@@ -12,7 +12,7 @@ import urllib.error
 from .config import ROOT, VLM_MODEL, VLM_PROJECTOR
 from .story import _protected_speech, _spoken_words, _unit_ids
 
-CLOSING_VERSION = 4
+CLOSING_VERSION = 5
 CONTEXT_LIMIT = 5300
 
 
@@ -121,7 +121,8 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
     from .analysis import candidate_units, storyboard
     from .editorial import load_profile
     editorial_profile=load_profile(job_dir)
-    result = copy.deepcopy(events)
+    from .source_roles import apply_exclusions,verified_story_ranges
+    result = apply_exclusions(events)
     duration = max((event['end'] for event in events), default=0)
     anchor = next((index for index, event in enumerate(events) if _ending_anchor(event, duration)), None)
     all_units = [candidate_units(event['start'], event['end'], transcript, shots) for event in events]
@@ -215,6 +216,10 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
             else:
                 for unit in units:
                     if unit['id'] not in omitted:
+                        continue
+                    if any(unit['start']<r['end'] and unit['end']>r['start'] for r in verified_story_ranges(event)):
+                        omitted.remove(unit['id'])
+                        event.setdefault('story_warnings',[]).append(f"{unit['id']}: сохранён независимо подтверждённый сюжет")
                         continue
                     atmosphere=unit['id'] in set(event.get('protected_atmosphere_units',[]))|set(raw.get('reaction_or_humor_units',[]))
                     if (atmosphere and (editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor'])

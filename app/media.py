@@ -126,7 +126,7 @@ def crop_expressions(cut: dict, width: int, height: int) -> tuple[str, str]:
 def choose_encoder(workdir: Path, cancelled=lambda: False) -> str:
     try:
         run_command([str(FFMPEG), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
-                     "color=size=128x128:rate=30", "-frames:v", "1", "-c:v", "h264_nvenc",
+                     "color=size=256x256:rate=30", "-frames:v", "1", "-c:v", "h264_nvenc",
                      "-f", "null", "-"], workdir, cancelled, 30)
         return "h264_nvenc"
     except (RuntimeError, TimeoutError):
@@ -198,6 +198,12 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     validate_export(partial, part["duration"], workdir, cancelled)
     if cancelled():
         raise InterruptedError("Обработка отменена")
+    # The requested hardware encoder can fall back per part. Record the actual
+    # successful encoder without changing the public Path return contract.
+    metadata = workdir / "render-info.json"
+    temporary = metadata.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps({"encoder": encoder}), encoding="utf-8")
+    os.replace(temporary, metadata)
     # Sidecars are written before the MP4 is published as the commit marker.
     srt_partial = workdir / (basename + ".srt")
     write_srt(srt_partial, part["subtitles"])

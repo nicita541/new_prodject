@@ -3,13 +3,14 @@ import copy
 from contextlib import contextmanager
 import uuid
 import time
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media import choose_encoder, crop_expressions, crop_position, crop_size, inspect_media, render_part, run_command, validate_export
-from app.pipeline import run_job
+from app.pipeline import _run_render_tasks, run_job
 
 
 @contextmanager
@@ -44,6 +45,109 @@ class CropTests(unittest.TestCase):
             self.assertLess(abs(cw / ch - 9 / 16), 0.004)
             self.assertEqual(crop_position(-1, -1, width, height), (0, 0))
             self.assertEqual(crop_position(2, 2, width, height), (width - cw, height - ch))
+
+
+class EncoderProbeTests(unittest.TestCase):
+    def test_nvenc_probe_uses_dimensions_supported_by_current_gpu(self):
+        with workspace_directory() as directory, patch("app.media.run_command") as run:
+            self.assertEqual(choose_encoder(Path(directory)), "h264_nvenc")
+            command = run.call_args.args[0]
+            self.assertIn("color=size=256x256:rate=30", command)
+
+    def test_nvenc_probe_failure_falls_back_to_cpu(self):
+        for error in (RuntimeError("unsupported"), TimeoutError("probe timed out")):
+            with self.subTest(error=type(error).__name__), workspace_directory() as directory, \
+                    patch("app.media.run_command", side_effect=error):
+                self.assertEqual(choose_encoder(Path(directory)), "libx264")
+
+
+class RenderTaskTests(unittest.TestCase):
+    def test_worker_count_cannot_exceed_safety_cap(self):
+        with self.assertRaises(ValueError):
+            _run_render_tasks([],lambda item,cancelled:item,lambda item,result:None,
+                              lambda:False,workers=3)
+
+    def test_render_batch_caps_workers_and_commits_on_caller_in_source_order(self):
+        guard=threading.Lock()
+        active=0
+        maximum=0
+        completion=[]
+        commits=[]
+        caller=threading.current_thread()
+        def render(item,cancelled):
+            nonlocal active,maximum
+            with guard:
+                active+=1
+                maximum=max(maximum,active)
+            try:
+                time.sleep(.02 if item%2==0 else .005)
+                completion.append(item)
+                return f"part-{item}"
+            finally:
+                with guard:
+                    active-=1
+        def commit(item,result):
+            self.assertIs(threading.current_thread(),caller)
+            commits.append((item,result))
+        results=_run_render_tasks(list(range(6)),render,commit,lambda:False,workers=2)
+        self.assertLessEqual(maximum,2)
+        self.assertNotEqual(completion,sorted(completion))
+        self.assertEqual(commits,[(i,f"part-{i}") for i in range(6)])
+        self.assertEqual(results,[f"part-{i}" for i in range(6)])
+
+    def test_failed_batch_commits_finished_success_and_never_dispatches_later_batch(self):
+        first_done=threading.Event()
+        dispatched=[]
+        committed=[]
+        def render(item,cancelled):
+            dispatched.append(item)
+            if item==0:
+                first_done.set()
+                return "valid-part-0"
+            if item==1:
+                self.assertTrue(first_done.wait(1))
+                raise RuntimeError("render failed")
+            return "unexpected"
+        with self.assertRaisesRegex(RuntimeError,"render failed"):
+            _run_render_tasks([0,1,2],render,lambda item,result:committed.append((item,result)),
+                              lambda:False,workers=2)
+        self.assertEqual(sorted(dispatched),[0,1])
+        self.assertEqual(committed,[(0,"valid-part-0")])
+
+    def test_cancellation_drains_owned_workers_before_return(self):
+        cancelled=threading.Event()
+        started=threading.Event()
+        start_lock=threading.Lock()
+        start_count=0
+        drained=[]
+        lock=threading.Lock()
+        commits=[]
+        def render(item,check_cancelled):
+            nonlocal start_count
+            with start_lock:
+                start_count+=1
+                if start_count==2:
+                    started.set()
+            try:
+                while not check_cancelled():
+                    time.sleep(.002)
+                raise InterruptedError("cancelled")
+            finally:
+                with lock:
+                    drained.append(item)
+        def request_cancel():
+            self.assertTrue(started.wait(timeout=2))
+            time.sleep(.01)
+            cancelled.set()
+        requester=threading.Thread(target=request_cancel)
+        requester.start()
+        with self.assertRaises(InterruptedError):
+            _run_render_tasks([0,1,2],render,lambda item,result:commits.append(item),
+                              cancelled.is_set,workers=2)
+        requester.join(timeout=1)
+        self.assertFalse(requester.is_alive())
+        self.assertEqual(sorted(drained),[0,1])
+        self.assertEqual(commits,[])
 
     def test_motion_preserves_finalized_low_confidence_anchors(self):
         cut = {"start": 10, "end": 20, "focus": [{"time": 10, "x": 0.1, "y": 0.5, "confidence": 0.8},
@@ -262,6 +366,17 @@ class PipelineCheckpointTests(unittest.TestCase):
                     patch("app.pipeline.render_part", side_effect=fake_render) as renderer, patch("app.pipeline.validate_export"):
                 outputs = run_job(base, lambda *args: None, lambda: False)
                 self.assertEqual(outputs, ["part_001.mp4", "part_001.srt"])
+                checkpoint=json.loads((base/"render/part_001.json").read_text(encoding="utf-8"))
+                self.assertEqual(checkpoint["requested_encoder"],"libx264")
+                self.assertIsNone(checkpoint["encoder"])
+                timing=json.loads((base/"timings.json").read_text(encoding="utf-8"))
+                self.assertEqual(timing["status"],"completed")
+                self.assertEqual(timing["parts"][0]["encoder"],None)
+                manifests=list((base/"runs").glob("*.json"))
+                self.assertEqual(len(manifests),1)
+                manifest=json.loads(manifests[0].read_text(encoding="utf-8"))
+                self.assertEqual(manifest["identity"]["git_commit"],timing["identity"]["git_commit"])
+                self.assertRegex(manifest["identity"]["source_files_sha256"]["app/pipeline.py"],r"^[0-9a-f]{64}$")
                 run_job(base, lambda *args: None, lambda: False)
                 self.assertEqual(renderer.call_count, 1)
                 (base / "output" / "part_001.srt").write_text("tampered", encoding="utf-8")

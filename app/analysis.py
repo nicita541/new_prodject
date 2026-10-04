@@ -18,7 +18,7 @@ import urllib.request
 from app.config import FFMPEG, FFPROBE, LLAMA, ROOT, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR, setup_environment
 
 ANALYSIS_VERSION = 8
-GLOBAL_STORY_VERSION = 4
+GLOBAL_STORY_VERSION = 5
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
 
 
@@ -46,7 +46,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
             'source_roles':SOURCE_ROLE_VERSION,
             'credit_capability':'image-pages' if paged else 'single-image',
             'editorial_policy':editorial_policy,'global_story':GLOBAL_STORY_VERSION,
-            'closing':CLOSING_VERSION,'titles':TITLES_VERSION,'speech_context':3,
+            'closing':CLOSING_VERSION,'titles':TITLES_VERSION,'speech_context':4,
             'focus':FOCUS_VERSION,'focus_model':str(STORY_MODEL),
             'focus_projector':str(STORY_PROJECTOR)}
 
@@ -502,6 +502,7 @@ def apply_global_selection(events, decisions, editorial_profile=None):
     """Only explicit validated omissions may overrule local importance."""
     from .editorial import DEFAULT_PROFILE
     profile=editorial_profile or DEFAULT_PROFILE
+    from .source_roles import verified_story_ranges
     if 'omit' in decisions:
         validate_global_omissions(decisions, {e['id'] for e in events})
     omissions = {item['event']:item for item in decisions.get('omit', [])}
@@ -512,6 +513,7 @@ def apply_global_selection(events, decisions, editorial_profile=None):
         if (omission and omission['confidence'] >= .85 and not event.get('uncertain')
                 and not event.get('selection_uncertain')
                 and not omission.get('reaction_or_humor') and not event.get('protected_atmosphere_units')
+                and not verified_story_ranges(event)
                 and not (omission['reason'] in ('redundant_exchange','repeated_information')
                          and not profile['remove_exact_repetition'])
                 and not (omission['reason']=='nonstory' and not profile['remove_empty_holds'])

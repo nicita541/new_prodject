@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from .jobs import atomic_json
 
-PACING_VERSION = 11
+PACING_VERSION = 13
 REMOVABLE = {'waiting','repeat','scenery'}
 
 
@@ -86,7 +86,7 @@ def silent_units(event, transcript, shots):
                 # jump with virtually no condensation. Preserve short handles.
                 if b - a < .75:
                     continue
-                count = max(1, math.ceil((b - a) / 4))
+                count = max(1, math.ceil((b - a) / 2))
                 for i in range(count):
                     result.append({'id': f's{len(result):03}', 'start': round(a + (b-a)*i/count, 6),
                                    'end': round(a + (b-a)*(i+1)/count, 6)})
@@ -96,6 +96,7 @@ def silent_units(event, transcript, shots):
 def apply_review(event, units, raw, editorial_profile=None):
     from .editorial import DEFAULT_PROFILE
     profile=editorial_profile or DEFAULT_PROFILE
+    from .source_roles import verified_story_ranges
     known = {u['id']: u for u in units}
     decisions = raw.get('decisions')
     if not isinstance(decisions, list) or not isinstance(raw.get('uncertain'), bool):
@@ -113,7 +114,9 @@ def apply_review(event, units, raw, editorial_profile=None):
             raise ValueError('Неверная оценка атмосферы сцены')
         protected=any(known[item['unit']]['start']<r['end'] and known[item['unit']]['end']>r['start']
                       for r in event.get('protected_atmosphere_ranges',[]))
-        if ((item.get('reaction_or_humor') or protected) and (profile['preserve_reactions'] or profile['preserve_humor'])
+        verified=any(known[item['unit']]['start']<r['end'] and known[item['unit']]['end']>r['start']
+                     for r in verified_story_ranges(event))
+        if (verified or (item.get('reaction_or_humor') or protected) and (profile['preserve_reactions'] or profile['preserve_humor'])
                 or item['reason']=='repeat' and not profile['remove_exact_repetition']
                 or item['reason'] in ('waiting','scenery') and not profile['remove_empty_holds']):
             blocked.add(item['unit'])
@@ -167,11 +170,14 @@ def make_sheet(source: Path, units, destination: Path, cancelled):
             if cancelled():
                 raise InterruptedError('Обработка отменена')
             x, y = 0, index * row_height
-            draw.text((x+3, y+3), f"{unit['id']} | {unit['start']:.2f}-{unit['end']:.2f}s", fill='white')
             timestamps = [max(0,unit['start']-1),
                           *(unit['start']+(unit['end']-unit['start'])*f for f in (.08,.29,.5,.71,.92)),
                           min(last_frame,unit['end']+1)]
             for frame_index, timestamp in enumerate(timestamps):
+                label=('CONTEXT BEFORE' if frame_index==0 else 'CONTEXT AFTER' if frame_index==6
+                       else f'CURRENT {frame_index}')
+                draw.text((x+frame_index*tile_width+3,y+3),
+                          f"{unit['id']} {label} | {timestamp:.2f}s",fill='white')
                 video.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000)
                 ok, frame = video.read()
                 if not ok:
@@ -221,7 +227,8 @@ def retained_context(events, transcript, retained_ids=None):
 def refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled):
     from .editorial import load_profile,instruction
     editorial_profile=load_profile(job_dir)
-    result = copy.deepcopy(events)
+    from .source_roles import apply_exclusions,verified_story_ranges
+    result = apply_exclusions(events)
     directory = job_dir / 'pacing'
     directory.mkdir(exist_ok=True)
     source_stat = source.stat()
@@ -231,6 +238,8 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
         if event.get('credit_montage') or event.get('global_excluded'):
             continue
         units = silent_units(event, transcript, shots)
+        units=[u for u in units if not any(u['start']<r['end'] and u['end']>r['start']
+               for r in verified_story_ranges(event))]
         if editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor']:
             units=[u for u in units if not any(u['start']<r['end'] and u['end']>r['start']
                 for r in event.get('protected_atmosphere_ranges',[]))]
@@ -286,6 +295,12 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                     prompt = (
                         instruction(editorial_profile)+' Condense this episode using ONLY the supplied speech-free source rows A..H, exactly once each. '
                         'Each row: CONTEXT BEFORE, five CURRENT UNIT frames, CONTEXT AFTER. Only the middle five are deletable. '
+                        'Every tile is explicitly labeled CONTEXT BEFORE/AFTER or CURRENT 1..5 with its actual source time. '
+                        'A reaction, new character inset or action appearing ONLY in a CONTEXT tile does not occur in this CURRENT row. '
+                        'For action/reaction evidence identify the actual CURRENT frame showing it. Do not assign a later reaction '
+                        'to an earlier empty courtyard, or let one needed departure frame protect every following unchanged view. '
+                        'Retain the developing action and its distinct reaction; trim redundant neutral dwell between them '
+                        'when the retained surrounding frames already establish the location and causal transition. '
                         'Evaluate narrative/emotional FUNCTION against actual neighboring replies and images. '
                         'Preserve almost all reactions, jokes, comic timing and emotional atmosphere, even without plot progress. '
                         'Mark reaction_or_humor=true and keep whenever this unit carries a reaction, joke, atmosphere or its payoff. '

@@ -112,6 +112,17 @@ class ClosingTests(unittest.TestCase):
         self.assertEqual(result[1]['importance'], 4)
         self.assertEqual(result[1]['selected_ranges'], [{'start':85,'end':90}])
 
+    def test_verified_current_story_range_survives_later_closing_omission(self):
+        directory,events,_=fixture()
+        events[1].update(credit_montage=True,kind='ending',importance=1,
+                         selected_ranges=[{'start':80,'end':82}],
+                         verified_current_story_ranges=[{'start':85,'end':90}])
+        result,_=self.run_closing(directory,events,
+            [decision(['u000','u001'],[]),decision(['u000','u001'],[])],shots=[{'start':85}])
+        self.assertEqual(result[1]['selected_ranges'],[{'start':85,'end':90}])
+        self.assertFalse(result[1]['credit_montage'])
+        self.assertEqual(result[1]['kind'],'story')
+
     def test_invalid_partitions_and_uncertainty_preserve_existing_ranges(self):
         failures = [[], decision(['invented'], []), decision([], []),
                     decision(['u000'], ['u000']), decision(['u000','u000'], []),

@@ -9,13 +9,14 @@ from app.closing import refine_closing_novelty
 from app.config import TEMP
 from app.editorial import DEFAULT_PROFILE
 from app.planner import build_plan
-from app.source_roles import refine_source_roles, validate_role_decisions
+from app.source_roles import (apply_exclusions, confirmed_exclusions, refine_source_roles,
+                              validate_role_decisions)
 from app.story import preserve_dialogue_in_credits, refine_story
 from tests.test_story import FakeVision, edge_fixture
 
 
 def role_answer(role, *, quote='', visible='', reaction=False, meaningful=False):
-    return {'decisions':[{'unit':'A','role':role,'wholly_nonstory':role in ('uploader','next_preview'),
+    return {'decisions':[{'unit':'A','role':role,'wholly_nonstory':role in ('uploader','next_preview','title_narration'),
                           'meaningful_story':meaningful,'reaction_or_humor':reaction,
                           'confidence':.98,'evidence':'Directly checked against the supplied scene context.',
                           'speech_quote':quote,'visible_text':visible}]}
@@ -29,6 +30,67 @@ def word_rows(start, end, text):
 
 
 class SourceRolePipelineTests(unittest.TestCase):
+    def test_story_proof_splits_broad_exclusions_and_nonstory_elsewhere_stays_excluded(self):
+        event={'id':'mixed','start':0,'end':20,'kind':'opening','importance':1,
+               'selected_ranges':[{'start':0,'end':20}],
+               'excluded_credit_ranges':[{'start':0,'end':20}],
+               'verified_current_story_ranges':[{'start':8,'end':10}]}
+        self.assertEqual(confirmed_exclusions(event),[
+            {'start':0,'end':8.0},{'start':10.0,'end':20}])
+        result=apply_exclusions([event])[0]
+        self.assertEqual(result['selected_ranges'],[{'start':8.0,'end':10.0}])
+        self.assertEqual(result['kind'],'story')
+
+    def test_verified_story_range_survives_credit_exclusion_and_role_override(self):
+        event={'id':'mixed','start':0,'end':20,'kind':'opening','importance':1,
+               'credit_montage':True,'selected_ranges':[{'start':0,'end':20}],
+               'excluded_credit_ranges':[{'start':0,'end':20}],
+               'verified_current_story_ranges':[{'start':6,'end':12}],
+               'source_role_excluded':True}
+        restored=apply_exclusions([event])[0]
+        self.assertEqual(restored['selected_ranges'],[{'start':6.0,'end':12.0}])
+        self.assertEqual(restored['kind'],'story')
+        self.assertNotIn('source_role_excluded',restored)
+        unit={'id':'A','start':6,'end':12,'text':'Subscribe to the official channel',
+              'verified_current_story':True}
+        claim=role_answer('uploader',quote=unit['text'],visible='OFFICIAL CHANNEL')
+        self.assertEqual(validate_role_decisions(claim,[unit]),[])
+        preview=role_answer('next_preview',quote='Tomorrow the next episode begins',visible='次回予告')
+        self.assertEqual(validate_role_decisions(preview,[{**unit,'text':'Tomorrow the next episode begins'}]),[])
+
+    def test_explicit_preview_marker_can_override_atmosphere_label_but_story_reaction_cannot(self):
+        units=[{'id':'A','text':'','protected_atmosphere':True},
+               {'id':'B','text':'Character laughs at the current story','protected_atmosphere':True}]
+        raw={'decisions':[
+            {'unit':'A','role':'next_preview','wholly_nonstory':True,'meaningful_story':False,
+             'reaction_or_humor':False,'confidence':.98,'evidence':'Visible next-episode card follows the episode ending.',
+             'speech_quote':'','visible_text':'次回予告'},
+            {'unit':'B','role':'current_story','wholly_nonstory':False,'meaningful_story':False,
+             'reaction_or_humor':True,'confidence':.98,'evidence':'Character reaction belongs to this scene.',
+             'speech_quote':'Character laughs','visible_text':''}]}
+        self.assertEqual([d['unit'] for d in validate_role_decisions(raw,units)],['A'])
+
+    def test_protected_preview_without_visible_marker_stays_and_malformed_claim_fails_closed(self):
+        unit={'id':'A','text':'Tomorrow they will meet again','protected_atmosphere':True}
+        plain_quote={'decisions':[{'unit':'A','role':'next_preview','wholly_nonstory':True,
+            'meaningful_story':False,'reaction_or_humor':False,'confidence':.98,
+            'evidence':'The wording sounds like a preview.','speech_quote':'Tomorrow they will meet again',
+            'visible_text':''}]}
+        self.assertEqual(validate_role_decisions(plain_quote,[unit]),[])
+        malformed={'decisions':[dict(plain_quote['decisions'][0],visible_text=None)]}
+        with self.assertRaises(ValueError):
+            validate_role_decisions(malformed,[unit])
+
+    def test_protected_uploader_and_title_need_matching_quote_and_visible_marker(self):
+        for role,text,marker in [('uploader','Subscribe to our official channel','OFFICIAL CHANNEL'),
+                                 ('title_narration','This episode is called Marie','EPISODE 1')]:
+            with self.subTest(role=role):
+                unit={'id':'A','text':text,'protected_atmosphere':True}
+                confirmed=role_answer(role,quote=text,visible=marker)
+                self.assertEqual(len(validate_role_decisions(confirmed,[unit])),1)
+                unsupported=role_answer(role,quote=text,visible='')
+                self.assertEqual(validate_role_decisions(unsupported,[unit]),[])
+
     def test_role_deletion_requires_complete_valid_evidence_and_positive_credit_span(self):
         units=[{'id':'A','text':'Official channel subscribes today'},
                {'id':'B','text':'Tomorrow another episode starts'},
@@ -123,6 +185,40 @@ class SourceRolePipelineTests(unittest.TestCase):
         self.assertTrue(loaded[0]['source_role_excluded'])
         self.assertEqual(loaded[1]['selected_ranges'],[{'start':10,'end':20}])
         self.assertEqual(loaded[2]['selected_ranges'],[{'start':20,'end':30}])
+
+    def test_preview_marker_can_remove_tentatively_protected_unit_after_two_agreeing_reviews(self):
+        directory,base,_=edge_fixture(start=0,end=20)
+        event={**copy.deepcopy(base),'contains_credits':True,
+               'protected_atmosphere_ranges':[{'start':0,'end':20}],
+               'selected_ranges':[{'start':0,'end':20}]}
+        text='Tomorrow the next episode begins'
+        transcript={'segments':[{'start':2,'end':20,'text':text}],
+                    'words':word_rows(2,20,text)}
+        visible='次回予告'
+        vision=FakeVision([role_answer('next_preview',quote=text,visible=visible),
+                           role_answer('next_preview',quote=text,visible=visible)])
+        vision.model=Path('test-model');vision.projector=Path('test-profile')
+        vision.cache_profile='test';vision.supports_image_pages=False
+        with patch('app.production.sequence_sheet',return_value=[directory/'preview-page.jpg']):
+            result=refine_source_roles([event],transcript,[],directory,vision,lambda *a:None,lambda:False)
+        self.assertFalse(result[0]['selected_ranges'])
+        self.assertTrue(result[0]['source_role_excluded'])
+        self.assertEqual(len(vision.calls),2)
+
+    def test_disagreeing_preview_role_reviewer_preserves_protected_content(self):
+        directory,event,_=edge_fixture(start=0,end=20)
+        event.update(contains_credits=True,protected_atmosphere_ranges=[{'start':0,'end':20}],
+                     selected_ranges=[{'start':0,'end':20}])
+        text='Tomorrow the next episode begins'
+        transcript={'segments':[{'start':2,'end':20,'text':text}], 'words':word_rows(2,20,text)}
+        vision=FakeVision([role_answer('next_preview',quote=text,visible='次回予告'),
+                           role_answer('current_story')])
+        vision.model=Path('test-model');vision.projector=Path('test-profile')
+        vision.cache_profile='test';vision.supports_image_pages=False
+        with patch('app.production.sequence_sheet',return_value=[directory/'preview-page.jpg']):
+            result=refine_source_roles([event],transcript,[],directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':20}])
+        self.assertFalse(result[0].get('source_role_excluded',False))
 
     def test_closing_rechecks_and_keeps_story_protected_atmosphere(self):
         from tests.test_closing import decision as closing_decision

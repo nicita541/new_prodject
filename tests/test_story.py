@@ -2,18 +2,20 @@ import copy
 import json
 import unittest
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
 
 from app.config import TEMP
-from app.story import _credit_decision, refine_story, clean_credit_continuations, preserve_dialogue_in_credits
+from app.story import (_credit_decision, refine_story, clean_credit_continuations,
+                       preserve_dialogue_in_credits, verify_omissions, _valid_cache)
 from app.planner import build_plan
 
 
 class FakeVision:
     def __init__(self, answers):
-        self.answers = list(answers)
+        self.answers = story_answers(*answers)
         self.calls = []
         self.schemas = []
 
@@ -47,6 +49,56 @@ def decision(keep, preserve=None, uncertain=False):
                           if u not in set(keep) | set(preserve or [])]}
 
 
+def story_answers(*answers):
+    """Pair story proposals with independent, conservative visual proof."""
+    result=[]
+    for index,raw in enumerate(answers):
+        result.append(raw)
+        if not isinstance(raw,dict) or 'summary' not in raw or not raw.get('omit_units'):
+            continue
+        if any(not isinstance(raw.get(key),list) or any(not isinstance(unit,str) for unit in raw[key])
+               for key in ('keep_units','preserve_silent_units')):
+            continue
+        if not (set(raw['keep_units'])|set(raw['preserve_silent_units'])) <= {'u000','u001','u002','u003'}:
+            continue
+        if any(not isinstance(omission,dict) or omission.get('unit') not in
+               {'u000','u001','u002','u003'} or omission.get('reason') not in
+               {'waiting','redundant_exchange','repeated_information'}
+               for omission in raw['omit_units']):
+            continue
+        if (index+1<len(answers) and isinstance(answers[index+1],dict)
+                and any(isinstance(item,dict) and 'keep' in item
+                        for item in answers[index+1].get('decisions',[]))):
+            continue  # Caller supplied the independent proof explicitly.
+        if any(not isinstance(omission,dict) or omission.get('unit') not in
+               {'u000','u001','u002','u003'} or omission.get('reason') not in
+               {'waiting','redundant_exchange','repeated_information'}
+               for omission in raw['omit_units']):
+            continue
+        selected=set(raw.get('keep_units',[]))|set(raw.get('preserve_silent_units',[]))
+        units={'u000':(0,6),'u001':(6,12),'u002':(12,19),'u003':(19,20)}
+        decisions=[]
+        for omission in raw['omit_units']:
+            unit=omission['unit']
+            if omission.get('reaction_or_humor'):
+                continue  # Balanced-atmosphere profile protects these in pass one.
+            if omission['reason']=='waiting':
+                decisions.append({'unit':unit,'keep':False,'story_change':False,
+                    'current_episode_story':False,'confidence':.98,
+                    'reaction_or_humor':False,'evidence':'No action, response, or distinct atmosphere appears here.',
+                    'retained_witness':'none'})
+                continue
+            earlier=[candidate for candidate in selected if units[candidate][1]<=units[unit][0]]
+            decisions.append({'unit':unit,'keep':not bool(earlier),'story_change':False,
+                'current_episode_story':False,'confidence':.98,
+                'reaction_or_humor':False,
+                'evidence':'The earlier retained unit already conveys this repeated exchange.' if earlier
+                           else 'No earlier retained unit proves this is redundant.',
+                'retained_witness':max(earlier,key=lambda candidate:units[candidate][1]) if earlier else 'none'})
+        result.append({'decisions':decisions})
+    return result
+
+
 def partition(excluded, narrative, uncertain=False):
     return {'nonstory_units': excluded, 'narrative_units': narrative, 'confidence': .95, 'uncertain': uncertain}
 
@@ -74,6 +126,122 @@ def fake_storyboard(source, start, end, shots, transcript, destination, cancelle
 
 
 class StoryRefinementTests(unittest.TestCase):
+    def test_omission_review_restores_new_wakeup_action_and_plan_cache_roundtrip(self):
+        directory,events,transcript=fixture()
+        raw=decision(['u000','u002','u003'])
+        proof={'decisions':[{'unit':'u001','keep':False,'story_change':True,
+            'current_episode_story':True,'confidence':.98,'reaction_or_humor':False,
+            'evidence':'The repeated name coincides with a new wake-up and response.',
+            'retained_witness':'none'}]}
+        vision=FakeVision([raw,proof])
+        result=refine_story(events,transcript,[],directory,vision,lambda *a:None,lambda:False)
+        self.assertTrue(any(r['start']<=6 and r['end']>=12 for r in result[0]['selected_ranges']))
+        self.assertEqual(result[0]['story_omission_review']['restored_units'],['u001'])
+        self.assertEqual(result[0]['verified_current_story_ranges'],[{'start':6.0,'end':12.0}])
+        serialized=json.loads(json.dumps(result,ensure_ascii=False))
+        plan=build_plan({'probe':{'duration':20,'width':1920,'height':1080,'has_audio':True},
+                         'events':serialized,'transcript':transcript,'shots':[]})
+        self.assertTrue(any(c['start']<=6 and c['end']>=12 for p in plan['parts'] for c in p['cuts']))
+        cached=FakeVision([])
+        self.assertEqual(refine_story(events,transcript,[],directory,cached,lambda *a:None,lambda:False),result)
+        self.assertFalse(cached.calls)
+        saved=json.loads(next((directory/'story_refinement').glob('*.json')).read_text('utf-8'))
+        self.assertTrue(_valid_cache(saved,saved['signature'],events[0]))
+        missing_range=copy.deepcopy(saved)
+        missing_range['event'].pop('verified_current_story_ranges')
+        self.assertFalse(_valid_cache(missing_range,saved['signature'],events[0]))
+
+    def test_op_or_preview_novelty_without_current_episode_ownership_is_not_sticky(self):
+        directory,events,transcript=fixture()
+        raw=decision(['u000','u002','u003'])
+        proof={'decisions':[{'unit':'u001','keep':False,'story_change':True,
+            'current_episode_story':False,'confidence':.98,'reaction_or_humor':False,
+            'evidence':'The new movement belongs to the episode opening montage, not its current plot.',
+            'retained_witness':'none'}]}
+        result=refine_story(events,transcript,[],directory,FakeVision([raw,proof]),
+                            lambda *a:None,lambda:False)
+        self.assertTrue(any(r['start']<=6 and r['end']>=12 for r in result[0]['selected_ranges']))
+        self.assertNotIn('verified_current_story_ranges',result[0])
+        serialized=json.loads(json.dumps(result,ensure_ascii=False))
+        self.assertNotIn('verified_current_story_ranges',serialized[0])
+
+    def test_omission_proof_rejects_integer_booleans_and_boolean_confidence(self):
+        from app.editorial import DEFAULT_PROFILE
+        unit={'id':'u001','start':6,'end':12,'text':'Мари просыпается'}
+        for field,value in [('current_episode_story',1),('confidence',True)]:
+            with self.subTest(field=field):
+                proof={'decisions':[{'unit':'u001','keep':True,'story_change':False,
+                    'reaction_or_humor':False,'current_episode_story':True,'confidence':.98,
+                    'evidence':'The current frame shows the character resting.','retained_witness':'none'}]}
+                proof['decisions'][0][field]=value
+                with self.assertRaises(ValueError):
+                    verify_omissions([unit],set(),[{'unit':'u001','reason':'waiting'}],
+                                     None,[],FakeVision([proof]),DEFAULT_PROFILE)
+
+    def test_independently_verified_action_survives_later_scenery_review_and_planning(self):
+        from app.analysis import apply_global_selection
+        from app.editorial import DEFAULT_PROFILE
+        from app.pacing import apply_review
+        directory,events,transcript=fixture()
+        raw=decision(['u000','u002','u003'])
+        proof={'decisions':[{'unit':'u001','keep':False,'story_change':True,
+            'current_episode_story':True,'confidence':.98,'reaction_or_humor':True,
+            'evidence':'The repeated name accompanies a new wake-up response.',
+            'retained_witness':'none'}]}
+        result=refine_story(events,transcript,[],directory,FakeVision([raw,proof]),
+                            lambda *a:None,lambda:False)
+        apply_global_selection(result,{'keep':[],'omit':[{'event':'event_0000','reason':'nonstory',
+            'evidence':'The short scene has no episode plot.','confidence':.98,'reaction_or_humor':False}],
+            'dependencies':[],'summary':'No scenes'},DEFAULT_PROFILE)
+        self.assertNotIn('global_excluded',result[0])
+        apply_review(result[0],[{'id':'s000','start':6,'end':6.55},
+                                {'id':'s001','start':6.55,'end':7.55},
+                                {'id':'s002','start':7.55,'end':12}],
+                     {'uncertain':False,'decisions':[
+                         {'unit':'s000','keep':True,'reason':'action','story_change':True,
+                          'reaction_or_humor':False,'evidence':'The action begins here.'},
+                         {'unit':'s001','keep':False,'reason':'scenery','story_change':False,
+                          'reaction_or_humor':False,'evidence':'No apparent plot movement in this narrow interval.'},
+                         {'unit':'s002','keep':True,'reason':'action','story_change':True,
+                          'reaction_or_humor':False,'evidence':'The scene resolves here.'}]})
+        self.assertTrue(any(r['start']<=7 and r['end']>=7.5 for r in result[0]['selected_ranges']))
+        plan=build_plan({'probe':{'duration':20,'width':1920,'height':1080,'has_audio':True},
+                         'events':result,'transcript':transcript,'shots':[]})
+        self.assertTrue(any(c['start']<=7 and c['end']>=7.5 for p in plan['parts'] for c in p['cuts']))
+
+    def test_repeat_omission_requires_an_earlier_selected_witness_and_valid_proof(self):
+        from app.editorial import DEFAULT_PROFILE
+        units=[{'id':'u000','start':0,'end':5},{'id':'u001','start':5,'end':10},
+               {'id':'u002','start':10,'end':15}]
+        omission=[{'unit':'u001','reason':'repeated_information'}]
+        collage=Path('current-collage.jpg')
+        class Vision:
+            def __init__(self,answer): self.answer=answer
+            def query(self,*args,**kwargs): return self.answer
+        no_witness={'decisions':[{'unit':'u001','keep':False,'story_change':False,
+            'current_episode_story':False,'confidence':.98,'reaction_or_humor':False,
+            'evidence':'No retained example proves repetition.',
+            'retained_witness':'none'}]}
+        approved,proof=verify_omissions(units,{'u000'},omission,collage,[],Vision(no_witness),DEFAULT_PROFILE)
+        self.assertEqual(approved,[])
+        supported={'decisions':[{'unit':'u001','keep':False,'story_change':False,
+            'current_episode_story':False,'confidence':.98,'reaction_or_humor':False,
+            'evidence':'This phrase repeats the earlier retained exchange.',
+            'retained_witness':'u000'}]}
+        approved,_=verify_omissions(units,{'u000'},omission,collage,[],Vision(supported),DEFAULT_PROFILE)
+        self.assertEqual(approved,omission)
+        later_witness={'decisions':[{'unit':'u001','keep':False,'story_change':False,
+            'current_episode_story':False,'confidence':.98,'reaction_or_humor':False,
+            'evidence':'A later occurrence cannot witness this interval.',
+            'retained_witness':'u002'}]}
+        approved,_=verify_omissions(units,{'u000','u002'},omission,collage,[],Vision(later_witness),DEFAULT_PROFILE)
+        self.assertEqual(approved,[])
+        malformed={'decisions':[{'unit':'u001','keep':False,'story_change':False,
+            'current_episode_story':False,'confidence':.98,'reaction_or_humor':False,
+            'evidence':'   ','retained_witness':'u000'}]}
+        with self.assertRaises(ValueError):
+            verify_omissions(units,{'u000'},omission,collage,[],Vision(malformed),DEFAULT_PROFILE)
+
     def test_physical_reaction_after_actual_segment_end_survives_margin_review(self):
         from app.pacing import apply_review
         directory,events,_=fixture()
@@ -221,7 +389,7 @@ class StoryRefinementTests(unittest.TestCase):
         result = refine_story(events, transcript, [], directory, vision, lambda *a: None, lambda: False)
         self.assertFalse(result[0].get("credit_montage", False))
         self.assertEqual(result[0]["importance"], 4)
-        self.assertEqual(len(vision.calls), 2)
+        self.assertEqual(len(vision.calls), 3)
         self.assertTrue(result[0]['contains_credits'])
         self.assertEqual(result[0]['credits_kind'], 'opening')
 
@@ -258,8 +426,8 @@ class StoryRefinementTests(unittest.TestCase):
         changed = FakeVision([decision(['u002'])])
         changed.thinking = True
         result = refine_story(events, transcript, [], directory, changed, lambda *a:None, lambda:False)
-        self.assertEqual(len(changed.calls), 1)
-        self.assertEqual(result[0]['selected_ranges'], [{'start':12, 'end':19}])
+        self.assertEqual(len(changed.calls), 2)
+        self.assertTrue(any(r['start']<=12 and r['end']>=19 for r in result[0]['selected_ranges']))
 
     def test_checkpoint_reuse_and_source_identity_change(self):
         directory, events, transcript = fixture()
@@ -271,7 +439,7 @@ class StoryRefinementTests(unittest.TestCase):
         (directory / "analysis.meta.json").write_text(json.dumps({"source": "different", "version": 3}), encoding="utf-8")
         changed = FakeVision([decision(["u000", "u002"])])
         refine_story(events, transcript, [], directory, changed, lambda *a: None, lambda: False)
-        self.assertEqual(len(changed.calls), 1)
+        self.assertEqual(len(changed.calls), 2)
 
     def test_cancel_before_any_model_request(self):
         directory, events, transcript = fixture()

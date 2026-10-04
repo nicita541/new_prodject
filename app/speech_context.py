@@ -17,10 +17,12 @@ def _tokens(text: str) -> list[str]:
 
 
 def _retained(events: list[dict]) -> set[str]:
+    from .source_roles import verified_story_ranges
     by_id = {event["id"]: event for event in events}
     retained = {event["id"] for event in events if not event.get('global_excluded')
                 and not event.get('pacing_excluded') and not event.get('source_role_excluded')
                 and ((event["kind"] == "story" and event["importance"] >= 3) or event["importance"] >= 4)}
+    retained|={event['id'] for event in events if verified_story_ranges(event)}
     if not retained:
         retained = {event["id"] for event in events if event["kind"] == "story"
                     and not event.get('global_excluded') and not event.get('pacing_excluded')

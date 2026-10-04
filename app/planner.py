@@ -115,7 +115,8 @@ def _speech_tail(end, speech, duration):
 
 def build_plan(analysis: dict, *, _part_count: int = 0) -> dict:
     validate_analysis(analysis)
-    events, probe = analysis["events"], analysis["probe"]
+    from .source_roles import apply_exclusions,confirmed_exclusions
+    events, probe = apply_exclusions(analysis["events"]), analysis["probe"]
     words = analysis["transcript"].get("words", [])
     segments = analysis["transcript"].get("segments", [])
     shot_starts = [_number(shot["start"]) for shot in analysis.get("shots", [])]
@@ -141,9 +142,7 @@ def build_plan(analysis: dict, *, _part_count: int = 0) -> dict:
                 selected.add(dep)
                 pending.append(dep)
     intervals = []
-    excluded_ranges = [r for event in events
-                       for key in ('excluded_title_units', 'excluded_credit_ranges', 'excluded_closing_ranges', 'excluded_review_ranges')
-                       for r in event.get(key, [])]
+    excluded_ranges = [r for event in events for r in confirmed_exclusions(event)]
     from .titles import _subtract
     for event in events:
         if event["id"] not in selected:

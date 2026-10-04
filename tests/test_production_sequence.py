@@ -3,7 +3,8 @@ import json
 import unittest
 from unittest.mock import patch
 
-from app.production_sequence import sequence_decision, clean_whole_sequences, original_clusters
+from app.production_sequence import (sequence_decision, verify_boundaries, verify_exceptions,
+                                    clean_whole_sequences, original_clusters)
 from app.production import clean_sequences
 from app.planner import build_plan
 from app.analysis import derived_story_identity
@@ -50,16 +51,56 @@ class WholeSequenceTests(unittest.TestCase):
         events=[{}, {'contains_credits':True}, {'credit_montage':True}, {}, {}, {'contains_credits':True}]
         self.assertEqual(original_clusters(events),[[1,2],[5]])
 
+    def test_independent_boundary_review_corrects_familiar_character_false_ending(self):
+        initial=decision()
+        initial.update(last_unit='U002',after_unit='U003',
+                       boundary_evidence='A familiar character appears outside the staff card.')
+        reviewed=decision()
+        reviewed.update(last_unit='U003',after_unit='U004',
+                        narrative_units=['U000','U003','U004'],
+                        boundary_evidence='The following familiar-character portraits remain part of the musical OP.')
+        class Vision:
+            def query(self,*args,**kwargs): return reviewed
+        corrected=verify_boundaries(initial,self.units,['original full pages'],Vision(),25)
+        self.assertEqual(corrected['last_unit'],'U003')
+        self.assertEqual(corrected['after_unit'],'U004')
+        self.assertEqual(sequence_decision(corrected,self.units,25)[0],{'U001','U002'})
+        self.assertIn('U003',corrected['narrative_units'])
+
+    def test_boundary_disagreement_and_malformed_second_review_fail_closed(self):
+        initial=decision()
+        class Vision:
+            def __init__(self,answer): self.answer=answer
+            def query(self,*args,**kwargs): return self.answer
+        different_kind=decision();different_kind['kind']='ending'
+        uncertain=verify_boundaries(initial,self.units,['pages'],Vision(different_kind),25)
+        self.assertEqual(uncertain['kind'],'uncertain')
+        malformed={**decision(),'last_unit':'invented'}
+        with self.assertRaises(ValueError):
+            verify_boundaries(initial,self.units,['pages'],Vision(malformed),25)
+
+    def test_verified_current_story_is_a_mandatory_mixed_sequence_exception(self):
+        raw=decision()
+        units=[{**unit,'verified_current_story':unit['id']=='U002'} for unit in self.units]
+        class Vision:
+            def __init__(self): self.calls=0
+            def query(self,*args,**kwargs): self.calls+=1; raise AssertionError('verified unit needs no paid/model review')
+        vision=Vision()
+        reviewed=verify_exceptions(raw,units,['full-pages'],vision,transcript={'words':[],'segments':[]})
+        self.assertIn('U002',reviewed['narrative_units'])
+        self.assertNotIn('U002',sequence_decision(reviewed,units,25)[0])
+        self.assertEqual(vision.calls,0)
+
     def test_one_sequence_query_plus_independent_anchor_then_paid_checkpoint_reuse(self):
         directory,event,_=edge_fixture(start=0,end=25)
         event.update(credit_montage=True,contains_credits=True,summary='Credits')
         original=copy.deepcopy(event)
-        vision=FakeVision([decision(),{'confirmed':True,'confidence':.95,'evidence':'Opening theme: Music'}])
+        vision=FakeVision([decision(),decision(),{'confirmed':True,'confidence':.95,'evidence':'Opening theme: Music'}])
         vision.model='test';vision.projector='test';vision.thinking=False
         shots=[{'start':i*5,'end':(i+1)*5} for i in range(5)]
         with patch('app.production.sequence_sheet',return_value=[directory/'source-page.jpg']):
             result=clean_whole_sequences([event],{'words':[],'segments':[]},shots,directory,vision,lambda *a:None,lambda:False)
-            self.assertEqual(len(vision.calls),2)
+            self.assertEqual(len(vision.calls),3)
             self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':5},{'start':20,'end':25}])
             self.assertFalse(result[0]['credit_montage'])
             replay=FakeVision([]);replay.model='test';replay.projector='test';replay.thinking=False
@@ -70,7 +111,7 @@ class WholeSequenceTests(unittest.TestCase):
     def test_failed_independent_anchor_restores_a_false_coarse_credit_window(self):
         directory,event,_=edge_fixture(start=0,end=25)
         event.update(credit_montage=True,contains_credits=True,summary='Quiet story')
-        vision=FakeVision([decision(),{'confirmed':False,'confidence':.95,'evidence':'A product label'}])
+        vision=FakeVision([decision(),decision(),{'confirmed':False,'confidence':.95,'evidence':'A product label'}])
         vision.model='test';vision.projector='test';vision.thinking=False
         shots=[{'start':i*5,'end':(i+1)*5} for i in range(5)]
         with patch('app.production.sequence_sheet',return_value=[directory/'source-page.jpg']):
@@ -99,7 +140,8 @@ class WholeSequenceTests(unittest.TestCase):
         anchor = {'confirmed': True, 'confidence': .95, 'evidence': 'Visible credit.'}
         # Original clusters at events 0 and 4 have contexts [0,2] and [2,6].
         # Their only shared event contains two independently confirmed cuts.
-        vision = FakeVision([sequence(4, 3, 5), anchor, sequence(1, 0, 2), anchor])
+        vision = FakeVision([sequence(4, 3, 5), sequence(4, 3, 5), anchor,
+                             sequence(1, 0, 2), sequence(1, 0, 2), anchor])
         vision.model = vision.projector = 'test'
         vision.thinking = False
         vision.supports_image_pages = True
