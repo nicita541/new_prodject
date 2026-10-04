@@ -506,6 +506,192 @@ class DeepSeekTests(unittest.TestCase):
                 self.assertEqual(self.entries()[-1]['status'],'completed')
         self.assertFalse(list(self.responses.glob('*.json')))
 
+    def test_selected_policy_allows_two_confirmed_retries_then_stops_and_accounts_each_charge(self):
+        vision=api.DeepSeekVision(self.directory,lambda:False,
+                                  retry_policy={'version':1,'max_paid_retries':2})
+        self.fetch.side_effect=[reply('{"keep":["invented"]}'),reply('not JSON'),reply()]
+        self.assertEqual(vision.query('bounded correction family',max_tokens=20,schema=SCHEMA),{'keep':['u000']})
+        entries=self.entries()
+        self.assertEqual(self.fetch.call_count,3)
+        self.assertEqual([entry['retry_index'] for entry in entries],[0,1,2])
+        self.assertEqual([entry['status'] for entry in entries],['completed']*3)
+        self.assertEqual([entry['response_status'] for entry in entries],['rejected','rejected','accepted'])
+        self.assertEqual(len({entry['request'] for entry in entries}),3)
+        self.assertEqual([entry['usage'] for entry in entries],[
+            {'prompt_tokens':100,'completion_tokens':10}]*3)
+        ledger=json.loads(self.ledger.read_text('utf-8'))
+        self.assertEqual(len(ledger['retry_families']),1)
+        family=next(iter(ledger['retry_families'].values()))
+        self.assertEqual(family['policy'],{'version':1,'max_paid_retries':2})
+        self.assertEqual(len(family['entry_ids']),3)
+        self.assertTrue(all(entry['request'] in ledger['blocked_requests'] for entry in entries[:2]))
+        bodies=[call.args[0] for call in self.fetch.call_args_list]
+        self.assertEqual([body['response_format'] for body in bodies],[{'type':'json_object'}]*3)
+        self.assertEqual([body['model'] for body in bodies],[api.MODEL]*3)
+        for body in bodies:
+            text=body['messages'][1]['content'][0]['text']
+            self.assertIn('"enum": ["u000"]',text)
+        self.assertIn('Corrective attempt 1.',bodies[1]['messages'][1]['content'][0]['text'])
+        self.assertIn('Corrective attempt 2.',bodies[2]['messages'][1]['content'][0]['text'])
+        self.assertEqual(json.loads((self.directory/'deepseek-retry-policy.json').read_text('utf-8')),
+                         {'version':1,'max_paid_retries':2})
+        self.assertEqual(Decimal(api.public_status()['charged_ceiling_usd']),Decimal('0.000126'))
+        self.assertEqual(vision.query('bounded correction family',max_tokens=20,schema=SCHEMA),{'keep':['u000']})
+        self.assertEqual(self.fetch.call_count,3)
+        (self.responses/(entries[-1]['request']+'.json')).unlink()
+        with self.assertRaises(api.AlreadyPaidInvalidResponse):
+            vision.query('bounded correction family',max_tokens=20,schema=SCHEMA)
+        self.assertEqual(self.fetch.call_count,3)
+
+    def test_retry_count_survives_new_job_instance_and_changed_token_hint(self):
+        selected={'version':1,'max_paid_retries':2}
+        first=api.DeepSeekVision(self.directory,lambda:False,retry_policy=selected)
+        self.fetch.return_value=reply('{"keep":["invented"]}')
+        with self.assertRaises(api.PaidResponseRejected):
+            first._query_once('durable retry family',max_tokens=20,image=None,schema=SCHEMA)
+        self.assertEqual(self.entries()[0]['retry_index'],0)
+        second_dir=self.directory/'new-job-instance'
+        second_dir.mkdir()
+        second=api.DeepSeekVision(second_dir,lambda:False,retry_policy=selected)
+        self.fetch.reset_mock()
+        self.fetch.return_value=reply()
+        self.assertEqual(second.query('durable retry family',max_tokens=30,schema=SCHEMA),{'keep':['u000']})
+        self.assertEqual(self.fetch.call_count,1)
+        self.assertEqual(self.entries()[-1]['retry_index'],1)
+        self.assertNotEqual(self.entries()[0]['job'],self.entries()[-1]['job'])
+        restarted=api.DeepSeekVision(self.directory/'third-job-instance',lambda:False,
+                                     cache_only=True,retry_policy=selected)
+        (self.directory/'third-job-instance').mkdir()
+        self.fetch.reset_mock()
+        self.assertEqual(restarted.query('durable retry family',max_tokens=20,schema=SCHEMA),{'keep':['u000']})
+        self.fetch.assert_not_called()
+        self.assertEqual(len(self.entries()),2)
+
+    def test_legacy_retry_policy_defaults_to_zero_and_selected_policy_is_validated(self):
+        with patch.object(api,'RETRY_SETTINGS',self.settings/'missing-policy.json'):
+            self.assertEqual(api.load_retry_policy(),{'version':1,'max_paid_retries':0})
+            self.assertEqual(self.vision().retry_policy,{'version':1,'max_paid_retries':0})
+        for invalid in ({'version':1,'max_paid_retries':3},
+                        {'version':1,'max_paid_retries':True},
+                        {'version':2,'max_paid_retries':2},
+                        {'version':1,'max_paid_retries':2,'extra':True}):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):
+                api.DeepSeekVision(self.directory,lambda:False,retry_policy=invalid)
+        self.fetch.return_value=reply('{"keep":["invented"]}')
+        with self.assertRaises(api.RemoteError):
+            self.vision().query('legacy policy rejects without retry',schema=SCHEMA)
+        self.fetch.assert_called_once()
+        self.assertEqual(len(self.entries()),1)
+
+    def test_known_marie_schema_rejection_seeds_attempt_one_but_acknowledged_unknown_never_seeds(self):
+        old='a33a537d388944f1bc6ae4897c71fef1f3c8ade37a498bfcd4875af8443270b7'
+        current='d7e192346a6354acc9d1557a2b5b1c8d03dca4874a4ca4741943f1484ac06a81'
+        logical='1'*64
+        selected={'version':1,'max_paid_retries':2}
+        completed={'id':'known-marie-response','request':old,'status':'completed',
+                   'charged_ceiling_usd':'0.000042','reserved_usd':'0.0053601',
+                   'usage':{'prompt_tokens':100,'completion_tokens':10},
+                   'response_status':'rejected','rejection_category':'schema_rejection'}
+        ledger={'entries':[completed],'blocked_requests':[old]}
+        family=api._retry_family(ledger,logical,[current,old],selected)
+        self.assertEqual(api._retry_index(ledger,family,selected),1)
+        self.assertEqual(family['entry_ids'],['known-marie-response'])
+        self.assertEqual(family['aliases'],[current,old])
+        uncertain={'id':'older-unknown','request':old,'status':'acknowledged_unknown',
+                   'charged_ceiling_usd':'0.0053601','reserved_usd':'0.0053601',
+                   'reservation_retained':True,'previous_status':'unknown'}
+        blocked={'entries':[uncertain],'blocked_requests':[old]}
+        with self.assertRaises(api.AlreadyPaidInvalidResponse):
+            api._retry_family(blocked,logical,[current,old],selected)
+        self.assertNotIn('retry_families',blocked)
+
+    def test_unknown_failure_during_correction_halts_without_third_send(self):
+        vision=api.DeepSeekVision(self.directory,lambda:False,
+                                  retry_policy={'version':1,'max_paid_retries':2})
+        self.fetch.side_effect=[reply('{"keep":["invented"]}'),api.RemoteError('sanitized uncertain response')]
+        with self.assertRaises(api.RemoteError):
+            vision.query('unknown retry family',schema=SCHEMA)
+        self.assertEqual(self.fetch.call_count,2)
+        entries=self.entries()
+        self.assertEqual([entry['status'] for entry in entries],['completed','unknown'])
+        self.assertEqual(entries[1]['charged_ceiling_usd'],entries[1]['reserved_usd'])
+        self.fetch.reset_mock()
+        self.fetch.return_value=reply()
+        with self.assertRaises(api.BudgetExceeded):
+            vision.query('different request after unknown retry',schema=SCHEMA)
+        self.fetch.assert_not_called()
+        self.assertTrue(json.loads(self.ledger.read_text('utf-8'))['halted'])
+
+    def test_cache_only_retry_family_miss_does_not_persist_policy_or_consume_retry(self):
+        vision=api.DeepSeekVision(self.directory,lambda:False,cache_only=True,
+                                  retry_policy={'version':1,'max_paid_retries':2})
+        before=self.ledger.read_bytes() if self.ledger.exists() else None
+        with self.assertRaises(api.BudgetExceeded):
+            vision.query('cache-only no-op family',schema=SCHEMA)
+        self.fetch.assert_not_called()
+        self.http.assert_not_called()
+        self.assertEqual(self.ledger.read_bytes() if self.ledger.exists() else None,before)
+        self.assertFalse((self.directory/'deepseek-retry-policy.json').exists())
+
+    def test_cancelled_before_retry_send_does_not_consume_allowance_or_lose_rejection_reason(self):
+        selected={'version':1,'max_paid_retries':2}
+        first=api.DeepSeekVision(self.directory,lambda:False,retry_policy=selected)
+        self.fetch.return_value=reply('{"keep":["invented"]}')
+        with self.assertRaises(api.PaidResponseRejected):
+            first._query_once('cancel-safe retry family',None,20,SCHEMA)
+        calls=0
+        def cancel_before_post():
+            nonlocal calls
+            calls+=1
+            return calls>=3
+        cancelled=api.DeepSeekVision(self.directory,cancel_before_post,retry_policy=selected)
+        self.fetch.reset_mock()
+        with self.assertRaises(InterruptedError):
+            cancelled.query('cancel-safe retry family',max_tokens=20,schema=SCHEMA)
+        self.assertEqual(self.fetch.call_count,0)
+        self.assertEqual(self.entries()[-1]['status'],'cancelled_before_send')
+        cancelled_entry=self.entries()[-1]
+        self.assertTrue(api._cancelled_without_send(cancelled_entry))
+        for malformed in ({**cancelled_entry,'charged_ceiling_usd':cancelled_entry['reserved_usd']},
+                          {**cancelled_entry,'usage':{'prompt_tokens':0,'completion_tokens':0}}):
+            with self.subTest(malformed=malformed):
+                self.assertFalse(api._cancelled_without_send(malformed))
+        resumed=api.DeepSeekVision(self.directory,lambda:False,retry_policy=selected)
+        self.fetch.return_value=reply()
+        self.assertEqual(resumed.query('cancel-safe retry family',max_tokens=20,schema=SCHEMA),{'keep':['u000']})
+        self.assertEqual(self.fetch.call_count,1)
+        self.assertEqual(self.entries()[-1]['retry_index'],1)
+        sent_text=self.fetch.call_args.args[0]['messages'][1]['content'][0]['text']
+        self.assertIn('previous received answer failed schema_rejection',sent_text)
+
+    def test_selected_retries_never_repeat_balance_auth_http_or_insufficient_funds(self):
+        selected={'version':1,'max_paid_retries':2}
+        transient=api.RemoteError('sanitized preflight connection failure',category='transport',
+                                  endpoint='/user/balance')
+        balance={'is_available':True,'balance_infos':[{'currency':'USD','total_balance':'0.06'}]}
+        self.http.side_effect=[transient,transient,balance,balance]
+        vision=api.DeepSeekVision(self.directory,lambda:False,retry_policy=selected)
+        vision.query('nonpaid balance retries',schema=SCHEMA)
+        self.assertEqual(self.http.call_count,4)  # two nonpaid retries, preflight, then balance refresh
+        self.assertEqual(self.fetch.call_count,1)
+        self.reset_fake_ledger()
+        self.http.reset_mock()
+        self.fetch.reset_mock()
+        self.http.side_effect=api.RemoteError('unauthorized',category='http',endpoint='/user/balance',http_status=401)
+        with self.assertRaises(api.RemoteError):
+            vision.query('auth failure no paid attempt',schema=SCHEMA)
+        self.assertEqual(self.http.call_count,1)
+        self.fetch.assert_not_called()
+        self.assertFalse(self.ledger.exists())
+        self.http.reset_mock()
+        self.http.side_effect=None
+        self.http.return_value={'is_available':True,'balance_infos':[{'currency':'USD','total_balance':'0'}]}
+        with self.assertRaises(api.BudgetExceeded):
+            vision.query('insufficient balance no retry',schema=SCHEMA)
+        self.assertEqual(self.http.call_count,1)
+        self.fetch.assert_not_called()
+        self.assertEqual(self.entries(),[])
+
     def test_missing_choices_and_nonstring_content_fail_with_reserved_charge_accounted(self):
         for raw in ({'usage':reply()['usage']}, {**reply(),'choices':[]},reply({'unexpected':'object'})):
             with self.subTest(raw=raw):

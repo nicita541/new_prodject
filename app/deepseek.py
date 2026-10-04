@@ -24,6 +24,7 @@ ENDPOINT = 'https://api.deepseek.com'
 SETTINGS = DATA / 'settings'
 PRIVATE = SETTINGS / 'deepseek.private.json'
 LEDGER = SETTINGS / 'deepseek-spending.json'
+RETRY_SETTINGS = SETTINGS / 'deepseek-retry.json'
 RESPONSES = CACHE / 'deepseek'
 TOTAL_BUDGET: Decimal | None = None  # No self-imposed account spending limit.
 EPISODE_BUDGET: Decimal | None = None  # User removed the per-attempt spending cap.
@@ -94,6 +95,31 @@ def begin_attempt(job_dir: Path) -> dict:
 
 class AlreadyPaidInvalidResponse(RemoteError):
     """A fully accounted rejected request must never be sent again."""
+
+
+class PaidResponseRejected(RemoteError):
+    """Fully accounted bad output; only an explicitly bounded correction may follow."""
+    def __init__(self, message, *, retry_available=False):
+        super().__init__(message, category='paid_response_quality')
+        self.retry_available = retry_available
+
+
+def validate_retry_policy(value):
+    if (not isinstance(value, dict) or set(value) != {'version', 'max_paid_retries'}
+            or type(value['version']) is not int or value['version'] != 1
+            or type(value['max_paid_retries']) is not int or not 0 <= value['max_paid_retries'] <= 2):
+        raise ValueError('Политика повторов DeepSeek требует версию 1 и лимит 0–2')
+    return dict(value)
+
+
+def load_retry_policy():
+    RETRY_SETTINGS.resolve().relative_to(ROOT.resolve())
+    if not RETRY_SETTINGS.exists():
+        return {'version': 1, 'max_paid_retries': 0}
+    try:
+        return validate_retry_policy(_strict_json(RETRY_SETTINGS.read_text('utf-8')))
+    except (OSError, ValueError, TypeError):
+        raise RemoteError('Сохранённая политика повторов DeepSeek повреждена') from None
 
 
 def answer_budget(max_tokens):
@@ -297,13 +323,13 @@ def _http(path: str, body=None, timeout=45):
                           category='transport', endpoint=path) from None
 
 
-def _preflight_balance():
-    """One bounded retry of a nonpaid read, before a chat reservation exists."""
-    for index in range(2):
+def _preflight_balance(max_retries=1):
+    """Bounded nonpaid reads before reservation; legacy allowance stays one."""
+    for index in range(max_retries+1):
         try:
             return _http('/user/balance')
         except RemoteError as error:
-            if index or error.endpoint != '/user/balance' or error.category not in ('transport', 'response_json_parse'):
+            if index == max_retries or error.endpoint != '/user/balance' or error.category not in ('transport', 'response_json_parse'):
                 raise
 
 
@@ -511,6 +537,103 @@ def _response_discipline(schema):
     return text
 
 
+QUALITY_REJECTIONS = frozenset(('response_shape', 'malformed_json', 'non_object_json', 'schema_rejection'))
+
+
+def _quality_rejection(entry):
+    """Recognize received bad output, never a transport/usage uncertainty."""
+    if entry.get('status') != 'completed':
+        return None
+    usage = entry.get('usage', {})
+    if not isinstance(usage, dict):
+        return None
+    incoming, outgoing = usage.get('prompt_tokens'), usage.get('completion_tokens')
+    if type(incoming) is not int or type(outgoing) is not int or min(incoming, outgoing) < 0:
+        return None
+    ceiling = (Decimal(incoming)*INPUT_PER_MILLION+Decimal(outgoing)*OUTPUT_PER_MILLION)/1000000
+    if ceiling != _decimal(entry['charged_ceiling_usd']) or ceiling > _decimal(entry.get('reserved_usd')):
+        return None
+    if entry.get('response_status') == 'rejected':
+        category = entry.get('rejection_category')
+        return category if category in QUALITY_REJECTIONS else None
+    digest = entry.get('request')
+    if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):
+        return None
+    try:
+        diagnostic = _strict_json((RESPONSES / 'rejected' / (digest+'.json')).read_text('utf-8'))
+        category = diagnostic['rejection_category']
+        tokens = diagnostic['usage']
+        if category in QUALITY_REJECTIONS and all(type(tokens.get(key)) is int and tokens[key] == usage[key]
+                for key in ('prompt_tokens', 'completion_tokens')):
+            return category
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    return None
+
+
+def _family_entries(ledger, family):
+    ids = family.get('entry_ids')
+    if not isinstance(ids, list) or len(ids) != len(set(ids)):
+        raise RemoteError('Счётчик повторов DeepSeek повреждён')
+    by_id = {entry.get('id'): entry for entry in ledger['entries']}
+    if any(identifier not in by_id for identifier in ids):
+        raise RemoteError('История повторов DeepSeek неполна')
+    return [by_id[identifier] for identifier in ids]
+
+
+def _retry_family(ledger, logical_digest, aliases, policy):
+    families = ledger.get('retry_families', {})
+    if not isinstance(families, dict):
+        raise RemoteError('Счётчик повторов DeepSeek повреждён')
+    family = families.get(logical_digest)
+    if family is None and not policy['max_paid_retries']:
+        return None
+    if family is None:
+        previous = [entry for entry in ledger['entries'] if entry.get('request') in aliases]
+        if any(entry.get('status') in ('reserved', 'unknown', 'unknown_usage') for entry in previous):
+            raise BudgetExceeded('Неподтверждённый расход запрещает новую оплачиваемую попытку')
+        if any(entry.get('status') == 'acknowledged_unknown' for entry in previous):
+            raise AlreadyPaidInvalidResponse('Запрос с неопределённым расходом нельзя повторять')
+        if any(not isinstance(entry.get('id'), str) for entry in previous):
+            raise RemoteError('Идентификаторы оплаченных попыток не подтверждены')
+        family = {'version': 1, 'policy': dict(policy), 'aliases': list(aliases),
+                  'entry_ids': [entry['id'] for entry in previous]}
+        ledger.setdefault('retry_families', {})[logical_digest] = family
+    if family.get('version') != 1 or not isinstance(family.get('aliases'), list):
+        raise RemoteError('Счётчик повторов DeepSeek повреждён')
+    validate_retry_policy(family.get('policy'))
+    family['aliases'] = list(dict.fromkeys([*family['aliases'], *aliases]))
+    return family
+
+
+def _retry_index(ledger, family, policy):
+    entries = [entry for entry in _family_entries(ledger, family)
+               if not _cancelled_without_send(entry)]
+    allowance = min(family['policy']['max_paid_retries'], policy['max_paid_retries'])
+    if any(entry.get('status') in ('reserved', 'unknown', 'unknown_usage') for entry in entries):
+        raise BudgetExceeded('Неподтверждённый расход запрещает новую оплачиваемую попытку')
+    if len(entries) >= allowance+1:
+        raise AlreadyPaidInvalidResponse('Лимит оплачиваемых попыток этого запроса исчерпан')
+    if any(_quality_rejection(entry) is None for entry in entries):
+        raise AlreadyPaidInvalidResponse('Уже оплаченный результат не подтверждён для повторной проверки')
+    return len(entries)
+
+
+def _cancelled_without_send(entry):
+    # This status is assigned only by the local branch before _fetch. A zero
+    # charge and absence of provider usage must agree with that no-send proof.
+    return (entry.get('status') == 'cancelled_before_send'
+            and _decimal(entry['charged_ceiling_usd']) == 0 and 'usage' not in entry)
+
+
+def _retry_prompt(prompt, index, category):
+    # Provider content is never echoed into a new prompt. Only bounded local
+    # categories and the unchanged supplied task/schema/media are used.
+    return (prompt+f'\nCorrective attempt {index}. The previous received answer failed {category}. '
+            'Regenerate a concrete JSON instance for the unchanged supplied task. '
+            'Respect the exact required fields and exhaustive ID enums; do not classify image context labels as extra targets.')
+
+
 def provider_identity(provider: str):
     if provider == 'local':
         return {'provider': 'local'}
@@ -527,8 +650,9 @@ def provider_identity(provider: str):
 
 class DeepSeekVision:
     supports_image_pages = True
-    """Existing model interface; paid calls are serialized and never auto-retried."""
-    def __init__(self, job_dir: Path, cancelled, cache_only=False, reasoning_effort=None, text_budget=20000):
+    """Serialized paid calls with explicit, durable bounded correction policy."""
+    def __init__(self, job_dir: Path, cancelled, cache_only=False, reasoning_effort=None, text_budget=20000,
+                 retry_policy=None):
         if reasoning_effort not in (None, 'low'):
             raise ValueError('Неизвестный режим проверки DeepSeek')
         if type(text_budget) is not int or not 20000 <= text_budget <= 64000:
@@ -546,6 +670,7 @@ class DeepSeekVision:
         self.gpu_layers = 0
         self.cpu_projector = True
         self.cache_only = cache_only
+        self.retry_policy = load_retry_policy() if retry_policy is None else validate_retry_policy(retry_policy)
 
     def __enter__(self):
         _key()
@@ -574,7 +699,30 @@ class DeepSeekVision:
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    def _reject_paid_output(self, ledger, entry, family, logical_digest, message, finish_reason, category, usage):
+        _record_rejection(entry['request'], message, finish_reason, category, usage)
+        entry.update(response_status='rejected', rejection_category=category)
+        ledger['blocked_requests'] = sorted({*ledger.get('blocked_requests', []), entry['request']})
+        ledger['halted'] = True
+        ledger['halt_reason'] = {'kind': 'response_quality', 'logical_request': logical_digest,
+                                 'request': entry['request']}
+        atomic_json(LEDGER, ledger)
+        if family is None:
+            return False
+        used = sum(not _cancelled_without_send(entry) for entry in _family_entries(ledger, family))
+        allowance = min(family['policy']['max_paid_retries'], self.retry_policy['max_paid_retries'])
+        return used < allowance+1
+
     def query(self, prompt: str, image: Path | list[Path] | None = None, max_tokens=1200, schema: dict | None = None):
+        for _ in range(self.retry_policy['max_paid_retries']+1):
+            try:
+                return self._query_once(prompt, image, max_tokens, schema)
+            except PaidResponseRejected as error:
+                if not error.retry_available:
+                    raise
+        raise AlreadyPaidInvalidResponse('Лимит оплачиваемых попыток этого запроса исчерпан')
+
+    def _query_once(self, prompt, image, max_tokens, schema):
         if self.cancelled():
             raise InterruptedError('Обработка отменена')
         requested_tokens = max_tokens
@@ -632,6 +780,9 @@ class DeepSeekVision:
                                                  sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
         compatible_digests = tuple(dict.fromkeys((digest, instance_digest, previous_digest,
                                                   previous_instance_digest, legacy_digest)))
+        logical_body = {key: value for key, value in legacy_body.items() if key != 'max_tokens'}
+        logical_digest = hashlib.sha256(json.dumps({'profile': PROFILE, 'request': logical_body},
+                                                   sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
         RESPONSES.resolve().relative_to(ROOT.resolve())
         RESPONSES.mkdir(parents=True, exist_ok=True)
         cached = RESPONSES / (digest+'.json')
@@ -649,22 +800,77 @@ class DeepSeekVision:
                     return value
                 except (ValueError, KeyError, TypeError):
                     pass
+            ledger = _read_ledger()
+            family = _retry_family(ledger, logical_digest, compatible_digests, self.retry_policy)
+            if family is not None:
+                for previous_entry in reversed(_family_entries(ledger, family)):
+                    previous = RESPONSES / (previous_entry['request']+'.json')
+                    if not previous.is_file() or _quality_rejection(previous_entry) is not None:
+                        continue
+                    try:
+                        value = _strict_json(previous.read_text('utf-8'))['result']
+                        if not isinstance(value, dict):
+                            raise ValueError()
+                        if schema is not None:
+                            _validate(value, schema)
+                        return value
+                    except (ValueError, KeyError, TypeError):
+                        pass
             if self.cache_only:
                 raise BudgetExceeded('Сохранённого ответа DeepSeek нет; режим проверки запрещает платный запрос')
-            ledger = _read_ledger()
             # The OS lock is exclusively ours now. A previous reservation that
             # never finished therefore belongs to a killed/crashed process,
             # not a live parallel request. Do not retry its unknown bill.
             if any(entry.get('status') in ('reserved', 'unknown', 'unknown_usage') for entry in ledger['entries']):
                 ledger['halted'] = True
                 atomic_json(LEDGER, ledger)
+            retry_index = _retry_index(ledger, family, self.retry_policy) if family is not None else 0
             if ledger.get('halted'):
-                raise BudgetExceeded('DeepSeek остановлен после неподтверждённого ответа или расхода; выберите локальный анализ')
+                owner = ledger.get('halt_reason', {})
+                old_owner = ledger['entries'][-1] if ledger['entries'] else {}
+                owned_quality = (family is not None and retry_index > 0
+                    and _quality_rejection(old_owner) is not None
+                    and old_owner.get('id') in family['entry_ids']
+                    and (not owner or owner.get('logical_request') == logical_digest))
+                if not owned_quality:
+                    raise BudgetExceeded('DeepSeek остановлен после неподтверждённого ответа или расхода; выберите локальный анализ')
+                # A selected correction policy may resume its own fully known
+                # quality failure. It never acknowledges new unknown debits.
+                ledger['blocked_requests'] = sorted(_confirmed_recovery_blocked_requests(ledger))
+                ledger['halted'] = False
+                ledger.pop('halt_reason', None)
             correction = None
             if any(candidate in ledger.get('blocked_requests', []) for candidate in compatible_digests):
-                correction = _approved_correction(ledger, digest, compatible_digests)
-                if correction is None:
+                if family is not None and retry_index > 0:
+                    known = {entry['request'] for entry in _family_entries(ledger, family)
+                             if _quality_rejection(entry) is not None}
+                    blocked_aliases = set(compatible_digests).intersection(ledger.get('blocked_requests', []))
+                    if not blocked_aliases.issubset(known):
+                        raise AlreadyPaidInvalidResponse('Запрет повтора не относится к подтверждённому ошибочному ответу')
+                else:
+                    correction = _approved_correction(ledger, digest, compatible_digests)
+                if correction is None and not (family is not None and retry_index > 0):
                     raise AlreadyPaidInvalidResponse('Этот неудачный запрос уже оплачен и исключён из повторов')
+            if family is not None and retry_index > 0:
+                previous_entries = _family_entries(ledger, family)
+                if any(entry.get('request') == digest and not _cancelled_without_send(entry)
+                       for entry in previous_entries):
+                    previous_paid = [entry for entry in previous_entries if not _cancelled_without_send(entry)]
+                    category = _quality_rejection(previous_paid[-1])
+                    corrected_prompt = _retry_prompt(prompt, retry_index, category)
+                    body = {**body, 'messages': [body['messages'][0], {'role': 'user',
+                        'content': [{'type': 'text', 'text': corrected_prompt}, *content[1:]]}]}
+                    text_bytes = len((SYSTEM+corrected_prompt).encode('utf-8'))
+                    if text_bytes > self.text_budget:
+                        raise BudgetExceeded('Исправляющий запрос DeepSeek превышает контекст')
+                    digest = hashlib.sha256(json.dumps({'profile': PROFILE, 'request': body},
+                        sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+                if digest in ledger.get('blocked_requests', []) or any(
+                        entry.get('request') == digest and not _cancelled_without_send(entry)
+                        for entry in previous_entries):
+                    raise AlreadyPaidInvalidResponse('Исправляющая попытка уже оплачена или заблокирована')
+                cached = RESPONSES / (digest+'.json')
+                family['aliases'] = list(dict.fromkeys([*family['aliases'], digest]))
             # UTF-8 bytes bound text tokens; official maximum is 1024/image.
             input_bound = text_bytes+512+1024*len(images)
             reservation = (Decimal(input_bound)*INPUT_PER_MILLION+Decimal(max_tokens)*OUTPUT_PER_MILLION)/1000000
@@ -677,7 +883,7 @@ class DeepSeekVision:
                 raise BudgetExceeded('Настроенный лимит DeepSeek недостаточен для следующего запроса. Выберите локальный анализ.')
             if self.cancelled():
                 raise InterruptedError('Обработка отменена')
-            balance = _preflight_balance()
+            balance = _preflight_balance(max(1, self.retry_policy['max_paid_retries']))
             usd = next((item for item in balance.get('balance_infos', []) if item.get('currency') == 'USD'), None)
             ledger['last_balance_infos'] = ([{'currency': 'USD', 'total_balance': str(_decimal(usd['total_balance']))}]
                                           if usd is not None else [])
@@ -693,6 +899,10 @@ class DeepSeekVision:
                                               and e.get('status') != 'cancelled_before_send' for e in ledger['entries']))
             entry = {'id': uuid.uuid4().hex, 'request': digest, 'status': 'reserved', 'job': episode_key, 'attempt': attempt,
                      'charged_ceiling_usd': str(reservation), 'reserved_usd': str(reservation)}
+            if family is not None:
+                entry.update(logical_request=logical_digest, retry_index=retry_index)
+                family['entry_ids'].append(entry['id'])
+                atomic_json(self.job_dir / 'deepseek-retry-policy.json', self.retry_policy)
             if correction is not None:
                 correction.update(status='reserved', entry=entry['id'])
                 entry['corrects_request'] = correction['source_request']
@@ -737,29 +947,30 @@ class DeepSeekVision:
                 finish_reason = raw['choices'][0].get('finish_reason')
                 message = raw['choices'][0]['message']['content']
             except (KeyError, IndexError, TypeError, AttributeError):
-                _record_rejection(digest, message, finish_reason, 'response_shape', usage)
-                ledger['halted'] = True
-                atomic_json(LEDGER, ledger)
-                raise RemoteError('DeepSeek вернул некорректный JSON; платный повтор не выполнен') from None
+                available = self._reject_paid_output(ledger, entry, family, logical_digest,
+                    message, finish_reason, 'response_shape', usage)
+                raise PaidResponseRejected('DeepSeek вернул некорректный JSON', retry_available=available) from None
             try:
                 value = _strict_json(message)
             except (KeyError, IndexError, TypeError, ValueError):
-                _record_rejection(digest, message, finish_reason, 'malformed_json', usage)
-                ledger['halted'] = True
-                atomic_json(LEDGER, ledger)
-                raise RemoteError('DeepSeek вернул некорректный JSON; платный повтор не выполнен') from None
+                available = self._reject_paid_output(ledger, entry, family, logical_digest,
+                    message, finish_reason, 'malformed_json', usage)
+                raise PaidResponseRejected('DeepSeek вернул некорректный JSON', retry_available=available) from None
             if not isinstance(value, dict):
-                _record_rejection(digest, message, finish_reason, 'non_object_json', usage)
-                ledger['halted'] = True
-                atomic_json(LEDGER, ledger)
-                raise RemoteError('DeepSeek вернул неподходящий JSON; платный повтор не выполнен')
+                available = self._reject_paid_output(ledger, entry, family, logical_digest,
+                    message, finish_reason, 'non_object_json', usage)
+                raise PaidResponseRejected('DeepSeek вернул неподходящий JSON', retry_available=available)
             if schema is not None:
                 try:
                     _validate(value, schema)
                 except ValueError:
-                    _record_rejection(digest, message, finish_reason, 'schema_rejection', usage)
-                    ledger['halted'] = True
-                    atomic_json(LEDGER, ledger)
-                    raise RemoteError('DeepSeek вернул неверные исходные ссылки или поля; платный повтор не выполнен') from None
-            atomic_json(cached, {'result': value, 'usage': usage, 'charged_ceiling_usd': str(ceiling)})
+                    available = self._reject_paid_output(ledger, entry, family, logical_digest,
+                        message, finish_reason, 'schema_rejection', usage)
+                    raise PaidResponseRejected('DeepSeek вернул неверные исходные ссылки или поля',
+                                               retry_available=available) from None
+            entry['response_status'] = 'accepted'
+            ledger.pop('halt_reason', None)
+            atomic_json(LEDGER, ledger)
+            atomic_json(cached, {'result': value, 'usage': usage, 'charged_ceiling_usd': str(ceiling),
+                                 'request': digest, 'logical_request': logical_digest, 'retry_index': retry_index})
             return value
