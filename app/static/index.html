@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Кадр — локальный монтаж шортсов</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=checkpoints-1">
   <script src="/static/app.js" defer></script><script src="/static/library.js" defer></script>
 </head>
 <body>
@@ -40,7 +40,7 @@
             </div>
             </details><details class="settings-section"><summary>Анализ и подключение<span>AI</span></summary><div class="provider-choice">
               <label for="analysis-provider">Анализ истории и кадров</label>
-              <select id="analysis-provider"><option value="deepseek_plan" selected>DeepSeek · сюжет и план</option><option value="local">На компьютере · без сети</option><option value="hybrid">Локально + DeepSeek при сомнениях</option><option value="deepseek">DeepSeek · через интернет, платно</option></select>
+              <select id="analysis-provider"><option value="deepseek_plan" selected>DeepSeek · сюжет и план</option><option value="local">На компьютере · без сети</option></select>
               <p id="provider-description" class="small muted">Кадры и текст обрабатываются на компьютере, без платных запросов.</p>
             </div>
             <details id="deepseek-details"><summary>DeepSeek · подключение</summary><div id="deepseek-notice" class="notice" hidden>
@@ -63,7 +63,15 @@
           <div class="progress-heading"><strong id="stage-label">Ожидание</strong><span id="progress-label">0%</span></div>
           <progress id="job-progress" max="1" value="0" aria-label="Прогресс обработки серии"></progress>
           <p id="job-message" class="muted small" role="status" aria-live="polite"></p>
-          <div class="stages" aria-label="Этапы обработки"><span data-stage="prepare">Подготовка</span><span data-stage="transcribe">Речь</span><span data-stage="analyze">Сюжет и кадр</span><span data-stage="plan">Монтажный план</span><span data-stage="render">Экспорт</span></div>
+          <ol class="stages" aria-label="Этапы обработки" aria-live="polite">
+            <li data-stage="prepare"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Подготовка видео</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+            <li data-stage="transcribe"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Распознавание речи</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+            <li data-stage="analyze"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Анализ сюжета и кадров</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+            <li data-stage="condense"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Сокращение сюжета</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+            <li data-stage="framing"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Кадрирование</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+            <li data-stage="plan"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Монтажный план</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+            <li data-stage="render"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Экспорт видео</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
+          </ol>
           <div id="job-error" class="notice error" role="alert" hidden></div>
           <div class="job-primary-actions"><button id="cancel-button" class="secondary-button" type="button" hidden>Отменить</button><button id="retry-button" class="secondary-button" type="button" hidden>Продолжить обработку</button></div>
           <details class="job-info"><summary>Параметры монтажа</summary><p id="job-source" class="filename"></p>

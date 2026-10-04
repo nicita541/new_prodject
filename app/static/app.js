@@ -5,17 +5,17 @@ const state = {health: null, sources: [], jobs: [], selected: null, selectedJob:
 const statuses = {queued: "В очереди", running: "В работе", completed: "Готово", failed: "Ошибка", cancelled: "Отменено", interrupted: "Прервано"};
 const timelineColors = ['#edb884', '#8ec3a8', '#91b4df', '#ca9cca', '#d8c978'];
 state.timelineKey = ''; state.timeline = null; state.sourceSelection = null;
-const stages = {queued: "Ожидание", prepare: "Подготовка видео", probe: "Проверка видео", audio: "Подготовка звука", transcribe: "Распознавание русской речи", transcript: "Распознавание русской речи", speech: "Распознавание русской речи", shots: "Поиск смены планов", analyze: "Анализ сюжета и изображения", analysis: "Анализ сюжета и изображения", events: "Анализ сюжета и изображения", condense: "Сокращение сюжета с сохранением контекста", framing: "Кадрирование говорящих и действия", focus: "Кадрирование говорящих и действия", plan: "Составление монтажного плана", planning: "Составление монтажного плана", render: "Экспорт частей", rendering: "Экспорт частей", completed: "Монтаж завершён", done: "Монтаж завершён"};
-const stageGroup = {queued: -1, prepare: 0, probe: 0, audio: 0, transcribe: 1, transcript: 1, speech: 1, shots: 2, analyze: 2, analysis: 2, events: 2, condense: 2, framing: 2, focus: 2, plan: 3, planning: 3, render: 4, rendering: 4, completed: 5, done: 5};
+const stages = {queued: "Ожидание", prepare: "Подготовка видео", preparing: "Подготовка видео", probe: "Проверка видео", audio: "Подготовка звука", transcribe: "Распознавание русской речи", transcribing: "Распознавание русской речи", transcript: "Распознавание русской речи", speech: "Распознавание русской речи", shots: "Поиск смены планов", analyze: "Анализ сюжета и изображения", analyzing: "Анализ сюжета и изображения", analysis: "Анализ сюжета и изображения", events: "Анализ сюжета и изображения", condense: "Сокращение сюжета с сохранением контекста", framing: "Кадрирование говорящих и действия", focus: "Кадрирование говорящих и действия", plan: "Составление монтажного плана", planning: "Составление монтажного плана", render: "Экспорт частей", rendering: "Экспорт частей", completed: "Монтаж завершён", done: "Монтаж завершён"};
+const checkpointStages = ["prepare", "transcribe", "analyze", "condense", "framing", "plan", "render"];
+const stageGroup = {prepare: 0, preparing: 0, probe: 0, audio: 0, transcribe: 1, transcribing: 1, transcript: 1, speech: 1, scenes: 0, shots: 0, analyze: 2, analyzing: 2, analysis: 2, events: 2, condense: 3, framing: 4, focus: 4, planning: 5, plan: 5, rendering: 6, render: 6, completed: 7, done: 7};
 
 function setText(id, text) { $(id).textContent = text ?? ""; }
 stages.scenes = "Поиск смены планов";
-stageGroup.scenes = 2;
 function humanSize(bytes) { return Number.isFinite(Number(bytes)) ? `${(Number(bytes) / 1024 / 1024).toFixed(1)} МБ` : ""; }
 function humanDuration(seconds) { const n = Math.round(Number(seconds)); return Number.isFinite(n) && n > 0 ? `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}` : ""; }
 function dateLabel(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ru-RU", {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}); }
 function safeUrl(value) { try { const url = new URL(value, location.origin); return url.origin === location.origin && url.pathname.startsWith("/api/jobs/") ? url.href : null; } catch { return null; } }
-function analysisProvider() { const provider = $("analysis-provider").value; return ["deepseek", "deepseek_plan", "hybrid"].includes(provider) ? provider : "local"; }
+function analysisProvider() { const select = $("analysis-provider"); if (["deepseek", "hybrid"].includes(select.value) || !["deepseek_plan", "local"].includes(select.value)) select.value = "deepseek_plan"; return select.value; }
 function editingOptions() { return {layout: $("layout").value === "portrait" ? "portrait" : "cinema", caption_style: $("caption-style").value === "classic" ? "classic" : "accent"}; }
 function renderEditing() {
   const options = editingOptions();
@@ -150,6 +150,38 @@ function renderHistory() {
     meta.append(status, date); button.append(name, meta); button.addEventListener("click", () => selectJob(job.id)); return button;
   }));
 }
+function checkpointOwner(step, provider, stage) {
+  if (step === "prepare" && ["scenes", "shots"].includes(stage)) return "На компьютере · поиск смены планов";
+  if (["prepare", "transcribe", "plan", "render"].includes(step)) return "На компьютере";
+  if (step === "framing") return provider === "deepseek_plan" ? "На компьютере · для этого режима" : provider === "local" ? "На компьютере" : "DeepSeek API";
+  if (provider === "local") return "На компьютере";
+  if (provider === "hybrid") return "Локально · DeepSeek API может уточнять сомнения";
+  return "DeepSeek API";
+}
+function renderCheckpoints(job) {
+  const group = stageGroup[job.stage];
+  const recognized = Number.isInteger(group);
+  const active = job.status === "running" && recognized && group < checkpointStages.length;
+  document.querySelectorAll("[data-stage]").forEach((element) => {
+    const step = element.dataset.stage;
+    const index = checkpointStages.indexOf(step);
+    let stateName = "pending", label = "Ожидает";
+    if (job.status === "completed") { stateName = "done"; label = "Завершено"; }
+    else if (active && index === group) { stateName = "current"; label = "Выполняется"; }
+    else if (job.status !== "queued" && recognized && group < checkpointStages.length && index < group) { stateName = "done"; label = "Готово"; }
+    else if (["failed", "cancelled", "interrupted"].includes(job.status) && recognized && index === group && group < checkpointStages.length) {
+      stateName = job.status === "failed" ? "failed" : job.status === "cancelled" ? "cancelled" : "interrupted";
+      label = job.status === "failed" ? "Остановлено с ошибкой" : job.status === "cancelled" ? "Отменено" : "Прервано";
+    } else if (!recognized && ["running", "failed", "cancelled", "interrupted"].includes(job.status)) { stateName = "unknown"; label = "Стадия сервера не распознана"; }
+    element.classList.remove("done", "current", "pending", "failed", "cancelled", "interrupted", "unknown");
+    element.classList.add(stateName);
+    if (active && index === group) element.setAttribute("aria-current", "step"); else element.removeAttribute("aria-current");
+    const owner = element.querySelector("[data-stage-owner]");
+    const status = element.querySelector("[data-stage-state]");
+    if (owner) owner.textContent = checkpointOwner(step, job.analysis_provider ?? "local", job.stage);
+    if (status) status.textContent = label;
+  });
+}
 function renderJob(job) {
   state.selectedJob = job;
   setText('workspace-title', job.source_name?.match(/[«「]([^»」]+)[»」]/)?.[1] ?? job.source_name?.replace(/\.(mp4|mkv)$/i,'') ?? 'Монтаж серии');
@@ -166,8 +198,7 @@ function renderJob(job) {
   const progress = Math.max(0, Math.min(1, Number(job.progress) || 0));
   $("job-progress").value = progress; setText("progress-label", `${Math.round(progress * 100)}%`);
   setText("stage-label", stages[job.stage] ?? job.stage ?? "Ожидание"); setText("job-message", job.message);
-  const group = job.status === "completed" ? 5 : (stageGroup[job.stage] ?? -1);
-  document.querySelectorAll("[data-stage]").forEach((element, index) => { element.classList.toggle("active", index === group); element.classList.toggle("done", index < group); });
+  renderCheckpoints(job);
   $("job-error").hidden = !job.error; setText("job-error", job.error);
   $("cancel-button").hidden = !["queued", "running"].includes(job.status);
   $("retry-button").hidden = !["failed", "cancelled", "interrupted"].includes(job.status);

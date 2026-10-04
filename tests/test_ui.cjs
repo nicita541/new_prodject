@@ -10,6 +10,7 @@ const vm = require("node:vm");
 const staticDir = path.join(__dirname, "..", "app", "static");
 const script = fs.readFileSync(path.join(staticDir, "app.js"), "utf8");
 const html = fs.readFileSync(path.join(staticDir, "index.html"), "utf8");
+const css = fs.readFileSync(path.join(staticDir, "style.css"), "utf8");
 const libraryScript = fs.readFileSync(path.join(staticDir, 'library.js'), 'utf8');
 
 class Element {
@@ -17,13 +18,24 @@ class Element {
     this.children = []; this.attrs = {}; this.value = ""; this.textContent = "";
     this.hidden = false; this.disabled = false; this.className = ""; this.listeners = {};
     this.style = {}; this.currentTime = 0;
-    this.classList = {contains: (name) => this.className.split(" ").includes(name), toggle: () => {}};
+    this.classList = {
+      contains: (name) => this.className.split(" ").includes(name),
+      toggle: (name, force) => {const names=new Set(this.className.split(" ").filter(Boolean)); if(force ?? !names.has(name)) names.add(name); else names.delete(name); this.className=[...names].join(" ");},
+      add: (...names) => {const values=new Set(this.className.split(" ").filter(Boolean)); names.forEach(name=>values.add(name)); this.className=[...values].join(" ");},
+      remove: (...names) => {const values=new Set(this.className.split(" ").filter(Boolean)); names.forEach(name=>values.delete(name)); this.className=[...values].join(" ");},
+    };
+    this.dataset = {};
   }
   replaceChildren(...children) { this.children = children; }
   append(...children) { this.children.push(...children); }
   addEventListener(name, handler) { this.listeners[name] = handler; }
   setAttribute(name, value) { this.attrs[name] = value; }
   getAttribute(name) { return this.attrs[name]; }
+  querySelector(selector) {
+    if (!this.descendants) this.descendants = new Map();
+    if (!this.descendants.has(selector)) this.descendants.set(selector, new Element());
+    return this.descendants.get(selector);
+  }
   removeAttribute(name) { delete this.attrs[name]; }
   querySelectorAll(selector) {
     const descendants=this.children.flatMap(child=>[child,...child.querySelectorAll()]);
@@ -39,6 +51,9 @@ class Element {
 async function ui(options = {}) {
   const elements = new Map();
   const element = (id) => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
+  const stageElements = ["prepare", "transcribe", "analyze", "condense", "framing", "plan", "render"].map(stage => {
+    const node = new Element(); node.dataset.stage = stage; return node;
+  });
   element("analysis-provider").value = "deepseek_plan";
   element("layout").value = "cinema";
   element("caption-style").value = "accent";
@@ -50,7 +65,7 @@ async function ui(options = {}) {
   };
   const context = vm.createContext({
     console, URL, location: {origin: "http://127.0.0.1:8765", hash:'#projects'}, setInterval: () => {}, addEventListener:()=>{},
-    document: {getElementById: element, createElement: tag => {const e=new Element(); e.tagName=tag.toUpperCase(); return e;}, querySelectorAll: () => Array.from({length: 5}, () => new Element())},
+    document: {getElementById: element, createElement: tag => {const e=new Element(); e.tagName=tag.toUpperCase(); return e;}, querySelectorAll: selector => selector === "[data-stage]" ? stageElements : Array.from({length: 5}, () => new Element())},
     fetch: async (url, request = {}) => {
       data.calls.push({url, method: request.method ?? "GET", body: request.body, headers: request.headers});
       let body;
@@ -98,7 +113,7 @@ async function ui(options = {}) {
   const run = (code) => vm.runInContext(code, context);
   element("source").value = "source-1"; run("sourceChanged()");
   return {
-    data, element, run,
+    data, element, run, stageElements,
     async installLibrary(data) { this.data.library=data; vm.runInContext(libraryScript,context); await new Promise(resolve=>setImmediate(resolve)); },
     choose(provider) { element("analysis-provider").value = provider; run("renderProvider()"); },
     submit() { return element("create-form").listeners.submit({preventDefault() {}}); },
@@ -107,43 +122,62 @@ async function ui(options = {}) {
   };
 }
 
-test("funded studio defaults to DeepSeek plan and cinema; local remains explicit and free", async () => {
+test("analysis picker exposes only local and DeepSeek story planning; launch makes no accounting calls", async () => {
   const u = await ui();
-  assert.match(html, /<option value="deepseek_plan" selected>/);
-  assert.match(html, /<option value="hybrid">Локально \+ DeepSeek при сомнениях/);
-  assert.match(html, /<option value="deepseek_plan" selected>DeepSeek/);
+  const picker = html.match(/<select id="analysis-provider">([\s\S]*?)<\/select>/)?.[1] ?? "";
+  assert.deepEqual([...picker.matchAll(/<option value="([^"]+)"/g)].map(match => match[1]), ["deepseek_plan", "local"]);
+  assert.match(picker, /value="deepseek_plan" selected/);
   assert.equal(u.run("analysisProvider()"), "deepseek_plan");
-  assert.equal(u.element("deepseek-budget").textContent, "Без общего лимита");
-  assert.equal(u.element("deepseek-remaining").textContent, "$1.00");
-  assert.equal(u.element("deepseek-charged").textContent, "$0.03");
   assert.equal(u.element("deepseek-notice").hidden, false);
   await u.submit();
   assert.equal(u.posts()[0].analysis_provider, "deepseek_plan");
-  assert.equal(u.posts()[0].layout, "cinema");
-  assert.equal(u.posts()[0].caption_style, "accent");
   u.choose("local"); await u.submit();
   assert.equal(u.posts()[1].analysis_provider, "local");
   assert.equal(u.checks().length, 0);
+  assert(!u.data.calls.some(call => /balance|spending|reset-budget/.test(call.url)));
 });
 
-test('provider balance is primary; failed refresh retains dated observation, never a price estimate',async()=>{
-  const u=await ui();
-  assert.equal(u.element('deepseek-charged').textContent,'$0.03');
-  u.data.balanceError=true;
-  await u.run('refreshBalance(true)');
-  assert.equal(u.element('deepseek-charged').textContent,'$0.03');
-  assert.match(u.element('provider-balance-time').textContent,/обновление не удалось/);
-  assert.match(html,/не отдельного API-ключа/);
-  assert.equal(u.posts().length,0);
+test("processing checkpoints identify the active stage and where work runs", async () => {
+  const u = await ui();
+  u.run('renderJob({id:"running",status:"running",stage:"condense",progress:0.62,message:"Проверяем темп",analysis_provider:"deepseek_plan",files:[]})');
+  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "done", "current", "pending", "pending", "pending"]);
+  assert.equal(u.stageElements[3].getAttribute("aria-current"), "step");
+  assert.equal(u.stageElements[2].querySelector("[data-stage-owner]").textContent, "DeepSeek API");
+  assert.equal(u.stageElements[3].querySelector("[data-stage-owner]").textContent, "DeepSeek API");
+  assert.equal(u.stageElements[4].querySelector("[data-stage-owner]").textContent, "На компьютере · для этого режима");
+  assert.equal(u.stageElements[5].querySelector("[data-stage-owner]").textContent, "На компьютере");
+  assert.equal(u.stageElements[6].querySelector("[data-stage-owner]").textContent, "На компьютере");
+  assert.equal(u.stageElements[3].querySelector("[data-stage-state]").textContent, "Выполняется");
+  assert.match(html, /<ol class="stages"[^>]*aria-label="Этапы обработки"/);
+  assert.match(html, /<li data-stage="condense"/);
+  assert.match(html, /<li data-stage="framing"/);
+  assert.match(css, /@media\(max-width:480px\)\{\.stages\{grid-template-columns:1fr/);
+  assert.match(html, /href="\/static\/style\.css\?v=checkpoints-1"/);
 });
 
-test('attempt reset cannot relabel previous balance decrease as new attempt spending',async()=>{
-  const u=await ui();
-  u.data.jobs.push({id:'done',status:'completed',stage:'completed',analysis_provider:'deepseek_plan',files:[]});
-  await u.run('selectJob("done")');
-  await u.run('state.providerBalanceJobId="done"; state.providerBalance={attempt:1,window:{decrease_usd:"0.03",coverage:"full_attempt",measured_at:1770000000}}; renderSpending(state.selectedJob,{attempt:2,charged_ceiling_usd:"0",limit_usd:"0.10",job_total_usd:"0.08"})');
-  assert.match(u.element('job-spending').textContent,/нет измерения/);
-  assert.doesNotMatch(u.element('job-spending').textContent,/\$0.03/);
+test("completed, failed, cancelled and queued jobs retain truthful checkpoint states", async () => {
+  const u = await ui();
+  u.run('renderJob({status:"completed",stage:"completed",progress:1,analysis_provider:"local",files:[]})');
+  assert(u.stageElements.every(node => node.classList.contains("done")));
+  u.run('renderJob({status:"failed",stage:"rendering",progress:0.74,error:"encoder failed",analysis_provider:"local",files:[]})');
+  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "done", "done", "done", "done", "failed"]);
+  assert.equal(u.element("job-error").hidden, false);
+  assert.equal(u.stageElements[6].querySelector("[data-stage-state]").textContent, "Остановлено с ошибкой");
+  u.run('renderJob({status:"cancelled",stage:"transcribe",progress:0.08,analysis_provider:"deepseek_plan",files:[]})');
+  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "cancelled", "pending", "pending", "pending", "pending", "pending"]);
+  u.run('renderJob({status:"queued",stage:"queued",progress:0,analysis_provider:"local",files:[]})');
+  assert(u.stageElements.every(node => node.classList.contains("pending")));
+  assert(u.stageElements.every(node => node.getAttribute("aria-current") === undefined));
+  u.run('renderJob({status:"running",stage:"framing",progress:0.65,analysis_provider:"deepseek_plan",files:[]})');
+  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "done", "done", "current", "pending", "pending"]);
+  assert.equal(u.stageElements[4].querySelector("[data-stage-owner]").textContent, "На компьютере · для этого режима");
+  u.run('renderJob({status:"running",stage:"scenes",progress:0.19,analysis_provider:"deepseek_plan",files:[]})');
+  assert.deepEqual(u.stageElements.map(node => node.className), ["current", "pending", "pending", "pending", "pending", "pending", "pending"]);
+  assert.match(u.stageElements[0].querySelector("[data-stage-owner]").textContent, /поиск смены планов/);
+  u.run('renderJob({status:"running",stage:"unexpected",progress:0.4,analysis_provider:"local",files:[]})');
+  assert(u.stageElements.every(node => node.classList.contains("unknown")));
+  u.run('renderJob({status:"running",stage:"analyze",progress:0.51,analysis_provider:"deepseek_plan",files:[]})');
+  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "current", "pending", "pending", "pending", "pending"]);
 });
 
 test("preset changes update the preview and explicit request without paid checks", async () => {
@@ -168,94 +202,41 @@ test("drop rejects multiple or unsupported files before import", async () => {
   assert(!u.data.calls.some((call) => call.url === "/api/import"));
 });
 
-test("hybrid can start without key, balance or cloud status; cloud mode remains gated", async () => {
-  const u = await ui({status: {configured: false, remaining_usd: "0.00"}});
-  u.choose("hybrid");
-  assert.equal(u.element("create-button").disabled, false);
-  assert.equal(u.element("deepseek-notice").hidden, false);
-  assert.equal(u.element("hybrid-fallback").hidden, false);
-  assert.match(u.element("provider-description").textContent, /ниже 75%/);
-  assert.match(u.element("provider-description").textContent, /самооценка модели, не гарантия точности/);
-  assert.match(u.element("deepseek-config").textContent, /продолжится локально с предупреждением/);
-  await u.submit();
-  assert.equal(u.posts()[0].analysis_provider, "hybrid");
-  assert.match(u.element("job-provider").textContent, /локально \+ DeepSeek при сомнениях/);
-  u.choose("deepseek"); assert.equal(u.element("create-button").disabled, true);
-  u.choose("hybrid"); u.data.statusError = true; await u.run("loadDeepseekStatus()");
-  assert.equal(u.element("create-button").disabled, false);
-  assert.equal(u.checks().length, 0);
-});
-
-test("all four modes are sent explicitly; cloud check occurs only on explicit button click", async () => {
-  const u = await ui();
-  for (const provider of ["local", "hybrid", "deepseek", "deepseek_plan"]) {
-    u.choose(provider); assert.equal(u.element("create-button").disabled, false); await u.submit();
-  }
-  assert.deepEqual(u.posts().map((post) => post.analysis_provider), ["local", "hybrid", "deepseek", "deepseek_plan"]);
-  assert.equal(u.checks().length, 0);
-  await u.element("deepseek-check").listeners.click();
-  assert.equal(u.checks().length, 1);
-  assert.match(u.element("deepseek-check-message").textContent, /не является расходом отдельного ключа/);
-  assert(u.data.calls.every((call) => call.url.startsWith("/api/")));
-});
-
-test("hybrid survives failed cloud check, but full cloud does not; local runtime is still required", async () => {
-  const u = await ui();
-  u.choose("hybrid"); u.data.connection.available = false;
-  await u.element("deepseek-check").listeners.click();
-  assert.equal(u.element("create-button").disabled, false);
-  u.choose("deepseek"); assert.equal(u.element("create-button").disabled, true);
-  u.choose("deepseek_plan"); assert.equal(u.element("create-button").disabled, true);
-  u.choose("hybrid"); u.data.ready = false; await u.run("refresh()");
-  assert.equal(u.element("create-button").disabled, true);
-  u.choose("local"); assert.equal(u.element("create-button").disabled, true);
-});
-
-test("retry uses the saved provider, and history distinguishes all four modes", async () => {
+test("legacy modes normalize to DeepSeek planning while old jobs keep their provider labels", async () => {
   const u = await ui({status: {remaining_usd: "0.00"}});
-  u.data.jobs = [
-    {id: "hybrid-job", source_name: "Серия.mp4", status: "failed", stage: "framing", analysis_provider: "hybrid", files: []},
-    {id: "cloud-job", source_name: "Серия.mp4", status: "failed", stage: "framing", analysis_provider: "deepseek", files: []},
-    {id: "plan-job", source_name: "Серия.mp4", status: "failed", stage: "framing", analysis_provider: "deepseek_plan", files: []},
-    {id: "local-job", source_name: "Серия.mp4", status: "failed", stage: "framing", analysis_provider: "local", files: []},
-  ];
-  await u.run("refresh()");
-  assert.match(u.element("history-list").children[0].children[1].children[0].textContent, /Локально \+ DeepSeek/);
-  assert.match(u.element("history-list").children[1].children[1].children[0].textContent, / · DeepSeek$/);
-  assert.match(u.element("history-list").children[2].children[1].children[0].textContent, /DeepSeek: сюжет · кадр локально/);
-  assert.equal(u.element("history-list").children[3].children[1].children[0].textContent, "Ошибка");
-  u.choose("deepseek"); await u.run('selectJob("hybrid-job")');
-  assert.equal(u.element("retry-button").disabled, false);
-  u.choose("hybrid"); await u.run('selectJob("cloud-job")');
-  assert.equal(u.element("retry-button").disabled, true);
-  await u.run('selectJob("plan-job")'); assert.equal(u.element("retry-button").disabled, true);
-  assert.match(u.element("job-provider").textContent, /DeepSeek — сюжет и план, платно · кадрирование, монтаж и экспорт локально/);
-  await u.run('selectJob("local-job")'); assert.equal(u.element("retry-button").disabled, false);
-  u.data.status.remaining_usd = "1.00"; await u.run("loadDeepseekStatus()");
-  await u.run('selectJob("plan-job")'); assert.equal(u.element("retry-button").disabled, false);
-  await u.run('selectJob("cloud-job")'); assert.equal(u.element("retry-button").disabled, false);
+  u.choose("hybrid"); assert.equal(u.run("analysisProvider()"), "deepseek_plan");
+  await u.submit(); assert.equal(u.posts()[0].analysis_provider, "deepseek_plan");
+  u.choose("deepseek"); assert.equal(u.run("analysisProvider()"), "deepseek_plan");
+  const savedLocal = {analysis_provider:"local",layout:"cinema",caption_style:"accent"};
+  await u.installLibrary({projects:[{id:"p",title:"Аниме"}],episodes:[{id:"e",project_id:"p",number:1,title:"Серия 1",source_id:"source-1",settings:{...savedLocal,analysis_provider:"hybrid"},jobs:[]}]});
+  await u.run("location.hash='#episode/e/edit'; libraryUI.route()");
+  assert.equal(u.element("analysis-provider").value, "deepseek_plan");
+  u.run('state.navigation=null; state.jobs=[{id:"old-hybrid",source_name:"Серия.mp4",status:"failed",stage:"analyze",analysis_provider:"hybrid",files:[]},{id:"old-deepseek",source_name:"Серия.mp4",status:"failed",stage:"analyze",analysis_provider:"deepseek",files:[]},{id:"old-local",source_name:"Серия.mp4",status:"failed",stage:"analyze",analysis_provider:"local",files:[]}]; state.selected=null; state.historyKey=""; renderHistory()');
+  assert.match(u.element("history-list").children[0].children[1].children[0].textContent,/Локально \+ DeepSeek/);
+  assert.match(u.element("history-list").children[1].children[1].children[0].textContent,/ · DeepSeek$/);
+  assert.equal(u.element("history-list").children[2].children[1].children[0].textContent,"Ошибка");
 });
 
-test("DeepSeek plan mode explains local framing and requires confirmed cloud availability", async () => {
+test("DeepSeek launch requires configured API and local readiness, without balance-based gating", async () => {
   const u = await ui();
   u.choose("deepseek_plan");
   assert.equal(u.element("deepseek-notice").hidden, false);
   assert.equal(u.element("hybrid-fallback").hidden, true);
   assert.match(u.element("provider-description").textContent, /события, заставки и титры/);
   assert.match(u.element("provider-description").textContent, /Распознавание речи, кадрирование, монтаж и экспорт выполняются на компьютере/);
-  assert.match(u.element("deepseek-notice-description").textContent, /в платный сервис передаются исходные кадры серии и распознанные реплики/);
+  assert.match(u.element("deepseek-notice-description").textContent, /исходные кадры серии и распознанные реплики/);
   assert.match(u.element("deepseek-notice-description").textContent, /DeepSeek не используется для обрезки кадра/);
   assert.match(u.element("storage-description").textContent, /Кадрирование и экспорт выполняются локально/);
-  for (const status of [{configured: false}, {configured: true, remaining_usd: "0.00"}, {remaining_usd: undefined}]) {
-    Object.assign(u.data.status, status); await u.run("loadDeepseekStatus()");
-    assert.equal(u.element("create-button").disabled, true);
-    await u.submit(); assert.equal(u.posts().length, 0);
-  }
-  Object.assign(u.data.status, {configured: true, remaining_usd: "1.00"}); await u.run("loadDeepseekStatus()");
+  u.data.status.configured=false; await u.run("loadDeepseekStatus()");
+  assert.equal(u.element("create-button").disabled,true);
+  await u.submit(); assert.equal(u.posts().length,0);
+  Object.assign(u.data.status,{configured:true,remaining_usd:"0.00"}); await u.run("loadDeepseekStatus()");
   assert.equal(u.element("create-button").disabled, false);
-  u.data.statusError = true; await u.run("loadDeepseekStatus()");
+  await u.submit(); assert.equal(u.posts()[0].analysis_provider,"deepseek_plan");
+  u.data.ready=false; await u.run("refresh()");
   assert.equal(u.element("create-button").disabled, true);
   assert.equal(u.checks().length, 0);
+  assert(!u.data.calls.some(call=>/balance|spending/.test(call.url)));
 });
 
 test("fallback warning is surfaced safely from the completed job plan", async () => {
@@ -268,28 +249,19 @@ test("fallback warning is surfaced safely from the completed job plan", async ()
   assert(!script.includes("innerHTML"));
 });
 
-test("unknown provider cost after balance adjustment never renders as zero", async () => {
-  const u=await ui();
-  assert.equal(u.run('usd(null)'), 'Неизвестно');
-  assert.equal(u.run('usd(undefined)'), 'Неизвестно');
-  assert.equal(u.run('usd("")'), 'Неизвестно');
-  assert.equal(u.run('usd("0.00")'), '$0.00');
-  u.run('state.providerBalance={balance_usd:"2.00",observed_decrease_usd:null,adjusted:true,measured_at:1791040000}; renderBalance()');
-  assert.equal(u.element('deepseek-charged').textContent,'Неизвестно');
-  assert.match(u.element('provider-balance-time').textContent,/корректировался/);
-});
-
-test("uncapped attempt keeps spending history and has no budget reset control", async () => {
+test("retry and checkpoint display make no balance or spending requests", async () => {
   const u = await ui();
-  u.data.jobs.push({id: "done-cloud", source_name: "Серия.mp4", status: "completed", stage: "completed", analysis_provider: "deepseek_plan", files: []});
-  await u.run("refresh()"); await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(u.element("reset-budget-button").hidden, true);
-  assert.match(u.element("job-spending").textContent, /Попытка 1 · расход по балансу: нет измерения/);
-  assert.match(u.element("job-budget-estimate").textContent, /Верхняя оценка по токенам: \$0.08/);
-  assert.match(u.element("job-budget-estimate").textContent, /все попытки: \$0.08/);
-  assert.doesNotMatch(u.element("processing-note").textContent, /0[.,]10|0[.,]1 /);
-  assert.equal(u.data.calls.filter((call) => call.url.endsWith('/reset-budget')).length, 0);
+  u.data.jobs.push({id: "failed-cloud", source_name: "Серия.mp4", status: "failed", stage: "rendering", analysis_provider: "deepseek_plan", files: []});
+  await u.run('selectJob("failed-cloud")');
+  assert.equal(u.element("retry-button").hidden,false);
+  await u.element("retry-button").listeners.click();
+  assert(u.data.calls.some(call=>call.url==="/api/jobs/failed-cloud/retry"&&call.method==="POST"));
+  assert(!u.data.calls.some(call=>/balance|spending|reset-budget/.test(call.url)));
   assert.equal(u.checks().length, 0);
+  u.run('renderJob({id:"complete",status:"completed",stage:"completed",progress:1,analysis_provider:"local",files:[]})');
+  assert(u.stageElements.every(node=>node.classList.contains("done")));
+  assert(!/\.job-completed \.stages\s*,/.test(css));
+  assert.match(css,/\.job-completed #job-message,\.job-completed \.progress-heading\{display:none\}/);
 });
 
 test('timeline covers kept and omitted footage and reviews the exact original interval', async () => {
