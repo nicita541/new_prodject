@@ -696,7 +696,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     visual_dir.mkdir(exist_ok=True)
     events = []
     report('analyze', 0.22, 'DeepSeek составляет сюжетный план; кадрирование будет локальным' if provider == 'deepseek_plan'
-           else ('Подключение DeepSeek с проверкой баланса' if provider == 'deepseek'
+           else ('Подключение DeepSeek: до двух повторов при сбое' if provider == 'deepseek'
            else ('Локальный анализ; DeepSeek проверяет только сомнения' if provider == 'hybrid'
                  else 'Загрузка локальной модели сюжета и изображения')))
     with vision_session(job_dir, cancelled, provider) as vision:

@@ -43,15 +43,11 @@
               <select id="analysis-provider"><option value="deepseek_plan" selected>DeepSeek · сюжет и план</option><option value="local">На компьютере · без сети</option><option value="hybrid">Локально + DeepSeek при сомнениях</option><option value="deepseek">DeepSeek · через интернет, платно</option></select>
               <p id="provider-description" class="small muted">Кадры и текст обрабатываются на компьютере, без платных запросов.</p>
             </div>
-            <details id="deepseek-details"><summary>DeepSeek · баланс и подключение</summary><div id="deepseek-notice" class="notice" hidden>
+            <details id="deepseek-details"><summary>DeepSeek · подключение</summary><div id="deepseek-notice" class="notice" hidden>
               <strong id="deepseek-notice-title">Кадры и текст отправятся в DeepSeek</strong>
               <p id="deepseek-notice-description">Для анализа передаются кадры серии и распознанные реплики. Требуется интернет. Оригинальное видео и результаты сохраняются в папке проекта.</p>
               <p id="hybrid-fallback" class="small" hidden>Если API недоступен или доступного баланса нет, обработка продолжится локально с предупреждением. При обращении к DeepSeek нужны интернет и оплата запросов.</p>
-              <dl class="budget-values"><div><dt>Общий лимит</dt><dd id="deepseek-budget">Проверяем…</dd></div><div><dt>Баланс от DeepSeek</dt><dd id="deepseek-remaining">Проверяем…</dd></div><div><dt>Снижение баланса с начала наблюдения</dt><dd id="deepseek-charged">Проверяем…</dd></div></dl>
-              <p id="provider-balance-time" class="small muted"></p>
-              <p class="small muted">Баланс всего аккаунта, не отдельного API-ключа. Изменения могут включать расходы других программ; это не выписка по ключу. Расчёт для контроля лимита показан отдельно.</p>
-              <button id="balance-refresh-button" class="secondary-button" type="button">Обновить баланс DeepSeek</button>
-              <a class="text-button" href="https://platform.deepseek.com/usage" target="_blank" rel="noopener noreferrer">Расходы по API-ключу в кабинете ↗</a>
+              <div hidden><span id="deepseek-budget"></span><span id="deepseek-remaining"></span><span id="deepseek-charged"></span><span id="provider-balance-time"></span><button id="balance-refresh-button" type="button"></button></div>
               <p id="deepseek-config" class="small" role="status" aria-live="polite"></p>
               <button id="deepseek-check" class="secondary-button" type="button" disabled>Проверить подключение</button>
               <p class="small muted">Кнопка выполняет бесплатную проверку подключения и баланса, без платного анализа.</p>

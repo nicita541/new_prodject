@@ -328,28 +328,13 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
 
     @application.get('/api/deepseek/balance')
     def provider_balance_status():
-        from .provider_balance import status
-        try:
-            return status()
-        except Exception:
-            raise HTTPException(503, 'Не удалось прочитать проверки баланса') from None
+        return {'accounting_enabled': False}
 
     @application.post('/api/deepseek/balance')
     def provider_balance_refresh(request: Request, job_id: str | None = None, force: bool = False):
-        from .provider_balance import refresh, status
-        from .deepseek import job_spending
-        current = get_manager(request)
-        directory, attempt, active = None, None, False
         if job_id is not None:
-            job = current.get(job_id)
-            directory = current.job_dir(job_id)
-            attempt = job_spending(directory)['attempt']
-            active = job['status'] in ('queued','running')
-        try:
-            refresh(directory if active else None, attempt if active else None, force)
-            return status(directory, attempt)
-        except Exception:
-            raise HTTPException(503, 'Не удалось обновить баланс DeepSeek') from None
+            get_manager(request).get(job_id)
+        return {'accounting_enabled': False}
 
     @application.get('/api/deepseek/recovery')
     def deepseek_recovery_status():

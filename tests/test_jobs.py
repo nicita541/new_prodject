@@ -59,21 +59,14 @@ class JobTests(unittest.TestCase):
         client.public_status.assert_not_called()
         client.check_connection.assert_not_called()
 
-    def test_explicit_deepseek_selection_persists_and_retry_rechecks_balance(self):
-        client = deepseek_stub()
-        with patch.dict(sys.modules, {"app.deepseek": client}):
-            job = self.manager.create(self.source_id, "deepseek")
-            self.assertEqual(job["analysis_provider"], "deepseek")
-            self.assertEqual(read_json(self.manager.job_dir(job["id"]) / "analysis-settings.json"), {"provider": "deepseek"})
-            self.manager.cancel(job["id"])
-            client.public_status.return_value["remaining_usd"] = "0"
-            with self.assertRaisesRegex(ValueError, "Баланс не подтверждён"):
-                self.manager.retry(job["id"])
-            self.assertFalse(self.manager.busy())
-            self.assertEqual(self.manager.get(job["id"])["status"], "cancelled")
-            client.public_status.return_value["remaining_usd"] = "0.004"
-            self.assertEqual(self.manager.retry(job["id"])["analysis_provider"], "deepseek")
-            client.begin_attempt.assert_called_once_with(self.manager.job_dir(job['id']))
+    def test_explicit_deepseek_selection_and_retry_ignore_money_status(self):
+        client=deepseek_stub({'configured':True,'remaining_usd':'0'})
+        with patch.dict(sys.modules, {'app.deepseek':client}):
+            job=self.manager.create(self.source_id,'deepseek')
+            self.assertEqual(job['analysis_provider'],'deepseek')
+            self.manager.cancel(job['id'])
+            client.public_status.return_value['remaining_usd']='NaN'
+            self.assertEqual(self.manager.retry(job['id'])['analysis_provider'],'deepseek')
         client.check_connection.assert_not_called()
 
     def test_hybrid_create_and_retry_allow_unavailable_remote_without_settings_reads(self):
@@ -99,42 +92,26 @@ class JobTests(unittest.TestCase):
                 client.public_status.assert_not_called()
                 client.check_connection.assert_not_called()
 
-    def test_deepseek_plan_persists_and_rechecks_verified_balance_on_retry(self):
-        client = deepseek_stub()
-        with patch.dict(sys.modules, {"app.deepseek": client}):
-            job = self.manager.create(self.source_id, "deepseek_plan")
-            self.assertEqual(job["analysis_provider"], "deepseek_plan")
-            directory = self.manager.job_dir(job["id"])
-            self.assertEqual(read_json(directory / "analysis-settings.json"), {"provider": "deepseek_plan"})
-            self.manager.cancel(job["id"])
-            client.public_status.return_value["remaining_usd"] = "0"
-            with self.assertRaisesRegex(ValueError, "Баланс не подтверждён"):
-                self.manager.retry(job["id"])
-            self.assertFalse(self.manager.busy())
-            client.public_status.return_value["remaining_usd"] = "0.04"
-            self.assertEqual(self.manager.retry(job["id"])["analysis_provider"], "deepseek_plan")
+    def test_deepseek_plan_persists_and_retries_without_balance(self):
+        client=deepseek_stub({'configured':True,'remaining_usd':None})
+        with patch.dict(sys.modules, {'app.deepseek':client}):
+            job=self.manager.create(self.source_id,'deepseek_plan')
+            directory=self.manager.job_dir(job['id'])
+            self.assertEqual(read_json(directory/'analysis-settings.json'),{'provider':'deepseek_plan'})
+            self.manager.cancel(job['id'])
+            self.assertEqual(self.manager.retry(job['id'])['analysis_provider'],'deepseek_plan')
         client.check_connection.assert_not_called()
 
-    def test_deepseek_plan_without_configured_positive_balance_creates_nothing(self):
-        for status in ({"configured": False, "remaining_usd": "0.04"},
-                       {"configured": True, "remaining_usd": "0"},
-                       {"configured": True, "remaining_usd": "NaN"}):
-            with self.subTest(status=status), patch.dict(sys.modules, {"app.deepseek": deepseek_stub(status)}):
-                with self.assertRaises(ValueError):
-                    self.manager.create(self.source_id, "deepseek_plan")
-                self.assertEqual(list(self.manager.jobs.iterdir()), [])
+    def test_unconfigured_deepseek_plan_creates_nothing(self):
+        with patch.dict(sys.modules, {'app.deepseek':deepseek_stub({'configured':False,'remaining_usd':'100'})}):
+            with self.assertRaises(ValueError):self.manager.create(self.source_id,'deepseek_plan')
+        self.assertEqual(list(self.manager.jobs.iterdir()),[])
 
-    def test_unconfigured_or_exhausted_deepseek_has_no_job_side_effects(self):
-        for status in ({"configured": False, "remaining_usd": "0.01"},
-                       {"configured": True, "remaining_usd": "0"},
-                       {"configured": True, "remaining_usd": "-0.001"},
-                       {"configured": True, "remaining_usd": "NaN"}):
-            with self.subTest(status=status), patch.dict(sys.modules, {"app.deepseek": deepseek_stub(status)}):
-                with self.assertRaises(ValueError):
-                    self.manager.create(self.source_id, "deepseek")
-        with self.assertRaises(ValueError):
-            self.manager.create(self.source_id, "unexpected")
-        self.assertEqual(list(self.manager.jobs.iterdir()), [])
+    def test_unconfigured_and_unknown_provider_have_no_job_side_effects(self):
+        with patch.dict(sys.modules, {'app.deepseek':deepseek_stub({'configured':False})}):
+            with self.assertRaises(ValueError):self.manager.create(self.source_id,'deepseek')
+        with self.assertRaises(ValueError):self.manager.create(self.source_id,'unexpected')
+        self.assertEqual(list(self.manager.jobs.iterdir()),[])
         self.assertFalse(self.manager.busy())
 
     def test_cancel_storage_failure_still_kills_tree_and_retains_actual_state(self):

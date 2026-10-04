@@ -34,7 +34,7 @@ class AnalysisProviderTests(unittest.TestCase):
         schema_bytes = len(json.dumps(arguments.kwargs['schema'], ensure_ascii=False).encode('utf-8'))
         self.assertLess(len(arguments.args[0].encode('utf-8')) + schema_bytes + 512, 64000)
         self.assertEqual(result['incomplete_event_ids'], [])
-        self.assertEqual(analysis_context_limit(vision), 16000)
+        self.assertEqual(analysis_context_limit(vision), 60000)
 
     def test_invalid_global_cloud_domain_does_not_automatically_pay_again(self):
         vision = DeepSeekVision(TEMP, lambda:False)

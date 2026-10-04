@@ -19,20 +19,17 @@ from tests.test_jobs import FakeWorker, deepseek_stub
 
 
 class ApiTests(unittest.TestCase):
-    def test_balance_refresh_is_free_scoped_throttled_and_keeps_private_errors_out(self):
-        state={'source':'deepseek_user_balance','scope':'account','balance_usd':'1.78','window':None}
-        with patch('app.provider_balance.refresh',return_value=state) as refresh, patch('app.provider_balance.status',return_value=state):
+    def test_retired_balance_endpoints_do_not_read_or_refresh_money(self):
+        state={'accounting_enabled':False}
+        with patch('app.provider_balance.refresh') as refresh, patch('app.provider_balance.status') as status:
             self.assertEqual(self.client.get('/api/deepseek/balance').json(),state)
             denied=self.client.post('/api/deepseek/balance',headers={'Origin':'https://other.example'})
             self.assertEqual(denied.status_code,403)
             refresh.assert_not_called()
             self.assertEqual(self.client.post('/api/deepseek/balance').json(),state)
-            refresh.assert_called_once_with(None,None,False)
+            refresh.assert_not_called()
+            status.assert_not_called()
             self.assertEqual(self.client.post('/api/deepseek/balance?job_id=missing').status_code,404)
-        with patch('app.provider_balance.refresh',side_effect=RuntimeError('secret-private-field')):
-            error=self.client.post('/api/deepseek/balance')
-            self.assertEqual(error.status_code,503)
-            self.assertNotIn('secret',error.text)
 
     def test_trash_preserves_outputs_across_reload_and_parent_restore(self):
         job=self.start_job(); self.client.post(f"/api/jobs/{job['id']}/cancel")
@@ -243,7 +240,7 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(response.status_code, 503)
                 self.assertNotIn("hidden-test-value", response.text)
 
-    def test_job_analysis_provider_is_explicit_local_default_and_balance_checked(self):
+    def test_job_analysis_provider_is_explicit_and_ignores_balance(self):
         client = deepseek_stub()
         source = self.client.get("/api/sources").json()[0]
         with patch.dict(sys.modules, {"app.deepseek": client}):
@@ -261,10 +258,9 @@ class ApiTests(unittest.TestCase):
             client.public_status.return_value["remaining_usd"] = "0"
             count = len(list(self.manager.jobs.iterdir()))
             denied = self.client.post("/api/jobs", json={"source_id": source["id"], "analysis_provider": "deepseek"})
-            self.assertEqual(denied.status_code, 400)
-            self.assertIn("Баланс не подтверждён", denied.json()["detail"])
-            self.assertNotIn("лимит", denied.json()["detail"].lower())
-            self.assertEqual(len(list(self.manager.jobs.iterdir())), count)
+            self.assertEqual(denied.status_code, 201)
+            self.assertEqual(len(list(self.manager.jobs.iterdir())), count+1)
+            self.client.post(f"/api/jobs/{denied.json()['id']}/cancel")
             invalid = self.client.post("/api/jobs", json={"source_id": source["id"], "analysis_provider": "other"})
             self.assertEqual(invalid.status_code, 422)
 
@@ -291,7 +287,7 @@ class ApiTests(unittest.TestCase):
                 client.public_status.assert_not_called()
                 client.check_connection.assert_not_called()
 
-    def test_deepseek_plan_api_requires_balance_and_preserves_provider_on_retry(self):
+    def test_deepseek_plan_api_requires_key_and_preserves_provider_on_retry(self):
         source = self.client.get("/api/sources").json()[0]
         client = deepseek_stub({"configured": False, "remaining_usd": "0.04"})
         body = {"source_id": source["id"], "analysis_provider": "deepseek_plan"}
@@ -307,9 +303,6 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(self.client.get(f"/api/jobs/{job['id']}").json()["analysis_provider"], "deepseek_plan")
             self.client.post(f"/api/jobs/{job['id']}/cancel")
             client.public_status.return_value["remaining_usd"] = "0"
-            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/retry").status_code, 400)
-            self.assertFalse(self.manager.busy())
-            client.public_status.return_value["remaining_usd"] = "0.03"
             retried = self.client.post(f"/api/jobs/{job['id']}/retry")
             self.assertEqual(retried.status_code, 200, retried.text)
             self.assertEqual(retried.json()["analysis_provider"], "deepseek_plan")

@@ -27,39 +27,13 @@ function providerLabel(provider) { return provider === "deepseek_plan" ? "DeepSe
 function usd(value) { if (value === null || value === undefined || value === "") return "Неизвестно"; const amount = Number(value); return Number.isFinite(amount) && amount >= 0 ? `$${amount.toFixed(8).replace(/0+$/, "").replace(/\.$/, ".00")}` : "Неизвестно"; }
 state.providerBalance=null; state.balanceBusy=false; state.balanceNextRefresh=0;
 function balanceTime(value) { return value ? new Date(value*1000).toLocaleString('ru-RU') : 'нет проверки'; }
-function renderBalance() {
-  const b=state.providerBalance;
-  setText('deepseek-remaining',usd(b?.balance_usd));
-  setText('deepseek-charged',usd(b?.observed_decrease_usd));
-  setText('provider-balance-time',b?.measured_at ? `DeepSeek · ${balanceTime(b.measured_at)}${b.error ? ' · обновление не удалось' : b.stale ? ' · данные устарели' : ''}${b.adjusted ? ' · баланс пополнялся или корректировался; расход не определён' : ''}` : 'Нет данных от DeepSeek.');
-  $('balance-refresh-button').disabled=state.balanceBusy || state.deepseek?.configured!==true;
-}
-function renderSpending(job,cost) {
-  const b=state.providerBalanceJobId===job.id && state.providerBalance?.attempt===cost.attempt ? state.providerBalance : cost.provider_balance;
-  const w=b?.window;
-  setText('job-spending',w ? `Попытка ${cost.attempt ?? 1} · снижение баланса аккаунта: ${usd(w.decrease_usd)}${w.coverage==='since_observation' ? ' · только с начала наблюдения' : ''} · ${balanceTime(w.measured_at)}` : `Попытка ${cost.attempt ?? 1} · расход по балансу: нет измерения для этой попытки`);
-  setText('job-budget-estimate',`Верхняя оценка по токенам: ${usd(cost.charged_ceiling_usd)} · все попытки: ${usd(cost.job_total_usd ?? cost.charged_ceiling_usd)} · включая резервы; не списание DeepSeek`);
-  $('job-spending').hidden=false; $('job-budget-estimate').hidden=false;
-}
-async function refreshBalance(force=false) {
-  if(state.balanceBusy || state.deepseek?.configured!==true || (!force && Date.now()<state.balanceNextRefresh)) return;
-  if(!force && state.navigation && !['edit','review'].includes(state.navigation.view)) return;
-  if(!force && !['deepseek','deepseek_plan','hybrid'].includes(state.selectedJob?.analysis_provider ?? analysisProvider())) return;
-  state.balanceBusy=true; state.balanceNextRefresh=Date.now()+30000; renderBalance();
-  const id=state.selectedJob?.id;
-  try {
-    const b=await api(`/api/deepseek/balance?force=${force}${id ? `&job_id=${encodeURIComponent(id)}` : ''}`,{method:'POST'});
-    if(id && state.selectedJob?.id!==id) return;
-    state.providerBalance=b; state.providerBalanceJobId=id;
-    if(id && state.selectedCostJobId===id) renderSpending(state.selectedJob,state.selectedCost);
-  } catch { if(state.providerBalance) state.providerBalance={...state.providerBalance,error:true}; }
-  finally { state.balanceBusy=false; renderBalance(); }
-}
+function renderBalance() {}
+function renderSpending() {}
+async function refreshBalance() {}
 function providerReady(provider) {
   if (!state.health?.ready) return false;
   if (!["deepseek", "deepseek_plan"].includes(provider)) return true;
-  const remaining = Number(state.deepseek?.remaining_usd);
-  return state.deepseek?.configured === true && Number.isFinite(remaining) && remaining > 0 && !state.checkingDeepseek && state.deepseekCheck?.vision_supported !== false && state.deepseekCheck?.available !== false;
+  return state.deepseek?.configured === true && !state.checkingDeepseek;
 }
 async function api(path, options = {}) {
   const response = await fetch(path, {cache: "no-store", ...options});
@@ -90,11 +64,11 @@ function updateControls() {
 }
 function renderProvider() {
   const provider = analysisProvider(), cloud = ["deepseek", "deepseek_plan"].includes(provider), cloudPlan = provider === "deepseek_plan", hybrid = provider === "hybrid";
-  setText('processing-note', cloud || hybrid ? `${hybrid ? 'При сомнениях ' : ''}DeepSeek: кадры и реплики через интернет, без лимита суммы за попытку. Экспорт — на компьютере.` : 'Речь, анализ и экспорт на компьютере. Без платных запросов.');
+  setText('processing-note', cloud || hybrid ? `${hybrid ? 'При сомнениях ' : ''}DeepSeek: кадры и реплики через интернет. При сбое — до двух повторов. Экспорт — на компьютере.` : 'Речь, анализ и экспорт на компьютере. Без платных запросов.');
   $("deepseek-notice").hidden = !cloud && !hybrid;
   $("deepseek-details").hidden = !cloud && !hybrid;
   $("hybrid-fallback").hidden = !hybrid;
-  setText("provider-description", cloudPlan ? "DeepSeek анализирует события, заставки и титры, сокращает сюжет и составляет план. Распознавание речи, кадрирование, монтаж и экспорт выполняются на компьютере. Требуются интернет и подтверждённый доступный баланс." : hybrid ? "Локальный анализ первым. DeepSeek вызывается при уверенности в кадрировании ниже 75%, явном сомнении или некорректном ответе. Уверенность — самооценка модели, не гарантия точности." : cloud ? "Кадры и текст отправляются в DeepSeek. Требуются интернет и подтверждённый доступный баланс." : "Кадры и текст обрабатываются на компьютере, без платных запросов.");
+  setText("provider-description", cloudPlan ? "DeepSeek анализирует события, заставки и титры, сокращает сюжет и составляет план. Распознавание речи, кадрирование, монтаж и экспорт выполняются на компьютере. Требуется интернет. При сбое запрос повторяется ещё до двух раз." : hybrid ? "Локальный анализ первым. DeepSeek вызывается при уверенности в кадрировании ниже 75%, явном сомнении или некорректном ответе. Уверенность — самооценка модели, не гарантия точности." : cloud ? "Кадры и текст отправляются в DeepSeek. Требуется интернет. При сбое запрос повторяется ещё до двух раз." : "Кадры и текст обрабатываются на компьютере, без платных запросов.");
   setText("deepseek-notice-title", hybrid ? "DeepSeek может уточнить сомнительные ответы" : "Кадры и текст отправятся в DeepSeek");
   setText("deepseek-notice-description", cloudPlan ? "Для анализа сюжета и плана в платный сервис передаются исходные кадры серии и распознанные реплики. DeepSeek не используется для обрезки кадра. Оригинальное видео и результаты сохраняются в папке проекта." : hybrid ? "При уточнении в сервис отправляются кадры серии и распознанные реплики. Оригинальное видео и результаты сохраняются в папке проекта." : "Для анализа передаются кадры серии и распознанные реплики. Требуется интернет. Оригинальное видео и результаты сохраняются в папке проекта.");
   setText("storage-title", cloudPlan ? "DeepSeek: сюжет и план · кадрирование локально" : hybrid ? "Локально + DeepSeek при сомнениях" : cloud ? "DeepSeek · анализ через интернет" : "Локальный анализ");
@@ -105,8 +79,7 @@ function renderProvider() {
   if (state.deepseekError) config = `Статус DeepSeek недоступен: ${state.deepseekError}`;
   else if (state.deepseek?.configured === false) config = "DeepSeek не настроен. Выберите локальный анализ.";
   else if (state.deepseek?.configured) {
-    const remaining = Number(state.deepseek.remaining_usd);
-    config = !Number.isFinite(remaining) ? "Баланс неизвестен. Запуск DeepSeek недоступен." : remaining <= 0 ? "Нет подтверждённого доступного баланса или учёт расходов требует проверки. Проверьте подключение и сообщения задания. Доступен локальный анализ." : `Локальная настройка готова · ${state.deepseek.model ?? "DeepSeek"}. Подключение можно проверить отдельно.`;
+    config = `Подключение настроено · ${state.deepseek.model ?? "DeepSeek"}. При сбое — до двух повторов.`;
   }
   if (state.deepseekCheck?.available === false) config = "Последняя проверка: подключение недоступно. Повторите проверку или выберите локальный анализ.";
   else if (state.deepseekCheck?.vision_supported === false) config = "Проверка не подтвердила поддержку кадров. Доступен локальный анализ.";
@@ -119,11 +92,7 @@ async function loadDeepseekStatus() {
   try { state.deepseek = await api("/api/deepseek"); state.deepseekError = null; }
   catch (error) { state.deepseek = null; state.deepseekError = error.message; }
   renderProvider();
-  try {
-    const recovery = await api('/api/deepseek/recovery');
-    $("deepseek-recovery").hidden = !recovery.halted;
-    setText("recovery-description", `Последний ответ или расход не подтверждён. Зарезервировано ${usd(recovery.reserved_ceiling_usd)}; это оценка, а не подтверждённое списание. Кнопка сохраняет этот расход в учёте, запрещает повтор спорных запросов и проверяет текущий баланс. После этого можно отправлять новые запросы.`);
-  } catch { $("deepseek-recovery").hidden = true; }
+  $("deepseek-recovery").hidden = true;
 }
 async function checkDeepseek() {
   if ($("deepseek-check").disabled) return;
@@ -134,7 +103,7 @@ async function checkDeepseek() {
     const balances = Array.isArray(result.balance_infos) ? result.balance_infos.map((item) => `${item.currency}: ${item.total_balance}`).join("; ") : "";
     const connection = result.available === true ? "Подключение доступно" : "Подключение недоступно";
     const vision = result.vision_supported === true ? "анализ кадров поддерживается" : result.vision_supported === false ? "модель не поддерживает кадры" : "поддержка кадров не подтверждена";
-    setText("deepseek-check-message", `Последняя проверка: ${connection}, ${vision}. Модель: ${result.model ?? "DeepSeek"}.${balances ? ` Баланс аккаунта: ${balances}.` : ""} Баланс аккаунта не является расходом отдельного ключа.`);
+    setText("deepseek-check-message", `Последняя проверка: ${connection}, ${vision}. Модель: ${result.model ?? "DeepSeek"}.${balances ? ` Баланс аккаунта: ${balances}.` : ""}`);
   } catch (error) { setText("deepseek-check-message", `Не удалось проверить подключение: ${error.message}`); }
   finally { state.checkingDeepseek = false; await loadDeepseekStatus(); updateControls(); }
 }
@@ -190,12 +159,7 @@ function renderJob(job) {
   setText("job-source", job.source_name);
   $("job-spending").hidden = true;
   $('job-budget-estimate').hidden=true;
-  if (["deepseek", "deepseek_plan", "hybrid"].includes(job.analysis_provider)) {
-    api(`/api/jobs/${encodeURIComponent(job.id)}/spending`).then((cost) => {
-      if (state.selectedJob?.id !== job.id) return;
-      state.selectedCost=cost; state.selectedCostJobId=job.id; renderSpending(job,cost);
-    }).catch(() => {});
-  }
+
   setText("job-editing", `Оформление: ${job.layout === "cinema" ? "весь кадр + мягкий фон" : "крупный план"} · ${job.caption_style === "accent" ? "яркие короткие субтитры" : "белые субтитры"}`);
   setText("job-provider", job.analysis_provider === "deepseek_plan" ? "Анализ: DeepSeek — сюжет и план, платно · кадрирование, монтаж и экспорт локально" : job.analysis_provider === "hybrid" ? "Анализ: локально + DeepSeek при сомнениях · возможны платные запросы; без API продолжаем локально" : job.analysis_provider === "deepseek" ? "Анализ: DeepSeek · кадры и текст отправляются через интернет, платно" : "Анализ: на компьютере · без платных запросов");
   setText("job-status", statuses[job.status] ?? job.status);

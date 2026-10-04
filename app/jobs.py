@@ -325,16 +325,11 @@ class JobManager:
             from app.deepseek import public_status
             state = public_status()
             configured = state.get("configured") is True
-            remaining = Decimal(str(state.get("remaining_usd", "0")))
-            if not remaining.is_finite():
-                raise ValueError()
         except Exception:
             # Client failures may contain credentials; never expose their text.
             raise ValueError("Не удалось проверить локальные настройки DeepSeek") from None
         if not configured:
             raise ValueError("DeepSeek не настроен. Доступен локальный анализ.")
-        if remaining <= 0:
-            raise ValueError("Баланс не подтверждён или запросы остановлены. Проверьте подключение; доступен локальный анализ.")
 
     def create(self, source_id: str, analysis_provider: str = "local",
                layout: str = "portrait", caption_style: str = "classic", episode_id: str | None = None) -> dict:

@@ -217,5 +217,5 @@ class AnalysisValidationTests(unittest.TestCase):
         prompt = query.call_args.args[0]
         self.assertEqual(prompt.count('Важная причина в середине.'), 36)
         self.assertNotIn('[middle omitted]', prompt)
-        self.assertEqual(vision.text_budget, 20000)
+        self.assertEqual(vision.text_budget, 64000)
         self.assertTrue(vision.cache_only)
