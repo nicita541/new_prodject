@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+faster-whisper
+pillow
+numpy
+opencv-python-headless
+pytest
+httpx

@@ -1,0 +1,502 @@
+"""Loopback-only HTTP API and static UI; no model downloads at runtime."""
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import mimetypes
+import os
+import re
+import subprocess
+import uuid
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal
+from urllib.parse import quote, urlsplit
+
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+
+from app import config
+from app.jobs import BusyError, JobManager, contained, read_json
+
+MAX_UPLOAD = 20 * 1024 ** 3
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MULTIPART_OVERHEAD = 64 * 1024
+
+
+class UploadTooLarge(HTTPException):
+    def __init__(self):
+        super().__init__(413, "Серия слишком большая (предел 20 ГБ)")
+
+
+class UploadLimitMiddleware:
+    """Bound the body before multipart parsing can spool it to disk."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") != "/api/import" or scope.get("method") != "POST":
+            return await self.app(scope, receive, send)
+        # Permit a small, bounded multipart envelope around the file limit.
+        limit = MAX_UPLOAD + MULTIPART_OVERHEAD
+        rejection = JSONResponse({"detail": "Серия слишком большая (предел 20 ГБ)"}, 413)
+        for name, value in scope.get("headers", []):
+            if name.lower() == b"content-length" and value.isdigit() and int(value) > limit:
+                return await rejection(scope, receive, send)
+        received = 0
+        async def bounded_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    # Starlette closes partial multipart temporary files when
+                    # its input stream raises; never deliver this block to it.
+                    raise UploadTooLarge()
+            return message
+        try:
+            await self.app(scope, bounded_receive, send)
+        except UploadTooLarge:
+            await rejection(scope, receive, send)
+
+
+class CreateJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    analysis_provider: Literal["local", "deepseek", "hybrid", "deepseek_plan"] = "local"
+    layout: Literal["portrait", "cinema"] = "portrait"
+    caption_style: Literal["classic", "accent"] = "classic"
+
+
+class RecoverDeepseek(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    accept_reserved_costs: Literal[True]
+
+
+class CreateProject(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    title: str = Field(min_length=1, max_length=200)
+
+
+class CreateEpisode(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    number: int | None = Field(default=None, ge=1, le=9999, strict=True)
+
+
+class EpisodeSettings(CreateJob):
+    pass
+
+
+def safe_filename(name: str | None) -> str:
+    if not name or len(name) > 1024 or "/" in name or "\\" in name or ":" in name:
+        raise ValueError("Выберите файл с обычным именем, без пути")
+    if any(ord(character) < 32 for character in name) or name.endswith((".", " ")):
+        raise ValueError("Недопустимое имя файла")
+    if Path(name).suffix.lower() not in {".mp4", ".mkv"}:
+        raise ValueError("Поддерживаются только MP4 и MKV")
+    # Import directory is a UUID, but also avoid Windows reserved names and
+    # characters. Preserve the full original name in source metadata.
+    stem = re.sub(r'[<>"|?*]', "_", Path(name).stem).strip(" .")[:100] or "episode"
+    if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", stem):
+        stem = "episode_" + stem
+    return stem + Path(name).suffix.lower()
+
+
+def validate_media(path: Path) -> None:
+    if not config.FFPROBE.is_file():
+        raise RuntimeError("FFprobe не установлен. Запустите setup.bat.")
+    try:
+        result = subprocess.run(
+            [str(config.FFPROBE), "-v", "error", "-protocol_whitelist", "file,pipe", "-format_whitelist", "mov,matroska,webm", "-show_streams", "-show_format", "-of", "json", str(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60, check=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+        probe = json.loads(result.stdout.decode("utf-8"))
+        streams = probe.get("streams", [])
+        duration = float(probe.get("format", {}).get("duration", 0))
+        if not any(item.get("codec_type") == "video" for item in streams):
+            raise ValueError("В файле нет видеодорожки")
+        if not any(item.get("codec_type") == "audio" for item in streams):
+            raise ValueError("В серии нет звуковой дорожки")
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("Не удалось определить длительность серии")
+    except (subprocess.SubprocessError, json.JSONDecodeError, UnicodeError) as error:
+        raise ValueError("Файл повреждён или не является видео MP4/MKV") from error
+
+
+def safe_message(error: Exception, manager: JobManager) -> str:
+    # Exceptions may contain source paths; public clients only see opaque IDs.
+    text = str(error)
+    text = text.replace(str(manager.root), "[папка проекта]")
+    return text
+
+
+def public_job(job: dict, manager: JobManager | None = None) -> dict:
+    result = dict(job)
+    result.setdefault("analysis_provider", "local")
+    identifier = job["id"]
+    outputs = job.get("outputs", []) if job["status"] == "completed" else []
+    durations = {}
+    if outputs and manager:
+        plan_path = contained(manager.job_dir(identifier) / "plan.json", manager.jobs)
+        saved_plan = read_json(plan_path, {})
+        durations = {f"part_{part['index']:03}.mp4": part.get("duration")
+                     for part in saved_plan.get("parts", []) if isinstance(part.get("index"), int)}
+    result["files"] = [{"name": name, "url": f"/api/jobs/{identifier}/files/{name}",
+                        "subtitle_url": f"/api/jobs/{identifier}/files/{Path(name).stem}.srt"
+                        if f"{Path(name).stem}.srt" in outputs else None,
+                        "duration": durations.get(name)}
+                       for name in outputs if name.endswith(".mp4")]
+    return result
+
+
+def ranged_file(path: Path, request: Request):
+    """Single-range streaming with bounded reads and correct 416 responses."""
+    length = path.stat().st_size
+    start, end, status = 0, length - 1, 200
+    range_header = request.headers.get("range")
+    if range_header:
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+        if not match or not any(match.groups()) or length == 0:
+            return JSONResponse({"detail": "Недопустимый диапазон"}, 416,
+                                headers={"Content-Range": f"bytes */{length}", "Accept-Ranges": "bytes"})
+        left, right = match.groups()
+        if left:
+            start = int(left)
+            end = min(int(right), length - 1) if right else length - 1
+        else:
+            suffix = int(right)
+            start = max(0, length - suffix)
+            if suffix == 0:
+                start = length
+        if start >= length or end < start:
+            return JSONResponse({"detail": "Диапазон за пределами файла"}, 416,
+                                headers={"Content-Range": f"bytes */{length}", "Accept-Ranges": "bytes"})
+        status = 206
+    headers = {"Accept-Ranges": "bytes", "Content-Length": str(max(0, end - start + 1)),
+               "Content-Disposition": "inline; filename*=UTF-8''" + quote(path.name, safe=""),
+               "X-Content-Type-Options": "nosniff"}
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{length}"
+    def chunks():
+        with path.open("rb") as stream:
+            stream.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                content = stream.read(min(1024 * 1024, remaining))
+                if not content:
+                    break
+                yield content
+                remaining -= len(content)
+    return StreamingResponse(iter(()) if request.method == "HEAD" else chunks(), status_code=status,
+                             media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                             headers=headers)
+
+
+def create_app(manager: JobManager | None = None) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application):
+        config.setup_environment()
+        application.state.manager = manager or JobManager()
+        try:
+            from .library import Library
+            application.state.library = Library(application.state.manager)
+            yield
+        finally:
+            application.state.manager.close()
+    application = FastAPI(title="Аниме → шортсы", lifespan=lifespan,
+                          docs_url=None, redoc_url=None, openapi_url=None)
+    application.add_middleware(UploadLimitMiddleware)
+
+    @application.middleware("http")
+    async def protect_loopback(request: Request, call_next):
+        try:
+            host = urlsplit("http://" + request.headers.get("host", ""))
+            if host.hostname not in ALLOWED_HOSTS or host.username or host.password:
+                raise ValueError()
+            port = host.port or 80
+        except ValueError:
+            return JSONResponse({"detail": "Разрешён только локальный адрес"}, 403)
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if origin:
+                try:
+                    parsed = urlsplit(origin)
+                    if (parsed.scheme != "http" or parsed.hostname != host.hostname or
+                            (parsed.port or 80) != port or parsed.username or parsed.password or
+                            parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+                        raise ValueError()
+                except ValueError:
+                    return JSONResponse({"detail": "Запрос разрешён только из этого приложения"}, 403)
+            if request.headers.get("sec-fetch-site") == "cross-site":
+                return JSONResponse({"detail": "Запрос с другого сайта запрещён"}, 403)
+            if request.headers.get("content-type", "").split(";", 1)[0].lower() not in {
+                "application/json", "multipart/form-data", ""}:
+                return JSONResponse({"detail": "Недопустимый формат запроса"}, 415)
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+        return response
+
+    def get_manager(request: Request):
+        return request.app.state.manager
+
+    @application.exception_handler(BusyError)
+    async def busy_error(request: Request, error: BusyError):
+        return JSONResponse({"detail": str(error)}, 409)
+
+    @application.exception_handler(KeyError)
+    async def missing_error(request: Request, error: KeyError):
+        return JSONResponse({"detail": "Серия или задание не найдены"}, 404)
+
+    @application.exception_handler(ValueError)
+    async def invalid_error(request: Request, error: ValueError):
+        return JSONResponse({"detail": safe_message(error, get_manager(request))}, 400)
+
+    @application.get("/api/health")
+    def health(request: Request):
+        return {**config.readiness(), "busy": get_manager(request).busy()}
+
+    @application.get("/api/sources")
+    def sources(request: Request):
+        return get_manager(request).list_sources()
+
+    @application.get('/api/library')
+    def library(request: Request):
+        return request.app.state.library.snapshot()
+
+    @application.delete('/api/projects/{identifier}')
+    def delete_project(request: Request, identifier: str):
+        return request.app.state.library.archive('project', identifier)
+
+    @application.delete('/api/episodes/{identifier}')
+    def delete_episode(request: Request, identifier: str):
+        return request.app.state.library.archive('episode', identifier)
+
+    @application.post('/api/projects/{identifier}/restore')
+    def restore_project(request: Request, identifier: str):
+        return request.app.state.library.restore('project', identifier)
+
+    @application.post('/api/episodes/{identifier}/restore')
+    def restore_episode(request: Request, identifier: str):
+        return request.app.state.library.restore('episode', identifier)
+
+    @application.post('/api/projects', status_code=201)
+    def new_project(request: Request, body: CreateProject):
+        return request.app.state.library.create_project(body.title)
+
+    @application.post('/api/projects/{identifier}/episodes', status_code=201)
+    def new_episode(request: Request, identifier: str, body: CreateEpisode):
+        return request.app.state.library.create_episode(identifier, body.number)
+
+    @application.put('/api/episodes/{identifier}/settings')
+    def episode_settings(request: Request, identifier: str, body: EpisodeSettings):
+        values = body.model_dump()
+        source_id = values.pop('source_id')
+        return request.app.state.library.save_episode(identifier, source_id, values)
+
+    @application.post('/api/episodes/{identifier}/jobs', status_code=201)
+    def episode_job(request: Request, identifier: str):
+        if not config.readiness()['ready']:
+            raise HTTPException(503, 'Сначала выполните локальную настройку проекта')
+        return public_job(request.app.state.library.launch(identifier), get_manager(request))
+
+    @application.get("/api/deepseek")
+    def deepseek_status():
+        try:
+            from app.deepseek import public_status
+            state = public_status()
+            return {key: state[key] for key in ("configured", "budget_usd", "charged_ceiling_usd",
+                                               "remaining_usd", "model")}
+        except Exception:
+            raise HTTPException(503, "Не удалось прочитать локальные настройки DeepSeek") from None
+
+    @application.post("/api/deepseek/check")
+    def deepseek_check():
+        try:
+            from app.deepseek import check_connection
+            state = check_connection()
+            return {"available": state["available"], "model": state["model"],
+                    "vision_supported": state["vision_supported"],
+                    "balance_infos": [{"currency": item["currency"], "total_balance": item["total_balance"]}
+                                      for item in state["balance_infos"]]}
+        except Exception:
+            raise HTTPException(503, "Не удалось проверить соединение с DeepSeek") from None
+
+    @application.get('/api/deepseek/balance')
+    def provider_balance_status():
+        from .provider_balance import status
+        try:
+            return status()
+        except Exception:
+            raise HTTPException(503, 'Не удалось прочитать проверки баланса') from None
+
+    @application.post('/api/deepseek/balance')
+    def provider_balance_refresh(request: Request, job_id: str | None = None, force: bool = False):
+        from .provider_balance import refresh, status
+        from .deepseek import job_spending
+        current = get_manager(request)
+        directory, attempt, active = None, None, False
+        if job_id is not None:
+            job = current.get(job_id)
+            directory = current.job_dir(job_id)
+            attempt = job_spending(directory)['attempt']
+            active = job['status'] in ('queued','running')
+        try:
+            refresh(directory if active else None, attempt if active else None, force)
+            return status(directory, attempt)
+        except Exception:
+            raise HTTPException(503, 'Не удалось обновить баланс DeepSeek') from None
+
+    @application.get('/api/deepseek/recovery')
+    def deepseek_recovery_status():
+        from .deepseek import recovery_status
+        return recovery_status()
+
+    @application.post('/api/deepseek/recovery')
+    def deepseek_recovery(body: RecoverDeepseek):
+        try:
+            from .deepseek import acknowledge_reserved_requests
+            return acknowledge_reserved_requests()
+        except Exception:
+            raise HTTPException(503, 'Восстановление не выполнено. Проверьте подключение и баланс.') from None
+
+    @application.post("/api/import", status_code=201)
+    async def import_source(request: Request, file: UploadFile = File(...)):
+        current = get_manager(request)
+        destination = None
+        temporary = None
+        try:
+            # Multipart already knows the file byte count. Reject the small
+            # envelope-tolerance excess before creating a second file copy.
+            if file.size is not None and file.size > MAX_UPLOAD:
+                raise HTTPException(413, "Серия слишком большая (предел 20 ГБ)")
+            filename = safe_filename(file.filename)
+            directory = current.imports / str(uuid.uuid4())
+            directory.mkdir()
+            temporary = directory / ".upload"
+            destination = directory / filename
+            size = 0
+            with temporary.open("xb") as stream:
+                while block := await file.read(1024 * 1024):
+                    size += len(block)
+                    if size > MAX_UPLOAD:
+                        raise HTTPException(413, "Серия слишком большая (предел 20 ГБ)")
+                    stream.write(block)
+            if size == 0:
+                raise ValueError("Выбран пустой файл")
+            await asyncio.to_thread(validate_media, temporary)
+            temporary.replace(destination)
+            return current.register_import(destination, file.filename)
+        except RuntimeError as error:
+            raise HTTPException(503, safe_message(error, current)) from error
+        except OSError as error:
+            raise HTTPException(507, "Не удалось сохранить серию. Проверьте свободное место и доступ к папке.") from error
+        finally:
+            await file.close()
+            if temporary:
+                temporary.unlink(missing_ok=True)
+            if destination and not destination.exists():
+                destination.parent.rmdir()
+
+    @application.post("/api/jobs", status_code=201)
+    def create_job(request: Request, body: CreateJob):
+        state = config.readiness()
+        if not state["ready"]:
+            raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
+        current = get_manager(request)
+        return public_job(current.create(body.source_id, body.analysis_provider,
+                                         body.layout, body.caption_style), current)
+
+    @application.get("/api/jobs")
+    def jobs(request: Request):
+        current = get_manager(request)
+        return [public_job(job, current) for job in current.list_jobs()]
+
+    @application.get("/api/jobs/{identifier}")
+    def job(request: Request, identifier: str):
+        current = get_manager(request)
+        return public_job(current.get(identifier), current)
+
+    @application.get('/api/jobs/{identifier}/spending')
+    def spending(request: Request, identifier: str):
+        current = get_manager(request)
+        current.get(identifier)
+        from .deepseek import job_spending
+        return job_spending(current.job_dir(identifier))
+
+    @application.post("/api/jobs/{identifier}/cancel")
+    def cancel(request: Request, identifier: str):
+        current = get_manager(request)
+        return public_job(current.cancel(identifier), current)
+
+    @application.post('/api/jobs/{identifier}/reset-budget')
+    def reset_budget(request: Request, identifier: str):
+        return get_manager(request).reset_attempt_budget(identifier)
+
+    @application.post("/api/jobs/{identifier}/retry")
+    def retry(request: Request, identifier: str):
+        state = config.readiness()
+        if not state["ready"]:
+            raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
+        current = get_manager(request)
+        return public_job(current.retry(identifier), current)
+
+    @application.get("/api/jobs/{identifier}/plan")
+    def plan(request: Request, identifier: str):
+        current = get_manager(request)
+        current.get(identifier)
+        result = read_json(contained(current.job_dir(identifier) / "plan.json", current.jobs))
+        if result is None:
+            raise HTTPException(404, "Монтажный план ещё не готов")
+        return result
+
+    @application.api_route('/api/jobs/{identifier}/source', methods=['GET', 'HEAD'])
+    def original_source(request: Request, identifier: str):
+        current = get_manager(request)
+        current.get(identifier)
+        record = read_json(current.job_dir(identifier) / 'source.json')
+        if not record or not isinstance(record.get('path'), str):
+            raise HTTPException(404, 'Исходная серия недоступна')
+        path = contained(Path(record['path']), current.root)
+        if not path.is_file() or path.suffix.lower() not in {'.mp4', '.mkv'}:
+            raise HTTPException(404, 'Исходная серия недоступна')
+        return ranged_file(path, request)
+
+    @application.api_route("/api/jobs/{identifier}/files/{filename}", methods=["GET", "HEAD"])
+    def output(request: Request, identifier: str, filename: str):
+        current = get_manager(request)
+        item = current.get(identifier)
+        if (item["status"] != "completed" or filename not in item.get("outputs", []) or
+                Path(filename).name != filename or "/" in filename or "\\" in filename or
+                Path(filename).suffix not in {".mp4", ".srt"}):
+            raise HTTPException(404, "Готовый файл не найден")
+        directory = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
+        path = contained(directory / filename, directory)
+        if not path.is_file():
+            raise HTTPException(404, "Готовый файл не найден")
+        return ranged_file(path, request)
+
+    static = config.ROOT / "app" / "static"
+    @application.get("/")
+    def index():
+        return FileResponse(static / "index.html")
+    if static.is_dir():
+        application.mount("/static", StaticFiles(directory=static), name="static")
+    return application
+
+
+app = create_app()
+
+
+def main():
+    import uvicorn
+    config.setup_environment()
+    uvicorn.run("app.server:app", host="127.0.0.1", port=8765, access_log=False)
+
+
+if __name__ == "__main__":
+    main()

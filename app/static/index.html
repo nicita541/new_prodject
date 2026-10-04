@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Кадр — локальный монтаж шортсов</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script><script src="/static/library.js" defer></script>
+</head>
+<body>
+<header class="topbar"><a href="#projects" class="brand" aria-label="Кадр, проекты"><span class="brand-mark" aria-hidden="true">К</span>КАДР<span class="brand-note">STUDIO</span></a><nav aria-label="Главное меню"><a href="#projects">Проекты</a><a href="#trash">Корзина</a></nav><span id="connection" class="status-pill"><span class="status-dot"></span><span id="connection-label">Проверяем систему</span></span></header>
+<main class="screen-shell">
+ <nav id="breadcrumbs" class="breadcrumbs" aria-label="Путь проекта"></nav>
+ <div class="workspace-heading"><h1 id="workspace-title">Проекты аниме</h1><span id="screen-context" class="muted small"></span></div>
+ <p id="library-message" class="message" role="status" aria-live="polite"></p>
+ <section id="trash-screen" class="app-screen" aria-label="Корзина" hidden><p class="screen-description">Удалённые проекты и серии. Видео и готовые шортсы сохранены; восстановление вернёт их в меню.</p><div id="trash-cards" class="episode-cards"></div><p id="trash-empty" class="empty-library" hidden>Корзина пуста.</p></section>
+ <section id="projects-screen" class="app-screen" aria-label="Проекты аниме">
+  <div class="library-layout"><div><p class="screen-description">Каждое аниме — отдельный проект. Внутри находятся его серии и готовые монтажи.</p><div id="project-cards" class="project-cards"></div><p id="projects-empty" class="empty-library" hidden>Пока нет проектов. Создайте проект с названием аниме.</p></div><form id="project-form" class="panel library-form"><h2>Новый проект</h2><label for="project-title">Название аниме</label><input id="project-title" required maxlength="200" placeholder="Например, название вашего аниме"><button class="primary-button" type="submit">Создать проект</button></form></div>
+ </section>
+ <section id="episodes-screen" class="app-screen" aria-label="Серии проекта" hidden>
+  <div class="screen-toolbar"><p class="screen-description">Один подпроект — одна серия. Видео, настройки и результаты хранятся отдельно.</p><form id="episode-form" class="episode-form"><label for="episode-number">Номер серии</label><input id="episode-number" type="number" min="1" max="9999" required value="1"><button class="primary-button" type="submit">Добавить серию</button></form></div><button id="delete-current-project" type="button" class="danger-button">Удалить проект</button><div id="episode-cards" class="episode-cards"></div><p id="episodes-empty" class="empty-library" hidden>Добавьте первую серию, затем выберите её видео и настройки монтажа.</p>
+ </section>
+ <section id="edit-screen" class="app-screen" aria-label="Настройки серии" hidden>
+  <div class="screen-toolbar"><p class="screen-description">Выберите видео и оформление этой серии. После монтажа откроется экран проверки.</p><div class="screen-actions"><button id="delete-current-episode" type="button" class="danger-button">Удалить серию</button><a id="edit-review-link" class="secondary-button" hidden>Открыть проверку</a></div></div>
+  <div class="episode-editor"><section class="panel source-panel" aria-labelledby="source-heading">
+          <div class="panel-heading"><div><p class="eyebrow">МЕДИА</p><h2 id="source-heading">Настройки монтажа</h2></div><span class="muted small">MP4 / MKV</span></div>
+          <form id="create-form">
+            <label for="source">Видео этой серии</label>
+            <select id="source" required><option value="">Загружаем список…</option></select>
+            <div class="source-meta"><span id="source-size" class="muted small"></span><button id="refresh-sources" type="button" class="text-button">Обновить список</button></div>
+            <input id="file-input" type="file" accept=".mp4,.mkv,video/mp4,video/x-matroska" hidden>
+            <button id="upload-button" type="button" class="upload-zone"><span aria-hidden="true">＋</span><span>Импортировать видео<small>MP4 / MKV · можно перетащить сюда</small></span></button>
+            <div id="upload-progress" class="upload-progress" hidden><progress id="upload-meter" max="100" value="0" aria-label="Копирование видео"></progress><span id="upload-label" class="small"></span></div>
+            <div id="readiness" class="notice" hidden><strong>Компоненты ещё не готовы</strong><p>Сначала выполните локальную настройку проекта.</p><ul id="missing-list"></ul></div>
+            <details class="settings-section" open><summary>Оформление экспорта<span>9:16</span></summary><div class="editing-choice">
+              <div class="editing-fields"><label for="layout">Оформление кадра</label><select id="layout"><option value="cinema" selected>Весь кадр + мягкий фон</option><option value="portrait">Крупный план · умное кадрирование</option></select><p id="layout-description" class="small muted field-hint">Видны все персонажи и действия. Вертикальный фон — размытая копия видео.</p>
+              <label for="caption-style">Субтитры</label><select id="caption-style"><option value="accent" selected>Яркие · короткие фразы</option><option value="classic">Спокойные · белый текст</option></select></div>
+              <div id="style-preview" class="style-preview cinema accent" aria-label="Схема оформления, не кадр вашего видео"><span class="preview-part">ЧАСТЬ 01</span><div class="preview-scene"><span>ТВОЁ ВИДЕО</span></div><strong id="preview-subtitle">ИСТОРИЯ<br>НАЧИНАЕТСЯ ЗДЕСЬ</strong><span class="preview-hint">Схема оформления</span></div>
+            </div>
+            </details><details class="settings-section"><summary>Анализ и подключение<span>AI</span></summary><div class="provider-choice">
+              <label for="analysis-provider">Анализ истории и кадров</label>
+              <select id="analysis-provider"><option value="deepseek_plan" selected>DeepSeek · сюжет и план</option><option value="local">На компьютере · без сети</option><option value="hybrid">Локально + DeepSeek при сомнениях</option><option value="deepseek">DeepSeek · через интернет, платно</option></select>
+              <p id="provider-description" class="small muted">Кадры и текст обрабатываются на компьютере, без платных запросов.</p>
+            </div>
+            <details id="deepseek-details"><summary>DeepSeek · баланс и подключение</summary><div id="deepseek-notice" class="notice" hidden>
+              <strong id="deepseek-notice-title">Кадры и текст отправятся в DeepSeek</strong>
+              <p id="deepseek-notice-description">Для анализа передаются кадры серии и распознанные реплики. Требуется интернет. Оригинальное видео и результаты сохраняются в папке проекта.</p>
+              <p id="hybrid-fallback" class="small" hidden>Если API недоступен или доступного баланса нет, обработка продолжится локально с предупреждением. При обращении к DeepSeek нужны интернет и оплата запросов.</p>
+              <dl class="budget-values"><div><dt>Общий лимит</dt><dd id="deepseek-budget">Проверяем…</dd></div><div><dt>Баланс от DeepSeek</dt><dd id="deepseek-remaining">Проверяем…</dd></div><div><dt>Снижение баланса с начала наблюдения</dt><dd id="deepseek-charged">Проверяем…</dd></div></dl>
+              <p id="provider-balance-time" class="small muted"></p>
+              <p class="small muted">Баланс всего аккаунта, не отдельного API-ключа. Изменения могут включать расходы других программ; это не выписка по ключу. Расчёт для контроля лимита показан отдельно.</p>
+              <button id="balance-refresh-button" class="secondary-button" type="button">Обновить баланс DeepSeek</button>
+              <a class="text-button" href="https://platform.deepseek.com/usage" target="_blank" rel="noopener noreferrer">Расходы по API-ключу в кабинете ↗</a>
+              <p id="deepseek-config" class="small" role="status" aria-live="polite"></p>
+              <button id="deepseek-check" class="secondary-button" type="button" disabled>Проверить подключение</button>
+              <p class="small muted">Кнопка выполняет бесплатную проверку подключения и баланса, без платного анализа.</p>
+              <p id="deepseek-check-message" class="message" role="status" aria-live="polite"></p>
+              <div id="deepseek-recovery" class="notice" hidden><strong>Платные запросы остановлены</strong><p id="recovery-description"></p><button id="recovery-button" type="button" class="secondary-button">Сохранить резерв и разрешить новые запросы</button><p id="recovery-message" class="message" role="status" aria-live="polite"></p></div>
+            </div>
+            </details></details><p class="export-spec">1080 × 1920 <span>•</span> H.264 <span>•</span> оригинальный звук</p><p id="processing-note" class="processing-note">DeepSeek: кадры и реплики через интернет, без лимита суммы за попытку. Экспорт — на компьютере.</p>
+            <button id="save-settings" type="button" class="secondary-button">Сохранить настройки</button><button id="create-button" class="primary-button" type="submit" disabled>Создать шортсы <span aria-hidden="true">↗</span></button>
+            <p id="form-message" class="message" role="status" aria-live="polite"></p>
+          </form>
+        </section><div class="processing-column"><section id="job-panel" class="panel" aria-labelledby="job-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">ЗАДАНИЕ</p><h2 id="job-heading">Обработка серии</h2></div><span id="job-status" class="small status-label"></span></div>
+          <div class="progress-heading"><strong id="stage-label">Ожидание</strong><span id="progress-label">0%</span></div>
+          <progress id="job-progress" max="1" value="0" aria-label="Прогресс обработки серии"></progress>
+          <p id="job-message" class="muted small" role="status" aria-live="polite"></p>
+          <div class="stages" aria-label="Этапы обработки"><span data-stage="prepare">Подготовка</span><span data-stage="transcribe">Речь</span><span data-stage="analyze">Сюжет и кадр</span><span data-stage="plan">Монтажный план</span><span data-stage="render">Экспорт</span></div>
+          <div id="job-error" class="notice error" role="alert" hidden></div>
+          <div class="job-primary-actions"><button id="cancel-button" class="secondary-button" type="button" hidden>Отменить</button><button id="retry-button" class="secondary-button" type="button" hidden>Продолжить обработку</button></div>
+          <details class="job-info"><summary>Параметры и расходы</summary><p id="job-source" class="filename"></p>
+          <p id="job-provider" class="small muted job-provider"></p>
+          <p id="job-editing" class="small muted"></p>
+          <p id="job-spending" class="small muted" hidden></p>
+          <p id="job-budget-estimate" class="small muted" hidden></p>
+          <div class="job-actions"><button id="reset-budget-button" class="secondary-button" type="button" hidden>Начать новое наблюдение</button><a id="plan-link" class="text-button" target="_blank" rel="noopener" hidden>Монтажный план ↗</a></div></details>
+        </section><div class="panel episode-guide"><h2>Монтаж этой серии</h2><p>Сохраните настройки или запустите монтаж. Можно вернуться к списку серий: обработка продолжится.</p><p>Здесь находятся только настройки и прогресс. Исходный плеер, таймлайн и шортсы — на отдельном экране проверки.</p><p id="episode-source-note" class="small muted"></p></div></div></div>
+ </section>
+ <section id="review-screen" class="app-screen" aria-label="Проверка монтажа" hidden>
+  <div class="screen-toolbar"><label class="attempt-label" for="episode-attempt">Монтаж <select id="episode-attempt"></select></label><a id="review-edit-link" class="secondary-button">Настройки серии</a></div><div class="review-workspace"><section id="timeline-panel" class="panel" aria-labelledby="timeline-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">МОНТАЖНАЯ</p><h2 id="timeline-heading">Таймлайн серии</h2></div><span id="timeline-duration" class="muted small"></span></div>
+          <p class="timeline-help muted small">Выберите часть для просмотра шортса, а склейку — для сравнения с исходником.</p>
+          <div class="timeline-tools"><div class="timeline-legend"><span><i class="kept-key"></i>В шортсах</span><span><i class="removed-key"></i>Убрано</span></div>
+          <label class="timeline-zoom-label" for="timeline-zoom">Масштаб <select id="timeline-zoom"><option value="1">Вся серия</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label></div>
+          <div class="timeline-scroll"><div id="timeline-map">
+          <div id="timeline-ruler" class="timeline-ruler"></div>
+          <div id="timeline-groups" class="timeline-groups" aria-label="Части на общей линии серии"></div>
+          <div class="timeline-line"><div id="timeline-overview" class="timeline-track" aria-label="Все фрагменты исходной серии"></div><span id="timeline-playhead" class="timeline-playhead" hidden></span></div>
+          </div></div>
+          <div class="source-assembly"><div class="source-review"><video id="source-player" controls playsinline preload="metadata" aria-label="Исходная серия: просмотр выбранного фрагмента"></video><div class="source-transport"><p id="source-clock" class="muted small"></p><label class="toggle-label"><input id="source-limit" type="checkbox">Только выбранный фрагмент</label></div><p id="source-selection" class="small" role="status">Выбери сохранённый или удалённый отрезок.</p><button id="source-full-button" class="secondary-button" type="button">Смотреть исходник целиком</button><p id="source-error" class="message" role="status"></p></div>
+          </div>
+        </section><section id="results-panel" class="panel" aria-labelledby="results-heading" hidden>
+          <div class="panel-heading"><div><p class="eyebrow">ЭКСПОРТ</p><h2 id="results-heading">Шортсы</h2></div><span id="parts-count" class="muted small"></span></div>
+          <details id="quality-warnings" class="notice quality-warnings" hidden><summary id="quality-summary">Замечания к монтажу</summary><p id="quality-message">Модель отметила места, которые стоит проверить при просмотре. Сопоставьте их с монтажным планом и исходной серией.</p><ul id="quality-warning-list"></ul></details>
+          <div class="viewer"><div class="video-frame"><video id="player" controls playsinline preload="metadata" aria-label="Просмотр шортса"></video></div><div class="playlist-column"><p class="muted small">Части по порядку · автопереход</p><ol id="playlist" class="playlist"></ol><div class="download-links"><a id="download-video" class="secondary-button" download>Скачать MP4</a><a id="download-subtitle" class="text-button" download>Субтитры SRT ↓</a></div><p id="player-message" class="muted small" role="status"></p></div></div>
+          
+        </section></div><p id="review-empty" class="empty-library" hidden>Готового монтажа пока нет. Вернитесь в настройки серии.</p>
+ </section>
+</main><footer><span>КАДР STUDIO</span><span id="storage-title">Локальная студия</span><span id="storage-description" class="storage-description"></span></footer>
+</body></html>

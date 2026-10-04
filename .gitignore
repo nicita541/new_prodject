@@ -1,0 +1,31 @@
+tools/
+models/
+data/
+cache/
+temp/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Generated QA material and private episode media/exports.
+qa/
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.aac
+*.srt
+*.ass
+*.log
+
+# Local credentials and settings.
+.env
+.env.*
+*.pem
+*.key
+*.token
