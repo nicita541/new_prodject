@@ -24,5 +24,5 @@ Provider attempts may each be billed; user explicitly authorized two retries and
 ## Progress
 - [x] User requirements and migration contract recorded.
 - [x] Provider and launch gates implemented.
-- [ ] Tests and browser integration verified.
-- [ ] Git checkpoint and user handoff.
+- [x] 343 discovered tests passed; browser button and actual normal episode launch verified.
+- [x] Source checkpoint `8dcd0e0` recorded. Job `98291dad-343d-434c-aa2a-9fbd439af3fd` is running in the retained browser tab; finished export/editorial acceptance remains pending.

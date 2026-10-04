@@ -14,6 +14,8 @@ An omission proof creates authoritative current-story protection only when it ha
 
 Keep GPU/model and paid-provider work sequential. After all model stages close, permit at most two independent final FFmpeg part renders. The coordinator owns progress, chronological commits, checkpoints, validation, and publication. Failure/cancellation stops new dispatch, cancels/drains owned subprocesses, and preserves validated completed parts for resume. Run manifests record source, Git/runtime-code and semantic identities plus stage/part timings; unknown legacy encoder provenance stays unknown.
 
+Storyboard evidence is bounded by actual video-frame timestamps rather than the container/audio duration, and the source-bound probe is cached only for matching path, size, and modification time. Balance preflight failures are typed: one retry is allowed for transport or response-JSON parse failures before the paid reservation, while HTTP/authentication/insufficient-balance failures fail closed. If local pacing fallback is used, its result is stored separately with degraded provenance and cannot satisfy a remote-stage cache identity.
+
 ## Alternatives considered
 
 - Let later stages independently decide whether to remove restored story evidence: rejected because the stages do not have stronger ownership proof than the independent story review.
@@ -23,7 +25,7 @@ Keep GPU/model and paid-provider work sequential. After all model stages close, 
 
 ## Consequences
 
-Verified ranges and proofs are part of versioned semantic cache state. Their validity must be rechecked on cache reuse and preserved through later edit stages. Final export concurrency is bounded and does not alter model-stage ordering or provider accounting. Run manifests improve timing and provenance diagnostics but do not establish editorial correctness.
+Verified ranges and proofs are part of versioned semantic cache state. Their validity must be rechecked on cache reuse and preserved through later edit stages. Production-credit removal additionally requires a typed visible staff/theme/series-title marker, matching source-sequence context, exact supplied speech when present, and skeptical independent confirmation. Sequence-edge reviews add bounded dense before/current/after samples, so a familiar character or office frame alone cannot confirm an edge. Final export concurrency is bounded and does not alter model-stage ordering or provider accounting. Run manifests improve timing and provenance diagnostics but do not establish editorial correctness.
 
 ## Revisit when
 
