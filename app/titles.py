@@ -12,7 +12,7 @@ import urllib.error
 from .config import ROOT, VLM_MODEL, VLM_PROJECTOR
 from .story import _protected_speech, _spoken_words
 
-TITLES_VERSION = 5
+TITLES_VERSION = 6
 
 
 def title_units(start, end, transcript, shots):

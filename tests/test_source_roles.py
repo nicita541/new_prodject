@@ -91,6 +91,33 @@ class SourceRolePipelineTests(unittest.TestCase):
                 unsupported=role_answer(role,quote=text,visible='')
                 self.assertEqual(validate_role_decisions(unsupported,[unit]),[])
 
+    def test_production_credit_requires_typed_visible_marker_and_sequence_context(self):
+        unit={'id':'A','start':10,'end':12,'text':'','production_sequence_context':True}
+        base={'unit':'A','role':'production_credit','wholly_nonstory':True,
+              'meaningful_story':False,'reaction_or_humor':False,'confidence':.97,
+              'evidence':'Visible staff card follows the independently confirmed opening sequence.',
+              'speech_quote':'','visible_text':'Animation staff','marker_type':'staff_credit',
+              'same_production_sequence':True}
+        self.assertEqual([row['unit'] for row in validate_role_decisions({'decisions':[base]},[unit])],['A'])
+        for changes in ({'production_sequence_context':False}, {'verified_current_story':True}):
+            kept={**unit,**changes}
+            self.assertEqual(validate_role_decisions({'decisions':[base]},[kept]),[])
+        for changes in ({'marker_type':'none'}, {'same_production_sequence':False},
+                        {'meaningful_story':True}, {'reaction_or_humor':True},
+                        {'confidence':.89}, {'visible_text':''}):
+            answer={**base,**changes}
+            self.assertEqual(validate_role_decisions({'decisions':[answer]},[unit]),[])
+
+    def test_production_credit_speech_must_match_the_unit_quote(self):
+        unit={'id':'A','text':'Staff names scroll across the screen',
+              'production_sequence_context':True}
+        answer={'unit':'A','role':'production_credit','wholly_nonstory':True,
+                'meaningful_story':False,'reaction_or_humor':False,'confidence':.97,
+                'evidence':'Visible staff roll in the confirmed sequence.',
+                'speech_quote':'An invented theme lyric','visible_text':'Animation staff',
+                'marker_type':'staff_credit','same_production_sequence':True}
+        self.assertEqual(validate_role_decisions({'decisions':[answer]},[unit]),[])
+
     def test_role_deletion_requires_complete_valid_evidence_and_positive_credit_span(self):
         units=[{'id':'A','text':'Official channel subscribes today'},
                {'id':'B','text':'Tomorrow another episode starts'},

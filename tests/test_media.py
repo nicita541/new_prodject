@@ -305,6 +305,31 @@ class MediaIntegrationTests(unittest.TestCase):
             result = render_part(source, part, {"width": 160, "height": 90}, base / "output", base / "work", choose_encoder(base))
             self.assertLessEqual(validate_export(result, 90, base)["duration"], 90)
 
+    def test_storyboard_clamps_audio_tail_to_real_video_frames(self):
+        from app.analysis import storyboard
+        from app.media import video_frame_bounds
+        with workspace_directory() as directory:
+            base = Path(directory)
+            source = base / "video_shorter_than_audio.mp4"
+            run_command([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                         "color=size=160x90:rate=30:duration=1", "-f", "lavfi", "-i",
+                         "sine=frequency=440:sample_rate=48000:duration=1.4", "-t", "1.4",
+                         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+                         "-c:a", "aac", str(source)], base)
+            info = inspect_media(source, base)
+            streams = {stream["codec_type"]: stream for stream in info["streams"]}
+            self.assertGreater(float(streams["audio"]["duration"]),
+                               float(streams["video"]["duration"]) + 0.2)
+
+            first, last = video_frame_bounds(source, base)
+            frames = storyboard(source, max(first, last - 0.05), 1.4, [],
+                                {"words": [], "segments": []}, base / "eof-board.jpg", lambda: False)
+            self.assertTrue(frames)
+            self.assertTrue(all(first <= timestamp <= last for timestamp in frames))
+            self.assertTrue((base / "eof-board.jpg").is_file())
+            self.assertTrue(list(base.glob("eof-board_*_*.jpg")))
+            self.assertTrue(all(frame.stat().st_size > 0 for frame in base.glob("eof-board_*_*.jpg")))
+
 
 class PipelineCheckpointTests(unittest.TestCase):
     def test_shorter_retry_archives_only_obsolete_owned_exports_after_success(self):

@@ -509,6 +509,45 @@ class DeepSeekTests(unittest.TestCase):
                 self.fetch.assert_not_called()
                 self.assertEqual(self.entries(), [])
 
+    def test_nonpaid_balance_preflight_retries_transport_or_json_parse_once(self):
+        for category in ('transport', 'response_json_parse'):
+            with self.subTest(category=category):
+                self.reset_fake_ledger()
+                self.http.reset_mock()
+                self.fetch.reset_mock()
+                transient = api.RemoteError('sanitized preflight failure', category=category,
+                                            endpoint='/user/balance')
+                balance = {'is_available': True,
+                           'balance_infos': [{'currency':'USD','total_balance':'0.06'}]}
+                self.http.side_effect = [transient, balance]
+                self.assertEqual(api._preflight_balance(), balance)
+                self.assertEqual(self.http.call_count, 2)
+                self.http.reset_mock()
+                self.http.side_effect = lambda *args, **kwargs: balance
+                self.vision().query(f'preflight retry contract for {category}', schema=SCHEMA)
+                self.assertEqual(self.fetch.call_count, 1)
+                self.assertEqual(len(self.entries()), 1)
+                self.assertEqual(self.entries()[0]['status'], 'completed')
+
+    def test_preflight_never_retries_auth_http_or_second_transport_failure(self):
+        failures = (
+            [api.RemoteError('unauthorized', category='http', endpoint='/user/balance', http_status=401)],
+            [api.RemoteError('wrong endpoint', category='transport', endpoint='/models')],
+            [api.RemoteError('transient', category='transport', endpoint='/user/balance')]
+            * 2,
+        )
+        for errors in failures:
+            with self.subTest(errors=len(errors)):
+                self.reset_fake_ledger()
+                self.http.reset_mock()
+                self.fetch.reset_mock()
+                self.http.side_effect = errors
+                with self.assertRaises(api.RemoteError):
+                    self.vision().query('preflight failure does not authorize paid request', schema=SCHEMA)
+                self.assertEqual(self.http.call_count, len(errors))
+                self.fetch.assert_not_called()
+                self.assertEqual(self.entries() if self.ledger.exists() else [], [])
+
     def test_invalid_ledger_stops_calls_instead_of_resetting_budget(self):
         for data in ('invalid JSON', json.dumps({'version':1,'entries':[{'charged_ceiling_usd':'NaN'}]}),
                      json.dumps({'version':1,'entries':[{'charged_ceiling_usd':'-1'}]}),

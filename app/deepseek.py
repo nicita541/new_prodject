@@ -40,7 +40,11 @@ class BudgetExceeded(Exception):
 
 
 class RemoteError(RuntimeError):
-    pass
+    def __init__(self, message, *, category=None, endpoint=None, http_status=None):
+        super().__init__(message)
+        self.category = category
+        self.endpoint = endpoint
+        self.http_status = http_status
 
 
 class EpisodeBudgetExceeded(BudgetExceeded):
@@ -283,9 +287,24 @@ def _http(path: str, body=None, timeout=45):
             return json.load(response)
     except urllib.error.HTTPError as error:
         # Error bodies can echo prompts/secrets. Do not log or expose them.
-        raise RemoteError(f'DeepSeek: HTTP {error.code}; повторный платный запрос не выполнен') from None
-    except (OSError, ValueError, urllib.error.URLError):
-        raise RemoteError('Не удалось получить ответ DeepSeek; автоматический повтор отключён') from None
+        raise RemoteError(f'DeepSeek: HTTP {error.code}; повторный платный запрос не выполнен',
+                          category='http', endpoint=path, http_status=error.code) from None
+    except ValueError:
+        raise RemoteError('DeepSeek вернул невалидный JSON; повторный платный запрос не выполнен',
+                          category='response_json_parse', endpoint=path) from None
+    except (OSError, urllib.error.URLError):
+        raise RemoteError('Не удалось получить ответ DeepSeek; автоматический повтор отключён',
+                          category='transport', endpoint=path) from None
+
+
+def _preflight_balance():
+    """One bounded retry of a nonpaid read, before a chat reservation exists."""
+    for index in range(2):
+        try:
+            return _http('/user/balance')
+        except RemoteError as error:
+            if index or error.endpoint != '/user/balance' or error.category not in ('transport', 'response_json_parse'):
+                raise
 
 
 def check_connection():
@@ -524,7 +543,7 @@ class DeepSeekVision:
                 raise BudgetExceeded('Настроенный лимит DeepSeek недостаточен для следующего запроса. Выберите локальный анализ.')
             if self.cancelled():
                 raise InterruptedError('Обработка отменена')
-            balance = _http('/user/balance')
+            balance = _preflight_balance()
             usd = next((item for item in balance.get('balance_infos', []) if item.get('currency') == 'USD'), None)
             ledger['last_balance_infos'] = ([{'currency': 'USD', 'total_balance': str(_decimal(usd['total_balance']))}]
                                           if usd is not None else [])

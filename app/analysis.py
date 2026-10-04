@@ -19,6 +19,7 @@ from app.config import FFMPEG, FFPROBE, LLAMA, ROOT, VLM_MODEL, VLM_PROJECTOR, S
 
 ANALYSIS_VERSION = 8
 GLOBAL_STORY_VERSION = 5
+STORYBOARD_VERSION = 2
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
 
 
@@ -47,6 +48,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
             'credit_capability':'image-pages' if paged else 'single-image',
             'editorial_policy':editorial_policy,'global_story':GLOBAL_STORY_VERSION,
             'closing':CLOSING_VERSION,'titles':TITLES_VERSION,'speech_context':4,
+            'storyboard':STORYBOARD_VERSION,
             'focus':FOCUS_VERSION,'focus_model':str(STORY_MODEL),
             'focus_projector':str(STORY_PROJECTOR)}
 
@@ -387,7 +389,13 @@ def storyboard_times(start: float, end: float, shots: list, transcript: dict) ->
 
 def storyboard(source: Path, start: float, end: float, shots: list, transcript: dict, destination: Path, cancelled) -> list[float]:
     from PIL import Image, ImageDraw
-    candidates = storyboard_times(start, end, shots, transcript)
+    from .media import video_frame_bounds
+    first, last = video_frame_bounds(source, destination.parent, cancelled)
+    left, right = max(start, first), min(end, last + .000001)
+    if left >= right:
+        raise ValueError('В выбранном исходном интервале нет видеокадра')
+    candidates = sorted({min(last, max(first, timestamp))
+                         for timestamp in storyboard_times(left, right, shots, transcript)})
     canvas = Image.new('RGB', (960, 294 * math.ceil(len(candidates) / 2)), '#111111')
     draw = ImageDraw.Draw(canvas)
     stat = source.stat()
@@ -396,7 +404,9 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
     for i, timestamp in enumerate(candidates):
         frame = destination.parent / f'{destination.stem}_{source_key}_{timestamp:.6f}.jpg'
         if not frame.exists():
-            run_process([FFMPEG, '-y', '-v', 'error', '-ss', f'{timestamp:.6f}', '-i', source, '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2', frame], destination.parent / 'frames.log', cancelled, timeout=30)
+            run_process([FFMPEG, '-y', '-v', 'error', '-ss', f'{timestamp:.6f}', '-i', source, '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2', '-pix_fmt', 'yuvj420p', frame], destination.parent / 'frames.log', cancelled, timeout=30)
+        if not frame.is_file() or frame.stat().st_size == 0:
+            raise ValueError('FFmpeg не создал исходный видеокадр')
         x, y = (i % 2) * 480, (i // 2) * 294
         with Image.open(frame) as picture:
             canvas.paste(picture, (x, y + 24))
@@ -677,7 +687,9 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         if recovery_status()['halted']:
             pacing_provider = 'local'
     focus_key = derived_key + f':pacing-v{PACING_VERSION}:' + layout + ':' + pacing_provider
-    if events_path.exists() and derived_meta.exists() and load_json(derived_meta).get('signature') == focus_key:
+    if (events_path.exists() and derived_meta.exists()
+            and load_json(derived_meta).get('signature') == focus_key
+            and load_json(derived_meta).get('quality_state') != 'degraded'):
         return analysis_result(job_dir, provider, probe, transcript, shots, load_json(events_path))
     windows = analysis_windows(probe['duration'], transcript)
     visual_dir = job_dir / 'visual'
@@ -734,7 +746,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     # comparisons reproduced clipped faces with 4B and improved them with 9B.
     story_checkpoint = job_dir / 'story-events.json'
     saved_story = load_json(story_checkpoint) if story_checkpoint.exists() else {}
-    if saved_story.get('signature') == derived_key:
+    if saved_story.get('signature') == derived_key and saved_story.get('quality_state') != 'degraded':
         events = saved_story['events']
     else:
         with vision_session(job_dir, cancelled, provider, model=STORY_MODEL, projector=STORY_PROJECTOR, thinking=True) as vision:
@@ -779,7 +791,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
                                               'cpu_fallback': vision.cpu_fallback, 'analysis_provider': provider})
             from app.speech_context import protect_speech_context
             events = protect_speech_context(events, transcript)
-        atomic_json(story_checkpoint, {'signature': derived_key, 'events': events})
+        atomic_json(story_checkpoint, {'signature': derived_key, 'events': events,
+            'quality_state':'degraded' if any(e.get('source_role_unresolved') for e in events) else 'complete'})
     from .pacing import refine_pacing, BudgetPacingVision
     with vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
         if pacing_provider in ('deepseek', 'deepseek_plan'):
@@ -799,5 +812,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     else:
         report('framing', 0.65, 'Сохраняем исходный кадр целиком на мягком вертикальном фоне')
     atomic_json(events_path, events)
-    atomic_json(derived_meta, {'signature': focus_key})
+    atomic_json(derived_meta, {'signature': focus_key,
+        'quality_state':'degraded' if any(e.get('source_role_unresolved') or e.get('pacing_degraded') for e in events) else 'complete',
+        'requested_provider':provider,'pacing_providers':sorted({p for e in events for p in e.get('pacing_providers',[])})})
     return analysis_result(job_dir, provider, probe, transcript, shots, events)

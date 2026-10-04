@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -10,6 +11,40 @@ from pathlib import Path
 
 from .config import FFMPEG, FFPROBE
 from .subtitles import write_ass, write_srt
+
+_FRAME_BOUNDS = {}
+
+
+def video_frame_bounds(source: Path, workdir: Path, cancelled=lambda: False) -> tuple[float, float]:
+    """Actual video timestamps, independent of an audio/container EOF tail."""
+    if cancelled():
+        raise InterruptedError('Обработка отменена')
+    source = source.resolve()
+    stat = source.stat()
+    key = (str(source), stat.st_size, stat.st_mtime_ns)
+    if key in _FRAME_BOUNDS:
+        return _FRAME_BOUNDS[key]
+    info = inspect_media(source, workdir, cancelled)
+    video = next((stream for stream in info.get('streams', []) if stream.get('codec_type') == 'video'), None)
+    if video is None:
+        raise ValueError('Источник не содержит видео')
+    first = float(video.get('start_time', 0))
+    duration = float(video.get('duration', info.get('format', {}).get('duration', 0)))
+    if not math.isfinite(first) or not math.isfinite(duration) or duration <= 0:
+        raise ValueError('Не удалось определить границы исходного видео')
+    end = first + duration
+    frames = json.loads(run_command([str(FFPROBE), '-v', 'error', '-select_streams', 'v:0',
+        '-read_intervals', f'{max(first, end-5):.6f}%{end+1:.6f}',
+        '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', str(source)],
+        workdir, cancelled, 45))
+    times = [float(frame['best_effort_timestamp_time']) for frame in frames.get('frames', [])
+             if frame.get('best_effort_timestamp_time') is not None]
+    times = [timestamp for timestamp in times if math.isfinite(timestamp) and timestamp >= first]
+    if not times:
+        raise ValueError('Не удалось прочитать последние исходные видеокадры')
+    bounds = (first, max(times))
+    _FRAME_BOUNDS[key] = bounds
+    return bounds
 
 
 def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: float | None = None) -> str:

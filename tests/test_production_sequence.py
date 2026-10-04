@@ -3,7 +3,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from app.production_sequence import (sequence_decision, verify_boundaries, verify_exceptions,
+from app.production_sequence import (boundary_units, sequence_decision, verify_boundaries, verify_exceptions,
                                     clean_whole_sequences, original_clusters)
 from app.production import clean_sequences
 from app.planner import build_plan
@@ -60,12 +60,23 @@ class WholeSequenceTests(unittest.TestCase):
                         narrative_units=['U000','U003','U004'],
                         boundary_evidence='The following familiar-character portraits remain part of the musical OP.')
         class Vision:
-            def query(self,*args,**kwargs): return reviewed
-        corrected=verify_boundaries(initial,self.units,['original full pages'],Vision(),25)
+            def __init__(self): self.pages=None
+            def query(self,prompt,pages,**kwargs): self.pages=pages; return reviewed
+        vision=Vision()
+        corrected=verify_boundaries(initial,self.units,['original full pages'],vision,25,
+                                     boundary_pages=['dense before/current/after pages'])
+        self.assertEqual(vision.pages,['original full pages','dense before/current/after pages'])
         self.assertEqual(corrected['last_unit'],'U003')
         self.assertEqual(corrected['after_unit'],'U004')
         self.assertEqual(sequence_decision(corrected,self.units,25)[0],{'U001','U002'})
         self.assertIn('U003',corrected['narrative_units'])
+
+    def test_dense_boundary_selection_includes_early_and_late_neighbors(self):
+        units=[{'id':f'U{i:03}','start':i,'end':i+1} for i in range(20)]
+        selected=boundary_units({'first_unit':'U004','last_unit':'U010'},units)
+        ids=[unit['id'] for unit in selected]
+        self.assertEqual(ids, [*(f'U{i:03}' for i in range(2,7)),
+                              *(f'U{i:03}' for i in range(8,19))])
 
     def test_boundary_disagreement_and_malformed_second_review_fail_closed(self):
         initial=decision()

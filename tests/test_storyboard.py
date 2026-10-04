@@ -34,7 +34,10 @@ class StoryboardCacheTests(unittest.TestCase):
         Image.new("RGB", (480, 270), self.color(timestamp, source)).save(destination, quality=96)
 
     def render(self, start=0, end=10, source=None):
-        with patch("app.analysis.run_process", side_effect=self.extract_frame):
+        # These cache tests mock JPEG extraction and do not need a valid video
+        # container; source-bound probing has separate FFmpeg integration tests.
+        with patch("app.media.video_frame_bounds", return_value=(0.0, 100.0)), \
+                patch("app.analysis.run_process", side_effect=self.extract_frame):
             return storyboard(source or self.source, start, end, [], {"words": [], "segments": []},
                               self.collage, lambda: False)
 

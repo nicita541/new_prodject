@@ -226,3 +226,59 @@ class PacingTests(unittest.TestCase):
             second = refine_pacing(source, events, transcript, [], directory, vision, lambda *a:None, lambda:False)
             self.assertEqual(vision.query.call_count, 1)
             self.assertEqual(second, first)
+
+    def test_local_fallback_batch_is_separate_from_paid_cache_and_provenance(self):
+        from types import SimpleNamespace
+        directory=TEMP/('pacing_degraded_'+uuid.uuid4().hex)
+        directory.mkdir()
+        source=directory/'source.mp4';source.write_bytes(b'fixture')
+        events=[{'id':'paid','start':0,'end':2,'kind':'story','importance':4,'requires':[],
+                 'selected_ranges':[{'start':0,'end':2}]},
+                {'id':'fallback','start':4,'end':6,'kind':'story','importance':4,'requires':[],
+                 'selected_ranges':[{'start':4,'end':6}]}]
+        transcript={'words':[],'segments':[]}
+        answer=lambda prompt,image,**kwargs:{'decisions':[
+            {'unit':unit,'keep':True,'reason':'action'}
+            for unit in kwargs['schema']['properties']['decisions']['items']['properties']['unit']['enum']],
+            'uncertain':False}
+        remote=Mock(model=Path('deepseek-flash'),projector=Path('profile'),cache_profile='remote',
+                    budget_fallback=False)
+        remote.query.side_effect=answer
+        with patch('app.pacing.make_sheet'):
+            initial=refine_pacing(source,events,transcript,[],directory,remote,lambda *a:None,lambda:False)
+            self.assertEqual(remote.query.call_count,2)
+            paid_cache=list((directory/'pacing').glob('*.json'))
+            self.assertEqual(len(paid_cache),2)
+
+            # Preserve one paid checkpoint and remove the other so only one
+            # batch needs local fallback on the next deterministic pass.
+            paid_cache[1].unlink()
+            class MixedVision:
+                model=Path('deepseek-flash')
+                projector=Path('profile')
+                cache_profile='remote'
+                budget_fallback=False
+                local=SimpleNamespace(model=Path('qwen-local'))
+                fallback_reason={'category':'transport','endpoint':'/user/balance'}
+                def query(self,*args,**kwargs):
+                    self.budget_fallback=True
+                    return answer(*args,**kwargs)
+            mixed=MixedVision()
+            replay=refine_pacing(source,events,transcript,[],directory,mixed,lambda *a:None,lambda:False)
+            self.assertEqual(sorted(event['pacing_provider'] for event in replay),
+                             ['deepseek-flash','qwen-local'])
+            degraded=[event for event in replay if event.get('pacing_degraded')]
+            self.assertEqual(len(degraded),1)
+            self.assertEqual(degraded[0]['pacing_provider'],'qwen-local')
+            self.assertEqual(degraded[0]['pacing_fallback_reason'],mixed.fallback_reason)
+            self.assertEqual(len(list((directory/'pacing').glob('*.json'))),1)
+            degraded_files=list((directory/'pacing'/'degraded').glob('*.json'))
+            self.assertEqual(len(degraded_files),1)
+            self.assertEqual(json.loads(degraded_files[0].read_text('utf-8'))['used_provider'],'qwen-local')
+
+            retry=Mock(model=Path('deepseek-flash'),projector=Path('profile'),cache_profile='remote',
+                       budget_fallback=False)
+            retry.query.side_effect=answer
+            again=refine_pacing(source,events,transcript,[],directory,retry,lambda *a:None,lambda:False)
+            self.assertEqual(retry.query.call_count,1)
+            self.assertTrue(all(event.get('pacing_provider')=='deepseek-flash' for event in again))

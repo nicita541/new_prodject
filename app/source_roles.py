@@ -11,8 +11,8 @@ from pathlib import Path
 from .config import ROOT
 from .jobs import atomic_json
 
-VERSION = 3
-ROLES = ('current_story','uploader','next_preview','title_narration','song_or_artifact','uncertain')
+VERSION = 4
+ROLES = ('current_story','uploader','next_preview','title_narration','song_or_artifact','production_credit','uncertain')
 EXCLUSION_KEYS = ('excluded_title_units','excluded_credit_ranges','excluded_closing_ranges','excluded_review_ranges')
 
 
@@ -104,6 +104,11 @@ def validate_role_decisions(raw,units,credit_confirmed=False):
             continue
         quote=_quote_in(d['speech_quote'],known[d['unit']].get('text',''))
         visible=bool(d['visible_text'].strip())
+        production = (d['role']=='production_credit' and visible
+            and d.get('marker_type') in ('staff_credit','theme_credit','series_title')
+            and d.get('same_production_sequence') is True
+            and (credit_confirmed or known[d['unit']].get('production_sequence_context') is True)
+            and (not known[d['unit']].get('text','').strip() or quote))
         # Story refinement supplies a tentative atmosphere hint before source
         # ownership is known. A preview/promo reaction is not current-episode
         # atmosphere. Reconsider it only against an explicit visible marker;
@@ -111,12 +116,12 @@ def validate_role_decisions(raw,units,credit_confirmed=False):
         if known[d['unit']].get('protected_atmosphere') and not (
                 d['role']=='next_preview' and visible
                 or d['role'] in ('uploader','title_narration') and quote and visible
-                or d['role']=='song_or_artifact' and credit_confirmed):
+                or d['role']=='song_or_artifact' and credit_confirmed or production):
             continue
         if (d['role']=='uploader' and quote
                 or d['role']=='title_narration' and quote and visible
                 or d['role']=='next_preview' and (quote or visible)
-                or d['role']=='song_or_artifact' and credit_confirmed):
+                or d['role']=='song_or_artifact' and credit_confirmed or production):
             removable.append(d)
     return removable
 
@@ -126,6 +131,8 @@ def _schema(units):
             'role':{'type':'string','enum':list(ROLES)},
             **{k:{'type':'boolean'} for k in ('wholly_nonstory','meaningful_story','reaction_or_humor')},
             'confidence':{'type':'number'},
+            'marker_type':{'type':'string','enum':['none','staff_credit','theme_credit','series_title']},
+            'same_production_sequence':{'type':'boolean'},
             **{k:{'type':'string'} for k in ('evidence','speech_quote','visible_text')}}
     return {'type':'object','properties':{'decisions':{'type':'array','items':{
         'type':'object','properties':fields,'required':list(fields),'additionalProperties':False}}},
@@ -152,6 +159,7 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
         units=candidate_units(event['start'],event['end'],transcript,shots)
         units=[{**u,'protected_atmosphere':any(u['start']<r['end'] and u['end']>r['start']
             for r in event.get('protected_atmosphere_ranges',[])),
+            'production_sequence_context':bool(event.get('confirmed_credit_sequence_ranges')),
             'verified_current_story':any(u['start']<r['end'] and u['end']>r['start']
             for r in verified_story_ranges(event))} for u in units]
         units=[u for u in units if any(u['start']<r['end'] and u['end']>r['start'] for r in selections)]
@@ -187,6 +195,10 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
                         'Title narration needs actual visible production/episode-title text. Song/ASR artifacts need an independently confirmed production sequence. '
                         'Images do not prove the actual sound or speaker; do not invent audio evidence. '
                         'For speech_quote copy actual words verbatim from that supplied unit; for visible_text transcribe actual visible marker. '
+                        'production_credit identifies a wholly nonstory staff/theme/series-title shot belonging to the adjacent independently confirmed production sequence. '
+                        'It requires production_sequence_context or credit_confirmed, concrete marker_type, visible_text, same_production_sequence=true and exact supplied quote if speech exists. '
+                        'A series-title card alone without confirmed sequence context is insufficient; mixed story/dialogue under credits remains. '
+                        'An uploader greeting over such imagery does not establish episodic story. For other roles use marker_type=none and same_production_sequence=false. '
                         'Give concrete before/current/after evidence and separate meaningful_story/reaction_or_humor. '
                         'Any mixed unit or uncertainty is kept. No source-time heuristics, deletion quota or plot-progress requirement. '
                         'protected_atmosphere is an earlier tentative label, not proof of CURRENT-episode ownership. '
@@ -203,7 +215,9 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
                     if proposed:
                         proposed_units=[u for u in batch if u['id'] in {d['unit'] for d in proposed}]
                         confirmation=vision.query('Independent skeptical review. Do NOT trust the previous role claims. '
-                            'Verify whether EACH whole proposed unit is entirely uploader/promo, NEXT-episode preview, visibly narrated title or confirmed song/ASR artifact. '
+                            'Verify whether EACH whole proposed unit is entirely uploader/promo, NEXT-episode preview, visibly narrated title, confirmed song/ASR artifact or production_credit. '
+                            'production_credit requires actual staff/theme/series-title text, typed marker_type, same_production_sequence=true and confirmed adjacent sequence context. '
+                            'Transcribe exact supplied speech if present. Title alone without such context is insufficient; mixed current-story action or dialogue survives. '
                             'Retain current episode narrator/character dialogue, new action, almost every reaction/joke/atmospheric payoff, including under credits. '
                             'A quote alone cannot establish nonstory; use its actual before/current/after situation. '
                             'Mixed or ambiguous units MUST be current_story or uncertain; meaningful_story/reaction_or_humor blocks deletion. '
@@ -235,5 +249,7 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
                     event['source_role_version']=VERSION
             except InterruptedError:raise
             except (ValueError,KeyError,TypeError,RuntimeError,OSError) as error:
+                event['source_role_unresolved'] = {'category':getattr(error,'category',None) or 'unresolved',
+                    'endpoint':getattr(error,'endpoint',None),'requested_provider':str(vision.model)}
                 event.setdefault('story_warnings',[]).append('Роль спорного материала не подтверждена; сохранён: '+str(error)[:150])
     return apply_exclusions(result)

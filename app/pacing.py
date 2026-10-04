@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from .jobs import atomic_json
 
-PACING_VERSION = 13
+PACING_VERSION = 14
 REMOVABLE = {'waiting','repeat','scenery'}
 
 
@@ -24,7 +24,8 @@ class BudgetPacingVision:
         self.model, self.projector = vision.model, vision.projector
         self.local = None
         self.budget_fallback = False
-        self.cache_profile = {'routing':'pacing-provider-failure-local-fallback-v2',
+        self.fallback_reason = None
+        self.cache_profile = {'routing':'pacing-provider-failure-local-fallback-v3',
                               'provider':getattr(vision,'cache_profile',str(vision.projector)),
                               'local_models':[(str(p),p.stat().st_size,p.stat().st_mtime_ns) if p.is_file() else (str(p),None,None)
                                               for p in (STORY_MODEL,STORY_PROJECTOR)]}
@@ -42,7 +43,9 @@ class BudgetPacingVision:
             return self._local_query(args, kwargs)
         try:
             return self.vision.query(*args, **kwargs)
-        except (BudgetExceeded, RemoteError):
+        except (BudgetExceeded, RemoteError) as error:
+            self.fallback_reason = {'category':getattr(error,'category',None) or type(error).__name__,
+                                    'endpoint':getattr(error,'endpoint',None)}
             from .analysis import LocalVision
             from .config import STORY_MODEL, STORY_PROJECTOR
             self.local = LocalVision(self.job_dir, self.cancelled, model=STORY_MODEL, projector=STORY_PROJECTOR)
@@ -278,6 +281,7 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
             checkpoint, image = directory / (digest+'.json'), directory / (digest+'.jpg')
             report('condense', .60 + .04*index/max(1,len(result)), f'Проверяем темп и титры: сцена {index+1} из {len(result)}')
             try:
+                review_from_cache = checkpoint.is_file()
                 if checkpoint.is_file():
                     raw = json.loads(checkpoint.read_text('utf-8'))
                 else:
@@ -331,10 +335,24 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                     # Validate all IDs before saving a reusable response.
                     checked = copy.deepcopy(event)
                     apply_review(checked, batch, raw,editorial_profile)
-                    atomic_json(checkpoint, raw)
+                    if getattr(vision, 'budget_fallback', False) is True:
+                        degraded = directory/'degraded'
+                        degraded.mkdir(exist_ok=True)
+                        atomic_json(degraded/(digest+'.json'), {'decision':raw,
+                            'requested_provider':str(vision.model),
+                            'used_provider':str(vision.local.model),
+                            'degraded':True,'reason':getattr(vision,'fallback_reason',None)})
+                    else:
+                        atomic_json(checkpoint, raw)
                 apply_review(event, batch, raw,editorial_profile)
-                if getattr(vision, 'budget_fallback', False):
+                if getattr(vision, 'budget_fallback', False) is True and not review_from_cache:
+                    event['pacing_provider'] = str(vision.local.model)
+                    event['pacing_degraded'] = True
+                    event['pacing_fallback_reason'] = getattr(vision,'fallback_reason',None)
                     event.setdefault('story_warnings', []).append('Оставшаяся проверка темпа выполнена локально: платный API недоступен')
+                else:
+                    event['pacing_provider'] = str(vision.model)
+                event['pacing_providers'] = sorted(set([*event.get('pacing_providers',[]), event['pacing_provider']]))
             except InterruptedError:
                 raise
             except (ValueError, RuntimeError, OSError) as error:
