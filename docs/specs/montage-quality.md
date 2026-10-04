@@ -10,6 +10,8 @@ The confirmed OP rule remains: after independently establishing both actual boun
 
 ## Goal
 
+Current delivery scope: finish launch reliability, processing checkpoints and the user's two observed continuity/ending defects on the working branch. Further improvements belong on a separate branch so the user can work from this version. Only DeepSeek story planning and fully local analysis remain in the mode picker; processing shows seven checkpoints and whether each step runs locally or through API.
+
 Produce a chronological, condensed story that remains understandable and keeps the episode's important scenes, speech, actions, reactions, and atmosphere. Apply the user's balanced compression choice to the active library episode and the latest completed job selected for review. Persist the editorial policy so it can be changed later without inventing an additional UI control.
 
 ## Source of truth: confirmed user choices

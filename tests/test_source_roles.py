@@ -30,6 +30,24 @@ def word_rows(start, end, text):
 
 
 class SourceRolePipelineTests(unittest.TestCase):
+    def test_legacy_opening_proof_stays_valid_but_pure_ending_needs_new_verified_ownership(self):
+        from app.source_roles import confirmed_exclusions
+        from app.production_sequence import VERSION
+        proof={'start':5,'end':20,'version':8,'kind':'opening','boundaries_verified':True,
+               'anchors_verified':True,'confidence':.95,'checkpoint':'a'*64+'.json',
+               'anchors':[{'unit':'U001','type':'theme_credit','visible_text':'Opening theme'}]}
+        event={'start':0,'end':30,'confirmed_opening_ranges':[{'start':5,'end':20}],
+               'confirmed_opening_proofs':[proof]}
+        self.assertEqual(confirmed_exclusions(event),[{'start':5.,'end':20.}])
+        with self.assertRaises(ValueError):
+            confirmed_exclusions({**event,'confirmed_opening_proofs':[{**proof,'boundaries_verified':False}]})
+        ending={'start':0,'end':30,'confirmed_nonstory_ending_ranges':[{'start':5,'end':20}],
+                'confirmed_nonstory_ending_proofs':[{**proof,'version':VERSION,'kind':'ending','wholly_nonstory':True}]}
+        self.assertEqual(confirmed_exclusions(ending),[{'start':5.,'end':20.}])
+        for change in ({'version':8},{'wholly_nonstory':False},{'anchors_verified':False}):
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                confirmed_exclusions({**ending,'confirmed_nonstory_ending_proofs':[{**ending['confirmed_nonstory_ending_proofs'][0],**change}]})
+
     def test_bare_or_malformed_opening_authority_fails_closed(self):
         from app.source_roles import confirmed_exclusions
         from app.production_sequence import VERSION

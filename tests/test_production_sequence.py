@@ -30,6 +30,52 @@ class WholeSequenceTests(unittest.TestCase):
         raw=decision();raw['kind']='ending';raw['narrative_units'].append('U003')
         self.assertEqual(sequence_decision(raw,self.units,25)[0],{'U001','U002'})
 
+    def test_low_confidence_wrong_kind_gets_dense_review_and_pure_ending_outranks_reaction_rescue(self):
+        from app.source_roles import verified_story_ranges,apply_exclusions
+        directory,event,_=edge_fixture(start=0,end=25)
+        event.update(contains_credits=True,credit_montage=True,
+                     verified_current_story_ranges=[{'start':0,'end':25}],
+                     protected_atmosphere_ranges=[{'start':5,'end':20}])
+        first=decision();first['confidence']=.72
+        first['anchors'].append({'unit':'U004','type':'episode_title','visible_text':'Episode title'})
+        final=decision();final.update(kind='ending',wholly_nonstory=True)
+        vision=FakeVision([first,final,{'confirmed':True,'confidence':.95,'evidence':'Visible staff credits'}])
+        vision.model=vision.projector='test';vision.thinking=False;vision.supports_image_pages=True
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']) as sheets:
+            result=clean_whole_sequences([event],{'words':[],'segments':[]},
+                [{'start':i*5,'end':(i+1)*5} for i in range(5)],directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(len(vision.calls),3)
+        self.assertEqual(sheets.call_count,3)
+        self.assertEqual(result[0]['confirmed_nonstory_ending_ranges'],[{'start':5.,'end':20.}])
+        self.assertEqual(verified_story_ranges(result[0]),[{'start':0.,'end':5.},{'start':20.,'end':25.}])
+        loaded=json.loads(json.dumps(result))
+        loaded[0]['selected_ranges']=[{'start':0,'end':25}]
+        loaded=apply_exclusions(loaded)
+        self.assertEqual(loaded[0]['selected_ranges'],[{'start':0.,'end':5.},{'start':20.,'end':25.}])
+        plan=build_plan({'probe':{'duration':25,'width':1920,'height':1080,'has_audio':True},
+                         'events':loaded,'transcript':{'words':[],'segments':[]},'shots':[]})
+        cuts=[(c['start'],c['end']) for part in plan['parts'] for c in part['cuts']]
+        self.assertTrue(cuts)
+        self.assertTrue(all(end<=5 or start>=20 for start,end in cuts))
+
+    def test_low_confidence_production_candidate_still_retains_when_dense_review_is_uncertain(self):
+        directory,event,_=edge_fixture(start=0,end=25)
+        event.update(contains_credits=True,credit_montage=True)
+        first={**decision(),'confidence':.72}
+        uncertain={**decision(),'kind':'uncertain','confidence':.7}
+        vision=FakeVision([first,uncertain])
+        vision.model=vision.projector='test';vision.thinking=False
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']):
+            result=clean_whole_sequences([event],{'words':[],'segments':[]},
+                [{'start':i*5,'end':(i+1)*5} for i in range(5)],directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(len(vision.calls),2)
+        self.assertFalse(result[0].get('confirmed_nonstory_ending_ranges'))
+        self.assertFalse(result[0].get('excluded_credit_ranges'))
+
+    def test_pure_ending_cannot_claim_an_interleaved_episode_story_exception(self):
+        raw=decision();raw.update(kind='ending',wholly_nonstory=True,narrative_units=['U003'])
+        with self.assertRaises(ValueError):sequence_decision(raw,self.units,25)
+
     def test_title_or_object_label_cannot_establish_a_production_sequence(self):
         for anchor_type in ('episode_title','series_title'):
             raw=decision();raw['anchors'][0]['type']=anchor_type

@@ -11,7 +11,7 @@ from pathlib import Path
 from .config import ROOT
 from .jobs import atomic_json
 
-VERSION = 5
+VERSION = 6
 ROLES = ('current_story','uploader','next_preview','title_narration','song_or_artifact','production_credit','uncertain')
 EXCLUSION_KEYS = ('excluded_title_units','excluded_credit_ranges','excluded_closing_ranges','excluded_review_ranges')
 
@@ -40,20 +40,22 @@ def _bounded_ranges(event,key):
     return ranges
 
 
-def authoritative_opening_ranges(event):
-    """Only independently bounded, anchored OP proof outranks story labels."""
+def _authoritative_sequence_ranges(event,kind,ranges_key,proofs_key):
+    """Only independently bounded, anchored production proof outranks labels."""
     from .production_sequence import VERSION as sequence_version,STRONG_ANCHORS
     from .titles import _subtract
-    ranges=_bounded_ranges(event,'confirmed_opening_ranges')
+    ranges=_bounded_ranges(event,ranges_key)
     if not ranges:return []
-    proofs=event.get('confirmed_opening_proofs')
+    proofs=event.get(proofs_key)
     if not isinstance(proofs,list) or not proofs:
         raise ValueError('Нет независимого подтверждения обеих границ OP')
     covered=[]
     for proof in proofs:
-        if (not isinstance(proof,dict) or proof.get('version')!=sequence_version
-                or proof.get('kind')!='opening' or proof.get('boundaries_verified') is not True
+        versions={sequence_version,8} if kind=='opening' else {sequence_version}
+        if (not isinstance(proof,dict) or type(proof.get('version')) is not int or proof.get('version') not in versions
+                or proof.get('kind')!=kind or proof.get('boundaries_verified') is not True
                 or proof.get('anchors_verified') is not True
+                or kind=='ending' and proof.get('wholly_nonstory') is not True
                 or not isinstance(proof.get('checkpoint'),str)
                 or not re.fullmatch(r'[0-9a-f]{64}\.json',proof['checkpoint'])):
             raise ValueError('Некорректное происхождение подтверждённой OP')
@@ -74,10 +76,19 @@ def authoritative_opening_ranges(event):
     return ranges
 
 
+def authoritative_opening_ranges(event):
+    return _authoritative_sequence_ranges(event,'opening','confirmed_opening_ranges','confirmed_opening_proofs')
+
+
+def authoritative_ending_ranges(event):
+    return _authoritative_sequence_ranges(event,'ending','confirmed_nonstory_ending_ranges','confirmed_nonstory_ending_proofs')
+
+
 def verified_story_ranges(event):
-    """Current-story proof remains authoritative outside confirmed whole OP."""
+    """Current-story proof survives outside whole OP and confirmed pure ED."""
     from .titles import _subtract
-    return _subtract(_bounded_ranges(event,'verified_current_story_ranges'),authoritative_opening_ranges(event))
+    return _subtract(_bounded_ranges(event,'verified_current_story_ranges'),
+                     [*authoritative_opening_ranges(event),*authoritative_ending_ranges(event)])
 
 
 def confirmed_exclusions(event):
@@ -86,7 +97,7 @@ def confirmed_exclusions(event):
     # exception. Genuine confirmed nonstory elsewhere remains authoritative.
     ordinary=_subtract(merge_ranges([r for key in EXCLUSION_KEYS for r in event.get(key,[])]),
                        verified_story_ranges(event))
-    return merge_ranges([*ordinary,*authoritative_opening_ranges(event)])
+    return merge_ranges([*ordinary,*authoritative_opening_ranges(event),*authoritative_ending_ranges(event)])
 
 
 def overlaps_exclusions(interval,events):
