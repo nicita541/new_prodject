@@ -191,4 +191,3 @@ class SourceRolePipelineTests(unittest.TestCase):
         apply_global_selection(events,{'keep':['plot'],'omit':[{'event':'reaction','reason':'nonstory',
             'evidence':'No new plot fact','confidence':.98,'reaction_or_humor':True}]},profile)
         self.assertNotIn('global_excluded',events[0])
-
