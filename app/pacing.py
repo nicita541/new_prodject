@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from .jobs import atomic_json
 
-PACING_VERSION = 10
+PACING_VERSION = 11
 REMOVABLE = {'waiting','repeat','scenery'}
 
 
@@ -93,7 +93,9 @@ def silent_units(event, transcript, shots):
     return result
 
 
-def apply_review(event, units, raw):
+def apply_review(event, units, raw, editorial_profile=None):
+    from .editorial import DEFAULT_PROFILE
+    profile=editorial_profile or DEFAULT_PROFILE
     known = {u['id']: u for u in units}
     decisions = raw.get('decisions')
     if not isinstance(decisions, list) or not isinstance(raw.get('uncertain'), bool):
@@ -107,6 +109,14 @@ def apply_review(event, units, raw):
     for item in decisions:
         if type(item.get('keep')) is not bool or item.get('reason') not in allowed:
             raise ValueError('Неверная классификация темпа')
+        if 'reaction_or_humor' in item and type(item['reaction_or_humor']) is not bool:
+            raise ValueError('Неверная оценка атмосферы сцены')
+        protected=any(known[item['unit']]['start']<r['end'] and known[item['unit']]['end']>r['start']
+                      for r in event.get('protected_atmosphere_ranges',[]))
+        if ((item.get('reaction_or_humor') or protected) and (profile['preserve_reactions'] or profile['preserve_humor'])
+                or item['reason']=='repeat' and not profile['remove_exact_repetition']
+                or item['reason'] in ('waiting','scenery') and not profile['remove_empty_holds']):
+            blocked.add(item['unit'])
         if 'evidence' in item and (not isinstance(item['evidence'],str) or not item['evidence'].strip()):
             raise ValueError('Нет объяснения изменения темпа')
         if (not item['keep'] and item['reason'] in REMOVABLE
@@ -209,6 +219,8 @@ def retained_context(events, transcript, retained_ids=None):
 
 
 def refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled):
+    from .editorial import load_profile,instruction
+    editorial_profile=load_profile(job_dir)
     result = copy.deepcopy(events)
     directory = job_dir / 'pacing'
     directory.mkdir(exist_ok=True)
@@ -219,6 +231,9 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
         if event.get('credit_montage') or event.get('global_excluded'):
             continue
         units = silent_units(event, transcript, shots)
+        if editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor']:
+            units=[u for u in units if not any(u['start']<r['end'] and u['end']>r['start']
+                for r in event.get('protected_atmosphere_ranges',[]))]
         if not units:
             continue
         # Bound collage/context size. Unexamined material is preserved.
@@ -248,7 +263,7 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
             duration = max(e['end'] for e in events)
             identity = {'version': PACING_VERSION, 'source': str(source), 'size': source_stat.st_size,
                         'mtime': source_stat.st_mtime_ns, 'event': events[index], 'units': batch,
-                        'context': previous, 'neighbors':neighbors, 'model': str(vision.model),
+                        'context': previous, 'neighbors':neighbors, 'editorial_profile':editorial_profile, 'model': str(vision.model),
                         'profile': getattr(vision, 'cache_profile', str(vision.projector))}
             digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             checkpoint, image = directory / (digest+'.json'), directory / (digest+'.jpg')
@@ -263,15 +278,17 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                             'unit': {'type':'string', 'enum':[u['id'] for u in batch]},
                             'keep': {'type':'boolean'},
                             'reason': {'type':'string', 'enum':['action','setup','reaction','waiting','repeat','scenery','production_credit']},
-                            'story_change':{'type':'boolean'}, 'evidence': {'type':'string'},
+                            'story_change':{'type':'boolean'}, 'reaction_or_humor':{'type':'boolean'}, 'evidence': {'type':'string'},
                             'retained_witness':{'type':'string','enum':sorted({'none','before','after',
                                 *(e['id'] for e in previous),*(u['id'] for u in batch)})}},
-                            'required':['unit','keep','reason','story_change','evidence'], 'additionalProperties':False}},
+                            'required':['unit','keep','reason','story_change','reaction_or_humor','evidence'], 'additionalProperties':False}},
                         'uncertain': {'type':'boolean'}}, 'required':['decisions','uncertain'], 'additionalProperties':False}
                     prompt = (
-                        'Condense this episode using ONLY the supplied speech-free source rows A..H, exactly once each. '
+                        instruction(editorial_profile)+' Condense this episode using ONLY the supplied speech-free source rows A..H, exactly once each. '
                         'Each row: CONTEXT BEFORE, five CURRENT UNIT frames, CONTEXT AFTER. Only the middle five are deletable. '
                         'Evaluate narrative/emotional FUNCTION against actual neighboring replies and images. '
+                        'Preserve almost all reactions, jokes, comic timing and emotional atmosphere, even without plot progress. '
+                        'Mark reaction_or_humor=true and keep whenever this unit carries a reaction, joke, atmosphere or its payoff. '
                         'Keep causes, consequential actions and their completion, revelations, relationship/goal changes and '
                         'quiet emotional consequences. A silent held reaction may be the essential payoff. '
                         'Movement, speech absence or an object category alone says nothing about importance. '
@@ -298,9 +315,9 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                         raise InterruptedError('Обработка отменена')
                     # Validate all IDs before saving a reusable response.
                     checked = copy.deepcopy(event)
-                    apply_review(checked, batch, raw)
+                    apply_review(checked, batch, raw,editorial_profile)
                     atomic_json(checkpoint, raw)
-                apply_review(event, batch, raw)
+                apply_review(event, batch, raw,editorial_profile)
                 if getattr(vision, 'budget_fallback', False):
                     event.setdefault('story_warnings', []).append('Оставшаяся проверка темпа выполнена локально: платный API недоступен')
             except InterruptedError:

@@ -40,9 +40,21 @@ Add a small offline integration matrix around the real `clean_sequences` dispatc
 
 Use the same semantic cases with each provider capability rather than relying on provider class construction tests. Keep remote calls patched or cached; these tests must not spend API balance.
 
+The dispatch regressions cover both routes: the legacy single-image route removes a confirmed credit unit while retaining adjacent story, and the page-capable route sends overlapping cluster decisions through planning while preserving both exclusions. The identity check covers `local`, `hybrid`, `deepseek`, and `deepseek_plan`, editorial-policy changes, and a sequence-version bump independent of the edge version. Added role and atmosphere checks exercise exclusions through speech rescue, JSON round-trip, cached role replay, and final planning; protect current-story speech, a silent action, and an almost-all-retained reaction; and verify that malformed partitions and unproven ASR/title/preview/song claims cannot authorize deletion. Separate checks cover closing/pacing protection for low-plot reaction beats and editorial settings that disable repeat or empty-hold removal.
+
+Final deterministic validation after these changes:
+
+```powershell
+tools/python/python.exe -m pytest -q
+```
+
+Result: `354 passed, 134 subtests passed, 1 warning in 20.26s`. The warning is the existing Starlette/httpx `TestClient` deprecation. The narrower integration/domain run before the final role-schema check was `tools/python/python.exe -m pytest -q tests/test_source_roles.py tests/test_production_sequence.py tests/test_production.py tests/test_story.py tests/test_closing.py tests/test_pacing.py tests/test_analysis.py` → `107 passed, 33 subtests passed in 1.06s`; the added role-schema regression separately passed with `tools/python/python.exe -m pytest -q tests/test_source_roles.py` → `4 passed in 0.23s`.
+
 ## Confirmed overlapping-cluster regression
 
 The montage implementation owner reported a deterministic synthetic reproduction, not independently run by this audit: events span 0–10, 10–20, and 20–30 seconds; the first and last events are original credit anchors; adjacent context expansion makes their clusters overlap. The first decision excludes 10–15 seconds, the second excludes 15–20 seconds, and the shared event's later result overwrites the first exclusion. Planner speech protection then reconstructs the event from its full window, restoring the already-confirmed 10–15-second credit interval. The resulting plan contains 0–15 and 20–30 seconds. Add a regression against the production sequence path and planner, asserting exclusions accumulate monotonically and later speech/plot guards do not resurrect confirmed credit intervals.
+
+The regression is now implemented across both production dispatch branches and the planner, and the full deterministic suite passes as recorded above. Real-output validation is still pending: inspect a fresh primary-source render and a cache-backed rerun against the independently reviewed point evidence; report retained intervals, confirmed removals, chronology/overlap, export timing, audio sync, and subtitle alignment. Point evidence does not establish complete continuous OP/ED boundaries, so uncertain surrounding footage must remain unscored until separately reviewed.
 
 ## Cheap offline failure reproductions
 
@@ -102,4 +114,4 @@ Have the app worker label the annotated evidence and a separate independent revi
 
 For cheaper worker/model comparisons, freeze the fixture set, provider route, prompts/decision version, decoding settings, and cached source assets. Run the same cases with each candidate worker, record semantic metrics, latency, input/output tokens or provider-reported usage, and any failure/fallback. Reuse compatible cached answers where that tests pipeline stability; do not treat cache replay as evidence that the alternate model would make the same decisions.
 
-No quality threshold is set here: choose it with the user after the fixture scope and tradeoffs are agreed. Passing unit tests, a successful export, and a low-cost run are separate facts from acceptable editorial quality.
+These benchmark criteria apply only to the annotated cases; no universal quality guarantee is asserted. Passing unit tests, a successful export, and a low-cost run are separate facts from acceptable editorial quality.

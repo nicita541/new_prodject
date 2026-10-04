@@ -43,6 +43,21 @@ class PacingTests(unittest.TestCase):
                                'evidence':'Current before/middle/after views','retained_witness':'none'}],'uncertain':False})
             self.assertEqual(event['selected_ranges'],expected)
 
+    def test_reaction_or_humor_and_disabled_empty_hold_removal_are_preserved(self):
+        from app.editorial import DEFAULT_PROFILE
+        event={'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}]}
+        units=[{'id':'s000','start':1,'end':3}]
+        apply_review(event,units,{'decisions':[{'unit':'s000','keep':False,'reason':'waiting',
+            'story_change':False,'reaction_or_humor':True,'evidence':'A quiet character reaction adds atmosphere'}],
+            'uncertain':False})
+        self.assertEqual(event['selected_ranges'],[{'start':0,'end':4}])
+        event={'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}]}
+        profile={**DEFAULT_PROFILE,'remove_empty_holds':False}
+        apply_review(event,units,{'decisions':[{'unit':'s000','keep':False,'reason':'waiting',
+            'story_change':False,'reaction_or_humor':False,'evidence':'Unchanged empty view compared with neighbors'}],
+            'uncertain':False},profile)
+        self.assertEqual(event['selected_ranges'],[{'start':0,'end':4}])
+
     def test_repeat_cannot_cite_an_omitted_neighbor(self):
         event={'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}]}
         units=[{'id':'s000','start':1,'end':3,'repeat_witnesses':['before']}]

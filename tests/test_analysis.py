@@ -39,6 +39,22 @@ class AnalysisValidationTests(unittest.TestCase):
         events[1]['requires']=['context']
         self.assertEqual(build_plan(data)['selected_event_ids'],['context','action'])
 
+    def test_editorial_profile_preserves_repetition_and_low_plot_atmosphere_globally(self):
+        from app.editorial import DEFAULT_PROFILE
+        profile={**DEFAULT_PROFILE,'remove_exact_repetition':False,'remove_empty_holds':False}
+        events=[{'id':'repeat','start':0,'end':5,'kind':'story','importance':1,'requires':[]},
+                {'id':'plot','start':5,'end':10,'kind':'story','importance':4,'requires':[]}]
+        apply_global_selection(events,{'keep':['plot'],'omit':[{'event':'repeat',
+            'reason':'repeated_information','evidence':'Same exchange retained earlier',
+            'confidence':.95,'reaction_or_humor':False}]},profile)
+        self.assertNotIn('global_excluded',events[0])
+        events=[{'id':'reaction','start':0,'end':5,'kind':'story','importance':1,'requires':[]},
+                {'id':'plot','start':5,'end':10,'kind':'story','importance':4,'requires':[]}]
+        apply_global_selection(events,{'keep':['plot'],'omit':[{'event':'reaction',
+            'reason':'nonstory','evidence':'No new plot fact',
+            'confidence':.95,'reaction_or_humor':True}]})
+        self.assertNotIn('global_excluded',events[0])
+
     def test_uncertainty_and_low_confidence_prevent_global_omission(self):
         for uncertain,confidence,refined_uncertain in [(True,.95,False),(False,.8,False),(False,.95,True)]:
             events=[{'id':'one','uncertain':uncertain,'selection_uncertain':refined_uncertain},{'id':'two'}]

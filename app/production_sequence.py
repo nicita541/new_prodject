@@ -10,7 +10,8 @@ from pathlib import Path
 from .config import ROOT
 from .jobs import atomic_json
 
-VERSION = 2
+VERSION = 4
+CONTEXT_RADIUS = 2
 ANCHOR_TYPES = ('staff_credit','theme_credit','production_logo','series_title','episode_title')
 STRONG_ANCHORS = set(ANCHOR_TYPES[:3])
 
@@ -119,34 +120,35 @@ def verify_anchors(raw, units, source, directory, signature, vision, cancelled):
     return response['confirmed'] and confidence >= .85
 
 
-def verify_exceptions(raw, units, pages, vision):
+def verify_exceptions(raw, units, pages, vision, transcript=None):
     """ASR fragments/title narration alone cannot become a narrative exception."""
     ids=[u['id'] for u in units]
     inside=set(ids[ids.index(raw['first_unit']):ids.index(raw['last_unit'])+1])
-    proposed=[u for u in raw['narrative_units'] if u in inside]
+    from .story import _protected_speech
+    from .source_roles import _schema,validate_role_decisions
+    proposed=[u['id'] for u in units if u['id'] in inside and (
+        u['id'] in raw['narrative_units'] or _protected_speech(u,transcript or {'segments':[],'words':[]}))]
     if not proposed:return raw
-    item={'type':'array','items':{'type':'string','enum':proposed}}
-    schema={'type':'object','properties':{'narrative_units':item,'nonstory_units':item,
-            'confidence':{'type':'number'},'evidence':{'type':'string'}},
-            'required':['narrative_units','nonstory_units','confidence','evidence'],'additionalProperties':False}
+    proposed_units=[u for u in units if u['id'] in proposed]
     answer=vision.query('Independently verify proposed NARRATIVE EXCEPTIONS inside an already confirmed OP/ED. '
         'Read the complete chronological pages. K0=U000, K1=U001, etc. '
         'The ASR can invent Russian words over songs or mis-time a narrator reading an episode title. '
         'Title narration, staff/theme cards, song words and ASR artifacts are NONSTORY. '
-        'Keep genuine new causal actions, consequential quiet emotional reactions or meaningful character dialogue. '
+        'Keep genuine new causal actions, quiet emotional reactions, nearly all jokes and meaningful CURRENT-episode character/narrator dialogue. '
         'An action or familiar character within the musical montage alone does not make it episodic story. '
-        'Partition ONLY these proposed IDs into narrative_units/nonstory_units; uncertainty preserves narrative. '
-        'Explain actual visual/audio-context evidence, do not trust previous labels. '
-        +json.dumps({'proposed':proposed,'units':units,'sequence':{'first':raw['first_unit'],'last':raw['last_unit']}},ensure_ascii=False),
-        pages,max_tokens=800,schema=schema)
-    keep,omit=answer.get('narrative_units'),answer.get('nonstory_units')
-    if (not isinstance(keep,list) or not isinstance(omit,list) or len(set(keep))!=len(keep) or len(set(omit))!=len(omit)
-            or set(keep)&set(omit) or set(keep)|set(omit)!=set(proposed)
-            or type(answer.get('confidence')) not in (int,float) or not math.isfinite(answer['confidence'])
-            or not 0<=answer['confidence']<=1 or not isinstance(answer.get('evidence'),str) or not answer['evidence'].strip()):
-        raise ValueError('Сюжетные исключения не подтверждены')
-    if answer['confidence']<.85:return raw
-    return {**raw,'narrative_units':[u for u in raw['narrative_units'] if u not in set(omit)]}
+        'Return source-role decisions ONLY for these proposed IDs, once each. wholly_nonstory requires no story, reaction, joke or atmosphere. '
+        'Use current_story or uncertain for mixed/ambiguous units; retain those. '
+        'A quote alone cannot establish nonstory; compare actual before/current/after sequence frames. '
+        'For title_narration transcribe visible title and exact speech_quote from the supplied unit. '
+        'Use song_or_artifact only for footage belonging to the confirmed production sequence, not an in-story musical performance. '
+        'Pictures cannot prove raw audio; do not invent sound/speaker evidence. '
+        +json.dumps({'proposed_units':proposed_units,'units':units,'credit_confirmed':True,
+                    'sequence':{'first':raw['first_unit'],'last':raw['last_unit']}},ensure_ascii=False),
+        pages,max_tokens=1100,schema=_schema(proposed_units))
+    confirmed=validate_role_decisions(answer,proposed_units,credit_confirmed=True)
+    omitted={d['unit'] for d in confirmed}
+    return {**raw,'narrative_units':sorted((set(raw['narrative_units'])|set(proposed))-omitted),
+            'verified_nonstory_units':sorted(omitted),'exception_role_decisions':answer}
 
 
 def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, cancelled):
@@ -160,17 +162,19 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
     source.relative_to(ROOT.resolve())
     stat=source.stat()
     directory=job_dir/'production_sequences';directory.mkdir(exist_ok=True)
+    reviews = {}
     for group in original_clusters(events):
         if cancelled():raise InterruptedError('Обработка отменена')
-        left=max(0,group[0]-1);right=min(len(events)-1,group[-1]+1)
+        left=max(0,group[0]-CONTEXT_RADIUS);right=min(len(events)-1,group[-1]+CONTEXT_RADIUS)
         units=candidate_units(events[left]['start'],events[right]['end'],transcript,shots)
         units=[{**u,'id':f'U{i:03}'} for i,u in enumerate(units)]
-        identity={'version':VERSION,'source':{'path':str(source),'size':stat.st_size,'mtime':stat.st_mtime_ns},
+        identity={'version':VERSION,'context_radius':CONTEXT_RADIUS,
+                  'source':{'path':str(source),'size':stat.st_size,'mtime':stat.st_mtime_ns},
                   'units':units,'events':events[left:right+1],'transcript':transcript,'shots':shots,
                   'model':str(vision.model),'profile':str(vision.projector),'thinking':vision.thinking}
         signature=hashlib.sha256(json.dumps(identity,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         checkpoint=directory/(signature+'.json')
-        removed=set();raw=None;warning=None
+        removed=set();raw=None;warning=None;verified=False
         report('condense',.489,'Определяем заставку целиком и проверяем обе границы')
         try:
             if len(units)>96:raise ValueError('Для проверки всей последовательности недостаточно контекста')
@@ -185,33 +189,73 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
                 removed,anchors=sequence_decision(raw,units,duration)
                 verified=verify_anchors(anchors,units,source,directory,signature,vision,cancelled) if removed else False
                 if verified:
-                    raw=verify_exceptions(raw,units,pages,vision)
+                    raw=verify_exceptions(raw,units,pages,vision,transcript)
                     removed,_=sequence_decision(raw,units,duration)
                 if cancelled():raise InterruptedError('Обработка отменена')
                 atomic_json(checkpoint,{'decision':raw,'anchors_verified':verified})
             if not verified:removed=set()
-            removed={u['id'] for u in units if u['id'] in removed and not _protected_speech(u,transcript)}
+            from .source_roles import validate_role_decisions
+            verified_nonstory=set()
+            if raw.get('exception_role_decisions'):
+                checked_units=[u for u in units if u['id'] in {
+                    d['unit'] for d in raw['exception_role_decisions'].get('decisions',[])}]
+                verified_nonstory={d['unit'] for d in validate_role_decisions(
+                    raw['exception_role_decisions'],checked_units,credit_confirmed=True)}
+            removed={u['id'] for u in units if u['id'] in removed and (
+                u['id'] in verified_nonstory or not _protected_speech(u,transcript))}
             if not removed:warning='Заставка не подтверждена целиком; спорный материал сохранён'
         except InterruptedError:raise
         except (ValueError,KeyError,TypeError,RuntimeError,OSError) as error:
-            removed=set();warning='Границы заставки не подтверждены; материал сохранён: '+str(error)[:160]
+            removed=set();verified=False
+            warning='Границы заставки не подтверждены; материал сохранён: '+str(error)[:160]
         excluded=[u for u in units if u['id'] in removed]
         for index in range(left,right+1):
-            event=result[index]
-            was_pure=bool(event.get('credit_montage') or event.get('credit_dialogue_rescued'))
-            pieces=[{'start':max(event['start'],u['start']),'end':min(event['end'],u['end'])}
-                    for u in excluded if u['start']<event['end'] and u['end']>event['start']]
-            ranges=_subtract([event] if was_pure else event.get('selected_ranges') or [event],pieces)
+            original=events[index]
+            review=reviews.setdefault(index,{'pieces':[],'proofs':[],'warnings':[],'evidence':[],
+                                             'sequence_ranges':[],'kind':None})
+            pieces=[{'start':max(original['start'],u['start']),'end':min(original['end'],u['end'])}
+                    for u in excluded if u['start']<original['end'] and u['end']>original['start']]
             if pieces:
-                event['excluded_credit_ranges']=pieces
-                event['credit_sequence_proofs']=[{'checkpoint':checkpoint.name,'units':units}]
-                event['credits_kind']=raw['kind']
-            if not ranges and pieces:
-                event.update(credit_montage=True,contains_credits=True,kind=raw['kind'],importance=1,requires=[])
-            elif ranges:
-                event['selected_ranges']=ranges
-                if was_pure:
-                    event.update(credit_montage=False,kind='story',importance=4,selection_uncertain=bool(warning),
-                                 summary='Сюжетный контекст вне подтверждённой заставки: '+raw['boundary_evidence'] if raw else event['summary'])
-            if warning and index in group:event.setdefault('story_warnings',[]).append(warning)
+                review['pieces'].extend(pieces)
+                review['proofs'].append({'checkpoint':checkpoint.name,'units':units})
+                review['kind']=raw['kind']
+            if raw and raw.get('kind') in ('opening','ending') and verified:
+                by_id={u['id']:u for u in units}
+                a=max(original['start'],by_id[raw['first_unit']]['start'])
+                b=min(original['end'],by_id[raw['last_unit']]['end'])
+                if a<b:review['sequence_ranges'].append({'start':a,'end':b})
+            if raw and raw.get('boundary_evidence'):
+                review['evidence'].append(raw['boundary_evidence'])
+            if warning and index in group:
+                review['warnings'].append(warning)
+    # Expanded original clusters can overlap. Apply their union once, against
+    # immutable selections, so a later cluster cannot revive an earlier cut.
+    for index,review in reviews.items():
+        original,event=events[index],result[index]
+        was_pure=bool(original.get('credit_montage') or original.get('credit_dialogue_rescued'))
+        pieces=[]
+        for piece in sorted([*original.get('excluded_credit_ranges',[]),*review['pieces']],key=lambda r:r['start']):
+            if pieces and piece['start']<=pieces[-1]['end']:
+                pieces[-1]['end']=max(pieces[-1]['end'],piece['end'])
+            else:
+                pieces.append({'start':piece['start'],'end':piece['end']})
+        ranges=_subtract([original] if was_pure else original.get('selected_ranges') or [original],pieces)
+        if pieces:
+            event['excluded_credit_ranges']=pieces
+            event['credit_sequence_proofs']=[*original.get('credit_sequence_proofs',[]),*review['proofs']]
+            event['credits_kind']=review['kind'] or original.get('credits_kind',original['kind'])
+        if review['sequence_ranges']:
+            from .source_roles import merge_ranges
+            event['confirmed_credit_sequence_ranges']=merge_ranges([
+                *original.get('confirmed_credit_sequence_ranges',[]),*review['sequence_ranges']])
+        if not ranges and pieces:
+            event.update(credit_montage=True,contains_credits=True,kind=event['credits_kind'],importance=1,requires=[])
+        elif ranges:
+            event['selected_ranges']=ranges
+            if was_pure:
+                event.update(credit_montage=False,kind='story',importance=4,
+                             selection_uncertain=bool(review['warnings']),
+                             summary='Сюжетный контекст вне подтверждённой заставки: '+'; '.join(review['evidence'])
+                                     if review['evidence'] else original['summary'])
+        event.setdefault('story_warnings',[]).extend(review['warnings'])
     return result

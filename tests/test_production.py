@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from app.production import confirmed_units
+from app.production import clean_sequences
 from app.story import clean_credit_continuations
 from tests.test_story import edge_fixture, FakeVision
 
@@ -20,6 +21,20 @@ def answer(removed=('A',), narrative=(), ids=('A','B')):
 
 
 class ProductionTests(unittest.TestCase):
+    def test_legacy_provider_dispatch_applies_confirmed_credit_unit_to_final_ranges(self):
+        directory,event,_=edge_fixture(start=0,end=10)
+        raw=answer(('A',),(),('A','B'))
+        vision=FakeVision([raw])
+        vision.model='test';vision.projector='test';vision.thinking=False
+        shots=[{'start':0,'end':5},{'start':5,'end':10}]
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']):
+            result=clean_sequences([event],{'segments':[],'words':[]},shots,directory,
+                                   vision,lambda *a:None,lambda:False)
+        self.assertEqual(result[0]['selected_ranges'],[{'start':5,'end':10}])
+        self.assertEqual(len(vision.calls),1)
+        self.assertEqual(vision.calls[0][2],1300)
+        self.assertFalse(isinstance(vision.calls[0][1],list))
+
     def test_sequence_context_includes_earlier_credit_cards_without_cascade(self):
         from app.production import production_context
         events=[{'id':f'e{i}','start':i*20,'end':(i+1)*20} for i in range(5)]

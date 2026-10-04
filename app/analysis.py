@@ -18,7 +18,37 @@ import urllib.request
 from app.config import FFMPEG, FFPROBE, LLAMA, ROOT, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR, setup_environment
 
 ANALYSIS_VERSION = 8
-GLOBAL_STORY_VERSION = 3
+GLOBAL_STORY_VERSION = 4
+EDITORIAL_POLICY = 'balanced-atmosphere-v1'
+
+
+def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_POLICY):
+    """Every semantic dependency that can bypass a story-stage checkpoint."""
+    from .story import STORY_VERSION, EDGE_VERSION
+    from .framing import FOCUS_VERSION
+    from .closing import CLOSING_VERSION
+    from .titles import TITLES_VERSION
+    from .production_sequence import VERSION as SEQUENCE_VERSION,CONTEXT_RADIUS
+    from .source_roles import VERSION as SOURCE_ROLE_VERSION
+    if provider in ('deepseek','deepseek_plan'):
+        from .deepseek import DeepSeekVision
+        paged=bool(getattr(DeepSeekVision,'supports_image_pages',False))
+    elif provider == 'hybrid':
+        from .hybrid import HybridVision
+        paged=bool(getattr(HybridVision,'supports_image_pages',False))
+    elif provider == 'local':
+        paged=bool(getattr(LocalVision,'supports_image_pages',False))
+    else:
+        raise ValueError('Неизвестный способ анализа')
+    return {'visual':analysis_key,'story':STORY_VERSION,'edge':EDGE_VERSION,
+            'credit_routing':'original-evidence-unioned-sequences-v2',
+            'production_sequence':SEQUENCE_VERSION,'credit_context_radius':CONTEXT_RADIUS,
+            'source_roles':SOURCE_ROLE_VERSION,
+            'credit_capability':'image-pages' if paged else 'single-image',
+            'editorial_policy':editorial_policy,'global_story':GLOBAL_STORY_VERSION,
+            'closing':CLOSING_VERSION,'titles':TITLES_VERSION,'speech_context':3,
+            'focus':FOCUS_VERSION,'focus_model':str(STORY_MODEL),
+            'focus_projector':str(STORY_PROJECTOR)}
 
 
 def atomic_json(path: Path, value) -> None:
@@ -458,6 +488,7 @@ def validate_global_omissions(decisions, known):
         if (not isinstance(item, dict) or item.get('event') not in known
                 or item.get('reason') not in {'redundant_exchange','repeated_information','nonstory'}
                 or not isinstance(item.get('evidence'), str) or not item['evidence'].strip()
+                or ('reaction_or_humor' in item and type(item['reaction_or_humor']) is not bool)
                 or isinstance(item.get('confidence'), bool) or not isinstance(item.get('confidence'), (float,int))
                 or not math.isfinite(item['confidence']) or not 0 <= item['confidence'] <= 1):
             raise ValueError('Нет подтверждения исключения события')
@@ -467,8 +498,10 @@ def validate_global_omissions(decisions, known):
         raise ValueError('Общий отбор должен покрывать все события без пересечений')
 
 
-def apply_global_selection(events, decisions):
+def apply_global_selection(events, decisions, editorial_profile=None):
     """Only explicit validated omissions may overrule local importance."""
+    from .editorial import DEFAULT_PROFILE
+    profile=editorial_profile or DEFAULT_PROFILE
     if 'omit' in decisions:
         validate_global_omissions(decisions, {e['id'] for e in events})
     omissions = {item['event']:item for item in decisions.get('omit', [])}
@@ -478,12 +511,16 @@ def apply_global_selection(events, decisions):
         omission = omissions.get(event['id'])
         if (omission and omission['confidence'] >= .85 and not event.get('uncertain')
                 and not event.get('selection_uncertain')
+                and not omission.get('reaction_or_humor') and not event.get('protected_atmosphere_units')
+                and not (omission['reason'] in ('redundant_exchange','repeated_information')
+                         and not profile['remove_exact_repetition'])
+                and not (omission['reason']=='nonstory' and not profile['remove_empty_holds'])
                 and event['id'] not in decisions.get('incomplete_event_ids',[])):
             event['global_excluded'] = True
             event['global_omission'] = omission
 
 
-def global_story_review(vision: LocalVision, events: list[dict]) -> dict:
+def global_story_review(vision: LocalVision, events: list[dict], editorial_profile=None) -> dict:
     from .deepseek import DeepSeekVision
     if isinstance(vision, DeepSeekVision):
         # A complete episode description is only tens of KB. The scene-sized
@@ -492,16 +529,22 @@ def global_story_review(vision: LocalVision, events: list[dict]) -> dict:
         import copy
         vision = copy.copy(vision)
         vision.text_budget = 64000
-    instruction = ('Edit a concise chronological episode, not an almost complete episode merely split into clips. '
+    from .editorial import instruction as policy_instruction, DEFAULT_PROFILE
+    instruction = (policy_instruction(editorial_profile or DEFAULT_PROFILE)+' '
+        'Edit a concise chronological episode, not an almost complete episode merely split into clips. '
         'Keep setup/payoff, causes/results, new information, significant relationship changes and consequential silent action. '
-        'Remove whole redundant exchanges or repeated information when all necessary facts are conveyed by kept events. '
-        'Ordinary talking gestures do not make every conversation essential. Never drop an unresolved cause or needed context. '
+        'Only when the applied editorial profile permits repetition removal, remove whole exact redundant exchanges '
+        'or repeated information when all necessary facts are conveyed by kept events. '
+        'Preserve nearly all short reactions, jokes, banter and atmospheric exchanges even without plot progress. '
+        'A whole repeated exchange can be removed only when it adds no distinct reaction, humor or emotional beat. '
+        'Never drop an unresolved cause or needed context. '
         'For each removed event supply a concrete explanation of redundancy/nonstory evidence and confidence; '
         'uncertainty preserves it. An event with summary_complete=false has missing facts and MUST remain. '
         'No target duration, clip count or removal percentage. '
         'Return JSON {"keep":[event ids],"omit":[{"event":id,"reason":"redundant_exchange|repeated_information|nonstory",'
-        '"evidence":"concrete explanation","confidence":0..1}],'
-        '"dependencies":[{"event":id,"requires":[earlier ids]}],"summary":"Russian episode storyline"}. Events: ')
+        '"evidence":"concrete explanation","confidence":0..1,"reaction_or_humor":boolean}],'
+        '"dependencies":[{"event":id,"requires":[earlier ids]}],"summary":"Russian episode storyline"}. '
+        'For an omission containing any reaction, joke or atmospheric beat mark reaction_or_humor=true; such events remain. Events: ')
     # Measure actual model tokens and leave room for template and output. Keep
     # every event ID in this global view instead of truncating the episode tail.
     length = max((len(e['summary']) for e in events), default=1500)
@@ -526,8 +569,8 @@ def global_story_review(vision: LocalVision, events: list[dict]) -> dict:
     schema['properties']['omit'] = {'type':'array', 'items':{'type':'object', 'properties':{
         'event': {'type':'string', 'enum':sorted(known)},
         'reason': {'type':'string', 'enum':['redundant_exchange','repeated_information','nonstory']},
-        'evidence': {'type':'string'}, 'confidence':{'type':'number'}},
-        'required':['event','reason','evidence','confidence'], 'additionalProperties':False}}
+        'evidence': {'type':'string'}, 'confidence':{'type':'number'},'reaction_or_humor':{'type':'boolean'}},
+        'required':['event','reason','evidence','confidence','reaction_or_humor'], 'additionalProperties':False}}
     last_error = None
     def validate_decisions(decisions):
         keep = decisions.get('keep')
@@ -557,6 +600,8 @@ def global_story_review(vision: LocalVision, events: list[dict]) -> dict:
 
 def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     setup_environment()
+    from .editorial import load_profile
+    editorial_profile=load_profile(job_dir,persist=True)
     from .editing import load_options
     layout = load_options(job_dir)['layout']
     provider = analysis_provider(job_dir)
@@ -618,16 +663,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     analysis_key = hashlib.sha256(json.dumps({'identity': identity, 'models': model_identity,
         'provider': provider_profile,
         'transcript': transcript, 'shots': shots}, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
-    from app.story import STORY_VERSION, EDGE_VERSION
-    from app.framing import FOCUS_VERSION
-    from app.closing import CLOSING_VERSION
-    from app.titles import TITLES_VERSION
-    derived_key = hashlib.sha256(json.dumps({'visual': analysis_key, 'story': STORY_VERSION,
-        'edge': EDGE_VERSION, 'credit_routing': 'original-evidence-production-text-v1',
-        'global_story': GLOBAL_STORY_VERSION,
-        'closing': CLOSING_VERSION, 'titles': TITLES_VERSION, 'speech_context': 2,
-        'focus': FOCUS_VERSION, 'focus_model': str(STORY_MODEL),
-        'focus_projector': str(STORY_PROJECTOR)}, sort_keys=True).encode('utf-8')).hexdigest()
+    derived_key = hashlib.sha256(json.dumps(derived_story_identity(analysis_key,provider,editorial_profile),
+        sort_keys=True).encode('utf-8')).hexdigest()
     derived_meta = job_dir / 'events.meta.json'
     # Story decisions retain their established signature. Only final focus
     # depends on the layout, so switching presets cannot repeat paid story work.
@@ -707,10 +744,12 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             from app.closing import refine_closing_novelty
             events = refine_titles(events, transcript, shots, job_dir, vision, report, cancelled)
             events = refine_closing_novelty(events, transcript, shots, job_dir, vision, report, cancelled)
+            from .source_roles import refine_source_roles
+            events = refine_source_roles(events, transcript, shots, job_dir, vision, report, cancelled)
             report('analyze', 0.49, 'Проверка связности истории целиком')
             # Global pass references only existing event IDs, never generated time ranges.
-            decisions = global_story_review(vision, events)
-            apply_global_selection(events, decisions)
+            decisions = global_story_review(vision, events, editorial_profile)
+            apply_global_selection(events, decisions,editorial_profile)
             known = {e['id'] for e in events}
             keep = decisions.get('keep')
             if not isinstance(keep, list) or not keep or any(not isinstance(e, str) or e not in known for e in keep):

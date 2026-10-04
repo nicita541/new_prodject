@@ -155,6 +155,19 @@ class StoryRefinementTests(unittest.TestCase):
         self.assertEqual(vision.calls[0][1], directory/'visual/event_0000.jpg')
         self.assertFalse(result[0]["story_warnings"])
 
+    def test_disabled_repeat_removal_restores_low_plot_repetition_through_planning(self):
+        directory,events,transcript=fixture()
+        from app.editorial import DEFAULT_PROFILE
+        profile={**DEFAULT_PROFILE,'remove_exact_repetition':False}
+        (directory/'editorial-settings.json').write_text(json.dumps(profile),encoding='utf-8')
+        result=refine_story(events,transcript,[],directory,
+                            FakeVision([decision(['u000','u002'])]),lambda *a:None,lambda:False)
+        self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':20}])
+        plan=build_plan({'probe':{'duration':20,'width':1920,'height':1080,'has_audio':True},
+                         'events':result,'transcript':transcript,'shots':[]})
+        subtitles=' '.join(c['text'] for p in plan['parts'] for c in p['subtitles'])
+        self.assertIn('Повтор.',subtitles)
+
     def test_preserve_silent_units_retains_entire_source_interval(self):
         directory, events, transcript = fixture()
         vision = FakeVision([decision(["u000"], ["u002"])])

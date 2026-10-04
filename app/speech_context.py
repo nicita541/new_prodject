@@ -19,14 +19,16 @@ def _tokens(text: str) -> list[str]:
 def _retained(events: list[dict]) -> set[str]:
     by_id = {event["id"]: event for event in events}
     retained = {event["id"] for event in events if not event.get('global_excluded')
+                and not event.get('pacing_excluded') and not event.get('source_role_excluded')
                 and ((event["kind"] == "story" and event["importance"] >= 3) or event["importance"] >= 4)}
     if not retained:
         retained = {event["id"] for event in events if event["kind"] == "story"
-                    and not event.get('global_excluded') and not event.get('pacing_excluded')}
+                    and not event.get('global_excluded') and not event.get('pacing_excluded')
+                    and not event.get('source_role_excluded')}
     pending = list(retained)
     while pending:
         for dependency in by_id[pending.pop()].get("requires", []):
-            if dependency in by_id and dependency not in retained:
+            if dependency in by_id and dependency not in retained and not by_id[dependency].get('source_role_excluded'):
                 retained.add(dependency)
                 pending.append(dependency)
     return retained
@@ -57,10 +59,14 @@ def _merge(intervals: list[dict]) -> list[dict]:
 def protect_question_pairs(events: list[dict], transcript: dict) -> list[dict]:
     """Retained answers must retain their adjacent actual source question."""
     result = copy.deepcopy(events)
+    from .source_roles import apply_exclusions, overlaps_exclusions
+    result=apply_exclusions(result)
     retained = _retained(result)
     words = transcript.get('words', [])
     segments = sorted(transcript.get('segments', []), key=lambda item: item['start'])
     for question, answer in zip(segments, segments[1:]):
+        if overlaps_exclusions(question,result):
+            continue
         if not re.search(r'\?\s*[\"\'»”)]*$', str(question.get('text', ''))):
             continue
         gap = float(answer['start']) - float(question['end'])
@@ -88,12 +94,14 @@ def protect_question_pairs(events: list[dict], transcript: dict) -> list[dict]:
                           'answer_start': answer['start'], 'answer_end': answer['end']}
             event.setdefault('question_pair_protections', []).append(protection)
             event.setdefault('story_warnings', []).append('Для выбранного ответа восстановлен исходный вопрос: ' + question['text'])
-    return result
+    return apply_exclusions(result)
 
 
 def protect_speech_context(events: list[dict], transcript: dict) -> list[dict]:
     """Deep-copy events and add only prefixes verified against one raw utterance."""
     result = copy.deepcopy(events)
+    from .source_roles import apply_exclusions, overlaps_exclusions
+    result=apply_exclusions(result)
     raw_segments = transcript.get("raw_segments")
     if not isinstance(raw_segments, list) or not raw_segments:
         return protect_question_pairs(result, transcript)
@@ -101,6 +109,8 @@ def protect_speech_context(events: list[dict], transcript: dict) -> list[dict]:
     words = transcript.get("words", [])
     retained = _retained(result)
     for prefix, continuation in zip(segments, segments[1:]):
+        if overlaps_exclusions(prefix,result):
+            continue
         text = str(prefix.get("text", "")).strip()
         tokens = _tokens(text)
         if (not 1 <= len(tokens) <= 2 or tokens[0] not in PREFIX_WORDS

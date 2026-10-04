@@ -4,6 +4,9 @@ import unittest
 from unittest.mock import patch
 
 from app.production_sequence import sequence_decision, clean_whole_sequences, original_clusters
+from app.production import clean_sequences
+from app.planner import build_plan
+from app.analysis import derived_story_identity
 from tests.test_story import edge_fixture, FakeVision
 
 
@@ -75,4 +78,58 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertFalse(result[0]['credit_montage'])
         self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':25}])
         self.assertTrue(result[0]['story_warnings'])
+
+    def test_overlapping_clusters_keep_both_confirmed_exclusions_through_planning(self):
+        directory, base, _ = edge_fixture(start=0, end=70)
+        events = [{**copy.deepcopy(base), 'id': f'event_{i:04d}',
+                   'start': i * 10, 'end': (i + 1) * 10, 'focus': [],
+                   'selected_ranges': [{'start': i * 10, 'end': (i + 1) * 10}],
+                   'credit_montage': False, 'credit_dialogue_rescued': i == 2,
+                   'contains_credits': i in (0, 4)} for i in range(7)]
+
+        def sequence(first, before, after):
+            return {'kind': 'opening', 'first_unit': f'U{first:03d}',
+                    'last_unit': f'U{first:03d}', 'before_unit': f'U{before:03d}',
+                    'after_unit': f'U{after:03d}',
+                    'anchors': [{'unit': f'U{first:03d}', 'type': 'theme_credit',
+                                 'visible_text': 'Theme music'}],
+                    'narrative_units': [], 'confidence': .95,
+                    'boundary_evidence': 'Theme between chronological story scenes.'}
+
+        anchor = {'confirmed': True, 'confidence': .95, 'evidence': 'Visible credit.'}
+        # Original clusters at events 0 and 4 have contexts [0,2] and [2,6].
+        # Their only shared event contains two independently confirmed cuts.
+        vision = FakeVision([sequence(4, 3, 5), anchor, sequence(1, 0, 2), anchor])
+        vision.model = vision.projector = 'test'
+        vision.thinking = False
+        vision.supports_image_pages = True
+        shots = [{'start': i * 5, 'end': (i + 1) * 5} for i in range(14)]
+        transcript = {'words': [], 'segments': []}
+
+        with patch('app.production.sequence_sheet', return_value=[directory / 'page.jpg']):
+            output = clean_sequences(events, transcript, shots, directory, vision,
+                                     lambda *a: None, lambda: False)
+
+        plan = build_plan({'probe': {'duration': 70, 'width': 1920, 'height': 1080,
+                                     'has_audio': True},
+                           'events': output, 'transcript': transcript, 'shots': shots})
+        cuts = [(cut['start'], cut['end']) for part in plan['parts'] for cut in part['cuts']]
+        self.assertEqual(cuts, [(0.0, 20), (30, 70)])
+        self.assertTrue(all(end <= 20 or start >= 30 for start, end in cuts))
+
+    def test_story_identity_tracks_sequence_version_provider_capability_and_editorial_policy(self):
+        from app.production_sequence import VERSION
+
+        base = derived_story_identity('analysis-key', 'local')
+        self.assertEqual(base['production_sequence'], VERSION)
+        self.assertEqual(base['credit_capability'], 'single-image')
+        for provider, capability in [('deepseek', 'image-pages'), ('deepseek_plan', 'image-pages'),
+                                     ('hybrid', 'single-image')]:
+            with self.subTest(provider=provider):
+                self.assertEqual(derived_story_identity('analysis-key', provider)['credit_capability'], capability)
+        self.assertNotEqual(base, derived_story_identity('analysis-key', 'local', 'strict-plot-v1'))
+        with patch('app.production_sequence.VERSION', VERSION + 1):
+            bumped = derived_story_identity('analysis-key', 'local')
+        self.assertEqual(bumped['edge'], base['edge'])
+        self.assertNotEqual(bumped['production_sequence'], base['production_sequence'])
 
