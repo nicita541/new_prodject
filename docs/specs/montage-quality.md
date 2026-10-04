@@ -17,6 +17,20 @@ Produce a chronological, condensed story that remains understandable and keeps t
 
 These statements are acceptance requirements. They are not model heuristics: scene labels and source evidence must establish whether a particular interval is an episode opening, this episode's plot after the apparent ending, or a next-episode preview.
 
+## Original user answers
+
+The following answers are preserved verbatim, including spelling, so later summaries or translation cannot reverse their meaning:
+
+- Desired result: `Последовательный сокращённый сюжет серии: понятно, что произошло, без потери важных сцен.`
+- Compression choice and persistence: `давай пока баланс, но это мы сохраним если что потом поменяем`
+- Useful/useless scenes: `длиные паузы без важной части сюжета, типо сцена с пролетом дома, типо тишина а камера просто пролетает сдания с верху в низ и все, это бесполезная сцена, а с цена с тищиной +- но там обматываю девушку веревками чтоб похотить это важная, повторы не нужны`
+- Reported defects: `там 1 проект с 1 серией, там и во 2 части опенинг есть и в конце часть эндинга есть , остальные были удалены нол там тоже есть ошибки`
+- Post-ending story and constraints: `если после эндинга есть и это не что будет дальше а часть сюжета то надо оставить, ограничений нет, главное красота`
+- Primary reference: `Да, «История о перекуре за супермаркетом».`
+- Atmosphere: `Сохранять почти все реакции и шутки ради атмосферы.`
+
+OP in part 2 and ED in the last part describe unwanted footage, not a requested placement rule. The verified primary/latest completed reference job is `928a9e13-a294-48f3-8231-09edd61bdf2b`; the gifted-girl job with prefix `013` is a separate regression reference.
+
 ## Evidence and limits
 
 Keep current user reports, source-code diagnosis, historical output observations, and hypotheses distinct:
@@ -58,6 +72,12 @@ Required contrasting examples include:
 | Exact or uninformative repeated view/exchange | Cut a redundant copy only | Identify an earlier retained witness and verify no new joke, reaction, or story beat |
 | Motion or silence without enough context | Uncertain; preserve pending review | Current frames and surrounding context do not establish value |
 
-## Not yet specified
+## Implemented policy and remaining evaluation
 
-Implementation must resolve these from repository evidence and the QA ground truth rather than create new user requirements: the exact persisted setting location/schema; how the existing opening/ending classifier excludes the reported pure credits without losing interleaved story; the policy/version fingerprint boundaries; how source labels distinguish this episode's post-ending plot from preview; and the exact fresh/cached run pair to review. Preserve current jobs and files while recording these selections.
+`app/editorial.py` validates a per-job `editorial-settings.json` with schema version `1`, policy `balanced-atmosphere-v1`, and boolean flags `preserve_reactions`, `preserve_humor`, `remove_empty_holds`, and `remove_exact_repetition` (all default to `true`). Analysis atomically persists the default only when the file is absent; an existing incompatible profile fails validation. This adds no UI control or library-wide settings migration. Editing the accepted flags changes the job's editorial intent on reanalysis.
+
+The complete profile participates in the derived story identity and story, closing, source-role, and pacing decision fingerprints. The derived identity also records production-sequence/source-role versions, credit context radius, provider image-page capability, and existing semantic model/stage identities. Compatible factual preparation and independently matching paid response caches remain reusable.
+
+Credit clusters compose confirmed exclusions as a union against original input selections. Independent source-role proofs distinguish current-story dialogue/narration from uploader promotion, title narration, next-episode preview, and song/ASR artifacts. Exact supplied speech and visible markers are evidence; song/artifact removal additionally requires the unit to belong to a confirmed credit sequence. Mixed, protected-atmosphere, or uncertain units remain. Later dialogue rescue and planning subtract confirmed exclusions so they cannot resurrect nonstory footage. See [the architectural decision](../ai/decisions/0012-editorial-policy-and-source-roles.md).
+
+The independent source review and focused checks are recorded in [the QA review](../qa/montage-quality-review.md). Post-change QA ran `tools/python/python.exe -m pytest -q`: 354 tests and 134 subtests passed in 20.26 s, with one existing Starlette/httpx warning; its focused gate passed 107 tests and 33 subtests in 1.06 s. Exact fresh/cache-backed run identities, rendered OP/ED removal, subtitle/audio synchronization, and editorial acceptance remain separate pending gates. Dense source-frame observations and technical tests do not prove the resulting montage passed them.

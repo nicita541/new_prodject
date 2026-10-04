@@ -7,8 +7,10 @@ Make the condensed output understandable and pleasant while preserving the confi
 - `docs/specs/montage-quality.md` records confirmed user choices, evaluation examples, acceptance criteria, and questions that require repository evidence rather than invented requirements.
 - The user confirmed «История о перекуре за супермаркетом» as the primary reference; its latest completed job is the main QA target. «Забота об одарённой девушке» is a separate cross-source regression. The current library has two unarchived projects despite the user's description of one active project/episode; preserve this state without archiving or restoring either project.
 - Existing architecture separates analysis, story condensation, closing/sequence classification, pacing, planning, and rendering. The user-facing pipeline is local-first with explicit optional remote-analysis modes; preserve existing project/job ownership, saved choices, and accounting/cache safeguards.
-- The source diagnosis reports that overlapping credit clusters can overwrite a rescued event's exclusions and reset its selected ranges, restoring confirmed credit footage. See `docs/qa/montage-quality-diagnosis.md` when the diagnosis worker has saved it.
+- The overlapping-credit-cluster defect is reproduced and corrected by composing exclusions once from immutable input selections. Independent source review also reproduced and verified corrections for disabled policy flags and later closing/pacing passes deleting protected atmosphere. See `docs/qa/montage-quality-review.md` for the independently executed checks and their limits.
+- `app/editorial.py` persists the versioned balanced profile in each job's `editorial-settings.json`; profile and semantic stage identities participate in derived/decision caches. `app/source_roles.py` independently verifies nonstory roles before global selection. See `docs/ai/decisions/0012-editorial-policy-and-source-roles.md` for precedence and compatibility.
 - A separate baseline run passed 344 tests; see `docs/qa/montage-quality-baseline.md` when saved. That does not establish editorial quality.
+- Post-change QA ran `tools/python/python.exe -m pytest -q`: 354 tests and 134 subtests passed in 20.26 s, with one existing Starlette/httpx warning. Its focused gate passed 107 tests and 33 subtests in 1.06 s. These do not establish rendered/editorial acceptance.
 - The user has set no output-duration, runtime, or API spending constraint. Keep the established provider mode/settings and safeguards; do not add an arbitrary cap.
 
 # Constraints
@@ -32,7 +34,7 @@ Make the condensed output understandable and pleasant while preserving the confi
 
 # Validation
 
-- Run the discovered portable Python test command (`tools/python/python.exe -m pytest -q`) and the existing Node UI suite when relevant; do not install or download dependencies. The current baseline record reports 344 `unittest` tests, but implementation must use the repository's applicable command and report actual results.
+- Run the established portable full-suite command `tools/python/python.exe -m unittest discover -s tests -q`; scoped suites may use the same runtime with explicit test modules. Record pytest only when actually executed. Do not install or download dependencies. The separate baseline reports 344 tests; the independent review ran 116 focused tests. The Node UI suite is not verified under the workspace-only runtime constraint; no project-local Node runtime was available in that baseline.
 - Add meaningful deterministic tests across the cases in Implementation milestone 5, including an overlapping credit-cluster regression with a rescued selected interval.
 - Verify persisted policy round-trip, behavior change after an explicit profile change, and matching/mismatching cache fingerprints.
 - For the real reference episode, verify OP removal from part 2, ED removal from the final part, the last retained current-episode story beat, all labeled credit/preview/post-ending cases, short atmosphere beats, silent action, scenery, repetition, dialogue handles, subtitles, and continuity. There is no opening/ending placement or part-count requirement.
@@ -48,7 +50,9 @@ Overly broad credit spans can delete interleaved story content; overly conservat
 - [x] Gather user answers and write the source-of-truth specification.
 - [x] Establish a safe local Git baseline and working branch.
 - [x] Confirm the primary episode/latest completed job and separate cross-source regression; preserve unarchived library state.
-- [ ] Reproduce and fix overlap/range defect with isolated regression coverage.
-- [ ] Persist the editorial policy and validate cache identity.
+- [x] Reproduce and fix overlap/range defect with isolated regression coverage.
+- [x] Persist the editorial policy and validate cache identity with focused deterministic checks.
+- [x] Complete finite independent source review; reproduce and recheck policy/atmosphere corrections (116 focused tests passed).
+- [x] Complete QA's post-change full-suite and deterministic regression gate: 354 tests + 134 subtests; focused 107 + 33 subtests.
 - [ ] Review fresh and cache-backed real outputs against all acceptance criteria.
-- [ ] Update QA/context and record remaining uncertainty.
+- [x] Save independent review, dense source-frame observations, policy architecture, and remaining uncertainty; final output acceptance remains pending.
