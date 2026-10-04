@@ -26,8 +26,8 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertEqual(excluded,{'U001','U002','U003'})
         self.assertEqual(anchors[0]['type'],'theme_credit')
 
-    def test_quiet_emotional_exception_remains_inside_credits(self):
-        raw=decision();raw['narrative_units'].append('U003')
+    def test_quiet_emotional_exception_remains_inside_ending_credits(self):
+        raw=decision();raw['kind']='ending';raw['narrative_units'].append('U003')
         self.assertEqual(sequence_decision(raw,self.units,25)[0],{'U001','U002'})
 
     def test_title_or_object_label_cannot_establish_a_production_sequence(self):
@@ -68,7 +68,7 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertEqual(vision.pages,['original full pages','dense before/current/after pages'])
         self.assertEqual(corrected['last_unit'],'U003')
         self.assertEqual(corrected['after_unit'],'U004')
-        self.assertEqual(sequence_decision(corrected,self.units,25)[0],{'U001','U002'})
+        self.assertEqual(sequence_decision(corrected,self.units,25)[0],{'U001','U002','U003'})
         self.assertIn('U003',corrected['narrative_units'])
 
     def test_dense_boundary_selection_includes_early_and_late_neighbors(self):
@@ -77,6 +77,67 @@ class WholeSequenceTests(unittest.TestCase):
         ids=[unit['id'] for unit in selected]
         self.assertEqual(ids, [*(f'U{i:03}' for i in range(2,7)),
                               *(f'U{i:03}' for i in range(8,19))])
+
+    def test_anchor_review_reads_early_middle_late_without_lowering_confirmation_threshold(self):
+        from app.production_sequence import verify_anchors
+        directory,_,source=edge_fixture()
+        anchors=decision()['anchors']
+        vision=FakeVision([{'confirmed':True,'confidence':.84,'evidence':'A difficult visible theme card.'}])
+        vision.supports_image_pages=True
+        with patch('app.production.sequence_sheet',return_value=[directory/'anchor.jpg']) as sheet:
+            self.assertFalse(verify_anchors(anchors,self.units,source,directory,'anchor',vision,lambda:False))
+        self.assertEqual(sheet.call_args.args[1],[self.units[2]])
+        self.assertEqual(sheet.call_args.args[2],[])
+        self.assertEqual(sheet.call_args.kwargs,{'page_size':8,'readable':True})
+        self.assertEqual(vision.calls[0][1],[directory/'anchor.jpg'])
+
+    def test_readable_boundary_pages_fit_eight_page_cap_without_dropping_units(self):
+        import math
+        directory,event,_=edge_fixture(start=0,end=230)
+        event.update(contains_credits=True,credit_montage=True)
+        raw=decision()
+        raw.update(first_unit='U004',last_unit='U010',before_unit='U003',after_unit='U011',
+                   anchors=[{'unit':'U006','type':'theme_credit','visible_text':'Opening theme'}],
+                   narrative_units=[])
+        vision=FakeVision([raw,raw,{'confirmed':True,'confidence':.95,'evidence':'Visible theme credit'}])
+        vision.model='test';vision.projector='test';vision.thinking=False;vision.supports_image_pages=True
+        captured=[]
+        def sheet(source,units,times,path,cancelled,**kwargs):
+            captured.append((units,times,kwargs))
+            count=math.ceil((len(units)*3+len(times))/kwargs['page_size'])
+            return [directory/f'{path.stem}-{i}.jpg' for i in range(count)]
+        shots=[{'start':i*5,'end':(i+1)*5} for i in range(46)]
+        with patch('app.production.sequence_sheet',side_effect=sheet):
+            clean_whole_sequences([event],{'words':[],'segments':[]},shots,directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(len(captured[0][1]),46)
+        self.assertEqual([u['id'] for u in captured[1][0]],
+                         [*(f'U{i:03}' for i in range(2,7)),*(f'U{i:03}' for i in range(8,19))])
+        self.assertEqual(captured[1][2],{'page_size':8,'readable':True})
+        self.assertEqual(len(vision.calls[1][1]),8)
+        self.assertLessEqual(len(vision.calls[1][1]),8)
+
+    def test_large_overview_uses_complete_legacy_dense_pages_within_provider_cap(self):
+        import math
+        directory,event,_=edge_fixture(start=0,end=480)
+        event.update(contains_credits=True,credit_montage=True)
+        raw=decision()
+        raw.update(first_unit='U004',last_unit='U010',before_unit='U003',after_unit='U011',
+                   anchors=[{'unit':'U006','type':'theme_credit','visible_text':'Opening theme'}],
+                   narrative_units=[])
+        vision=FakeVision([raw,raw,{'confirmed':True,'confidence':.95,'evidence':'Visible theme credit'}])
+        vision.model='test';vision.projector='test';vision.thinking=False;vision.supports_image_pages=True
+        captured=[]
+        def sheet(source,units,times,path,cancelled,**kwargs):
+            captured.append((units,times,kwargs))
+            return [directory/f'{path.stem}-{i}.jpg' for i in range(
+                math.ceil((len(units)*3+len(times))/kwargs['page_size']))]
+        shots=[{'start':i*5,'end':(i+1)*5} for i in range(96)]
+        with patch('app.production.sequence_sheet',side_effect=sheet):
+            clean_whole_sequences([event],{'words':[],'segments':[]},shots,directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(len(captured[0][1]),96)
+        self.assertEqual(len(captured[1][0]),16)
+        self.assertEqual(captured[1][2],{'page_size':24,'readable':False})
+        self.assertEqual(len(vision.calls[1][1]),6)
 
     def test_boundary_disagreement_and_malformed_second_review_fail_closed(self):
         initial=decision()
@@ -90,8 +151,8 @@ class WholeSequenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_boundaries(initial,self.units,['pages'],Vision(malformed),25)
 
-    def test_verified_current_story_is_a_mandatory_mixed_sequence_exception(self):
-        raw=decision()
+    def test_verified_current_story_is_a_mandatory_mixed_ending_exception(self):
+        raw=decision();raw['kind']='ending'
         units=[{**unit,'verified_current_story':unit['id']=='U002'} for unit in self.units]
         class Vision:
             def __init__(self): self.calls=0
@@ -101,6 +162,73 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertIn('U002',reviewed['narrative_units'])
         self.assertNotIn('U002',sequence_decision(reviewed,units,25)[0])
         self.assertEqual(vision.calls,0)
+
+    def test_confirmed_whole_opening_outranks_action_reaction_speech_and_later_story_guards(self):
+        from app.source_roles import apply_exclusions,verified_story_ranges,confirmed_exclusions
+        from app.story import preserve_dialogue_in_credits
+        from app.analysis import apply_global_selection
+        from app.pacing import apply_review
+        directory,event,_=edge_fixture(start=0,end=25)
+        event.update(contains_credits=True,credit_montage=True,
+                     verified_current_story_ranges=[{'start':0,'end':25}],
+                     protected_atmosphere_ranges=[{'start':5,'end':19}])
+        text='A familiar character performs a plausible action and replies'
+        transcript={'segments':[{'start':6,'end':19,'text':text}],
+                    'words':[{'start':6+i,'end':6+i+.8,'text':w,'probability':.98}
+                             for i,w in enumerate(text.split())]}
+        shots=[{'start':i*5,'end':(i+1)*5} for i in range(5)]
+        raw=decision()
+        raw.update(first_unit='U001',last_unit='U001',before_unit='U000',after_unit='U002',
+                   narrative_units=['U000','U001','U002'],
+                   anchors=[{'unit':'U001','type':'theme_credit','visible_text':'Opening theme'}])
+        vision=FakeVision([raw,raw,{'confirmed':True,'confidence':.95,'evidence':'Visible opening theme'}])
+        vision.model=vision.projector='test';vision.thinking=False
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']):
+            output=clean_whole_sequences([event],transcript,shots,directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(len(vision.calls),3)
+        loaded=json.loads(json.dumps(output))
+        self.assertEqual(verified_story_ranges(loaded[0]),[{'start':0.,'end':5.},{'start':19.,'end':25.}])
+        self.assertEqual(confirmed_exclusions(loaded[0]),[{'start':5.,'end':19.}])
+        loaded=preserve_dialogue_in_credits(loaded,transcript)
+        # Later guards may re-propose a plausible reaction; final ownership
+        # still cuts only the confirmed interior and keeps both outside scenes.
+        loaded[0]['selected_ranges']=[{'start':0,'end':25}]
+        apply_review(loaded[0],[{'id':'A','start':5,'end':19}],
+                     {'uncertain':False,'decisions':[{'unit':'A','keep':True,
+                       'reason':'reaction','reaction_or_humor':True,'story_change':True}]})
+        apply_global_selection(loaded,{'keep':[event['id']],'omit':[],'dependencies':[], 'summary':'Story'})
+        loaded=apply_exclusions(loaded)
+        self.assertEqual(loaded[0]['selected_ranges'],[{'start':0.,'end':5.},{'start':19.,'end':25.}])
+        plan=build_plan({'probe':{'duration':25,'width':1920,'height':1080,'has_audio':True},
+                         'events':loaded,'transcript':transcript,'shots':shots})
+        cuts=[(c['start'],c['end']) for part in plan['parts'] for c in part['cuts']]
+        self.assertTrue(cuts)
+        self.assertTrue(all(end<=5 or start>=19 for start,end in cuts))
+
+    def test_uncertain_opening_boundaries_do_not_create_whole_opening_authority(self):
+        directory,event,_=edge_fixture(start=0,end=25)
+        event.update(contains_credits=True,credit_montage=True,
+                     verified_current_story_ranges=[{'start':10,'end':15}])
+        uncertain={**decision(),'kind':'uncertain','confidence':.7}
+        vision=FakeVision([decision(),uncertain])
+        vision.model=vision.projector='test';vision.thinking=False
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']):
+            result=clean_whole_sequences([event],{'words':[],'segments':[]},
+                [{'start':i*5,'end':(i+1)*5} for i in range(5)],directory,vision,lambda *a:None,lambda:False)
+        self.assertFalse(result[0].get('confirmed_opening_ranges'))
+        self.assertFalse(result[0].get('excluded_credit_ranges'))
+        self.assertEqual(result[0]['verified_current_story_ranges'],[{'start':10,'end':15}])
+
+    def test_typical_ninety_seconds_is_not_a_hard_opening_duration(self):
+        from app.production_sequence import sequence_prompt
+        self.assertIn('never derive a boundary from that duration',sequence_prompt(self.units))
+        for duration in (60,110):
+            units=[{'id':f'U{i:03}','start':i*duration/3,'end':(i+1)*duration/3,'text':''}
+                   for i in range(3)]
+            raw={**decision(),'first_unit':'U000','last_unit':'U002',
+                 'before_unit':'none','after_unit':'none','narrative_units':[],
+                 'anchors':[{'unit':'U001','type':'theme_credit','visible_text':'Opening theme'}]}
+            self.assertEqual(sequence_decision(raw,units,duration)[0],{'U000','U001','U002'})
 
     def test_one_sequence_query_plus_independent_anchor_then_paid_checkpoint_reuse(self):
         directory,event,_=edge_fixture(start=0,end=25)

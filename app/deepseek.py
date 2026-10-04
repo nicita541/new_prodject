@@ -41,11 +41,34 @@ class BudgetExceeded(Exception):
 
 
 class RemoteError(RuntimeError):
-    def __init__(self, message, *, category=None, endpoint=None, http_status=None):
+    def __init__(self, message, *, category=None, endpoint=None, http_status=None, cause_type=None):
         super().__init__(message)
         self.category = category
         self.endpoint = endpoint
         self.http_status = http_status
+        self.cause_type = cause_type
+
+
+def _safe_failure_diagnostic(error):
+    """Persist transport identity only; exception text may contain credentials."""
+    classes = {'RemoteError', 'TimeoutError', 'OSError', 'URLError', 'HTTPError',
+               'JSONDecodeError', 'UnicodeDecodeError', 'ValueError', 'InterruptedError',
+               'ConnectionError', 'ConnectionResetError', 'ConnectionAbortedError',
+               'BrokenPipeError', 'IncompleteRead', 'RemoteDisconnected'}
+    category = getattr(error, 'category', None) if isinstance(error, RemoteError) else None
+    if isinstance(error, InterruptedError):
+        category = 'cancelled'
+    elif not isinstance(category, str) or category not in {'http', 'response_json_parse', 'transport'}:
+        category = 'unexpected'
+    error_class = type(error).__name__
+    cause_class = getattr(error, 'cause_type', None) if isinstance(error, RemoteError) else None
+    diagnostic = {'category': category, 'endpoint': '/chat/completions',
+                  'error_class': error_class if error_class in classes else 'Exception',
+                  'cause_class': cause_class if isinstance(cause_class, str) and cause_class in classes else None}
+    status = getattr(error, 'http_status', None) if isinstance(error, RemoteError) else None
+    if category == 'http' and type(status) is int and 100 <= status <= 599:
+        diagnostic['http_status'] = status
+    return diagnostic
 
 
 class EpisodeBudgetExceeded(BudgetExceeded):
@@ -314,13 +337,17 @@ def _http(path: str, body=None, timeout=45):
     except urllib.error.HTTPError as error:
         # Error bodies can echo prompts/secrets. Do not log or expose them.
         raise RemoteError(f'DeepSeek: HTTP {error.code}; повторный платный запрос не выполнен',
-                          category='http', endpoint=path, http_status=error.code) from None
-    except ValueError:
+                          category='http', endpoint=path, http_status=error.code,
+                          cause_type='HTTPError') from None
+    except ValueError as error:
         raise RemoteError('DeepSeek вернул невалидный JSON; повторный платный запрос не выполнен',
-                          category='response_json_parse', endpoint=path) from None
-    except (OSError, urllib.error.URLError):
+                          category='response_json_parse', endpoint=path,
+                          cause_type=type(error).__name__) from None
+    except (OSError, urllib.error.URLError) as error:
+        cause = error.reason if isinstance(error, urllib.error.URLError) else error
         raise RemoteError('Не удалось получить ответ DeepSeek; автоматический повтор отключён',
-                          category='transport', endpoint=path) from None
+                          category='transport', endpoint=path,
+                          cause_type=type(cause).__name__) from None
 
 
 def _preflight_balance(max_retries=1):
@@ -606,6 +633,35 @@ def _retry_family(ledger, logical_digest, aliases, policy):
     return family
 
 
+def _explicit_unknown_seed(ledger, family, entry):
+    """Only a separately reviewed, retained reservation can seed two retries."""
+    approval = family.get('explicit_unknown_retry')
+    if (not isinstance(approval, dict) or type(approval.get('version')) is not int
+            or approval['version'] != 1):
+        return False
+    logical = approval.get('logical_request')
+    if not isinstance(logical, str) or not re.fullmatch(r'[a-f0-9]{64}', logical):
+        return False
+    return (approval.get('authorization') == 'retain_unknown_and_allow_two_retries'
+            and type(approval.get('max_paid_retries')) is int
+            and approval['max_paid_retries'] == 2
+            and type(approval.get('authorized_at')) in (int, float)
+            and math.isfinite(approval['authorized_at'])
+            and ledger.get('retry_families', {}).get(logical) is family
+            and approval.get('entry_id') == entry.get('id')
+            and approval.get('source_request') == entry.get('request')
+            and logical == entry.get('logical_request')
+            and bool(family.get('entry_ids'))
+            and family['entry_ids'][0] == entry.get('id')
+            and entry.get('status') == 'acknowledged_unknown'
+            and entry.get('previous_status') == 'unknown'
+            and entry.get('reservation_retained') is True
+            and entry.get('request') in ledger.get('blocked_requests', [])
+            and _decimal(approval.get('retained_usd')) > 0
+            and _decimal(approval.get('retained_usd')) == _decimal(entry.get('reserved_usd'))
+            and _decimal(entry.get('reserved_usd')) == _decimal(entry.get('charged_ceiling_usd')))
+
+
 def _retry_index(ledger, family, policy):
     entries = [entry for entry in _family_entries(ledger, family)
                if not _cancelled_without_send(entry)]
@@ -614,7 +670,8 @@ def _retry_index(ledger, family, policy):
         raise BudgetExceeded('Неподтверждённый расход запрещает новую оплачиваемую попытку')
     if len(entries) >= allowance+1:
         raise AlreadyPaidInvalidResponse('Лимит оплачиваемых попыток этого запроса исчерпан')
-    if any(_quality_rejection(entry) is None for entry in entries):
+    if any(_quality_rejection(entry) is None and not _explicit_unknown_seed(ledger, family, entry)
+           for entry in entries):
         raise AlreadyPaidInvalidResponse('Уже оплаченный результат не подтверждён для повторной проверки')
     return len(entries)
 
@@ -689,7 +746,7 @@ class DeepSeekVision:
     def _fetch(self, body):
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = (executor.submit(_http, '/chat/completions', body, timeout=180 if body['max_tokens']>8192 else 120)
-                  if self.thinking else executor.submit(_http, '/chat/completions', body))
+                  if self.thinking else executor.submit(_http, '/chat/completions', body, timeout=120))
         try:
             while not future.done():
                 if self.cancelled():
@@ -843,7 +900,8 @@ class DeepSeekVision:
             if any(candidate in ledger.get('blocked_requests', []) for candidate in compatible_digests):
                 if family is not None and retry_index > 0:
                     known = {entry['request'] for entry in _family_entries(ledger, family)
-                             if _quality_rejection(entry) is not None}
+                             if _quality_rejection(entry) is not None
+                             or _explicit_unknown_seed(ledger, family, entry)}
                     blocked_aliases = set(compatible_digests).intersection(ledger.get('blocked_requests', []))
                     if not blocked_aliases.issubset(known):
                         raise AlreadyPaidInvalidResponse('Запрет повтора не относится к подтверждённому ошибочному ответу')
@@ -857,6 +915,8 @@ class DeepSeekVision:
                        for entry in previous_entries):
                     previous_paid = [entry for entry in previous_entries if not _cancelled_without_send(entry)]
                     category = _quality_rejection(previous_paid[-1])
+                    if category is None and _explicit_unknown_seed(ledger, family, previous_paid[-1]):
+                        category = 'unconfirmed_transport_response'
                     corrected_prompt = _retry_prompt(prompt, retry_index, category)
                     body = {**body, 'messages': [body['messages'][0], {'role': 'user',
                         'content': [{'type': 'text', 'text': corrected_prompt}, *content[1:]]}]}
@@ -914,10 +974,11 @@ class DeepSeekVision:
                 raise InterruptedError('Обработка отменена')
             try:
                 raw = self._fetch(body)
-            except Exception:
+            except Exception as error:
                 # A timeout/cancellation cannot prove that the provider did not
                 # bill. Keep the reservation and stop future paid requests.
                 entry['status'] = 'unknown'
+                entry['failure_diagnostic'] = _safe_failure_diagnostic(error)
                 ledger['halted'] = True
                 atomic_json(LEDGER, ledger)
                 safe_refresh(self.job_dir, attempt)

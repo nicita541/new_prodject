@@ -30,6 +30,52 @@ def word_rows(start, end, text):
 
 
 class SourceRolePipelineTests(unittest.TestCase):
+    def test_bare_or_malformed_opening_authority_fails_closed(self):
+        from app.source_roles import confirmed_exclusions
+        from app.production_sequence import VERSION
+        event={'start':0,'end':30,'confirmed_opening_ranges':[{'start':5,'end':20}]}
+        with self.assertRaises(ValueError):confirmed_exclusions(event)
+        proof={'start':5,'end':20,'version':VERSION,'kind':'opening','boundaries_verified':True,
+               'anchors_verified':True,'confidence':.95,'checkpoint':'a'*64+'.json',
+               'anchors':[{'unit':'U001','type':'theme_credit','visible_text':'Opening theme'}]}
+        valid={**event,'confirmed_opening_proofs':[proof]}
+        self.assertEqual(confirmed_exclusions(valid),[{'start':5.,'end':20.}])
+        for change in ({'kind':'ending'},{'boundaries_verified':False},{'anchors_verified':False},
+                       {'confidence':.84},{'confidence':float('nan')},{'start':-1},
+                       {'end':31},{'end':19},{'checkpoint':'unreviewed'}, {'anchors':[]}):
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                confirmed_exclusions({**event,'confirmed_opening_proofs':[{**proof,**change}]})
+
+    def test_readable_layout_has_separate_cache_and_keeps_exact_target_context_and_two_reviews(self):
+        directory,event,_=edge_fixture(start=0,end=5)
+        event.update(contains_credits=True,selected_ranges=[{'start':0,'end':5}])
+        text='Tomorrow they will meet again'
+        transcript={'segments':[{'start':0,'end':5,'text':text}], 'words':word_rows(0,5,text)}
+        decisions=[role_answer('next_preview',quote=text,visible='次回予告') for _ in range(2)]
+        def vision(paged,answers):
+            result=FakeVision(answers)
+            result.model=Path('test-model');result.projector=Path('test-profile')
+            result.cache_profile='test';result.supports_image_pages=paged
+            return result
+        old=vision(False,copy.deepcopy(decisions))
+        new=vision(True,copy.deepcopy(decisions))
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']) as sheet:
+            legacy=refine_source_roles([event],transcript,[],directory,old,lambda *a:None,lambda:False)
+            readable=refine_source_roles([event],transcript,[],directory,new,lambda *a:None,lambda:False)
+            self.assertEqual(sheet.call_count,2)
+            first,second=sheet.call_args_list
+            self.assertEqual(first.args[1:3],second.args[1:3])
+            self.assertEqual(first.kwargs,{'page_size':None,'readable':False})
+            self.assertEqual(second.kwargs,{'page_size':8,'readable':True})
+            replay=vision(True,[])
+            cached=refine_source_roles([event],transcript,[],directory,replay,lambda *a:None,lambda:False)
+            self.assertEqual(sheet.call_count,2)
+        self.assertEqual(legacy[0]['selected_ranges'],readable[0]['selected_ranges'])
+        self.assertEqual(cached,readable)
+        self.assertEqual(len(new.calls),2)
+        self.assertFalse(replay.calls)
+        self.assertEqual(len(list((directory/'source_roles').glob('*.json'))),2)
+
     def test_story_proof_splits_broad_exclusions_and_nonstory_elsewhere_stays_excluded(self):
         event={'id':'mixed','start':0,'end':20,'kind':'opening','importance':1,
                'selected_ranges':[{'start':0,'end':20}],

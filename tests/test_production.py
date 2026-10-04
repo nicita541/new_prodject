@@ -87,6 +87,36 @@ class ProductionTests(unittest.TestCase):
         self.assertFalse(vision.thinking)
         self.assertTrue(vision.cache_only)
 
+    def test_readable_pages_keep_all_current_and_context_views_in_source_order(self):
+        import cv2
+        import numpy as np
+        from PIL import Image
+        from unittest.mock import Mock
+        from app.production import sequence_sheet
+        directory,_,source=edge_fixture()
+        video=Mock()
+        video.get.side_effect=lambda prop:30 if prop==cv2.CAP_PROP_FPS else 3000
+        video.read.return_value=(True,np.zeros((720,1280,3),dtype=np.uint8))
+        units=[{'id':chr(65+i),'start':i*5+1,'end':i*5+5} for i in range(4)]
+        context=[0,6,16,22]
+        draw=Mock()
+        with patch('app.production.cv2.VideoCapture',return_value=video), patch('app.production.ImageDraw.Draw',return_value=draw):
+            pages=sequence_sheet(source,units,context,directory/'readable.jpg',lambda:False,
+                                 page_size=8,readable=True)
+        self.assertEqual(len(pages),2)
+        positions=[call.args[1]/1000 for call in video.set.call_args_list]
+        expected=sorted(context+[u['start']+(u['end']-u['start'])*f for u in units for f in (.08,.5,.92)])
+        self.assertEqual(positions,expected)
+        labels=[call.args[1] for call in draw.text.call_args_list]
+        self.assertEqual(len(labels),16)
+        self.assertEqual(sum(label.startswith('CONTEXT K') for label in labels),4)
+        for unit in units:
+            self.assertEqual(sum(label.startswith('UNIT '+unit['id']+' |') for label in labels),3)
+        for page in pages:
+            with Image.open(page) as picture:
+                self.assertEqual(picture.size,(960,1176))
+                self.assertLessEqual(picture.width*picture.height,960*1632)
+
     def test_sequence_batches_bound_work_and_map_all_source_units(self):
         directory,event,_=edge_fixture(start=0,end=50)
         shots=[{'start':t,'end':t+5} for t in range(0,50,5)]

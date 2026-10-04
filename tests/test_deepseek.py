@@ -191,9 +191,11 @@ class DeepSeekTests(unittest.TestCase):
         self.fake_key='sk-fake-tests-only-'+uuid.uuid4().hex
         self.private.write_text(json.dumps({'api_key':self.fake_key}),encoding='utf-8')
         self.real_http=api._http
+        self.real_fetch=api.DeepSeekVision._fetch
         self.http=Mock(return_value={'is_available':True,'balance_infos':[{'currency':'USD','total_balance':'0.06'}]})
         self.fetch=Mock(return_value=reply())
-        for name,value in [('SETTINGS',self.settings),('PRIVATE',self.private),('LEDGER',self.ledger),('RESPONSES',self.responses),
+        for name,value in [('SETTINGS',self.settings),('PRIVATE',self.private),('LEDGER',self.ledger),
+                           ('RETRY_SETTINGS',self.settings/'fake-retry.json'),('RESPONSES',self.responses),
                            ('_http',self.http),('TOTAL_BUDGET',Decimal('0.01'))]:
             patcher=patch.object(api,name,value)
             patcher.start()
@@ -691,6 +693,140 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual(self.http.call_count,1)
         self.fetch.assert_not_called()
         self.assertEqual(self.entries(),[])
+
+    def test_user_authorized_exact_unknown_seed_keeps_charge_and_uses_only_two_retry_slots(self):
+        policy={'version':1,'max_paid_retries':2}
+        vision=api.DeepSeekVision(self.directory,lambda:False,retry_policy=policy)
+        self.fetch.side_effect=api.RemoteError('private token sk-this-must-not-persist',category='transport',
+                                               endpoint='/chat/completions',cause_type='TimeoutError')
+        with self.assertRaises(api.RemoteError):
+            vision.query('one explicitly approved uncertain request',max_tokens=20,schema=SCHEMA)
+        before=json.loads(self.ledger.read_text('utf-8'))
+        first=before['entries'][0]
+        old_acknowledgements=[
+            {'id':'old-ack-unknown','request':'a'*64,'status':'acknowledged_unknown',
+             'previous_status':'unknown','reservation_retained':True,
+             'charged_ceiling_usd':'0.0038325','reserved_usd':'0.0038325'},
+            {'id':'old-ack-reserved','request':'b'*64,'status':'acknowledged_unknown',
+             'previous_status':'reserved','reservation_retained':True,
+             'charged_ceiling_usd':'0.0040188','reserved_usd':'0.0040188'}]
+        before['entries'][0:0]=copy.deepcopy(old_acknowledgements)
+        before['blocked_requests']=sorted(set(before.get('blocked_requests',[]))|{'a'*64,'b'*64})
+        retained_charge=first['charged_ceiling_usd']
+        logical=first['logical_request']
+        family=before['retry_families'][logical]
+        first.update(status='acknowledged_unknown',previous_status='unknown',reservation_retained=True)
+        before['blocked_requests']=sorted(set(before.get('blocked_requests',[]))|{first['request']})
+        before['halted']=False
+        family['explicit_unknown_retry']={'version':1,'authorization':'retain_unknown_and_allow_two_retries',
+            'entry_id':first['id'],'source_request':first['request'],'logical_request':logical,
+            'retained_usd':first['reserved_usd'],'max_paid_retries':2,'authorized_at':1.0}
+        self.assertTrue(api._explicit_unknown_seed(before,family,first))
+        self.ledger.write_text(json.dumps(before),encoding='utf-8')
+        self.fetch.reset_mock()
+        self.fetch.side_effect=[reply('{"keep":["invented"]}'),reply('not JSON')]
+        with patch.object(api,'TOTAL_BUDGET',None),self.assertRaises(api.PaidResponseRejected):
+            vision.query('one explicitly approved uncertain request',max_tokens=20,schema=SCHEMA)
+        self.assertEqual(self.fetch.call_count,2)
+        after=json.loads(self.ledger.read_text('utf-8'))
+        self.assertEqual(after['entries'][:2],old_acknowledgements)
+        self.assertEqual(after['entries'][2]['status'],'acknowledged_unknown')
+        self.assertEqual(after['entries'][2]['charged_ceiling_usd'],retained_charge)
+        self.assertEqual(after['entries'][2]['reserved_usd'],first['reserved_usd'])
+        self.assertNotIn('usage',after['entries'][2])
+        family_entries=[e for e in after['entries'] if e.get('logical_request')==logical]
+        self.assertEqual([entry['retry_index'] for entry in family_entries],[0,1,2])
+        self.assertEqual([entry['status'] for entry in family_entries],
+                         ['acknowledged_unknown','completed','completed'])
+        self.assertTrue(all(entry['request'] in after['blocked_requests'] for entry in family_entries[1:]))
+        self.assertEqual(family_entries[1]['rejection_category'],'schema_rejection')
+        self.assertEqual(family_entries[2]['rejection_category'],'malformed_json')
+        family=after['retry_families'][logical]
+        self.assertEqual(len(family['entry_ids']),3)
+        self.assertTrue(api._explicit_unknown_seed(after,family,family_entries[0]))
+        before_count=len(after['entries'])
+        self.fetch.reset_mock()
+        with self.assertRaises(api.AlreadyPaidInvalidResponse):
+            vision.query('one explicitly approved uncertain request',max_tokens=20,schema=SCHEMA)
+        self.fetch.assert_not_called()
+        self.assertEqual(len(json.loads(self.ledger.read_text('utf-8'))['entries']),before_count)
+
+    def test_specific_unknown_seed_rejects_mismatched_or_unapproved_acknowledgments(self):
+        policy={'version':1,'max_paid_retries':2}
+        for change in ('missing_approval','bool_version','wrong_entry','wrong_digest','wrong_charge','wrong_status',
+                       'not_blocked','wrong_family','invalid_logical','old_ack'):
+            with self.subTest(change=change):
+                logical='1'*64
+                request='2'*64
+                entry={'id':'exact-entry','request':request,'logical_request':logical,
+                       'status':'acknowledged_unknown','previous_status':'unknown',
+                       'reservation_retained':True,'charged_ceiling_usd':'0.0055','reserved_usd':'0.0055'}
+                family={'version':1,'policy':policy.copy(),'aliases':[request],'entry_ids':[entry['id']]}
+                approval={'version':1,'authorization':'retain_unknown_and_allow_two_retries',
+                          'entry_id':entry['id'],'source_request':request,'logical_request':logical,
+                          'retained_usd':'0.0055','max_paid_retries':2,'authorized_at':123.0}
+                if change!='missing_approval': family['explicit_unknown_retry']=approval.copy()
+                if change=='bool_version': family['explicit_unknown_retry']['version']=True
+                if change=='wrong_entry': family['explicit_unknown_retry']['entry_id']='other-entry'
+                if change=='wrong_digest': family['explicit_unknown_retry']['source_request']='3'*64
+                if change=='wrong_charge': family['explicit_unknown_retry']['retained_usd']='0.006'
+                if change=='wrong_status': entry['previous_status']='reserved'
+                if change=='not_blocked': pass
+                if change=='wrong_family': family['explicit_unknown_retry']['logical_request']='4'*64
+                if change=='old_ack': entry['previous_status']='reserved'
+                if change=='invalid_logical': family['explicit_unknown_retry']['logical_request']=['not','a','digest']
+                ledger={'entries':[entry],'blocked_requests':([] if change=='not_blocked' else [request]),
+                        'retry_families':{logical:family}}
+                if change=='wrong_family': ledger['retry_families']={'4'*64:family}
+                self.assertFalse(api._explicit_unknown_seed(ledger,family,entry))
+
+    def test_safe_failure_diagnostic_and_nonthinking_fetch_timeout_are_fixed_and_sanitized(self):
+        failure=api.RemoteError('Bearer fake-token; response body secret',category='http',
+            endpoint='/user/balance?secret=value',http_status=503,cause_type='HTTPError')
+        self.assertEqual(api._safe_failure_diagnostic(failure),{
+            'category':'http','endpoint':'/chat/completions','error_class':'RemoteError',
+            'cause_class':'HTTPError','http_status':503})
+        class PrivateException(Exception):
+            pass
+        fallback=api._safe_failure_diagnostic(PrivateException('secret detail'))
+        self.assertEqual(fallback,{'category':'unexpected','endpoint':'/chat/completions',
+                                   'error_class':'Exception','cause_class':None})
+        malformed=api.RemoteError('sensitive',category=['Bearer sk-private'],cause_type=['secret'])
+        self.assertEqual(api._safe_failure_diagnostic(malformed),{'category':'unexpected',
+            'endpoint':'/chat/completions','error_class':'RemoteError','cause_class':None})
+        ordinary=self.vision()
+        with patch.object(api,'_http',return_value={'ok':True}) as request:
+            self.real_fetch(ordinary,{'max_tokens':512})
+            request.assert_called_once_with('/chat/completions',{'max_tokens':512},timeout=120)
+            request.reset_mock()
+            thinking=api.DeepSeekVision(self.directory,lambda:False,reasoning_effort='low')
+            self.real_fetch(thinking,{'max_tokens':8192})
+            request.assert_called_once_with('/chat/completions',{'max_tokens':8192},timeout=120)
+            request.reset_mock()
+            self.real_fetch(thinking,{'max_tokens':8193})
+            request.assert_called_once_with('/chat/completions',{'max_tokens':8193},timeout=180)
+
+    def test_unknown_paid_exception_persists_only_sanitized_diagnostic_and_never_retries(self):
+        vision=api.DeepSeekVision(self.directory,lambda:False,
+                                  retry_policy={'version':1,'max_paid_retries':2})
+        self.fetch.side_effect=api.RemoteError('secret sk-test-not-to-save Bearer private',category='http',
+            endpoint='/chat/completions',http_status=502,cause_type='HTTPError')
+        with self.assertRaises(api.RemoteError):
+            vision.query('unknown request diagnostic',schema=SCHEMA)
+        ledger_text=self.ledger.read_text('utf-8')
+        entry=self.entries()[0]
+        self.assertEqual(entry['status'],'unknown')
+        self.assertEqual(entry['charged_ceiling_usd'],entry['reserved_usd'])
+        self.assertNotIn('usage',entry)
+        self.assertEqual(entry['failure_diagnostic'],{'category':'http','endpoint':'/chat/completions',
+            'error_class':'RemoteError','cause_class':'HTTPError','http_status':502})
+        for forbidden in ('secret','sk-test-not-to-save','Bearer private'):
+            self.assertNotIn(forbidden,ledger_text)
+        self.assertFalse((self.responses/(entry['request']+'.json')).exists())
+        self.fetch.reset_mock()
+        with self.assertRaises(api.BudgetExceeded):
+            vision.query('different request after unknown diagnostic',schema=SCHEMA)
+        self.fetch.assert_not_called()
 
     def test_missing_choices_and_nonstring_content_fail_with_reserved_charge_accounted(self):
         for raw in ({'usage':reply()['usage']}, {**reply(),'choices':[]},reply({'unexpected':'object'})):

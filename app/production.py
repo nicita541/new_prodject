@@ -34,9 +34,10 @@ def production_context(events, anchors, center, shots, transcript):
     return context,times
 
 
-def sequence_sheet(source, units, context_times, destination, cancelled, page_size=None):
+def sequence_sheet(source, units, context_times, destination, cancelled, page_size=None, *, readable=False):
     """One source-chronological sheet; target and context labels interleave."""
-    columns, width, height = 3, 320, 204
+    columns, width, frame_height = (2, 480, 270) if readable else (3, 320, 180)
+    height = frame_height + 24
     views = [(f'CONTEXT K{i}', t) for i, t in enumerate(context_times)]
     for unit in units:
         for fraction in (.08, .5, .92):
@@ -60,12 +61,12 @@ def sequence_sheet(source, units, context_times, destination, cancelled, page_si
             if not ok:
                 raise ValueError('Не удалось прочитать исходный кадр заставки')
             picture = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            picture.thumbnail((width, 180))
+            picture.thumbnail((width, frame_height))
             canvas=pages[i//page_size]
             draw=ImageDraw.Draw(canvas)
             position=i%page_size
             x, y = (position % columns) * width, (position // columns) * height
-            canvas.paste(picture, (x + (width - picture.width) // 2, y + 24 + (180 - picture.height) // 2))
+            canvas.paste(picture, (x + (width - picture.width) // 2, y + 24 + (frame_height - picture.height) // 2))
             draw.text((x + 4, y + 3), f'{label} | source {timestamp:.3f}s', fill='white', font=ImageFont.load_default(size=16))
     finally:
         video.release()

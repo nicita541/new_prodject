@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import ROOT
 from .jobs import atomic_json
 
-VERSION = 7
+VERSION = 8
 CONTEXT_RADIUS = 2
 ANCHOR_TYPES = ('staff_credit','theme_credit','production_logo','series_title','episode_title')
 STRONG_ANCHORS = set(ANCHOR_TYPES[:3])
@@ -66,7 +66,9 @@ def sequence_decision(raw, units, duration):
     strong = [a for a in anchors if a['type'] in STRONG_ANCHORS]
     if not strong:
         return set(), []  # Object labels and episode cards cannot establish OP/ED.
-    return inside - set(narrative), strong[:2]
+    # Once independently confirmed, OP ownership covers its whole interior.
+    # A plausible action/reaction or ASR label is not an episode exception.
+    return (inside if raw['kind']=='opening' else inside-set(narrative)), strong[:2]
 
 
 def original_clusters(events):
@@ -87,10 +89,15 @@ def sequence_prompt(units):
         'An opening is a character/music/credit montage disconnected from the ongoing episode situation; '
         'realistic office/store shots and character interactions can belong to it. '
         'Staff/theme/title cards may occur midway, not at the beginning. '
+        'An OP is often about 90 seconds, but may be shorter or longer. This is only a soft search/plausibility hint; '
+        'never derive a boundary from that duration. Establish both actual transitions from supplied frames. '
         'Keep chronological dialogue, causal actions, and quiet emotional consequences before/after the montage. '
         'Give first_unit/last_unit, the IMMEDIATE neighboring outside units before_unit/after_unit, '
         'one or two visible staff/theme/production anchors (transcribe actual words), '
         'and narrative_units for genuine chronological story exceptions. '
+        'For an opening with BOTH actual boundaries established, every interior unit belongs to the OP, '
+        'including familiar faces, animation, emotional poses and isolated ASR. Keep the episode story outside it. '
+        'Ending sequences may still contain genuine CURRENT-episode story exceptions. '
         'Do not call movement, a recurring location, or familiar characters alone narrative continuity. '
         'Product/shop labels, subtitles and objects are not production credits. '
         'An episode-title card alone is not evidence of OP/ED. '
@@ -103,15 +110,16 @@ def verify_anchors(raw, units, source, directory, signature, vision, cancelled):
     from .production import sequence_sheet
     by_id = {u['id']:u for u in units}
     anchors = sorted(raw,key=lambda a:by_id[a['unit']]['start'])
-    times=[(by_id[a['unit']]['start']+by_id[a['unit']]['end'])/2 for a in anchors]
     path=directory/(signature+'.anchors.jpg')
-    sequence_sheet(source,[],times,path,cancelled)
+    targets=[by_id[a['unit']] for a in anchors]
+    paged=bool(getattr(vision,'supports_image_pages',False))
+    pages=sequence_sheet(source,targets,[],path,cancelled,page_size=8 if paged else None,readable=paged)
     properties={'confirmed':{'type':'boolean'},'confidence':{'type':'number'},'evidence':{'type':'string'}}
     schema={'type':'object','properties':properties,'required':list(properties),'additionalProperties':False}
     response=vision.query('Independently verify ONLY these actual frames. Do they visibly show staff credits, '
         'opening/ending theme credits or a production company logo? Product labels, shop signs, dialogue subtitles '
         'and episode-title cards do NOT count. Cite actual visible words, do not trust the prior classification: '
-        +json.dumps(anchors,ensure_ascii=False),path,max_tokens=400,schema=schema)
+        +json.dumps(anchors,ensure_ascii=False),pages if paged else pages[0],max_tokens=400,schema=schema)
     confidence=response.get('confidence')
     if (type(response.get('confirmed')) is not bool or type(confidence) not in (int,float)
             or not math.isfinite(confidence) or not 0<=confidence<=1
@@ -134,6 +142,9 @@ def verify_boundaries(raw,units,pages,vision,duration,boundary_pages=None):
     reviewed=vision.query('Independently establish BOTH boundaries of the production sequence in these original chronological pages. '
         'Do not trust the previous boundary claim. Familiar characters, realistic offices, character movement '
         'and apparently connected poses may still be the OP/ED musical introduction. '
+        'About 90 seconds is only a typical OP duration, never an endpoint or duration limit. '
+        'Once BOTH actual OP boundaries are independently established, all interior units are opening material; '
+        'do not rescue them as plot from familiar faces, action, reactions or isolated ASR. '
         'A staff/theme card near the alleged last unit is evidence to inspect the following units, not to stop at the card. '
         'Find the first genuine CURRENT-episode causal situation outside the montage and the last situation before it. '
         'ASR over opening/ending songs or dub introductions is not an outside story witness. '
@@ -158,6 +169,7 @@ def verify_boundaries(raw,units,pages,vision,duration,boundary_pages=None):
 
 def verify_exceptions(raw, units, pages, vision, transcript=None):
     """ASR fragments/title narration alone cannot become a narrative exception."""
+    if raw['kind']=='opening':return raw
     ids=[u['id'] for u in units]
     inside=set(ids[ids.index(raw['first_unit']):ids.index(raw['last_unit'])+1])
     from .story import _protected_speech
@@ -210,18 +222,20 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
         units=[{**u,'id':f'U{i:03}','verified_current_story':any(u['start']<r['end'] and u['end']>r['start']
                for r in positive)} for i,u in enumerate(units)]
         identity={'version':VERSION,'context_radius':CONTEXT_RADIUS,
+                  'readable_detail':bool(getattr(vision,'supports_image_pages',False)),
                   'source':{'path':str(source),'size':stat.st_size,'mtime':stat.st_mtime_ns},
                   'units':units,'events':events[left:right+1],'transcript':transcript,'shots':shots,
                   'model':str(vision.model),'profile':str(vision.projector),'thinking':vision.thinking}
         signature=hashlib.sha256(json.dumps(identity,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
         checkpoint=directory/(signature+'.json')
-        removed=set();raw=None;warning=None;verified=False
+        removed=set();raw=None;warning=None;verified=False;boundaries_verified=False
         report('condense',.489,'Определяем заставку целиком и проверяем обе границы')
         try:
             if len(units)>96:raise ValueError('Для проверки всей последовательности недостаточно контекста')
             if checkpoint.is_file():
                 saved=json.loads(checkpoint.read_text('utf-8'))
                 raw=saved['decision'];verified=saved['anchors_verified'] is True
+                boundaries_verified=saved.get('boundaries_verified') is True
                 removed,anchors=sequence_decision(raw,units,duration)
             else:
                 times=[(u['start']+u['end'])/2 for u in units]
@@ -229,17 +243,25 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
                 raw=vision.query(sequence_prompt(units),pages,max_tokens=1800,schema=sequence_schema(units))
                 removed,anchors=sequence_decision(raw,units,duration)
                 if removed:
+                    # At most 16 boundary units => 48 dense views. Six readable
+                    # pages plus two overview pages fit the provider's eight-page
+                    # cap. Larger overviews keep the existing 24-view layout;
+                    # no current unit or chronological context is discarded.
+                    readable=bool(getattr(vision,'supports_image_pages',False)) and len(pages)<=2
                     dense=sequence_sheet(source,boundary_units(raw,units),[],
-                        directory/(signature+'.boundaries.jpg'),cancelled,page_size=24)
+                        directory/(signature+'.boundaries.jpg'),cancelled,
+                        page_size=8 if readable else 24,readable=readable)
                     raw=verify_boundaries(raw,units,pages,vision,duration,dense)
                     removed,anchors=sequence_decision(raw,units,duration)
+                    boundaries_verified=bool(removed)
                 verified=verify_anchors(anchors,units,source,directory,signature,vision,cancelled) if removed else False
                 if verified:
                     raw=verify_exceptions(raw,units,pages,vision,transcript)
                     removed,_=sequence_decision(raw,units,duration)
                 if cancelled():raise InterruptedError('Обработка отменена')
-                atomic_json(checkpoint,{'decision':raw,'anchors_verified':verified})
-            if not verified:removed=set()
+                atomic_json(checkpoint,{'decision':raw,'anchors_verified':verified,
+                                        'boundaries_verified':boundaries_verified})
+            if not verified or not boundaries_verified:removed=set()
             from .source_roles import validate_role_decisions
             verified_nonstory=set()
             if raw.get('exception_role_decisions'):
@@ -247,8 +269,9 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
                     d['unit'] for d in raw['exception_role_decisions'].get('decisions',[])}]
                 verified_nonstory={d['unit'] for d in validate_role_decisions(
                     raw['exception_role_decisions'],checked_units,credit_confirmed=True)}
-            removed={u['id'] for u in units if u['id'] in removed and (
-                u['id'] in verified_nonstory or not _protected_speech(u,transcript))}
+            if raw['kind']!='opening':
+                removed={u['id'] for u in units if u['id'] in removed and (
+                    u['id'] in verified_nonstory or not _protected_speech(u,transcript))}
             if not removed:warning='Заставка не подтверждена целиком; спорный материал сохранён'
         except InterruptedError:raise
         except (ValueError,KeyError,TypeError,RuntimeError,OSError) as error:
@@ -258,18 +281,25 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
         for index in range(left,right+1):
             original=events[index]
             review=reviews.setdefault(index,{'pieces':[],'proofs':[],'warnings':[],'evidence':[],
-                                             'sequence_ranges':[],'kind':None})
+                                             'sequence_ranges':[],'opening_ranges':[],
+                                             'opening_proofs':[],'kind':None})
             pieces=[{'start':max(original['start'],u['start']),'end':min(original['end'],u['end'])}
                     for u in excluded if u['start']<original['end'] and u['end']>original['start']]
             if pieces:
                 review['pieces'].extend(pieces)
                 review['proofs'].append({'checkpoint':checkpoint.name,'units':units})
                 review['kind']=raw['kind']
-            if raw and raw.get('kind') in ('opening','ending') and verified:
+            if raw and raw.get('kind') in ('opening','ending') and verified and boundaries_verified:
                 by_id={u['id']:u for u in units}
                 a=max(original['start'],by_id[raw['first_unit']]['start'])
                 b=min(original['end'],by_id[raw['last_unit']]['end'])
-                if a<b:review['sequence_ranges'].append({'start':a,'end':b})
+                if a<b:
+                    review['sequence_ranges'].append({'start':a,'end':b})
+                    if raw['kind']=='opening':
+                        review['opening_ranges'].append({'start':a,'end':b})
+                        review['opening_proofs'].append({'start':a,'end':b,'version':VERSION,
+                            'kind':'opening','boundaries_verified':True,'anchors_verified':True,
+                            'confidence':raw['confidence'],'anchors':anchors,'checkpoint':checkpoint.name})
             if raw and raw.get('boundary_evidence'):
                 review['evidence'].append(raw['boundary_evidence'])
             if warning and index in group:
@@ -294,6 +324,12 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
             from .source_roles import merge_ranges
             event['confirmed_credit_sequence_ranges']=merge_ranges([
                 *original.get('confirmed_credit_sequence_ranges',[]),*review['sequence_ranges']])
+        if review['opening_ranges']:
+            from .source_roles import merge_ranges
+            event['confirmed_opening_ranges']=merge_ranges([
+                *original.get('confirmed_opening_ranges',[]),*review['opening_ranges']])
+            event['confirmed_opening_proofs']=[*original.get('confirmed_opening_proofs',[]),
+                                              *review['opening_proofs']]
         if not ranges and pieces:
             event.update(credit_montage=True,contains_credits=True,kind=event['credits_kind'],importance=1,requires=[])
         elif ranges:

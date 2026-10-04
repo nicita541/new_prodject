@@ -11,7 +11,7 @@ from pathlib import Path
 from .config import ROOT
 from .jobs import atomic_json
 
-VERSION = 4
+VERSION = 5
 ROLES = ('current_story','uploader','next_preview','title_narration','song_or_artifact','production_credit','uncertain')
 EXCLUSION_KEYS = ('excluded_title_units','excluded_credit_ranges','excluded_closing_ranges','excluded_review_ranges')
 
@@ -29,9 +29,8 @@ def merge_ranges(ranges):
     return merged
 
 
-def verified_story_ranges(event):
-    """Authoritative current-story proof uses bounded original source ranges."""
-    supplied=event.get('verified_current_story_ranges',[])
+def _bounded_ranges(event,key):
+    supplied=event.get(key,[])
     if (not isinstance(supplied,list) or any(not isinstance(r,dict)
             or any(type(r.get(k)) not in (int,float) for k in ('start','end')) for r in supplied)):
         raise ValueError('Подтверждённые сюжетные интервалы требуют исходные числовые границы')
@@ -41,12 +40,53 @@ def verified_story_ranges(event):
     return ranges
 
 
+def authoritative_opening_ranges(event):
+    """Only independently bounded, anchored OP proof outranks story labels."""
+    from .production_sequence import VERSION as sequence_version,STRONG_ANCHORS
+    from .titles import _subtract
+    ranges=_bounded_ranges(event,'confirmed_opening_ranges')
+    if not ranges:return []
+    proofs=event.get('confirmed_opening_proofs')
+    if not isinstance(proofs,list) or not proofs:
+        raise ValueError('Нет независимого подтверждения обеих границ OP')
+    covered=[]
+    for proof in proofs:
+        if (not isinstance(proof,dict) or proof.get('version')!=sequence_version
+                or proof.get('kind')!='opening' or proof.get('boundaries_verified') is not True
+                or proof.get('anchors_verified') is not True
+                or not isinstance(proof.get('checkpoint'),str)
+                or not re.fullmatch(r'[0-9a-f]{64}\.json',proof['checkpoint'])):
+            raise ValueError('Некорректное происхождение подтверждённой OP')
+        confidence=proof.get('confidence')
+        anchors=proof.get('anchors')
+        if (type(confidence) not in (int,float) or not math.isfinite(confidence) or not .85<=confidence<=1
+                or not isinstance(anchors,list) or not anchors
+                or any(not isinstance(a,dict) or a.get('type') not in STRONG_ANCHORS
+                       or not isinstance(a.get('visible_text'),str) or not a['visible_text'].strip()
+                       or not isinstance(a.get('unit'),str) for a in anchors)):
+            raise ValueError('Нет подтверждённой видимой производственной опоры OP')
+        piece=_bounded_ranges(
+            {**event,'_opening_proof_range':[{'start':proof.get('start'),'end':proof.get('end')}]},
+            '_opening_proof_range')
+        covered.extend(piece)
+    if _subtract(ranges,merge_ranges(covered)):
+        raise ValueError('Подтверждение OP не покрывает её исходные границы')
+    return ranges
+
+
+def verified_story_ranges(event):
+    """Current-story proof remains authoritative outside confirmed whole OP."""
+    from .titles import _subtract
+    return _subtract(_bounded_ranges(event,'verified_current_story_ranges'),authoritative_opening_ranges(event))
+
+
 def confirmed_exclusions(event):
     from .titles import _subtract
     # A broad later exclusion cannot swallow an independently verified story
     # exception. Genuine confirmed nonstory elsewhere remains authoritative.
-    return _subtract(merge_ranges([r for key in EXCLUSION_KEYS for r in event.get(key,[])]),
-                     verified_story_ranges(event))
+    ordinary=_subtract(merge_ranges([r for key in EXCLUSION_KEYS for r in event.get(key,[])]),
+                       verified_story_ranges(event))
+    return merge_ranges([*ordinary,*authoritative_opening_ranges(event)])
 
 
 def overlaps_exclusions(interval,events):
@@ -173,8 +213,10 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
             context_end=min(duration,events[min(len(events)-1,index+1)]['start']+2)
             context_times=sorted({context_start,max(0,batch[0]['start']-1),
                                   min(duration-.001,batch[-1]['end']+1),min(duration-.001,context_end)})
+            paged=bool(getattr(vision,'supports_image_pages',False))
             identity={'version':VERSION,'source':str(source),'size':stat.st_size,'mtime':stat.st_mtime_ns,
                       'units':batch,'context':context_times,'credit_confirmed':credit_confirmed,'policy':profile,
+                      'image_layout':'readable-two-column-v1' if paged else 'legacy-three-column-v1',
                       'model':str(vision.model),'profile':getattr(vision,'cache_profile',str(vision.projector))}
             key=hashlib.sha256(json.dumps(identity,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
             checkpoint=directory/(key+'.json')
@@ -185,7 +227,7 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
                 else:
                     report('condense',.49,'Проверяем сюжетную речь, озвучку титров и анонсы')
                     pages=sequence_sheet(source,batch,context_times,directory/(key+'.jpg'),cancelled,
-                                         page_size=12 if getattr(vision,'supports_image_pages',False) else None)
+                                         page_size=8 if paged else None,readable=paged)
                     media=pages if getattr(vision,'supports_image_pages',False) else pages[0]
                     prompt=(instruction(profile)+' Classify source roles using only CURRENT unit frames, before/after context and exact supplied ASR. '
                         'The whole unit must be nonstory to remove it. Character dialogue and current-episode narrator, '
