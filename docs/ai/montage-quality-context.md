@@ -1,0 +1,9 @@
+# Montage quality context
+
+The user-selected editorial profile is chronological story condensation with balanced compression. The user wants this preference persisted so it can be changed later. Keep almost all short reactions and jokes for atmosphere; remove long non-event dwell and exact or uninformative repetition only when evidence shows they add no story or atmosphere value. Silence, stillness, and motion alone do not decide value. See [the quality specification](../specs/montage-quality.md) for confirmed examples and acceptance criteria.
+
+The confirmed primary reference and latest completed-job target is «История о перекуре за супермаркетом». The user reports that unwanted OP remains in part 2 and unwanted ED in the final part; remove confirmed pure credits while retaining current-episode plot after the apparent ending. Remove next-episode preview. Use «Забота об одарённой девушке» as a separate cross-source regression. Old exports and manual exclusions are regression evidence, not proof of fresh-run behavior.
+
+The diagnosis report identifies an overlap-order defect in credit handling that can replace a rescued event's selected ranges with an exclusion range from a later credit cluster. Resolve this without losing the surrounding event. The dedicated diagnosis and QA baseline reports live under `docs/qa/`. A passing general test suite is not editorial acceptance: require current-source evidence, a fresh output review, and a cache-backed consistency review.
+
+Keep source media, job state, API settings and payloads, model files, external tools, caches, and generated exports inside their existing ignored workspace directories. Do not copy secrets or raw provider responses into tracked notes. Update this context only when the persisted policy, stable review workflow, or source architecture changes.
