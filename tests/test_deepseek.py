@@ -212,6 +212,32 @@ class DeepSeekTests(unittest.TestCase):
         # Subcases represent independent accounts; only this UUID fixture is reset.
         self.ledger.unlink(missing_ok=True)
 
+    def new_and_previous_digest(self,prompt,schema):
+        """Obtain exact request identities through the production query builder, offline."""
+        reference_ledger=self.directory/'reference-spending.json'
+        reference_responses=self.directory/'reference-responses'
+        if 'decisions' in schema.get('properties',{}):
+            self.fetch.return_value=reply('{"decisions":[{"unit":"A","role":"current_story"}]}')
+        else:
+            self.fetch.return_value=reply()
+        with patch.object(api,'LEDGER',reference_ledger), patch.object(api,'RESPONSES',reference_responses):
+            self.vision().query(prompt,max_tokens=20,schema=schema)
+            body=self.fetch.call_args.args[0]
+            new_digest=json.loads(reference_ledger.read_text('utf-8'))['entries'][0]['request']
+        text=body['messages'][1]['content'][0]['text']
+        if 'decisions' in schema.get('properties',{}):
+            self.assertIn('Allowed output unit IDs by array:',text)
+            self.assertIn('"decisions": ["A"]',text)
+        previous_body=copy.deepcopy(body)
+        text=previous_body['messages'][1]['content'][0]['text']
+        discipline=api._response_discipline(schema)
+        self.assertTrue(text.endswith(discipline))
+        previous_body['messages'][1]['content'][0]['text']=text[:-len(discipline)]
+        previous_digest=hashlib.sha256(json.dumps({'profile':api.PROFILE,'request':previous_body},
+            sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+        self.fetch.reset_mock()
+        return previous_digest,new_digest
+
     def legacy_digest(self, body, prompt, schema, max_tokens=1200):
         legacy=copy.deepcopy(body)
         legacy['max_tokens']=max_tokens
@@ -844,6 +870,178 @@ class DeepSeekTests(unittest.TestCase):
         with self.assertRaises(api.RemoteError):
             api.resume_confirmed_requests()
         self.assertEqual(self.http.call_count, calls)
+
+    def test_confirmed_recovery_preserves_acknowledged_charges_and_blocks_every_rejected_digest(self):
+        usage={'prompt_tokens':100,'completion_tokens':10}
+        charge=str((Decimal(100)*api.INPUT_PER_MILLION+Decimal(10)*api.OUTPUT_PER_MILLION)/1000000)
+        ledger={'halted':True,'blocked_requests':['older-uncertain'], 'entries':[
+            {'request':'older-uncertain','status':'acknowledged_unknown','previous_status':'unknown',
+             'reservation_retained':True,'charged_ceiling_usd':'0.0038325','reserved_usd':'0.0038325'},
+            {'request':'older-completed-rejection','status':'completed','usage':usage,
+             'charged_ceiling_usd':charge,'reserved_usd':'0.01'},
+            {'request':'latest-rejection','status':'completed','usage':usage,
+             'charged_ceiling_usd':charge,'reserved_usd':'0.01'}]}
+        self.ledger.write_text(json.dumps(ledger),encoding='utf-8')
+        rejected=self.responses/'rejected';rejected.mkdir(parents=True)
+        for digest in ('older-completed-rejection','latest-rejection'):
+            (rejected/(digest+'.json')).write_text('{}',encoding='utf-8')
+
+        blocked=api._confirmed_recovery_blocked_requests(ledger)
+
+        self.assertEqual(blocked,{'older-uncertain','older-completed-rejection','latest-rejection'})
+        self.assertEqual(ledger['entries'][0]['status'],'acknowledged_unknown')
+        self.assertEqual(ledger['entries'][0]['charged_ceiling_usd'],'0.0038325')
+        self.assertEqual(ledger['entries'][0]['reserved_usd'],'0.0038325')
+        self.assertTrue(ledger['halted'])
+
+    def test_confirmed_recovery_rejects_malformed_acknowledgement_and_unresolved_rows(self):
+        valid={'request':'older-uncertain','status':'acknowledged_unknown',
+               'previous_status':'unknown','reservation_retained':True,
+               'charged_ceiling_usd':'0.0038325','reserved_usd':'0.0038325'}
+        for invalid in (
+                {**valid,'reservation_retained':False},
+                {**valid,'previous_status':'completed'},
+                {**valid,'charged_ceiling_usd':'0.0038325','reserved_usd':'0.004'},
+                {'request':'still-uncertain','status':'unknown','charged_ceiling_usd':'0.01','reserved_usd':'0.01'}):
+            with self.subTest(invalid=invalid), self.assertRaises(api.RemoteError):
+                api._confirmed_recovery_blocked_requests({'halted':True,
+                    'blocked_requests':['older-uncertain'],'entries':[invalid]})
+
+    def test_explicit_recovery_reopens_new_work_after_old_acknowledgements_without_replaying_failed_query(self):
+        self.fetch.return_value=reply('{"keep":["invented"]}')
+        with self.assertRaises(api.RemoteError):
+            self.vision().query('current schema rejection',max_tokens=20,schema=SCHEMA)
+        ledger=json.loads(self.ledger.read_text('utf-8'))
+        failed_request=ledger['entries'][-1]['request']
+        acknowledged=[
+            {'request':'older-uncertain-a','status':'acknowledged_unknown','previous_status':'unknown',
+             'reservation_retained':True,'charged_ceiling_usd':'0.0038325','reserved_usd':'0.0038325'},
+            {'request':'older-uncertain-b','status':'acknowledged_unknown','previous_status':'reserved',
+             'reservation_retained':True,'charged_ceiling_usd':'0.0040188','reserved_usd':'0.0040188'}]
+        ledger['entries'][0:0]=acknowledged
+        ledger['blocked_requests']=['older-uncertain-a','older-uncertain-b']
+        self.ledger.write_text(json.dumps(ledger),encoding='utf-8')
+
+        result=api.resume_confirmed_requests()
+        after=json.loads(self.ledger.read_text('utf-8'))
+        self.assertTrue(result['resumed'])
+        self.assertFalse(after['halted'])
+        self.assertIn(failed_request,after['blocked_requests'])
+        for entry,charge in zip(after['entries'][:2],('0.0038325','0.0040188')):
+            self.assertEqual(entry['status'],'acknowledged_unknown')
+            self.assertEqual(entry['charged_ceiling_usd'],charge)
+            self.assertEqual(entry['reserved_usd'],charge)
+        self.fetch.reset_mock()
+        with self.assertRaises(api.AlreadyPaidInvalidResponse):
+            self.vision().query('current schema rejection',max_tokens=20,schema=SCHEMA)
+        self.fetch.assert_not_called()
+        self.fetch.return_value=reply()
+        self.vision().query('new request after confirmed recovery',max_tokens=20,schema=SCHEMA)
+        self.assertEqual(self.fetch.call_count,1)
+
+    def test_exact_schema_correction_is_one_shot_and_new_unknown_charge_cannot_be_retried(self):
+        prompt='Classify the whole provided unit batch; return every supplied unit ID once.'
+        schema={'type':'object','properties':{'decisions':{'type':'array','items':{
+            'type':'object','properties':{'unit':{'type':'string','enum':['A']},
+            'role':{'type':'string','enum':['current_story','next_preview']}},
+            'required':['unit','role'],'additionalProperties':False}}},
+            'required':['decisions'],'additionalProperties':False}
+        old_digest,new_digest=self.new_and_previous_digest(prompt,schema)
+        usage={'prompt_tokens':100,'completion_tokens':10}
+        charge=str((Decimal(100)*api.INPUT_PER_MILLION+Decimal(10)*api.OUTPUT_PER_MILLION)/1000000)
+        self.ledger.write_text(json.dumps({'version':1,'halted':True,'blocked_requests':[old_digest],
+            'entries':[{'request':old_digest,'status':'completed','usage':usage,
+                'charged_ceiling_usd':charge,'reserved_usd':'0.01'}]}),encoding='utf-8')
+        rejected=self.responses/'rejected';rejected.mkdir(parents=True)
+        (rejected/(old_digest+'.json')).write_text(json.dumps({'rejection_category':'schema_rejection',
+            'usage':usage}),encoding='utf-8')
+
+        result=api.resume_confirmed_requests(corrections={old_digest:new_digest})
+        self.assertTrue(result['resumed'])
+        initial_approval=json.loads(self.ledger.read_text('utf-8'))['request_corrections'][new_digest]
+        self.assertEqual(initial_approval['source_request'],old_digest)
+        self.assertEqual(initial_approval['reason'],'schema_scope_correction')
+        self.assertEqual(initial_approval['status'],'approved')
+        self.assertIsInstance(initial_approval['approved_at'],float)
+        def fail_after_reservation(body):
+            persisted=json.loads(self.ledger.read_text('utf-8'))
+            approval=persisted['request_corrections'][new_digest]
+            self.assertEqual(approval['status'],'reserved')
+            self.assertTrue(any(entry.get('id')==approval['entry'] and
+                                entry.get('request')==new_digest and
+                                entry.get('corrects_request')==old_digest
+                                for entry in persisted['entries']))
+            raise api.RemoteError('simulated uncertain provider result')
+        self.fetch.side_effect=fail_after_reservation
+        with self.assertRaises(api.RemoteError):
+            self.vision().query(prompt,max_tokens=20,schema=schema)
+        after=json.loads(self.ledger.read_text('utf-8'))
+        self.assertTrue(after['halted'])
+        self.assertEqual(after['request_corrections'][new_digest]['status'],'reserved')
+        self.assertEqual(after['entries'][-1]['request'],new_digest)
+        self.assertEqual(after['entries'][-1]['corrects_request'],old_digest)
+        calls=self.fetch.call_count
+        with self.assertRaises(api.BudgetExceeded):
+            self.vision().query(prompt,max_tokens=20,schema=schema)
+        self.assertEqual(self.fetch.call_count,calls)
+
+    def test_correction_requires_exact_confirmed_schema_rejection_and_direct_new_block_wins(self):
+        old_digest='a'*64
+        new_digest='b'*64
+        usage={'prompt_tokens':100,'completion_tokens':10}
+        charge=str((Decimal(100)*api.INPUT_PER_MILLION+Decimal(10)*api.OUTPUT_PER_MILLION)/1000000)
+        entry={'request':old_digest,'status':'completed','usage':usage,
+               'charged_ceiling_usd':charge,'reserved_usd':'0.01'}
+        ledger={'halted':True,'blocked_requests':[old_digest],'entries':[entry]}
+        rejected=self.responses/'rejected';rejected.mkdir(parents=True)
+        diagnostic=rejected/(old_digest+'.json')
+        diagnostic.write_text(json.dumps({'rejection_category':'schema_rejection','usage':usage}),encoding='utf-8')
+        for invalid_diagnostic in (
+                {'rejection_category':'malformed_json','usage':usage},
+                {'rejection_category':'schema_rejection','usage':{'prompt_tokens':True,'completion_tokens':10}},
+                {'rejection_category':'schema_rejection','usage':{'prompt_tokens':101,'completion_tokens':10}}):
+            with self.subTest(invalid_diagnostic=invalid_diagnostic):
+                diagnostic.write_text(json.dumps(invalid_diagnostic),encoding='utf-8')
+                with self.assertRaises(api.RemoteError):
+                    api._reviewed_corrections(ledger,{old_digest:new_digest},set([old_digest]))
+        diagnostic.write_text(json.dumps({'rejection_category':'schema_rejection','usage':usage}),encoding='utf-8')
+        cases=[
+            ({'request_corrections':{}},[{'request':old_digest,'status':'acknowledged_unknown',
+              'previous_status':'unknown','reservation_retained':True,
+              'charged_ceiling_usd':charge,'reserved_usd':charge}], 'unknown rows never authorize correction'),
+            ({'request_corrections':{}},[entry], 'source must be explicitly blocked'),
+        ]
+        for extra,entries,label in cases:
+            with self.subTest(label=label):
+                candidate={**ledger,**extra,'entries':entries,
+                           'blocked_requests':[] if label.startswith('source') else [old_digest]}
+                with self.assertRaises(api.RemoteError):
+                    api._reviewed_corrections(candidate,{old_digest:new_digest},
+                                              set(candidate['blocked_requests']))
+        approval={'source_request':old_digest,'reason':'schema_scope_correction',
+                  'status':'approved','approved_at':1.0}
+        approved_ledger={**ledger,'request_corrections':{new_digest:approval}}
+        self.assertEqual(api._approved_correction(approved_ledger,new_digest,(new_digest,old_digest)),approval)
+        self.assertIsNone(api._approved_correction({**approved_ledger,'blocked_requests':[old_digest,new_digest]},
+            new_digest,(new_digest,old_digest)))
+        self.assertIsNone(api._approved_correction({**approved_ledger,'blocked_requests':[old_digest,'c'*64]},
+            new_digest,(new_digest,old_digest,'c'*64)))
+        self.assertIsNone(api._approved_correction({**approved_ledger,'entries':[entry,{'request':new_digest}]},
+            new_digest,(new_digest,old_digest)))
+
+    def test_recovery_rejects_stale_ledger_snapshot_before_balance_or_write(self):
+        self.ledger.write_text(json.dumps({'version':1,'halted':True,'entries':[
+            {'request':'confirmed','status':'completed','usage':{'prompt_tokens':0,'completion_tokens':0},
+             'charged_ceiling_usd':'0','reserved_usd':'0'}]}),encoding='utf-8')
+        before=self.ledger.read_bytes()
+        expected=hashlib.sha256(before).hexdigest()
+        self.http.reset_mock()
+        with self.assertRaises(api.RemoteError):
+            api.resume_confirmed_requests(expected_ledger_sha256='0'*64 if expected!='0'*64 else 'f'*64)
+        self.http.assert_not_called()
+        self.assertEqual(self.ledger.read_bytes(),before)
+        self.assertNotEqual(hashlib.sha256(self.ledger.read_bytes()).hexdigest(),
+                            '0'*64 if expected!='0'*64 else 'f'*64)
 
     def test_explicit_recovery_requires_verified_available_funds(self):
         self.fetch.return_value = reply('{"keep":["invented"]}')

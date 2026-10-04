@@ -327,37 +327,141 @@ def check_connection():
             'vision_supported': 'image' in current.get('input_modalities', [])}
 
 
-def resume_confirmed_requests():
+def _confirmed_recovery_blocked_requests(ledger):
+    """Validate recovery without changing acknowledged costs or replay guards."""
+    entries = ledger['entries']
+    blocked = set(ledger.get('blocked_requests', []))
+    if not entries:
+        raise RemoteError('Есть неподтверждённый расход; автоматическое восстановление запрещено')
+    for entry in entries:
+        if entry.get('status') == 'acknowledged_unknown':
+            # This was already accepted explicitly; do not require the user
+            # to acknowledge it again or pretend its usage was confirmed.
+            if (entry.get('reservation_retained') is not True
+                    or entry.get('previous_status') not in ('reserved', 'unknown', 'unknown_usage')
+                    or entry.get('request') not in blocked
+                    or _decimal(entry['charged_ceiling_usd']) != _decimal(entry.get('reserved_usd'))):
+                raise RemoteError('Ранее признанный резерв или запрет повтора не подтверждён')
+            continue
+        if entry.get('status') != 'completed':
+            raise RemoteError('Есть неподтверждённый расход; автоматическое восстановление запрещено')
+        usage = entry.get('usage', {})
+        if not isinstance(usage, dict):
+            raise RemoteError('Расход не подтверждён; восстановление запрещено')
+        incoming, outgoing = usage.get('prompt_tokens'), usage.get('completion_tokens')
+        if type(incoming) is not int or type(outgoing) is not int or incoming < 0 or outgoing < 0:
+            raise RemoteError('Расход не подтверждён; восстановление запрещено')
+        ceiling = (Decimal(incoming)*INPUT_PER_MILLION+Decimal(outgoing)*OUTPUT_PER_MILLION)/1000000
+        if ceiling != _decimal(entry['charged_ceiling_usd']) or ceiling > _decimal(entry.get('reserved_usd')):
+            raise RemoteError('Расход превысил подтверждённый резерв; восстановление запрещено')
+        if (RESPONSES / 'rejected' / (entry['request']+'.json')).is_file():
+            blocked.add(entry['request'])
+    # Preserve the conservative last-request guard even if diagnostic storage
+    # failed. Recovery enables NEW tasks, never replay of the halted task.
+    blocked.add(entries[-1]['request'])
+    return blocked
+
+
+def _confirmed_schema_rejection(ledger, digest):
+    """A correction is allowed only for a confirmed, schema-rejected debit."""
+    if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):
+        raise RemoteError('Исходный запрос исправляющей проверки некорректен')
+    entries = [entry for entry in ledger['entries'] if entry.get('request') == digest]
+    if not entries or any(entry.get('status') != 'completed' for entry in entries):
+        raise RemoteError('Исправляющая проверка требует подтверждённый расход')
+    for entry in entries:
+        usage = entry.get('usage', {})
+        if not isinstance(usage, dict):
+            raise RemoteError('Расход исправляемого запроса не подтверждён')
+        incoming, outgoing = usage.get('prompt_tokens'), usage.get('completion_tokens')
+        if type(incoming) is not int or type(outgoing) is not int or min(incoming, outgoing) < 0:
+            raise RemoteError('Расход исправляемого запроса не подтверждён')
+        ceiling = (Decimal(incoming)*INPUT_PER_MILLION+Decimal(outgoing)*OUTPUT_PER_MILLION)/1000000
+        if ceiling != _decimal(entry['charged_ceiling_usd']) or ceiling > _decimal(entry.get('reserved_usd')):
+            raise RemoteError('Резерв исправляемого запроса не подтверждён')
+    try:
+        diagnostic = _strict_json((RESPONSES / 'rejected' / (digest+'.json')).read_text('utf-8'))
+        usage = diagnostic['usage']
+        if (diagnostic['rejection_category'] != 'schema_rejection'
+                or any(type(usage.get(key)) is not int or usage[key] != entries[-1]['usage'][key]
+                       for key in ('prompt_tokens', 'completion_tokens'))):
+            raise ValueError()
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        raise RemoteError('Отклонение схемы исправляемого запроса не подтверждено') from None
+
+
+def _reviewed_corrections(ledger, corrections, blocked):
+    """Prepare exact, explicit one-shot corrections; never approve unknown bills."""
+    if not isinstance(corrections, dict):
+        raise RemoteError('Исправляющие проверки требуют точные пары запросов')
+    approved = dict(ledger.get('request_corrections', {}))
+    for source, destination in corrections.items():
+        if (not isinstance(source, str) or not isinstance(destination, str)
+                or not re.fullmatch(r'[a-f0-9]{64}', source)
+                or not re.fullmatch(r'[a-f0-9]{64}', destination) or source == destination
+                or source not in blocked or destination in blocked
+                or any(entry.get('request') == destination for entry in ledger['entries'])):
+            raise RemoteError('Исправляющая проверка не является новым точным запросом')
+        _confirmed_schema_rejection(ledger, source)
+        previous = approved.get(destination)
+        if previous is not None:
+            if previous.get('source_request') != source or previous.get('status') != 'approved':
+                raise RemoteError('Исправляющая проверка уже использована или несовместима')
+            continue
+        approved[destination] = {'source_request': source, 'reason': 'schema_scope_correction',
+                                 'status': 'approved', 'approved_at': time.time()}
+    return approved
+
+
+def _approved_correction(ledger, digest, compatible_digests):
+    """Return an unused explicit correction only for its exact new identity."""
+    blocked = set(ledger.get('blocked_requests', []))
+    rejected_aliases = blocked.intersection(compatible_digests)
+    if digest in blocked:
+        return None
+    approval = ledger.get('request_corrections', {}).get(digest)
+    if (not isinstance(approval, dict) or approval.get('status') != 'approved'
+            or approval.get('reason') != 'schema_scope_correction'
+            or rejected_aliases != {approval.get('source_request')}
+            or any(entry.get('request') == digest for entry in ledger['entries'])):
+        return None
+    _confirmed_schema_rejection(ledger, approval['source_request'])
+    return approval
+
+
+def resume_confirmed_requests(*, corrections=None, expected_ledger_sha256=None):
     """Explicit recovery for NEW requests after fully accounted invalid output.
 
-    Never release unknown billing or repeat a rejected request. This is not
+    Previously acknowledged reservations stay retained and blocked. Never
+    release new unknown billing or repeat a rejected request. This is not
     invoked by query/check_connection or an automatic retry.
+    Optional reviewed old->new digest pairs authorize one corrected request,
+    exclusively after a confirmed schema rejection; they never replay old IDs.
+    An optional ledger hash binds an offline-reviewed snapshot to this action.
     """
     with _spending_lock():
+        if expected_ledger_sha256 is not None:
+            if (not isinstance(expected_ledger_sha256, str)
+                    or not re.fullmatch(r'[a-f0-9]{64}', expected_ledger_sha256)):
+                raise RemoteError('Контрольная сумма состояния расходов некорректна')
+            actual = hashlib.sha256(LEDGER.read_bytes()).hexdigest()
+            if actual != expected_ledger_sha256:
+                raise RemoteError('Состояние расходов изменилось после проверки; восстановление запрещено')
         ledger = _read_ledger()
         if not ledger.get('halted'):
             return {'resumed': False, 'reason': 'not_halted'}
-        entries = ledger['entries']
-        if not entries or any(entry.get('status') != 'completed' for entry in entries):
-            raise RemoteError('Есть неподтверждённый расход; автоматическое восстановление запрещено')
-        for entry in entries:
-            usage = entry.get('usage', {})
-            incoming, outgoing = usage.get('prompt_tokens'), usage.get('completion_tokens')
-            if type(incoming) is not int or type(outgoing) is not int or incoming < 0 or outgoing < 0:
-                raise RemoteError('Расход не подтверждён; восстановление запрещено')
-            ceiling = (Decimal(incoming)*INPUT_PER_MILLION+Decimal(outgoing)*OUTPUT_PER_MILLION)/1000000
-            if ceiling != _decimal(entry['charged_ceiling_usd']) or ceiling > _decimal(entry['reserved_usd']):
-                raise RemoteError('Расход превысил подтверждённый резерв; восстановление запрещено')
+        blocked = _confirmed_recovery_blocked_requests(ledger)
+        approved = _reviewed_corrections(ledger, {} if corrections is None else corrections, blocked)
         balance = _http('/user/balance')
         usd = next((item for item in balance.get('balance_infos', []) if item.get('currency') == 'USD'), None)
         if balance.get('is_available') is not True or usd is None or _decimal(usd['total_balance']) <= 0:
             raise RemoteError('Доступный долларовый баланс не подтверждён')
-        blocked = set(ledger.get('blocked_requests', []))
-        blocked.add(entries[-1]['request'])
         ledger.update(halted=False, blocked_requests=sorted(blocked),
                       last_balance_available=True,
                       last_balance_infos=[{'currency':'USD','total_balance':str(_decimal(usd['total_balance']))}],
                       recovered_for_new_requests_at=time.time())
+        if corrections:
+            ledger['request_corrections'] = approved
         atomic_json(LEDGER, ledger)
         return {'resumed': True, 'blocked_requests': len(blocked), 'charged_ceiling_usd': str(_total(ledger))}
 
@@ -389,6 +493,22 @@ def _validate(data, schema):
     if kind == 'array':
         for value in data:
             _validate(value, schema.get('items', {}))
+
+
+def _response_discipline(schema):
+    """Clarify existing enum/coverage rules without broadening the schema."""
+    text = ('\nEnum values are exhaustive allowed values, never examples. '
+            'Use only supplied IDs even when images show other labels; those labels '
+            'are context evidence, not additional output targets. '
+            'Return exactly the coverage requested by the task.')
+    scopes = {}
+    for name, field in schema.get('properties', {}).items():
+        unit = field.get('items', {}).get('properties', {}).get('unit', {})
+        if field.get('type') == 'array' and 'enum' in unit:
+            scopes[name] = unit['enum']
+    if scopes:
+        text += '\nAllowed output unit IDs by array: '+json.dumps(scopes, ensure_ascii=False)+'.'
+    return text
 
 
 def provider_identity(provider: str):
@@ -467,6 +587,9 @@ class DeepSeekVision:
                        'Return a concrete JSON instance with actual values matching the specification. '
                        'Do not return schema definitions or type/properties/enum keys. '
                        'Return compact JSON only, no explanation.\nSchema specification: '+specification)
+        previous_prompt = prompt
+        if schema is not None:
+            prompt += _response_discipline(schema)
         text_bytes = len((SYSTEM+prompt).encode('utf-8'))
         if text_bytes > self.text_budget:
             raise BudgetExceeded('Запрос DeepSeek слишком большой для экономного режима')
@@ -496,11 +619,19 @@ class DeepSeekVision:
         instance_body = {**body, 'max_tokens': requested_tokens}
         instance_digest = hashlib.sha256(json.dumps({'profile': PROFILE, 'request': instance_body},
                                                    sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+        previous_body = {**body, 'messages': [body['messages'][0], {'role': 'user',
+            'content': [{'type': 'text', 'text': previous_prompt}, *content[1:]]}]}
+        previous_digest = hashlib.sha256(json.dumps({'profile': PROFILE, 'request': previous_body},
+                                                   sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+        previous_instance_body = {**previous_body, 'max_tokens': requested_tokens}
+        previous_instance_digest = hashlib.sha256(json.dumps({'profile': PROFILE, 'request': previous_instance_body},
+                                                            sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
         legacy_body = {**instance_body, 'messages': [body['messages'][0], {'role': 'user',
             'content': [{'type': 'text', 'text': legacy_prompt}, *content[1:]]}]}
         legacy_digest = hashlib.sha256(json.dumps({'profile': PROFILE, 'request': legacy_body},
                                                  sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
-        compatible_digests = tuple(dict.fromkeys((digest, instance_digest, legacy_digest)))
+        compatible_digests = tuple(dict.fromkeys((digest, instance_digest, previous_digest,
+                                                  previous_instance_digest, legacy_digest)))
         RESPONSES.resolve().relative_to(ROOT.resolve())
         RESPONSES.mkdir(parents=True, exist_ok=True)
         cached = RESPONSES / (digest+'.json')
@@ -529,8 +660,11 @@ class DeepSeekVision:
                 atomic_json(LEDGER, ledger)
             if ledger.get('halted'):
                 raise BudgetExceeded('DeepSeek остановлен после неподтверждённого ответа или расхода; выберите локальный анализ')
+            correction = None
             if any(candidate in ledger.get('blocked_requests', []) for candidate in compatible_digests):
-                raise AlreadyPaidInvalidResponse('Этот неудачный запрос уже оплачен и исключён из повторов')
+                correction = _approved_correction(ledger, digest, compatible_digests)
+                if correction is None:
+                    raise AlreadyPaidInvalidResponse('Этот неудачный запрос уже оплачен и исключён из повторов')
             # UTF-8 bytes bound text tokens; official maximum is 1024/image.
             input_bound = text_bytes+512+1024*len(images)
             reservation = (Decimal(input_bound)*INPUT_PER_MILLION+Decimal(max_tokens)*OUTPUT_PER_MILLION)/1000000
@@ -559,6 +693,9 @@ class DeepSeekVision:
                                               and e.get('status') != 'cancelled_before_send' for e in ledger['entries']))
             entry = {'id': uuid.uuid4().hex, 'request': digest, 'status': 'reserved', 'job': episode_key, 'attempt': attempt,
                      'charged_ceiling_usd': str(reservation), 'reserved_usd': str(reservation)}
+            if correction is not None:
+                correction.update(status='reserved', entry=entry['id'])
+                entry['corrects_request'] = correction['source_request']
             ledger['entries'].append(entry)
             atomic_json(LEDGER, ledger)  # Must succeed BEFORE sending a paid request.
             if self.cancelled():
