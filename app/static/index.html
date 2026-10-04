@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Кадр — локальный монтаж шортсов</title>
-  <link rel="stylesheet" href="/static/style.css?v=checkpoints-1">
-  <script src="/static/app.js" defer></script><script src="/static/library.js" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=analysis-debug-2">
+  <script src="/static/app.js?v=analysis-debug-2" defer></script><script src="/static/library.js" defer></script>
 </head>
 <body>
 <header class="topbar"><a href="#projects" class="brand" aria-label="Кадр, проекты"><span class="brand-mark" aria-hidden="true">К</span>КАДР<span class="brand-note">STUDIO</span></a><nav aria-label="Главное меню"><a href="#projects">Проекты</a><a href="#trash">Корзина</a></nav><span id="connection" class="status-pill"><span class="status-dot"></span><span id="connection-label">Проверяем систему</span></span></header>
@@ -87,17 +87,21 @@
           <div class="panel-heading"><div><p class="eyebrow">МОНТАЖНАЯ</p><h2 id="timeline-heading">Таймлайн серии</h2></div><span id="timeline-duration" class="muted small"></span></div>
           <p class="timeline-help muted small">Выберите часть для просмотра шортса, а склейку — для сравнения с исходником.</p>
           <div class="timeline-tools"><div class="timeline-legend"><span><i class="kept-key"></i>В шортсах</span><span><i class="removed-key"></i>Убрано</span></div>
+          <label class="toggle-label"><input id="analysis-debug" type="checkbox">Отладка анализа</label>
           <label class="timeline-zoom-label" for="timeline-zoom">Масштаб <select id="timeline-zoom"><option value="1">Вся серия</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label></div>
           <div class="timeline-scroll"><div id="timeline-map">
           <div id="timeline-ruler" class="timeline-ruler"></div>
           <div id="timeline-groups" class="timeline-groups" aria-label="Части на общей линии серии"></div>
           <div class="timeline-line"><div id="timeline-overview" class="timeline-track" aria-label="Все фрагменты исходной серии"></div><span id="timeline-playhead" class="timeline-playhead" hidden></span></div>
+          <div id="analysis-debug-lane" class="analysis-debug-lane" aria-label="Причины сохранения исходных интервалов" hidden></div>
           </div></div>
+          <div id="analysis-debug-info" class="analysis-debug-info" hidden><p id="analysis-debug-title" class="small" role="status"></p><p id="analysis-debug-detail" class="muted small"></p></div>
           <div class="source-assembly"><div class="source-review"><video id="source-player" controls playsinline preload="metadata" aria-label="Исходная серия: просмотр выбранного фрагмента"></video><div class="source-transport"><p id="source-clock" class="muted small"></p><label class="toggle-label"><input id="source-limit" type="checkbox">Только выбранный фрагмент</label></div><p id="source-selection" class="small" role="status">Выбери сохранённый или удалённый отрезок.</p><button id="source-full-button" class="secondary-button" type="button">Смотреть исходник целиком</button><p id="source-error" class="message" role="status"></p></div>
           </div>
         </section><section id="results-panel" class="panel" aria-labelledby="results-heading" hidden>
           <div class="panel-heading"><div><p class="eyebrow">ЭКСПОРТ</p><h2 id="results-heading">Шортсы</h2></div><span id="parts-count" class="muted small"></span></div>
           <details id="quality-warnings" class="notice quality-warnings" hidden><summary id="quality-summary">Замечания к монтажу</summary><p id="quality-message">Модель отметила места, которые стоит проверить при просмотре. Сопоставьте их с монтажным планом и исходной серией.</p><ul id="quality-warning-list"></ul></details>
+          <details id="quality-notes" class="quality-notes" hidden><summary>Причины сохранения сцен</summary><ul id="quality-note-list"></ul></details>
           <div class="viewer"><div class="video-frame"><video id="player" controls playsinline preload="metadata" aria-label="Просмотр шортса"></video></div><div class="playlist-column"><p class="muted small">Части по порядку · автопереход</p><ol id="playlist" class="playlist"></ol><div class="download-links"><a id="download-video" class="secondary-button" download>Скачать MP4</a><a id="download-subtitle" class="text-button" download>Субтитры SRT ↓</a></div><p id="player-message" class="muted small" role="status"></p></div></div>
           
         </section></div><p id="review-empty" class="empty-library" hidden>Готового монтажа пока нет. Вернитесь в настройки серии.</p>

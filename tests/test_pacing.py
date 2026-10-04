@@ -58,6 +58,49 @@ class PacingTests(unittest.TestCase):
             'uncertain':False},profile)
         self.assertEqual(event['selected_ranges'],[{'start':0,'end':4}])
 
+    def test_tentative_atmosphere_label_does_not_override_current_empty_hold_review(self):
+        event={'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}],
+               'protected_atmosphere_ranges':[{'start':0,'end':4}]}
+        apply_review(event,[{'id':'s000','start':1,'end':3}],{'decisions':[{
+            'unit':'s000','keep':False,'reason':'scenery','story_change':False,
+            'reaction_or_humor':False,'evidence':'Same empty hallway in the current frames and both neighboring views.'
+        }],'uncertain':False})
+        self.assertEqual(event['selected_ranges'],[{'start':0,'end':1},{'start':3,'end':4}])
+
+    def test_independently_verified_story_and_visible_reactions_still_survive(self):
+        for event,decision in [
+            ({'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}],
+              'verified_current_story_ranges':[{'start':1,'end':3}]},
+             {'reason':'scenery','story_change':False,'reaction_or_humor':False}),
+            ({'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}],
+              'protected_atmosphere_ranges':[{'start':0,'end':4}]},
+             {'reason':'reaction','story_change':False,'reaction_or_humor':True}),
+        ]:
+            apply_review(event,[{'id':'s000','start':1,'end':3}],{'decisions':[{
+                'unit':'s000','keep':False,**decision,
+                'evidence':'A specific expression and gesture visibly changes in the current frames.'
+            }],'uncertain':False})
+            self.assertEqual(event['selected_ranges'],[{'start':0,'end':4}])
+
+    def test_tentative_atmosphere_units_are_sent_for_current_frame_review(self):
+        directory=TEMP/('pacing_atmosphere_'+uuid.uuid4().hex)
+        directory.mkdir()
+        source=directory/'source.mp4';source.write_bytes(b'fixture')
+        event={'id':'silent','start':0,'end':2,'kind':'story','importance':4,'requires':[],
+               'selected_ranges':[{'start':0,'end':2}],
+               'protected_atmosphere_ranges':[{'start':0,'end':2}]}
+        vision=Mock(model=Path('model'),projector=Path('profile'),cache_profile='fixture')
+        vision.query.return_value={'decisions':[{'unit':'A','keep':False,'reason':'scenery',
+            'story_change':False,'reaction_or_humor':False,
+            'evidence':'The current frames show the same empty hallway as the neighboring views.'}],
+            'uncertain':False}
+        with patch('app.pacing.make_sheet'):
+            result=refine_pacing(source,[event],{'words':[],'segments':[]},[],directory,vision,
+                                 lambda *a:None,lambda:False)
+        vision.query.assert_called_once()
+        self.assertEqual(result[0]['selected_ranges'],[])
+        self.assertTrue(result[0]['pacing_excluded'])
+
     def test_repeat_cannot_cite_an_omitted_neighbor(self):
         event={'start':0,'end':4,'selected_ranges':[{'start':0,'end':4}]}
         units=[{'id':'s000','start':1,'end':3,'repeat_witnesses':['before']}]

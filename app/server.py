@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
 from app.jobs import BusyError, JobManager, contained, read_json
+from app.quality import debug_timeline, summarize_plan
 
 MAX_UPLOAD = 20 * 1024 ** 3
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -437,6 +438,12 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         result = read_json(contained(current.job_dir(identifier) / "plan.json", current.jobs))
         if result is None:
             raise HTTPException(404, "Монтажный план ещё не готов")
+        if isinstance(result, dict):
+            # Derived, bounded diagnostics use the existing plan response and
+            # never expose provider payloads or filesystem metadata.
+            result = dict(result)
+            result["quality_summary"] = summarize_plan(result)
+            result["debug_timeline"] = debug_timeline(result)
         return result
 
     @application.api_route('/api/jobs/{identifier}/source', methods=['GET', 'HEAD'])

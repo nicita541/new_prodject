@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import ROOT
 from .jobs import atomic_json
 
-VERSION = 9
+VERSION = 10
 CONTEXT_RADIUS = 2
 ANCHOR_TYPES = ('staff_credit','theme_credit','production_logo','series_title','episode_title')
 STRONG_ANCHORS = set(ANCHOR_TYPES[:3])
@@ -100,6 +100,7 @@ def sequence_prompt(units):
         'An OP is often about 90 seconds, but may be shorter or longer. This is only a soft search/plausibility hint; '
         'never derive a boundary from that duration. Establish both actual transitions from supplied frames. '
         'Keep chronological dialogue, causal actions, and quiet emotional consequences before/after the montage. '
+        'A completed reply and its audible tail belong to the preceding story; an ASR end or silence alone is not an OP/ED transition. '
         'Give first_unit/last_unit, the IMMEDIATE neighboring outside units before_unit/after_unit, '
         'one or two visible staff/theme/production anchors (transcribe actual words), '
         'and narrative_units for genuine chronological story exceptions. '
@@ -160,6 +161,7 @@ def verify_boundaries(raw,units,pages,vision,duration,boundary_pages=None,*,allo
         'ASR over opening/ending songs or dub introductions is not an outside story witness. '
         'The original overview labels K0=U000, K1=U001, etc.; added dense boundary pages label UNIT Uxxx directly. '
         'Inspect the early/middle/late frames of each proposed outside unit, not just its midpoint. '
+        'A unit boundary after dialogue only protects its audible tail; establish the actual production transition from the frames, not the ASR endpoint. '
         'A visible staff/theme/series-title card after the claimed end contradicts that end unless independent CURRENT-story action is mixed into it. '
         'A generic host greeting over production/title imagery before the claimed start is not a current-story witness. '
         'Look beyond such cards until the first independently evidenced episode situation; title recitation is not character dialogue. '
@@ -231,8 +233,20 @@ def _visible_low_confidence_candidate(raw,units):
         and a['visible_text'].strip() for a in anchors)
 
 
-def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, cancelled):
+def sequence_units(start,end,transcript,shots):
+    """Keep audible reply tails on the story side of a proposed OP/ED edge."""
     from .analysis import candidate_units
+    from .planner import _speech_tail
+    speech=[*transcript['segments'],*transcript['words']]
+    # ASR ends are not acoustic cuts. Reuse the planner's bounded handles
+    # before selecting sequence units, so a subsequent exclusion cannot
+    # truncate the tail that the planner would otherwise restore.
+    padded={**transcript,'segments':[{**s,'end':_speech_tail(s['end'],speech,end)}
+                                    for s in transcript['segments']]}
+    return candidate_units(start,end,padded,shots)
+
+
+def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, cancelled):
     from .production import sequence_sheet
     from .story import _protected_speech
     from .titles import _subtract
@@ -247,7 +261,7 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
     for group in original_clusters(events):
         if cancelled():raise InterruptedError('Обработка отменена')
         left=max(0,group[0]-CONTEXT_RADIUS);right=min(len(events)-1,group[-1]+CONTEXT_RADIUS)
-        units=candidate_units(events[left]['start'],events[right]['end'],transcript,shots)
+        units=sequence_units(events[left]['start'],events[right]['end'],transcript,shots)
         positive=[r for e in events[left:right+1] for r in verified_story_ranges(e)]
         units=[{**u,'id':f'U{i:03}','verified_current_story':any(u['start']<r['end'] and u['end']>r['start']
                for r in positive)} for i,u in enumerate(units)]

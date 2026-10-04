@@ -21,6 +21,52 @@ def decision():
 class WholeSequenceTests(unittest.TestCase):
     units=[{'id':f'U{i:03}','start':i*5,'end':(i+1)*5,'text':''} for i in range(5)]
 
+    def test_sequence_units_keep_reply_tail_before_actual_opening_shot(self):
+        from app.production_sequence import sequence_units
+        transcript={'segments':[{'start':83.7,'end':84.62,'text':'Понимаю.'}],
+                    'words':[{'start':83.7,'end':84.62,'text':'Понимаю.'}]}
+        units=sequence_units(77.37,100,transcript,[{'start':88.005,'end':100}])
+        self.assertAlmostEqual(units[0]['end'],85.17)
+        self.assertEqual(units[0]['text'],'Понимаю.')
+        self.assertEqual(units[1]['end'],88.005)
+        self.assertEqual(units[2]['start'],88.005)
+        self.assertEqual(transcript['segments'][0]['end'],84.62)
+
+    def test_sequence_speech_tail_stops_before_next_reply_and_no_speech_keeps_shots(self):
+        from app.production_sequence import sequence_units
+        transcript={'segments':[{'start':3,'end':5,'text':'Первый.'},
+                                 {'start':5.2,'end':8,'text':'Ответ.'}],
+                    'words':[{'start':3,'end':5,'text':'Первый.'},
+                             {'start':5.2,'end':8,'text':'Ответ.'}]}
+        units=sequence_units(0,15,transcript,[])
+        self.assertAlmostEqual(units[0]['end'],5.16)
+        self.assertAlmostEqual(units[1]['end'],8.55)
+        self.assertEqual(sequence_units(0,15,{'segments':[],'words':[]},
+            [{'start':5,'end':10},{'start':10,'end':15}]),
+            [{'id':'u000','start':0,'end':5.,'text':''},
+             {'id':'u001','start':5.,'end':10.,'text':''},
+             {'id':'u002','start':10.,'end':15,'text':''}])
+
+    def test_real_opening_boundary_does_not_clip_preceding_story_word(self):
+        directory,event,_=edge_fixture(start=0,end=100)
+        event.update(kind='story',importance=4,selected_ranges=[{'start':0,'end':84.62}])
+        transcript={'segments':[{'start':83.7,'end':84.62,'text':'Понимаю.'}],
+                    'words':[{'start':83.7,'end':84.62,'text':'Понимаю.'}]}
+        shots=[{'start':88.005,'end':100}]
+        raw=decision()
+        raw.update(first_unit='U002',last_unit='U002',before_unit='U001',after_unit='none',
+                   narrative_units=['U000','U001'],anchors=[{'unit':'U002','type':'theme_credit',
+                   'visible_text':'Opening theme'}])
+        vision=FakeVision([raw,raw,{'confirmed':True,'confidence':.95,'evidence':'Visible theme credit'}])
+        vision.model=vision.projector='test';vision.thinking=False
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']):
+            events=clean_whole_sequences([event],transcript,shots,directory,vision,lambda *a:None,lambda:False)
+        self.assertEqual(events[0]['confirmed_opening_ranges'],[{'start':88.005,'end':100.}])
+        plan=build_plan({'probe':{'duration':100,'width':1920,'height':1080,'has_audio':True},
+                         'events':events,'transcript':transcript,'shots':shots})
+        self.assertAlmostEqual(plan['parts'][0]['cuts'][-1]['end'],85.17)
+        self.assertFalse(any(c['end']>88.005 for p in plan['parts'] for c in p['cuts']))
+
     def test_text_free_middle_and_tail_belong_to_one_sequence(self):
         excluded,anchors=sequence_decision(decision(),self.units,25)
         self.assertEqual(excluded,{'U001','U002','U003'})
@@ -233,8 +279,10 @@ class WholeSequenceTests(unittest.TestCase):
             output=clean_whole_sequences([event],transcript,shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(len(vision.calls),3)
         loaded=json.loads(json.dumps(output))
-        self.assertEqual(verified_story_ranges(loaded[0]),[{'start':0.,'end':5.},{'start':19.,'end':25.}])
-        self.assertEqual(confirmed_exclusions(loaded[0]),[{'start':5.,'end':19.}])
+        # Sequence units include the same acoustic tail as the final planner.
+        boundary=19.55
+        self.assertEqual(verified_story_ranges(loaded[0]),[{'start':0.,'end':5.},{'start':boundary,'end':25.}])
+        self.assertEqual(confirmed_exclusions(loaded[0]),[{'start':5.,'end':boundary}])
         loaded=preserve_dialogue_in_credits(loaded,transcript)
         # Later guards may re-propose a plausible reaction; final ownership
         # still cuts only the confirmed interior and keeps both outside scenes.
@@ -244,12 +292,12 @@ class WholeSequenceTests(unittest.TestCase):
                        'reason':'reaction','reaction_or_humor':True,'story_change':True}]})
         apply_global_selection(loaded,{'keep':[event['id']],'omit':[],'dependencies':[], 'summary':'Story'})
         loaded=apply_exclusions(loaded)
-        self.assertEqual(loaded[0]['selected_ranges'],[{'start':0.,'end':5.},{'start':19.,'end':25.}])
+        self.assertEqual(loaded[0]['selected_ranges'],[{'start':0.,'end':5.},{'start':boundary,'end':25.}])
         plan=build_plan({'probe':{'duration':25,'width':1920,'height':1080,'has_audio':True},
                          'events':loaded,'transcript':transcript,'shots':shots})
         cuts=[(c['start'],c['end']) for part in plan['parts'] for c in part['cuts']]
         self.assertTrue(cuts)
-        self.assertTrue(all(end<=5 or start>=19 for start,end in cuts))
+        self.assertTrue(all(end<=5 or start>=boundary for start,end in cuts))
 
     def test_uncertain_opening_boundaries_do_not_create_whole_opening_authority(self):
         directory,event,_=edge_fixture(start=0,end=25)

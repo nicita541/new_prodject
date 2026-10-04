@@ -23,9 +23,12 @@ def load_profile(job_dir: Path, *, persist=False):
 
 
 def instruction(profile):
-    parts=['Balanced chronological condensation: remove empty dwelling and exact repetition, with no duration or removal quota.']
+    parts=['Balanced chronological condensation with no duration or removal quota.']
+    parts.append('An unchanged pose, generic walking between places, repeated camera views, empty holds, and scenery alone are not reactions or atmosphere.')
     if profile['preserve_reactions']:
-        parts.append('Preserve almost all character reactions and emotional pauses for atmosphere, including quiet or unchanged poses; plot progress is not required.')
+        parts.append('Preserve almost all specific character reactions and emotional pauses that are visibly carried by a character: a changed expression, gesture, interaction, or a clearly staged response. Silence can carry emotion. Do not protect neutral views only because they are quiet, slow, or plot-neutral.')
+        if profile['remove_empty_holds']:
+            parts.append('For neutral travel or holds, keep only the briefest establishing arrival/context and remove redundant views when neighboring frames prove no unique action or response is lost.')
     if profile['preserve_humor']:
         parts.append('Preserve almost all jokes, banter, comic timing and their setup/payoff even without new plot facts.')
     if not profile['remove_empty_holds']:

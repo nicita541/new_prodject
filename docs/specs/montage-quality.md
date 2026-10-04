@@ -8,6 +8,12 @@ Remove local monetary accounting, balance-based launch gates, reservations and h
 
 The confirmed OP rule remains: after independently establishing both actual boundaries and production anchors, all interior footage belongs to the OP. Approximately 90 seconds is a soft search hint, never a fixed cut duration. Current-episode plot after an ED remains protected. Whole-episode text context now defaults to 64,000 UTF-8 bytes, with context size included in semantic cache identity.
 
+## Active prompt correction — 2026-10-05
+
+This correction supersedes earlier prompt wording below wherever it says to protect unchanged poses, generic motion, or all plot-neutral scenery as atmosphere. Keep almost all *specific, visibly carried* character reactions, jokes, and emotional pauses when enabled by the persisted profile. An unchanged pose, generic walk/approach, repeated travel view, empty hold, building exterior, or scenic sweep alone is not a reaction or atmosphere; do not protect it only because it is quiet, slow, or plot-neutral. Keep causal action, its consequences, and necessary context. Remove redundant neutral holds or repetition only when actual adjacent frames/context establish that no unique action, response, joke, or story meaning is lost. Respect the profile flags: disabling reaction/humor preservation or enabling empty-hold/repetition protection must change the relevant decisions. When evidence is weak or conflicting, preserve the source and mark uncertainty.
+
+Active semantic versions at this correction are production sequence v10, source roles v6, story v14, and pacing v16. The review timeline's **Отладка анализа** control is off by default. It shows only saved reason metadata clipped to exact final retained cuts; missing mappings stay unavailable or explicitly uncertain. Atmosphere annotations are presented as model rationale, not verified plot/reaction proof. The existing plan endpoint adds bounded derived diagnostics; no new route, HTML rendering, provider payload, prompt, key, or monetary ledger is introduced. See [ADR-0016](../ai/decisions/0016-plan-review-diagnostics.md).
+
 ## Goal
 
 Current delivery scope: finish launch reliability, processing checkpoints and the user's two observed continuity/ending defects on the working branch. Further improvements belong on a separate branch so the user can work from this version. Only DeepSeek story planning and fully local analysis remain in the mode picker; processing shows seven checkpoints and whether each step runs locally or through API.

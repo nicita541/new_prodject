@@ -51,7 +51,7 @@ def _authoritative_sequence_ranges(event,kind,ranges_key,proofs_key):
         raise ValueError('Нет независимого подтверждения обеих границ OP')
     covered=[]
     for proof in proofs:
-        versions={sequence_version,8} if kind=='opening' else {sequence_version}
+        versions={sequence_version,8,9} if kind=='opening' else {sequence_version,9}
         if (not isinstance(proof,dict) or type(proof.get('version')) is not int or proof.get('version') not in versions
                 or proof.get('kind')!=kind or proof.get('boundaries_verified') is not True
                 or proof.get('anchors_verified') is not True

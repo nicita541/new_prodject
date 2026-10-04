@@ -12,7 +12,7 @@ from PIL import Image, ImageDraw
 
 from .jobs import atomic_json
 
-PACING_VERSION = 14
+PACING_VERSION = 16
 REMOVABLE = {'waiting','repeat','scenery'}
 
 
@@ -115,11 +115,9 @@ def apply_review(event, units, raw, editorial_profile=None):
             raise ValueError('Неверная классификация темпа')
         if 'reaction_or_humor' in item and type(item['reaction_or_humor']) is not bool:
             raise ValueError('Неверная оценка атмосферы сцены')
-        protected=any(known[item['unit']]['start']<r['end'] and known[item['unit']]['end']>r['start']
-                      for r in event.get('protected_atmosphere_ranges',[]))
         verified=any(known[item['unit']]['start']<r['end'] and known[item['unit']]['end']>r['start']
                      for r in verified_story_ranges(event))
-        if (verified or (item.get('reaction_or_humor') or protected) and (profile['preserve_reactions'] or profile['preserve_humor'])
+        if (verified or item.get('reaction_or_humor') and (profile['preserve_reactions'] or profile['preserve_humor'])
                 or item['reason']=='repeat' and not profile['remove_exact_repetition']
                 or item['reason'] in ('waiting','scenery') and not profile['remove_empty_holds']):
             blocked.add(item['unit'])
@@ -243,9 +241,6 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
         units = silent_units(event, transcript, shots)
         units=[u for u in units if not any(u['start']<r['end'] and u['end']>r['start']
                for r in verified_story_ranges(event))]
-        if editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor']:
-            units=[u for u in units if not any(u['start']<r['end'] and u['end']>r['start']
-                for r in event.get('protected_atmosphere_ranges',[]))]
         if not units:
             continue
         # Bound collage/context size. Unexamined material is preserved.
@@ -296,6 +291,9 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                                 *(e['id'] for e in previous),*(u['id'] for u in batch)})}},
                             'required':['unit','keep','reason','story_change','reaction_or_humor','evidence'], 'additionalProperties':False}},
                         'uncertain': {'type':'boolean'}}, 'required':['decisions','uncertain'], 'additionalProperties':False}
+                    empty_hold_guidance = ('Trim redundant neutral travel or holds when neighboring frames show no unique action, interaction, or response; keep only the briefest establishing context.'
+                                           if editorial_profile['remove_empty_holds'] else
+                                           'The editorial profile disables empty-hold removal: keep neutral travel and holds even when they add no new plot fact.')
                     prompt = (
                         instruction(editorial_profile)+' Condense this episode using ONLY the supplied speech-free source rows A..H, exactly once each. '
                         'Each row: CONTEXT BEFORE, five CURRENT UNIT frames, CONTEXT AFTER. Only the middle five are deletable. '
@@ -303,11 +301,11 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                         'A reaction, new character inset or action appearing ONLY in a CONTEXT tile does not occur in this CURRENT row. '
                         'For action/reaction evidence identify the actual CURRENT frame showing it. Do not assign a later reaction '
                         'to an earlier empty courtyard, or let one needed departure frame protect every following unchanged view. '
-                        'Retain the developing action and its distinct reaction; trim redundant neutral dwell between them '
-                        'when the retained surrounding frames already establish the location and causal transition. '
+                        'Retain the developing action and its distinct reaction. '+empty_hold_guidance+' '
                         'Evaluate narrative/emotional FUNCTION against actual neighboring replies and images. '
-                        'Preserve almost all reactions, jokes, comic timing and emotional atmosphere, even without plot progress. '
-                        'Mark reaction_or_humor=true and keep whenever this unit carries a reaction, joke, atmosphere or its payoff. '
+                        'Preserve almost all specific character reactions, jokes, comic timing and emotional pauses carried by visible acting, even without plot progress. '
+                        'An unchanged pose, generic walking, repeated travel views, an empty hold or scenery alone is not a reaction or atmosphere. '
+                        'Mark reaction_or_humor=true and keep only when CURRENT frames show a specific character reaction, joke, or emotional beat; do not use generic quietness or a scenic view as evidence. '
                         'Keep causes, consequential actions and their completion, revelations, relationship/goal changes and '
                         'quiet emotional consequences. A silent held reaction may be the essential payoff. '
                         'Movement, speech absence or an object category alone says nothing about importance. '

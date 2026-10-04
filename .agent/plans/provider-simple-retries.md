@@ -25,4 +25,4 @@ Provider attempts may each be billed; user explicitly authorized two retries and
 - [x] User requirements and migration contract recorded.
 - [x] Provider and launch gates implemented.
 - [x] 343 discovered tests passed; browser button and actual normal episode launch verified.
-- [x] Source checkpoint `8dcd0e0` recorded. Job `98291dad-343d-434c-aa2a-9fbd439af3fd` is running in the retained browser tab; finished export/editorial acceptance remains pending.
+- [x] Source checkpoint `8dcd0e0` recorded. Job `98291dad-343d-434c-aa2a-9fbd439af3fd` completed and its exact review route displayed 15 parts in the retained browser tab. Editorial acceptance remains pending; the review shows 34 observations.

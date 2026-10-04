@@ -39,11 +39,19 @@ class SourceRolePipelineTests(unittest.TestCase):
         event={'start':0,'end':30,'confirmed_opening_ranges':[{'start':5,'end':20}],
                'confirmed_opening_proofs':[proof]}
         self.assertEqual(confirmed_exclusions(event),[{'start':5.,'end':20.}])
+        self.assertEqual(confirmed_exclusions({**event,'confirmed_opening_proofs':[{**proof,'version':9}]}),
+                         [{'start':5.,'end':20.}])
         with self.assertRaises(ValueError):
             confirmed_exclusions({**event,'confirmed_opening_proofs':[{**proof,'boundaries_verified':False}]})
         ending={'start':0,'end':30,'confirmed_nonstory_ending_ranges':[{'start':5,'end':20}],
                 'confirmed_nonstory_ending_proofs':[{**proof,'version':VERSION,'kind':'ending','wholly_nonstory':True}]}
         self.assertEqual(confirmed_exclusions(ending),[{'start':5.,'end':20.}])
+        prior_ending={**ending,'confirmed_nonstory_ending_proofs':[
+            {**ending['confirmed_nonstory_ending_proofs'][0],'version':9}]}
+        self.assertEqual(confirmed_exclusions(prior_ending),[{'start':5.,'end':20.}])
+        with self.assertRaises(ValueError):
+            confirmed_exclusions({**prior_ending,'confirmed_nonstory_ending_proofs':[
+                {**prior_ending['confirmed_nonstory_ending_proofs'][0],'wholly_nonstory':False}]})
         for change in ({'version':8},{'wholly_nonstory':False},{'anchors_verified':False}):
             with self.subTest(change=change),self.assertRaises(ValueError):
                 confirmed_exclusions({**ending,'confirmed_nonstory_ending_proofs':[{**ending['confirmed_nonstory_ending_proofs'][0],**change}]})
@@ -318,10 +326,17 @@ class SourceRolePipelineTests(unittest.TestCase):
         directory,event,_=edge_fixture(start=0,end=20,kind='ending')
         _,_,transcript=story_fixture()
         raw={**story_decision(['u001','u003']),
-             'omit_units':[{'unit':'u000','reason':'waiting','reaction_or_humor':True},
+             'omit_units':[{'unit':'u000','reason':'waiting','reaction_or_humor':False},
                            {'unit':'u002','reason':'repeated_information','reaction_or_humor':False}]}
-        story=refine_story([event],transcript,[],directory,FakeVision([raw]),lambda *a:None,lambda:False)
-        self.assertIn('u000',story[0]['protected_atmosphere_units'])
+        proof={'decisions':[
+            {'unit':'u000','keep':True,'story_change':False,'reaction_or_humor':True,
+             'current_episode_story':True,'confidence':.98,'retained_witness':'none',
+             'evidence':'The current character notices the reply, turns and responds in the same scene.'},
+            {'unit':'u002','keep':False,'story_change':False,'reaction_or_humor':False,
+             'current_episode_story':False,'confidence':.98,'retained_witness':'u001',
+             'evidence':'The earlier retained reply conveys the same information without another reaction.'}]}
+        story=refine_story([event],transcript,[],directory,FakeVision([raw,proof]),lambda *a:None,lambda:False)
+        self.assertEqual(story[0]['verified_current_story_ranges'],[{'start':0,'end':6}])
         story[0].update(kind='ending',credits_kind='ending',credit_montage=True,
                         contains_credits=True,importance=1,
                         selected_ranges=[{'start':0,'end':20}])
@@ -369,7 +384,18 @@ class SourceRolePipelineTests(unittest.TestCase):
                          'events':paced,'transcript':transcript,'shots':[]})
         cuts=[(c['start'],c['end']) for part in plan['parts'] for c in part['cuts']]
         self.assertTrue(any(start<=0.01 and end>=5.99 for start,end in cuts))
-        self.assertEqual(paced[0]['protected_atmosphere_ranges'],[{'start':0,'end':6}])
+        self.assertEqual(paced[0]['verified_current_story_ranges'],[{'start':0,'end':6}])
+
+    def test_tentative_atmosphere_hint_does_not_overrule_reviewed_neutral_waiting(self):
+        from app.pacing import apply_review
+        event={'id':'one','start':0,'end':10,'kind':'story','importance':4,
+               'selected_ranges':[{'start':0,'end':10}],
+               'protected_atmosphere_units':['u000'],
+               'protected_atmosphere_ranges':[{'start':0,'end':6}]}
+        apply_review(event,[{'id':'A','start':0,'end':6}],{'uncertain':False,'decisions':[
+            {'unit':'A','keep':False,'reason':'waiting','story_change':False,'reaction_or_humor':False,
+             'evidence':'The same neutral pose remains unchanged; the retained next shot establishes the scene.'}]})
+        self.assertEqual(event['selected_ranges'],[{'start':6,'end':10}])
 
     def test_global_review_and_empty_hold_settings_preserve_reaction_and_repetition(self):
         profile={**DEFAULT_PROFILE,'remove_exact_repetition':False,'remove_empty_holds':False}

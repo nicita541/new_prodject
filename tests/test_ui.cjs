@@ -301,6 +301,85 @@ test('timeline covers kept and omitted footage and reviews the exact original in
   assert.equal(u.checks().length,0);
 });
 
+test('analysis debug is optional, clips evidence to kept footage and uses the existing source player', async()=>{
+  const u=await ui();
+  assert.doesNotMatch(html.match(/<input id="analysis-debug"[^>]*>/)?.[0] ?? '',/checked/);
+  u.data.plan={source:{duration:100},parts:[{index:1,cuts:[{start:10,end:20},{start:25,end:30}]}],
+    debug_timeline:{available:true,reasons:[
+      {start:4,end:28,kind:'reaction',title:'Ответ героя',detail:'Эмоциональная реакция.'},
+      {start:15,end:18,kind:'story',title:'Причина действия',detail:'Продолжает разговор.'}]}};
+  u.data.jobs.push({id:'debug-job',status:'completed',stage:'completed',files:[]});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(u.element('analysis-debug-lane').hidden,true);
+  const timelineCount=u.element('timeline-overview').children.length;
+  u.element('analysis-debug').checked=true;u.element('analysis-debug').listeners.change();
+  const reasons=u.element('analysis-debug-lane').children;
+  assert.equal(reasons.length,3);
+  assert.equal(reasons[0].style.left,'10%');assert.equal(reasons[0].style.width,'10%');
+  assert.equal(reasons[1].style.top,'25px');assert.equal(reasons[2].style.left,'25%');
+  reasons[1].listeners.mouseenter();
+  assert.match(u.element('analysis-debug-title').textContent,/00:15.00–00:18.00/);
+  reasons[2].listeners.click();u.element('source-player').listeners.loadedmetadata();
+  assert.equal(u.element('source-player').currentTime,25);
+  assert.equal(u.element('source-player').paused,false);
+  u.element('analysis-debug').checked=false;u.element('analysis-debug').listeners.change();
+  assert.equal(u.element('analysis-debug-lane').hidden,true);
+  assert.equal(u.element('source-player').currentTime,25);assert.equal(u.element('source-player').paused,false);
+  assert.equal(u.element('timeline-overview').children.length,timelineCount);
+});
+
+test('debug text is literal and malformed or missing evidence is unavailable', async()=>{
+  const u=await ui();
+  const injected='<img src=x onerror=alert(1)>';
+  u.data.plan={source:{duration:50},parts:[{index:1,cuts:[{start:10,end:20}]}],
+    debug_timeline:{available:true,reasons:[
+      {start:10,end:15,kind:'manual',title:injected,detail:injected},
+      {start:10,end:15,kind:'<script>',title:'x',detail:'x'},
+      {start:-1,end:15,kind:'story',title:'x',detail:'x'},
+      {start:10,end:51,kind:'story',title:'x',detail:'x'},
+      {start:'10',end:15,kind:'story',title:'x',detail:'x'}]}};
+  u.data.jobs.push({id:'safe-debug',status:'completed',stage:'completed',files:[]});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  u.element('analysis-debug').checked=true;u.element('analysis-debug').listeners.change();
+  assert.equal(u.element('analysis-debug-lane').children.length,1);
+  u.element('analysis-debug-lane').children[0].listeners.focus();
+  assert.equal(u.element('analysis-debug-detail').textContent,injected);
+  assert.equal(u.element('analysis-debug-detail').children.length,0);
+  u.data.plan.debug_timeline={available:false,reasons:[]};u.element('analysis-debug').listeners.change();
+  assert.equal(u.element('analysis-debug-lane').children.length,0);
+  assert.match(u.element('analysis-debug-title').textContent,/недоступны/);
+});
+
+test('debug combines adjacent identical proof but preserves source gaps and part boundaries',async()=>{
+  const u=await ui();
+  u.data.plan={source:{duration:100},parts:[{cuts:[{start:10,end:30},{start:35,end:40}]},{cuts:[{start:40,end:45}]}],
+    debug_timeline:{available:true,reasons:[
+      {event_id:'one',kind:'atmosphere',title:'Пауза',detail:'Та же причина',start:10,end:15},
+      {event_id:'one',kind:'atmosphere',title:'Пауза',detail:'Та же причина',start:15,end:20},
+      {event_id:'one',kind:'atmosphere',title:'Пауза',detail:'Та же причина',start:25,end:45},
+      {event_id:'one',kind:'reaction',title:'Реакция',detail:'Другая причина',start:20,end:25}]}};
+  u.data.jobs.push({id:'merged-debug',status:'completed',stage:'completed',files:[]});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  const pieces=JSON.parse(JSON.stringify(u.run('debugPieces(state.timeline.plan)')));
+  assert.deepEqual(pieces.map(p=>[p.start,p.end,p.kind]),[
+    [10,20,'atmosphere'],[20,25,'reaction'],[25,30,'atmosphere'],[35,40,'atmosphere'],[40,45,'atmosphere']]);
+});
+
+test('current quality summary separates review warnings from profile information',async()=>{
+  const u=await ui();
+  u.data.plan={warnings:['STALE_REMOVED_ED'],quality_summary:{available:true,
+    warnings:[{text:'Проверьте переход',category:'review',event_id:'one'}],
+    notes:[{text:'Атмосфера сохранена выбранным профилем',category:'profile',event_id:'one'}]}};
+  u.data.jobs.push({id:'quality-filtered',status:'completed',stage:'completed',files:[]});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(u.element('quality-warning-list').children.length,1);
+  assert.equal(u.element('quality-warning-list').children[0].textContent,'Проверьте переход');
+  assert.equal(u.element('quality-notes').hidden,false);
+  assert.equal(u.element('quality-note-list').children[0].textContent,'Атмосфера сохранена выбранным профилем');
+  assert.match(u.element('quality-summary').textContent,/замечаний: 1/);
+  assert.equal(u.checks().length,0);
+});
+
 test('library opens projects then scoped episodes and separate editing/review screens', async()=>{
   const u=await ui();
   const settings={analysis_provider:'local',layout:'cinema',caption_style:'accent'};

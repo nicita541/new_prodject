@@ -1,5 +1,7 @@
 # Architecture Decision Records
 
+- [0016: Derived plan diagnostics for review](0016-plan-review-diagnostics.md) — filtered to final retained intervals; no new endpoint.
+
 - [0015: Direct requests without monetary launch gates](0015-simple-provider-retries.md) — current contract; supersedes monetary gating in earlier records.
 
 - [0014: Bounded retries for confirmed response rejection](0014-confirmed-schema-correction.md)

@@ -394,7 +394,10 @@ class ApiTests(unittest.TestCase):
         checkpoint = self.manager.job_dir(job["id"]) / "transcript.json"
         atomic_json(checkpoint, {"words": ["saved"]})
         atomic_json(checkpoint.parent / "plan.json", {"parts": [{"number": 1}]})
-        self.assertEqual(self.client.get(f"/api/jobs/{job['id']}/plan").json()["parts"][0]["number"], 1)
+        plan_response = self.client.get(f"/api/jobs/{job['id']}/plan").json()
+        self.assertEqual(plan_response["parts"][0]["number"], 1)
+        self.assertEqual(plan_response["quality_summary"], {"available": False, "warnings": [], "notes": []})
+        self.assertEqual(plan_response["debug_timeline"], {"available": False, "reasons": []})
         self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/cancel").json()["status"], "cancelled")
         self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/retry").json()["status"], "running")
         self.assertTrue(checkpoint.is_file())

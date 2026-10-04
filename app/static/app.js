@@ -214,23 +214,29 @@ function renderJob(job) {
 function renderQualityWarnings(jobId, record) {
   if (state.selected !== jobId || state.selectedJob?.id !== jobId || state.selectedJob.status !== "completed") return;
   const warnings = record.warnings ?? [];
-  const key = jobId + JSON.stringify([warnings, record.error]);
+  const notes = record.notes ?? [];
+  const key = jobId + JSON.stringify([warnings, notes, record.error]);
   if (state.qualityRenderedKey === key) return;
   state.qualityRenderedKey = key;
   $("quality-warnings").hidden = !record.error && !warnings.length;
   setText("quality-summary", record.error ? "Замечания к монтажу недоступны" : `Требует проверки · замечаний: ${warnings.length}`);
   setText("quality-message", record.error ? `Не удалось прочитать монтажный план: ${record.error} Откройте его по ссылке выше и проверьте результат перед публикацией.` : "Модель отметила места, которые стоит проверить при просмотре. Сопоставьте их с монтажным планом и исходной серией.");
   $("quality-warning-list").replaceChildren(...warnings.map((warning) => { const item = document.createElement("li"); item.textContent = warning; return item; }));
+  $('quality-notes').hidden=!notes.length;
+  $('quality-note-list').replaceChildren(...notes.map(note=>{const item=document.createElement('li');item.textContent=note;return item;}));
 }
 function loadQualityWarnings(job) {
-  if (state.qualityJobId !== job.id) { state.qualityJobId = job.id; state.qualityRenderedKey = ""; $("quality-warnings").open = false; $("quality-warnings").hidden = true; $("quality-warning-list").replaceChildren(); }
-  if (job.status !== "completed") { $("quality-warnings").hidden = true; return; }
+  if (state.qualityJobId !== job.id) { state.qualityJobId = job.id; state.qualityRenderedKey = ""; $("quality-warnings").open = false; $("quality-warnings").hidden = true; $("quality-warning-list").replaceChildren(); $('quality-notes').hidden=true; $('quality-notes').open=false; $('quality-note-list').replaceChildren(); }
+  if (job.status !== "completed") { $("quality-warnings").hidden = true; $('quality-notes').hidden=true; return; }
   const previous = state.planWarnings.get(job.id);
   if (previous) { renderQualityWarnings(job.id, previous); return; }
-  const record = {warnings: [], error: null};
+  const record = {warnings: [], notes: [], error: null};
   state.planWarnings.set(job.id, record);
   api(`/api/jobs/${encodeURIComponent(job.id)}/plan`).then((plan) => {
-    record.warnings = Array.isArray(plan.warnings) ? [...new Set(plan.warnings.filter((warning) => typeof warning === "string" && warning.trim()))] : [];
+    const texts=items=>Array.isArray(items) ? [...new Set(items.map(item=>item?.text).filter(text=>typeof text==='string' && text.trim()).map(text=>text.slice(0,500)))] : [];
+    if (plan.quality_summary && typeof plan.quality_summary==='object') {
+      record.warnings=texts(plan.quality_summary.warnings); record.notes=texts(plan.quality_summary.notes);
+    } else record.warnings = Array.isArray(plan.warnings) ? [...new Set(plan.warnings.filter((warning) => typeof warning === "string" && warning.trim()))] : [];
     renderQualityWarnings(job.id, record);
   }).catch((error) => { record.error = error.message; renderQualityWarnings(job.id, record); });
 }
@@ -287,11 +293,63 @@ function timelineButton(piece, duration) {
   const label = pieceLabel(piece); button.title = label; button.setAttribute('aria-label', label);
   button.addEventListener('click', () => reviewSource(piece)); return button;
 }
+const debugKinds={atmosphere:'Атмосфера',story:'Развитие сюжета',reaction:'Реакция',uncertainty:'Неуверенность',manual:'Ручная проверка'};
+function debugPieces(plan) {
+  if (plan.debug_timeline?.available!==true || !Array.isArray(plan.debug_timeline.reasons)) return [];
+  const pieces=[];
+  for(const reason of plan.debug_timeline.reasons.slice(0,500)) {
+    if(!reason || !Object.hasOwn(debugKinds,reason.kind) || !Number.isFinite(reason.start) || !Number.isFinite(reason.end) || reason.start<0 || reason.end<=reason.start || reason.end>plan.source.duration || typeof reason.title!=='string' || typeof reason.detail!=='string') continue;
+    plan.parts.forEach((part,partIndex)=>part.cuts.forEach((cut,cutIndex)=>{
+      const start=Math.max(cut.start,reason.start),end=Math.min(cut.end,reason.end);
+      if(start<end) pieces.push({...reason,start,end,partIndex,cutIndex,title:reason.title.slice(0,160),detail:reason.detail.slice(0,500)});
+    }));
+  }
+  const groups=new Map();
+  pieces.forEach((piece,index)=>{
+    const key=typeof piece.event_id==='string' && piece.event_id ? JSON.stringify([piece.event_id,piece.kind,piece.title,piece.detail,piece.partIndex,piece.cutIndex]) : `unmapped-${index}`;
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push(piece);
+  });
+  const merged=[];
+  for(const group of groups.values()) {
+    const continuous=[];
+    for(const piece of group.sort((a,b)=>a.start-b.start || a.end-b.end)) {
+      const last=continuous.at(-1);
+      if(last && piece.start<=last.end) last.end=Math.max(last.end,piece.end);
+      else continuous.push({...piece});
+    }
+    merged.push(...continuous);
+  }
+  return merged.sort((a,b)=>a.start-b.start || a.end-b.end);
+}
+function showDebugReason(piece) {
+  setText('analysis-debug-title',`${debugKinds[piece.kind]} · исходник ${sourceTime(piece.start)}–${sourceTime(piece.end)} · ${piece.title}`);
+  setText('analysis-debug-detail',piece.detail);
+}
+function renderDebugTimeline() {
+  const enabled=$('analysis-debug').checked===true;
+  $('analysis-debug-info').hidden=!enabled; $('analysis-debug-lane').hidden=!enabled;
+  const record=state.timeline;
+  if(!enabled || !record || record.jobId!==state.selected) return;
+  const pieces=debugPieces(record.plan),ends=[];
+  $('analysis-debug-lane').replaceChildren(...pieces.map(piece=>{
+    let row=ends.findIndex(end=>end<=piece.start); if(row<0)row=ends.length; ends[row]=piece.end;
+    const button=document.createElement('button');button.type='button';button.className=`analysis-debug-piece reason-${piece.kind}`;
+    button.style.left=`${100*piece.start/record.plan.source.duration}%`;button.style.width=`${100*(piece.end-piece.start)/record.plan.source.duration}%`;button.style.top=`${row*25}px`;
+    button.textContent=debugKinds[piece.kind];button.title=`${piece.title} · ${piece.detail}`;button.setAttribute('aria-label',`${debugKinds[piece.kind]} · ${sourceTime(piece.start)}–${sourceTime(piece.end)} · ${piece.title}`);
+    button.addEventListener('mouseenter',()=>showDebugReason(piece));button.addEventListener('focus',()=>showDebugReason(piece));
+    button.addEventListener('click',()=>{reviewSource(piece);showDebugReason(piece);});return button;
+  }));
+  $('analysis-debug-lane').style.height=`${Math.max(1,ends.length)*25}px`;
+  setText('analysis-debug-title',pieces.length ? 'Выберите причину на таймлайне для сравнения с исходником.' : 'Причины анализа недоступны для оставленных фрагментов.');
+  setText('analysis-debug-detail','');
+}
+$('analysis-debug').addEventListener('change',renderDebugTimeline);
 function loadTimeline(job) {
   const available = job.status === 'completed' || job.stage === 'rendering';
   const key = `${job.id}:${available ? job.status : 'pending'}`;
   if (key === state.timelineKey) return;
   state.timelineKey = key; state.timeline = null; state.sourceSelection = null;
+  $('analysis-debug').checked=false; $('analysis-debug-info').hidden=true; $('analysis-debug-lane').hidden=true; $('analysis-debug-lane').replaceChildren();
   $('timeline-playhead').hidden = true; setText('source-clock','');
   $('timeline-zoom').value='1'; $('timeline-map').style.width='100%';
   $('timeline-map').classList.toggle('zoomed',false);
@@ -321,6 +379,7 @@ function loadTimeline(job) {
       return label;
     }));
     renderTimelineSelection(state.fileIndex < plan.parts.length ? state.fileIndex : 0);
+    renderDebugTimeline();
   }).catch(() => { if (state.timelineKey === key) state.timelineKey = ''; });
 }
 function renderTimelineSelection(index) {
