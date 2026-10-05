@@ -489,6 +489,16 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         current = get_manager(request)
         return public_job(current.get(identifier), current)
 
+    @application.delete("/api/jobs/{identifier}")
+    def delete_job(request: Request, identifier: str):
+        current = get_manager(request)
+        return current.delete_job(identifier)
+
+    @application.post("/api/jobs/prune")
+    def prune_jobs(request: Request, max_jobs: int = 50, max_age_days: int | None = 30):
+        current = get_manager(request)
+        return current.prune_jobs(max_jobs=max_jobs, max_age_days=max_age_days)
+
     @application.get('/api/jobs/{identifier}/spending')
     def spending(request: Request, identifier: str):
         current = get_manager(request)

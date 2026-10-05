@@ -104,3 +104,96 @@ class DeepSeekTests(unittest.TestCase):
     def test_http_server_error_retries(self):
         with patch.object(self.vision,'_fetch',side_effect=[api.RemoteError('server',category='http',http_status=503),response()]) as fetch:self.vision.query('current',schema=SCHEMA)
         self.assertEqual(fetch.call_count,2)
+
+    def test_sharded_cache_lookup_and_write(self):
+        with patch.object(self.vision, '_fetch', return_value=response()) as fetch:
+            res = self.vision.query('sharded_test_query', schema=SCHEMA)
+            self.assertEqual(res, {'keep': ['A']})
+        # Check that it wrote to a 2-char subfolder inside responses
+        resp_dir = self.root / 'responses'
+        sharded_files = list(resp_dir.glob('*/*.json'))
+        self.assertEqual(len(sharded_files), 1)
+        subfolder = sharded_files[0].parent
+        self.assertEqual(len(subfolder.name), 2)
+        self.assertTrue(sharded_files[0].name.startswith(subfolder.name))
+
+    def test_legacy_flat_cache_fallback(self):
+        import json
+        resp_dir = self.root / 'responses'
+        resp_dir.mkdir(parents=True, exist_ok=True)
+        # Mock fetch to return a unique response
+        with patch.object(self.vision, '_fetch', return_value=response('{"keep":["A"]}')) as fetch:
+            self.vision.query('legacy_query', schema=SCHEMA)
+        # Find the sharded file created and move it to flat root
+        sharded_file = list(resp_dir.glob('*/*.json'))[0]
+        flat_file = resp_dir / sharded_file.name
+        sharded_file.replace(flat_file)
+        sharded_file.parent.rmdir()
+        self.assertTrue(flat_file.is_file())
+
+        # Second query should read from flat file without network fetch
+        with patch.object(self.vision, '_fetch') as fetch:
+            res = self.vision.query('legacy_query', schema=SCHEMA)
+            self.assertEqual(res, {'keep': ['A']})
+            fetch.assert_not_called()
+
+    def test_migrate_flat_cache_moves_all_files(self):
+        import json
+        resp_dir = self.root / 'responses'
+        resp_dir.mkdir(parents=True, exist_ok=True)
+        hash1 = 'aabb11223344556677889900aabbccddeeff0011223344556677889900aabbcc'
+        hash2 = 'ccdd11223344556677889900aabbccddeeff0011223344556677889900aabbcc'
+        (resp_dir / f'{hash1}.json').write_text(json.dumps({'result': {'keep': ['A']}}), encoding='utf-8')
+        (resp_dir / f'{hash2}.json').write_text(json.dumps({'result': {'keep': ['A']}}), encoding='utf-8')
+
+        stats = api.cache_stats(resp_dir)
+        self.assertEqual(stats['flat_files'], 2)
+        self.assertEqual(stats['sharded_files'], 0)
+
+        result = api.migrate_flat_cache(resp_dir)
+        self.assertEqual(result['migrated'], 2)
+        self.assertEqual(result['errors'], 0)
+
+        stats_after = api.cache_stats(resp_dir)
+        self.assertEqual(stats_after['flat_files'], 0)
+        self.assertEqual(stats_after['sharded_files'], 2)
+        self.assertTrue((resp_dir / 'aa' / f'{hash1}.json').is_file())
+        self.assertTrue((resp_dir / 'cc' / f'{hash2}.json').is_file())
+
+    def test_prune_cache_corrupted_and_limits(self):
+        import json, time
+        resp_dir = self.root / 'responses'
+        resp_dir.mkdir(parents=True, exist_ok=True)
+        # Create corrupted 0-byte file
+        corrupt1 = resp_dir / '00' / '00zero.json'
+        corrupt1.parent.mkdir(exist_ok=True)
+        corrupt1.write_bytes(b'')
+
+        # Create invalid json file
+        corrupt2 = resp_dir / '11' / '11bad.json'
+        corrupt2.parent.mkdir(exist_ok=True)
+        corrupt2.write_bytes(b'not json')
+
+        # Create valid entries
+        valid1 = resp_dir / '22' / '22valid1.json'
+        valid1.parent.mkdir(exist_ok=True)
+        valid1.write_text(json.dumps({'result': {'keep': ['A']}}), encoding='utf-8')
+
+        valid2 = resp_dir / '33' / '33valid2.json'
+        valid2.parent.mkdir(exist_ok=True)
+        valid2.write_text(json.dumps({'result': {'keep': ['A']}}), encoding='utf-8')
+
+        # Test corrupt removal
+        res = api.prune_cache(resp_dir, max_entries=10, remove_corrupted=True)
+        self.assertEqual(res['corrupted_removed'], 2)
+        self.assertEqual(res['remaining'], 2)
+        self.assertFalse(corrupt1.exists())
+        self.assertFalse(corrupt2.exists())
+        self.assertTrue(valid1.exists())
+        self.assertTrue(valid2.exists())
+
+        # Test max_entries limit pruning
+        res_limit = api.prune_cache(resp_dir, max_entries=1)
+        self.assertEqual(res_limit['limit_pruned'], 1)
+        self.assertEqual(res_limit['remaining'], 1)
+

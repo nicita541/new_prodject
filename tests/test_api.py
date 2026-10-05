@@ -616,6 +616,31 @@ class ApiTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_media(self.root / "Русская серия 01.mp4")
 
+    def test_delete_and_prune_jobs_endpoints(self):
+        source = self.client.get("/api/sources").json()[0]
+        job = self.client.post("/api/jobs", json={"source_id": source["id"]}).json()
+        job_id = job["id"]
+
+        # Deleting active job returns 409 Conflict
+        del_active = self.client.delete(f"/api/jobs/{job_id}")
+        self.assertEqual(del_active.status_code, 409)
+
+        # Cancel job so it is terminal
+        self.client.post(f"/api/jobs/{job_id}/cancel")
+
+        # Prune jobs endpoint
+        prune_res = self.client.post("/api/jobs/prune")
+        self.assertEqual(prune_res.status_code, 200)
+
+        # Delete job endpoint succeeds
+        del_res = self.client.delete(f"/api/jobs/{job_id}")
+        self.assertEqual(del_res.status_code, 200)
+        self.assertTrue(del_res.json()["deleted"])
+
+        # Subsequent get returns 404
+        get_res = self.client.get(f"/api/jobs/{job_id}")
+        self.assertEqual(get_res.status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

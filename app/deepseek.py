@@ -208,6 +208,208 @@ def check_connection():
             'accounting_enabled': False}
 
 
+def target_cache_path(digest: str, responses_dir: Path | None = None) -> Path:
+    """Return the 2-char sharded destination path for storing a cache entry."""
+    root = responses_dir if responses_dir is not None else RESPONSES
+    clean = re.sub(r'[^0-9a-fA-F]', '', digest)
+    prefix = clean[:2].lower() if len(clean) >= 2 else '__'
+    return root / prefix / (digest + '.json')
+
+
+def cache_file_path(identity: str, responses_dir: Path | None = None) -> Path:
+    """Resolve cache path for an identity hash, checking sharded path then legacy flat path."""
+    root = responses_dir if responses_dir is not None else RESPONSES
+    clean = re.sub(r'[^0-9a-fA-F]', '', identity)
+    prefix = clean[:2].lower() if len(clean) >= 2 else '__'
+    sharded = root / prefix / (identity + '.json')
+    if sharded.is_file():
+        return sharded
+    flat = root / (identity + '.json')
+    if flat.is_file():
+        return flat
+    return sharded
+
+
+def migrate_flat_cache(responses_dir: Path | None = None) -> dict:
+    """Migrate legacy flat cache JSON files into 2-character hex sharded subfolders."""
+    root = responses_dir if responses_dir is not None else RESPONSES
+    if not root.is_dir():
+        return {'migrated': 0, 'skipped': 0, 'errors': 0}
+    root.resolve().relative_to(ROOT.resolve())
+    migrated = 0
+    skipped = 0
+    errors = 0
+    for entry in list(root.iterdir()):
+        if entry.is_file() and entry.suffix == '.json' and not entry.name.startswith('.'):
+            stem = entry.stem
+            if len(stem) >= 2 and re.fullmatch(r'[0-9a-fA-F]+', stem):
+                prefix = stem[:2].lower()
+                target_dir = root / prefix
+                target_file = target_dir / entry.name
+                try:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    if target_file.exists():
+                        entry.unlink()
+                        skipped += 1
+                    else:
+                        entry.replace(target_file)
+                        migrated += 1
+                except OSError:
+                    errors += 1
+    return {'migrated': migrated, 'skipped': skipped, 'errors': errors}
+
+
+def prune_cache(responses_dir: Path | None = None,
+                max_entries: int | None = 20000,
+                max_bytes: int | None = 150 * 1024 * 1024,
+                max_age_days: int | None = None,
+                remove_corrupted: bool = True) -> dict:
+    """Prune stale, corrupted, or limit-exceeding cache entries."""
+    root = responses_dir if responses_dir is not None else RESPONSES
+    if not root.is_dir():
+        return {'scanned': 0, 'corrupted_removed': 0, 'expired_removed': 0,
+                'limit_pruned': 0, 'remaining': 0, 'total_bytes': 0}
+    root.resolve().relative_to(ROOT.resolve())
+
+    now = time.time()
+    cutoff_time = (now - max_age_days * 86400) if max_age_days is not None else None
+
+    # Clean up orphaned temporary files older than 1 hour
+    for tmp in root.rglob('.*.tmp'):
+        try:
+            if tmp.is_file() and (now - tmp.stat().st_mtime > 3600):
+                tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    entries = []
+    corrupted_removed = 0
+    expired_removed = 0
+
+    for path in root.rglob('*.json'):
+        if not path.is_file() or path.name.startswith('.'):
+            continue
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+
+        if remove_corrupted:
+            if st.st_size == 0:
+                try:
+                    path.unlink(missing_ok=True)
+                    corrupted_removed += 1
+                    continue
+                except OSError:
+                    pass
+            elif st.st_size < 30:
+                try:
+                    data = json.loads(path.read_text('utf-8'))
+                    if not isinstance(data, dict) or 'result' not in data:
+                        path.unlink(missing_ok=True)
+                        corrupted_removed += 1
+                        continue
+                except (ValueError, OSError):
+                    path.unlink(missing_ok=True)
+                    corrupted_removed += 1
+                    continue
+
+        if cutoff_time is not None and st.st_mtime < cutoff_time:
+            try:
+                path.unlink(missing_ok=True)
+                expired_removed += 1
+                continue
+            except OSError:
+                pass
+
+        entries.append((path, st.st_mtime, st.st_size))
+
+    # Sort oldest first (LRU based on modification time)
+    entries.sort(key=lambda item: item[1])
+
+    total_count = len(entries)
+    total_bytes = sum(item[2] for item in entries)
+    limit_pruned = 0
+
+    to_remove_count = max(0, total_count - max_entries) if max_entries is not None else 0
+    to_remove_bytes = max(0, total_bytes - max_bytes) if max_bytes is not None else 0
+
+    if to_remove_count > 0 or to_remove_bytes > 0:
+        for path, _, size in entries:
+            if to_remove_count <= 0 and to_remove_bytes <= 0:
+                break
+            try:
+                path.unlink(missing_ok=True)
+                limit_pruned += 1
+                to_remove_count -= 1
+                to_remove_bytes -= size
+                total_bytes -= size
+            except OSError:
+                pass
+
+    # Clean up empty subdirectories
+    for subdir in list(root.iterdir()):
+        if subdir.is_dir() and not subdir.name.startswith('.'):
+            try:
+                if not any(subdir.iterdir()):
+                    subdir.rmdir()
+            except OSError:
+                pass
+
+    remaining = max(0, total_count - limit_pruned)
+    return {
+        'scanned': total_count + corrupted_removed + expired_removed,
+        'corrupted_removed': corrupted_removed,
+        'expired_removed': expired_removed,
+        'limit_pruned': limit_pruned,
+        'remaining': remaining,
+        'total_bytes': max(0, total_bytes),
+    }
+
+
+def cache_stats(responses_dir: Path | None = None) -> dict:
+    """Return summary statistics of the DeepSeek response cache."""
+    root = responses_dir if responses_dir is not None else RESPONSES
+    if not root.is_dir():
+        return {'total_files': 0, 'sharded_files': 0, 'flat_files': 0,
+                'total_bytes': 0, 'shards_count': 0, 'oldest_mtime': None, 'newest_mtime': None}
+    root.resolve().relative_to(ROOT.resolve())
+    sharded = 0
+    flat = 0
+    total_bytes = 0
+    oldest = None
+    newest = None
+    shards = set()
+
+    for path in root.rglob('*.json'):
+        if not path.is_file() or path.name.startswith('.'):
+            continue
+        try:
+            st = path.stat()
+            size = st.st_size
+            mtime = st.st_mtime
+            total_bytes += size
+            oldest = min(oldest, mtime) if oldest is not None else mtime
+            newest = max(newest, mtime) if newest is not None else mtime
+            if path.parent == root:
+                flat += 1
+            else:
+                sharded += 1
+                shards.add(path.parent.name)
+        except OSError:
+            pass
+
+    return {
+        'total_files': sharded + flat,
+        'sharded_files': sharded,
+        'flat_files': flat,
+        'total_bytes': total_bytes,
+        'shards_count': len(shards),
+        'oldest_mtime': oldest,
+        'newest_mtime': newest,
+    }
+
+
 class DeepSeekVision:
     supports_image_pages = True
 
@@ -226,6 +428,7 @@ class DeepSeekVision:
             self.cache_profile = {'purpose':'production-sequence','reasoning_effort':reasoning_effort,'version':1}
         self.cpu_fallback, self.gpu_layers, self.cpu_projector = False, 0, True
         self._lock = threading.Lock()
+        self._writes_count = 0
 
     def __enter__(self):
         _key()
@@ -307,7 +510,7 @@ class DeepSeekVision:
             candidates.extend((fingerprint(earlier),fingerprint({**earlier,'max_tokens':requested_tokens})))
         RESPONSES.resolve().relative_to(ROOT.resolve())
         for identity in dict.fromkeys(candidates):
-            cache=RESPONSES/(identity+'.json')
+            cache = cache_file_path(identity)
             if not cache.is_file():
                 continue
             try:
@@ -337,7 +540,12 @@ class DeepSeekVision:
                 except (KeyError,IndexError,TypeError,ValueError):
                     raise RemoteError('DeepSeek вернул неверный формат ответа',category='response') from None
                 try:
-                    atomic_json(RESPONSES/(digest+'.json'),{'result':value,'request':digest})
+                    dest = target_cache_path(digest)
+                    atomic_json(dest, {'result': value, 'request': digest})
+                    self._writes_count += 1
+                    if self._writes_count >= 100:
+                        self._writes_count = 0
+                        prune_cache()
                 except OSError:
                     logging.getLogger(__name__).warning('Не удалось сохранить ответ в кэш DeepSeek')
                 return value

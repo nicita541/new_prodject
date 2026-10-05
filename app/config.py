@@ -42,8 +42,10 @@ def setup_environment() -> None:
         'PYTHONPYCACHEPREFIX': str(CACHE / 'pycache'),
         'PYTHONUTF8': '1',
     })
-    dll_path = TOOLS / 'cuda' / 'bin'
-    os.environ['PATH'] = str(dll_path) + os.pathsep + os.environ.get('PATH', '')
+    dll_path = str(TOOLS / 'cuda' / 'bin')
+    current_path = os.environ.get('PATH', '')
+    if dll_path not in current_path.split(os.pathsep):
+        os.environ['PATH'] = dll_path + os.pathsep + current_path
 
 
 def readiness() -> dict:
@@ -60,6 +62,3 @@ def readiness() -> dict:
         if not path.is_file():
             missing.append(name)
     return {'ready': not missing, 'missing': missing}
-
-
-setup_environment()

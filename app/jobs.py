@@ -5,6 +5,7 @@ import ctypes
 import json
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -237,9 +238,14 @@ class JobManager:
 
     def list_sources(self) -> list[dict]:
         with self.mutex:
+            sources_path = self.data / "sources.json"
+            on_disk = read_json(sources_path, {})
+            if isinstance(on_disk, dict):
+                self.sources.update(on_disk)
             by_path = {record["path"]: identifier for identifier, record in self.sources.items()}
             candidates = list(self.root.iterdir()) + list(self.imports.glob("*/*"))
             result = []
+            changed = False
             for candidate in candidates:
                 if not candidate.is_file() or candidate.suffix.lower() not in {".mp4", ".mkv"}:
                     continue
@@ -247,19 +253,35 @@ class JobManager:
                     resolved = contained(candidate, self.root)
                 except ValueError:
                     continue
-                identifier = by_path.get(str(resolved)) or str(uuid.uuid4())
-                record = self.sources.get(identifier, {"path": str(resolved), "name": candidate.name})
-                self.sources[identifier] = record
-                result.append({"id": identifier, "name": record["name"], "size": resolved.stat().st_size})
-            atomic_json(self.data / "sources.json", self.sources)
+                resolved_str = str(resolved)
+                identifier = by_path.get(resolved_str)
+                if not identifier:
+                    identifier = str(uuid.uuid4())
+                    by_path[resolved_str] = identifier
+                    changed = True
+                record = self.sources.get(identifier)
+                if not record:
+                    record = {"path": resolved_str, "name": candidate.name}
+                    self.sources[identifier] = record
+                    changed = True
+                elif record.get("path") != resolved_str:
+                    record["path"] = resolved_str
+                    changed = True
+                result.append({"id": identifier, "name": record.get("name", candidate.name), "size": resolved.stat().st_size})
+            if changed or not sources_path.is_file():
+                atomic_json(sources_path, self.sources)
             return sorted(result, key=lambda item: item["name"])
 
     def register_import(self, path: Path, original_name: str) -> dict:
         with self.mutex:
+            sources_path = self.data / "sources.json"
+            on_disk = read_json(sources_path, {})
+            if isinstance(on_disk, dict):
+                self.sources.update(on_disk)
             path = contained(path, self.imports)
             identifier = str(uuid.uuid4())
             self.sources[identifier] = {"path": str(path), "name": original_name}
-            atomic_json(self.data / "sources.json", self.sources)
+            atomic_json(sources_path, self.sources)
             return {"id": identifier, "name": original_name, "size": path.stat().st_size}
 
     def source(self, identifier: str) -> dict:
@@ -307,6 +329,65 @@ class JobManager:
     def list_jobs(self) -> list[dict]:
         return sorted((self.get(path.parent.name) for path in self.jobs.glob("*/job.json")),
                       key=lambda item: item["created_at"], reverse=True)
+
+    def delete_job(self, identifier: str) -> dict:
+        with self.mutex:
+            validate_id(identifier)
+            if self.active and self.active[0] == identifier:
+                raise BusyError("Нельзя удалить выполняющееся задание")
+            directory = self.job_dir(identifier)
+            if not directory.is_dir():
+                raise KeyError(identifier)
+            self.pending_states.pop(identifier, None)
+            shutil.rmtree(directory, ignore_errors=True)
+            return {"id": identifier, "deleted": True}
+
+    def prune_jobs(self, max_jobs: int = 50, max_age_days: int | None = 30) -> dict:
+        with self.mutex:
+            active_id = self.active[0] if self.active else None
+            terminal_jobs = []
+            now_ts = time.time()
+            cutoff_ts = (now_ts - max_age_days * 86400) if max_age_days is not None else None
+
+            for path in self.jobs.glob("*/job.json"):
+                jid = path.parent.name
+                if jid == active_id:
+                    continue
+                data = read_json(path)
+                if not data or data.get("status") not in TERMINAL:
+                    continue
+                created_at = data.get("created_at") or ""
+                mtime = path.stat().st_mtime
+                terminal_jobs.append((jid, created_at, mtime, path.parent))
+
+            # Sort oldest first by created_at / mtime
+            terminal_jobs.sort(key=lambda item: (item[1], item[2]))
+
+            pruned = []
+            # Prune jobs older than max_age_days
+            remaining_jobs = []
+            for jid, created_at, mtime, directory in terminal_jobs:
+                if cutoff_ts is not None and mtime < cutoff_ts:
+                    try:
+                        shutil.rmtree(directory, ignore_errors=True)
+                        pruned.append(jid)
+                    except OSError:
+                        pass
+                else:
+                    remaining_jobs.append((jid, created_at, mtime, directory))
+
+            # Prune excess count beyond max_jobs
+            excess = max(0, len(remaining_jobs) - max_jobs) if max_jobs is not None else 0
+            if excess > 0:
+                for jid, _, _, directory in remaining_jobs[:excess]:
+                    try:
+                        shutil.rmtree(directory, ignore_errors=True)
+                        pruned.append(jid)
+                    except OSError:
+                        pass
+
+            return {"pruned_count": len(pruned), "pruned_ids": pruned,
+                    "remaining_terminal": len(terminal_jobs) - len(pruned)}
 
     def busy(self) -> bool:
         with self.mutex:

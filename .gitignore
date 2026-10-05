@@ -3,6 +3,7 @@ models/
 data/
 cache/
 temp/
+scratch/
 __pycache__/
 .pytest_cache/
 *.pyc

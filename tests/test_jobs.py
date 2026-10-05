@@ -274,6 +274,59 @@ class JobTests(unittest.TestCase):
             sibling.terminate()
             sibling.wait()
 
+    def test_list_sources_does_not_write_if_unchanged(self):
+        # Initial list writes sources.json
+        sources_file = self.manager.data / "sources.json"
+        self.assertTrue(sources_file.exists())
+        # Subsequent list without changes should NOT write to disk
+        with patch("app.jobs.atomic_json") as mock_atomic:
+            self.manager.list_sources()
+            mock_atomic.assert_not_called()
+
+    def test_list_sources_incorporates_manual_edits(self):
+        sources_file = self.manager.data / "sources.json"
+        custom_id = str(uuid.uuid4())
+        manual_record = {custom_id: {"path": str(self.source), "name": "Ручное имя.mp4"}}
+        atomic_json(sources_file, manual_record)
+
+        sources = self.manager.list_sources()
+        found = [s for s in sources if s["id"] == custom_id]
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["name"], "Ручное имя.mp4")
+
+    def test_delete_job_and_prune_jobs(self):
+        job = self.manager.create(self.source_id)
+        # Cannot delete active running job
+        with self.assertRaises(BusyError):
+            self.manager.delete_job(job["id"])
+
+        # Cancel job so it becomes terminal
+        self.manager.cancel(job["id"])
+        job_dir = self.manager.job_dir(job["id"])
+        self.assertTrue(job_dir.is_dir())
+
+        # Now delete_job succeeds
+        res = self.manager.delete_job(job["id"])
+        self.assertTrue(res["deleted"])
+        self.assertFalse(job_dir.is_dir())
+
+        # Test prune_jobs with multiple terminal jobs
+        job1 = self.manager.create(self.source_id)
+        self.manager.cancel(job1["id"])
+        job2 = self.manager.create(self.source_id)
+        self.manager.cancel(job2["id"])
+
+        prune_res = self.manager.prune_jobs(max_jobs=1)
+        self.assertEqual(prune_res["pruned_count"], 1)
+        self.assertEqual(prune_res["remaining_terminal"], 1)
+
+    def test_setup_environment_idempotent(self):
+        config.setup_environment()
+        path1 = os.environ.get("PATH", "")
+        config.setup_environment()
+        path2 = os.environ.get("PATH", "")
+        self.assertEqual(path1, path2)
+
 
 if __name__ == "__main__":
     unittest.main()
