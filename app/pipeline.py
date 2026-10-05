@@ -15,12 +15,12 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ROOT, MUSIC, MUSIC_CONFIG, setup_environment
+from .config import ROOT, MUSIC, setup_environment
 from .media import choose_encoder, inspect_media, render_part, validate_export
 from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
-from .music import load_config as load_music_config, pick_track
+from .music import load_settings, pick_track
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -146,7 +146,7 @@ def _run_identity(job_dir: Path) -> dict:
             "analysis_version": ANALYSIS_VERSION, "planner_version": PLANNER_VERSION, "renderer_version": 6,
             "pacing_version": PACING_VERSION, "semantic_identity": semantic,
             "provider": provider_identity(provider), "editorial_profile": profile,
-            "editing": load_options(job_dir), "music": load_music_config(MUSIC_CONFIG), "model_files": models}
+            "editing": load_options(job_dir), "music": load_settings(), "model_files": models}
 
 
 def _archive_obsolete_outputs(job_dir: Path, previous: dict | None, current: dict, cancelled) -> None:
@@ -254,7 +254,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             raise InterruptedError("Обработка отменена")
     check()
     options = load_options(job_dir)
-    music_config = load_music_config(MUSIC_CONFIG)
+    music_config = load_settings()
     with _timed_stage(timings, "analysis"):
         analysis = analyze(job_dir, source, report, cancelled)
     check()

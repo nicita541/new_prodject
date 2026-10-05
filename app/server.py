@@ -26,6 +26,7 @@ from app import config
 from app.jobs import BusyError, JobManager, contained, read_json
 from app.quality import debug_timeline, summarize_plan
 from app.part_context import with_context
+from app.music import list_tracks, load_settings, save_settings
 
 MAX_UPLOAD = 20 * 1024 ** 3
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -99,6 +100,13 @@ class CreateEpisode(BaseModel):
 
 class EpisodeSettings(CreateJob):
     pass
+
+
+class MusicSettings(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    enabled: bool
+    volume: float = Field(ge=0, le=1)
+    track: str | None = None
 
 
 def safe_filename(name: str | None) -> str:
@@ -330,6 +338,31 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         if not config.readiness()['ready']:
             raise HTTPException(503, 'Сначала выполните локальную настройку проекта')
         return public_job(request.app.state.library.launch(identifier), get_manager(request))
+
+    @application.get("/api/music")
+    def music_settings():
+        settings = load_settings()
+        return {"enabled": settings["enabled"], "volume": settings["volume"],
+                "fade_in": settings["fade_in"], "fade_out": settings["fade_out"],
+                "track": settings["track"], "tracks": [path.name for path in list_tracks(config.MUSIC)]}
+
+    @application.put("/api/music")
+    def save_music_settings(body: MusicSettings):
+        settings = load_settings()
+        track = (body.track or "").strip() or None
+        saved = save_settings({**settings, "enabled": body.enabled, "volume": body.volume, "track": track})
+        return {"enabled": saved["enabled"], "volume": saved["volume"],
+                "fade_in": saved["fade_in"], "fade_out": saved["fade_out"],
+                "track": saved["track"], "tracks": [path.name for path in list_tracks(config.MUSIC)]}
+
+    @application.post("/api/music/open")
+    def open_music_folder():
+        config.MUSIC.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(config.MUSIC))
+        except OSError as error:
+            raise HTTPException(500, "Не удалось открыть папку музыки") from error
+        return {"opened": True}
 
     @application.get("/api/deepseek")
     def deepseek_status():

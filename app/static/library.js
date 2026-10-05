@@ -77,7 +77,7 @@ const libraryUI = {
     if(view==='edit') {
       $('analysis-provider').value=episode.settings.analysis_provider;
       $('layout').value=episode.settings.layout; $('caption-style').value=episode.settings.caption_style;
-      renderProvider(); renderEditing();
+      renderProvider(); renderEditing(); musicUI.load();
       setText('episode-source-note',episode.source_id ? 'Одно видео закреплено за этой серией. Для другой серии создайте отдельный подпроект.' : 'Выбранное видео будет закреплено за этим подпроектом после сохранения настроек.');
       try { await loadSources(episode.source_id ?? ''); } catch(error) { setText('form-message',error.message); }
       if(revision!==this.revision) return;
@@ -194,6 +194,56 @@ const libraryUI = {
     finally { state.busyAction=false; updateControls(); }
   }
 };
+const musicUI = {
+  tracks: [], current: {enabled: true, volume: 0.15, track: null},
+  option(value, label) { const option=document.createElement('option'); option.value=value; option.textContent=label; return option; },
+  populateTracks(selected) {
+    const select=$('music-track');
+    const options=[this.option('', 'Случайный трек')];
+    for(const name of this.tracks) options.push(this.option(name, name));
+    select.replaceChildren(...options);
+    select.value=selected ?? '';
+  },
+  render() {
+    const enabled=$('music-enabled').checked;
+    const volume=Number($('music-volume').value) || 0;
+    const track=$('music-track').value;
+    setText('music-volume-label', `${volume}%`);
+    setText('music-current', track ? `Текущий трек: ${track}` : 'Текущий трек: случайный выбор');
+    setText('music-summary', enabled ? (track || 'случайный') : 'выключена');
+    $('music-volume').disabled=!enabled;
+    $('music-track').disabled=!enabled;
+    $('music-random').disabled=!enabled;
+  },
+  async load() {
+    try {
+      const data=await api('/api/music');
+      this.current=data; this.tracks=data.tracks ?? [];
+      $('music-enabled').checked=!!data.enabled;
+      $('music-volume').value=String(Math.round((data.volume ?? 0.15) * 100));
+      this.populateTracks(data.track);
+      this.render();
+    } catch(error) { setText('music-message', error.message); }
+  },
+  async save() {
+    try {
+      const body={enabled:$('music-enabled').checked, volume:(Number($('music-volume').value) || 0) / 100, track:$('music-track').value || null};
+      const saved=await api('/api/music', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      this.current=saved; this.tracks=saved.tracks ?? [];
+      setText('music-message', 'Настройки музыки сохранены.');
+      this.render();
+    } catch(error) { setText('music-message', error.message); }
+  },
+  async random() {
+    if(!this.tracks.length) { setText('music-message', 'В папке music нет аудиофайлов.'); return; }
+    $('music-track').value=this.tracks[Math.floor(Math.random() * this.tracks.length)];
+    this.render(); await this.save();
+  },
+  async openFolder() {
+    try { await api('/api/music/open', {method:'POST'}); setText('music-message', 'Папка музыки открыта.'); }
+    catch(error) { setText('music-message', error.message); }
+  },
+};
 state.navigation=libraryUI;
 $('delete-current-project').addEventListener('click',()=>libraryUI.archive('project',libraryUI.project.id));
 $('delete-current-episode').addEventListener('click',()=>libraryUI.archive('episode',libraryUI.episode.id));
@@ -219,4 +269,10 @@ $('save-settings').addEventListener('click',async()=>{
 $('episode-attempt').addEventListener('change',()=>{
   if(libraryUI.attempts().some(j=>j.id===$('episode-attempt').value && j.status==='completed')) location.hash=`episode/${libraryUI.episode.id}/review/${$('episode-attempt').value}`;
 });
+$('music-enabled').addEventListener('change',()=>{ musicUI.render(); musicUI.save(); });
+$('music-volume').addEventListener('input',()=>setText('music-volume-label',`${$('music-volume').value}%`));
+$('music-volume').addEventListener('change',()=>musicUI.save());
+$('music-track').addEventListener('change',()=>{ musicUI.render(); musicUI.save(); });
+$('music-random').addEventListener('click',()=>musicUI.random());
+$('music-open-folder').addEventListener('click',()=>musicUI.openFolder());
 libraryUI.refreshLibrary().then(()=>libraryUI.route()).catch(error=>setText('library-message',`Не удалось открыть проекты: ${error.message}`));

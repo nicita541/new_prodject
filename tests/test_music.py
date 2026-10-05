@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media import inspect_media, render_part, run_command
-from app.music import (DEFAULT_CONFIG, list_tracks, load_config, pick_track,
-                       validate_config)
+from app.music import (DEFAULT_CONFIG, list_tracks, load_config, load_settings,
+                       pick_track, save_settings, validate_config)
 
 
 @contextmanager
@@ -46,6 +46,10 @@ class ConfigTests(unittest.TestCase):
     def test_rejects_non_boolean_enabled(self):
         with self.assertRaises(ValueError):
             validate_config({"enabled": "yes"})
+
+    def test_rejects_non_string_track(self):
+        with self.assertRaises(ValueError):
+            validate_config({"track": 5})
 
     def test_ignores_unknown_keys(self):
         config = validate_config({"volume": 0.3, "unknown": 1})
@@ -86,6 +90,42 @@ class TrackTests(unittest.TestCase):
             (directory / "b.mp3").write_bytes(b"x")
             (directory / "a.wav").write_bytes(b"x")
             self.assertEqual([p.name for p in list_tracks(directory)], ["a.wav", "b.mp3"])
+
+    def test_pick_track_honors_configured_track(self):
+        with workspace_directory() as directory:
+            (directory / "a.mp3").write_bytes(b"a")
+            (directory / "b.mp3").write_bytes(b"b")
+            track = pick_track(directory, {"enabled": True, "volume": 0.15, "track": "b.mp3"})
+            self.assertEqual(track.name, "b.mp3")
+
+    def test_pick_track_falls_back_to_random_when_track_missing(self):
+        with workspace_directory() as directory:
+            (directory / "a.mp3").write_bytes(b"a")
+            track = pick_track(directory, {"enabled": True, "volume": 0.15, "track": "gone.mp3"},
+                               random.Random(0))
+            self.assertEqual(track.name, "a.mp3")
+
+
+class SettingsPersistenceTests(unittest.TestCase):
+    def test_save_and_load_settings_roundtrip(self):
+        with workspace_directory() as directory:
+            settings_path = directory / "settings" / "music.json"
+            with patch("app.music.MUSIC_SETTINGS", settings_path):
+                saved = save_settings({"enabled": False, "volume": 0.3, "track": "song.mp3"})
+                self.assertFalse(saved["enabled"])
+                self.assertEqual(saved["volume"], 0.3)
+                self.assertEqual(load_settings(), saved)
+                self.assertTrue(settings_path.is_file())
+
+    def test_load_settings_prefers_runtime_file(self):
+        with workspace_directory() as directory:
+            runtime = directory / "runtime.json"
+            runtime.write_text(json.dumps({"music": {"enabled": False, "volume": 0.5}}), encoding="utf-8")
+            with patch("app.music.MUSIC_SETTINGS", runtime), \
+                    patch("app.music.MUSIC_CONFIG", directory / "missing.json"):
+                config = load_settings()
+                self.assertFalse(config["enabled"])
+                self.assertEqual(config["volume"], 0.5)
 
 
 class BackgroundMusicFilterTests(unittest.TestCase):
@@ -165,4 +205,34 @@ class BackgroundMusicIntegrationTests(unittest.TestCase):
             streams = {s["codec_type"]: s for s in info["streams"]}
             self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
             self.assertLess(abs(float(streams["video"]["duration"]) - float(streams["audio"]["duration"])), 0.15)
+
+
+class MusicApiTests(unittest.TestCase):
+    def test_get_and_put_music_settings(self):
+        from fastapi.testclient import TestClient
+        from app.jobs import JobManager
+        from app.server import create_app
+        with workspace_directory() as directory:
+            base = Path(directory)
+            music_dir = base / "music"
+            music_dir.mkdir()
+            (music_dir / "a.mp3").write_bytes(b"a")
+            (music_dir / "b.wav").write_bytes(b"b")
+            settings_path = base / "settings" / "music.json"
+            with patch("app.music.MUSIC_SETTINGS", settings_path), \
+                    patch("app.music.MUSIC_CONFIG", base / "missing.json"), \
+                    patch("app.config.MUSIC", music_dir):
+                client = TestClient(create_app(JobManager(root=base)), base_url="http://127.0.0.1:8765")
+                data = client.get("/api/music").json()
+                self.assertTrue(data["enabled"])
+                self.assertEqual(data["tracks"], ["a.mp3", "b.wav"])
+                self.assertIsNone(data["track"])
+                updated = client.put("/api/music", json={"enabled": False, "volume": 0.25, "track": "b.wav"}).json()
+                self.assertFalse(updated["enabled"])
+                self.assertEqual(updated["volume"], 0.25)
+                self.assertEqual(updated["track"], "b.wav")
+                again = client.get("/api/music").json()
+                self.assertFalse(again["enabled"])
+                self.assertEqual(again["volume"], 0.25)
+                self.assertEqual(again["track"], "b.wav")
 
