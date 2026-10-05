@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Кадр — локальный монтаж шортсов</title>
-  <link rel="stylesheet" href="/static/style.css?v=analysis-debug-2">
-  <script src="/static/app.js?v=analysis-debug-2" defer></script><script src="/static/library.js" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=chosen-folder-1">
+  <script src="/static/app.js?v=chosen-folder-1" defer></script><script src="/static/library.js" defer></script>
 </head>
 <body>
 <header class="topbar"><a href="#projects" class="brand" aria-label="Кадр, проекты"><span class="brand-mark" aria-hidden="true">К</span>КАДР<span class="brand-note">STUDIO</span></a><nav aria-label="Главное меню"><a href="#projects">Проекты</a><a href="#trash">Корзина</a></nav><span id="connection" class="status-pill"><span class="status-dot"></span><span id="connection-label">Проверяем систему</span></span></header>
@@ -102,7 +102,7 @@
           <div class="panel-heading"><div><p class="eyebrow">ЭКСПОРТ</p><h2 id="results-heading">Шортсы</h2></div><span id="parts-count" class="muted small"></span></div>
           <details id="quality-warnings" class="notice quality-warnings" hidden><summary id="quality-summary">Замечания к монтажу</summary><p id="quality-message">Модель отметила места, которые стоит проверить при просмотре. Сопоставьте их с монтажным планом и исходной серией.</p><ul id="quality-warning-list"></ul></details>
           <details id="quality-notes" class="quality-notes" hidden><summary>Причины сохранения сцен</summary><ul id="quality-note-list"></ul></details>
-          <div class="viewer"><div class="video-frame"><video id="player" controls playsinline preload="metadata" aria-label="Просмотр шортса"></video></div><div class="playlist-column"><p class="muted small">Части по порядку · автопереход</p><ol id="playlist" class="playlist"></ol><div class="download-links"><a id="download-video" class="secondary-button" download>Скачать MP4</a><a id="download-subtitle" class="text-button" download>Субтитры SRT ↓</a></div><p id="player-message" class="muted small" role="status"></p></div></div>
+          <div class="viewer"><div class="video-frame"><video id="player" controls playsinline preload="metadata" aria-label="Просмотр шортса"></video></div><div class="playlist-column"><p class="muted small">Части по порядку · автопереход</p><ol id="playlist" class="playlist"></ol><div class="download-links"><button id="download-video" class="secondary-button" type="button" disabled>Скачать MP4</button><button id="download-all" class="secondary-button" type="button" disabled>Скачать все видео</button><a id="download-subtitle" class="text-button" download>Субтитры SRT ↓</a></div><p id="download-status" class="muted small" role="status" aria-live="polite"></p><p id="player-message" class="muted small" role="status"></p></div></div>
           
         </section></div><p id="review-empty" class="empty-library" hidden>Готового монтажа пока нет. Вернитесь в настройки серии.</p>
  </section>

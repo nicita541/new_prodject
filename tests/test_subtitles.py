@@ -68,7 +68,21 @@ class SubtitleTests(unittest.TestCase):
             contents = (base / "test.ass").read_text(encoding="utf-8")
             self.assertNotIn(r"{\pos", contents)
             self.assertIn(r"строка\N", contents)
-            self.assertIn("Часть 3", contents)
+            self.assertNotIn("Часть 3", contents)
+            self.assertNotIn("Style: Part,", contents)
+
+    def test_actual_render_has_no_part_label_and_keeps_speech(self):
+        with workspace_directory() as directory:
+            base = Path(directory)
+            write_ass(base / 'captions.ass',
+                      [{'start': 0, 'end': 1, 'text': 'Понимаю.'}], 1, 1)
+            run_command([str(FFMPEG), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                         'color=black:size=1080x1920:rate=30', '-vf', 'ass=captions.ass',
+                         '-frames:v', '1', str(base / 'no-part-label.png')], base)
+            with Image.open(base / 'no-part-label.png') as rendered:
+                picture = rendered.convert('L')
+                self.assertIsNone(picture.crop((0, 0, 1080, 600)).getbbox())
+                self.assertIsNotNone(picture.crop((0, 1300, 1080, 1850)).getbbox())
 
     def test_wide_russian_line_obeys_real_rendered_safe_margins(self):
         text = 'хоть никотинчиком подкрепиться увидала'
@@ -84,7 +98,7 @@ class SubtitleTests(unittest.TestCase):
                          'color=black:size=1080x1920:rate=30', '-vf', 'ass=captions.ass',
                          '-frames:v', '1', str(base / 'caption.png')], base)
             picture = Image.open(base / 'caption.png').convert('L')
-            # Exclude the part number; measure actual libass glyph pixels.
+            # Measure actual libass speech glyph pixels in the caption area.
             box = picture.crop((0, 1300, 1080, 1850)).getbbox()
             self.assertIsNotNone(box)
             self.assertGreaterEqual(box[0], 90)

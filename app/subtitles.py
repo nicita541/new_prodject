@@ -14,7 +14,7 @@ TEXT_WIDTH = 884  # 900px safe area minus outlines and rounding allowance.
 def style_identity(style: str = 'classic') -> dict:
     font = Path(_speech_font().path)
     stat = font.stat()
-    return {'version': 3, 'style': style, 'font': str(font), 'size': stat.st_size,
+    return {'version': 4, 'style': style, 'font': str(font), 'size': stat.st_size,
             'mtime_ns': stat.st_mtime_ns, 'font_size': 64 if style == 'accent' else 56,
             'text_width': 780 if style == 'accent' else TEXT_WIDTH}
 
@@ -133,7 +133,6 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Speech,Arial,56,&H00FFFFFF,&H00FFFFFF,&H00141414,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,90,285,1
-Style: Part,Arial,38,&H00FFFFFF,&H00FFFFFF,&H00141414,&H80000000,0,0,0,0,100,100,0,0,1,2,1,7,80,80,150,1
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
@@ -147,7 +146,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # Never allow dialogue to insert ASS control/override sequences.
     def escape(text):
         return text.replace("\\", "＼").replace("{", "｛").replace("}", "｝").replace("\r", "").replace("\n", r"\N")
-    lines = [header, f"Dialogue: 1,0:00:00.00,{_clock(duration, True)},Part,,0,0,0,,Часть {index}\n"]
+    lines = [header]
     for cue in cues:
         effect = r'{\fad(50,60)}' if style == 'accent' else ''
         lines.append(f"Dialogue: 0,{_clock(cue['start'], True)},{_clock(cue['end'], True)},Speech,,0,0,0,,{effect}{escape(cue['text'])}\n")

@@ -470,6 +470,128 @@ class ApiTests(unittest.TestCase):
         atomic_json(directory / "job.json", job)
         self.assertEqual(self.client.get(base + "part_001.mp4").status_code, 404)
 
+    def completed_output_job(self, count=2):
+        job = self.start_job()
+        self.client.post(f"/api/jobs/{job['id']}/cancel")
+        item = self.manager.get(job["id"])
+        output = self.manager.job_dir(job["id"]) / "output"
+        output.mkdir(exist_ok=True)
+        names = []
+        for index in range(1, count + 1):
+            name = f"part_{index:03}.mp4"
+            (output / name).write_bytes(f"video-{index}".encode())
+            names.append(name)
+        item.update(status="completed", outputs=names)
+        atomic_json(self.manager.job_dir(job["id"]) / "job.json", item)
+        return item, output
+
+    def test_save_one_video_to_native_chosen_folder_and_avoid_overwrite(self):
+        job, output = self.completed_output_job(1)
+        folder = self.root / "chosen"
+        folder.mkdir()
+        (folder / "part_001.mp4").write_bytes(b"existing user file")
+        with patch("app.server.choose_download_directory", return_value=str(folder)) as chooser:
+            response = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"filename":"part_001.mp4"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"cancelled":False,"count":1,"files":["part_001 (2).mp4"]})
+        chooser.assert_called_once_with()
+        self.assertEqual((folder / "part_001.mp4").read_bytes(), b"existing user file")
+        self.assertEqual((folder / "part_001 (2).mp4").read_bytes(), (output / "part_001.mp4").read_bytes())
+
+    def test_save_all_copies_only_registered_mp4_files(self):
+        job, output = self.completed_output_job(14)
+        (output / "private.mp4").write_bytes(b"not registered")
+        (output / "part_001.srt").write_bytes(b"subtitle")
+        folder = self.root / "chosen-all"
+        folder.mkdir()
+        with patch("app.server.choose_download_directory", return_value=str(folder)):
+            response = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["count"], 14)
+        self.assertEqual(body["files"], [f"part_{index:03}.mp4" for index in range(1, 15)])
+        for name in body["files"]:
+            self.assertEqual((folder / name).read_bytes(), (output / name).read_bytes())
+        self.assertFalse((folder / "private.mp4").exists())
+        self.assertFalse((folder / "part_001.srt").exists())
+
+    def test_save_videos_rejects_unready_jobs_paths_unknown_files_and_arbitrary_destination(self):
+        job, output = self.completed_output_job(1)
+        folder = self.root / "must-not-open"
+        folder.mkdir()
+        with patch("app.server.choose_download_directory", return_value=str(folder)) as chooser:
+            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"filename":"..\\source.mp4"}).status_code, 404)
+            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"filename":"missing.mp4"}).status_code, 404)
+            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True,"filename":"part_001.mp4"}).status_code, 422)
+            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True,"path":str(folder)}).status_code, 422)
+            self.assertEqual(self.client.post("/api/jobs/not-a-uuid/save-videos", json={"all":True}).status_code, 404)
+            chooser.assert_not_called()
+
+            (output / "part_001.mp4").unlink()
+            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True}).status_code, 404)
+            chooser.assert_not_called()
+
+            item = self.manager.get(job["id"])
+            item["status"] = "running"
+            atomic_json(self.manager.job_dir(job["id"]) / "job.json", item)
+            self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True}).status_code, 404)
+            chooser.assert_not_called()
+
+    def test_save_videos_cancel_returns_truthful_empty_result_and_picker_is_serialized(self):
+        job, _ = self.completed_output_job(1)
+        with patch("app.server.choose_download_directory", return_value=None) as chooser:
+            response = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"cancelled":True,"count":0,"files":[]})
+        chooser.assert_called_once_with()
+
+        application = self.client.app
+        lock = application.state.download_picker_lock
+        self.assertTrue(lock.acquire(blocking=False))
+        try:
+            with patch("app.server.choose_download_directory") as chooser:
+                response = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
+            self.assertEqual(response.status_code, 409)
+            chooser.assert_not_called()
+        finally:
+            lock.release()
+
+    def test_save_videos_picker_failure_is_sanitized_and_bad_selection_is_rejected(self):
+        job, _ = self.completed_output_job(1)
+        with patch("app.server.choose_download_directory", side_effect=RuntimeError("private local path")):
+            failed = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
+        self.assertEqual(failed.status_code, 500)
+        self.assertEqual(failed.json(), {"detail":"Не удалось открыть окно выбора папки"})
+        self.assertNotIn("private local path", failed.text)
+
+        with patch("app.server.choose_download_directory", return_value=str(self.root / "missing-folder")):
+            rejected = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.json(), {"detail":"Выбранная папка недоступна"})
+
+    def test_save_videos_partial_copy_error_reports_completed_files_and_cleans_temp(self):
+        job, _ = self.completed_output_job(2)
+        folder = self.root / "partial"
+        folder.mkdir()
+        original = __import__("shutil").copyfileobj
+        calls = 0
+        def fail_second(source, destination, length=0):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated disk failure")
+            return original(source, destination, length)
+        with patch("app.server.choose_download_directory", return_value=str(folder)), \
+             patch("app.server.shutil.copyfileobj", side_effect=fail_second):
+            response = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
+        self.assertEqual(response.status_code, 507)
+        self.assertEqual(response.json()["count"], 1)
+        self.assertEqual(response.json()["files"], ["part_001.mp4"])
+        self.assertIn("error", response.json())
+        self.assertEqual((folder / "part_001.mp4").read_bytes(), b"video-1")
+        self.assertFalse((folder / "part_002.mp4").exists())
+        self.assertEqual(list(folder.glob("*.tmp")), [])
+
     def test_unready_job_has_no_side_effect_and_missing_components_shown(self):
         with patch("app.server.config.readiness", return_value={"ready": False, "missing": ["FFmpeg"]}):
             source = self.client.get("/api/sources").json()[0]

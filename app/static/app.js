@@ -5,6 +5,7 @@ const state = {health: null, sources: [], jobs: [], selected: null, selectedJob:
 const statuses = {queued: "В очереди", running: "В работе", completed: "Готово", failed: "Ошибка", cancelled: "Отменено", interrupted: "Прервано"};
 const timelineColors = ['#edb884', '#8ec3a8', '#91b4df', '#ca9cca', '#d8c978'];
 state.timelineKey = ''; state.timeline = null; state.sourceSelection = null;
+state.savingVideos=false;
 const stages = {queued: "Ожидание", prepare: "Подготовка видео", preparing: "Подготовка видео", probe: "Проверка видео", audio: "Подготовка звука", transcribe: "Распознавание русской речи", transcribing: "Распознавание русской речи", transcript: "Распознавание русской речи", speech: "Распознавание русской речи", shots: "Поиск смены планов", analyze: "Анализ сюжета и изображения", analyzing: "Анализ сюжета и изображения", analysis: "Анализ сюжета и изображения", events: "Анализ сюжета и изображения", condense: "Сокращение сюжета с сохранением контекста", framing: "Кадрирование говорящих и действия", focus: "Кадрирование говорящих и действия", plan: "Составление монтажного плана", planning: "Составление монтажного плана", render: "Экспорт частей", rendering: "Экспорт частей", completed: "Монтаж завершён", done: "Монтаж завершён"};
 const checkpointStages = ["prepare", "transcribe", "analyze", "condense", "framing", "plan", "render"];
 const stageGroup = {prepare: 0, preparing: 0, probe: 0, audio: 0, transcribe: 1, transcribing: 1, transcript: 1, speech: 1, scenes: 0, shots: 0, analyze: 2, analyzing: 2, analysis: 2, events: 2, condense: 3, framing: 4, focus: 4, planning: 5, plan: 5, rendering: 6, render: 6, completed: 7, done: 7};
@@ -245,6 +246,7 @@ function renderFiles(job) {
   const key = job.id + JSON.stringify(files);
   if (key === state.filesKey) return;
   state.filesKey = key; state.files = files;
+  if(!state.savingVideos)setText('download-status','');
   $("results-panel").hidden = !files.length;
   const player = $("player"); player.pause(); player.removeAttribute("src"); player.load();
   setText("parts-count", `${files.length} шт.`);
@@ -255,11 +257,43 @@ function renderFiles(job) {
     button.append(name, duration); button.addEventListener("click", () => selectFile(index, true)); li.append(button); return li;
   }));
   if (files.length) selectFile(0, false);
+  renderDownloadButtons();
 }
+function renderDownloadButtons() {
+  const ready=state.selectedJob?.status==='completed' && state.selectedJob.id===state.selected;
+  $('download-video').disabled=state.savingVideos || !ready || !state.files[state.fileIndex];
+  $('download-all').disabled=state.savingVideos || !ready || !state.files.length;
+}
+async function saveVideos(all) {
+  const job=state.selectedJob,file=state.files[state.fileIndex];
+  if(state.savingVideos || !job || job.id!==state.selected || job.status!=='completed' || !state.files.length || (!all && !file)) return;
+  const expected=all ? state.files.length : 1;
+  state.savingVideos=true;renderDownloadButtons();
+  setText('download-status','Выберите папку для сохранения видео в открывшемся окне Windows.');
+  try {
+    const response=await fetch(`/api/jobs/${encodeURIComponent(job.id)}/save-videos`,{
+      cache:'no-store',method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(all ? {all:true} : {filename:file.name})});
+    let result;try{result=await response.json();}catch{throw new Error('Сервер не подтвердил сохранение видео.');}
+    const receipt=Number.isInteger(result.count) && result.count>=0 && Array.isArray(result.files) && result.files.length===result.count;
+    if(!response.ok) {
+      const message=typeof result.error==='string' ? result.error : typeof result.detail==='string' ? result.detail : `Ошибка сервера (${response.status}).`;
+      throw new Error(receipt && result.count>0 ? `Успели сохранить видео: ${result.count}. ${message}` : message);
+    }
+    if(state.selected===job.id) {
+      if(result.cancelled===true)setText('download-status','Сохранение отменено.');
+      else if(result.cancelled===false && receipt && result.count===expected)setText('download-status',all ? `В выбранную папку сохранено видео: ${result.count}.` : 'MP4 сохранён в выбранную папку.');
+      else throw new Error('Сервер не подтвердил сохранение видео. Повторите выбор папки.');
+    }
+  } catch(error) {
+    if(state.selected===job.id)setText('download-status',`Не удалось сохранить видео: ${error.message}`);
+  } finally {state.savingVideos=false;renderDownloadButtons();}
+}
+$('download-video').addEventListener('click',()=>saveVideos(false));
+$('download-all').addEventListener('click',()=>saveVideos(true));
 function selectFile(index, play) {
   const file = state.files[index]; if (!file) return;
   state.fileIndex = index; setText("player-message", "");
-  $("player").src = safeUrl(file.url); $("download-video").href = safeUrl(file.url); $("download-video").download = file.name;
+  $("player").src = safeUrl(file.url); renderDownloadButtons();
   const subtitleUrl = safeUrl(file.subtitle_url); $("download-subtitle").hidden = !subtitleUrl;
   if (subtitleUrl) $("download-subtitle").href = subtitleUrl;
   $("playlist").querySelectorAll("button").forEach((button, current) => { button.classList.toggle("selected", current === index); button.setAttribute("aria-current", String(current === index)); });

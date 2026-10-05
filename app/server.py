@@ -7,7 +7,10 @@ import math
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
+import tempfile
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -77,6 +80,12 @@ class RecoverDeepseek(BaseModel):
     accept_reserved_costs: Literal[True]
 
 
+class SaveVideos(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    filename: str | None = None
+    all: bool = False
+
+
 class CreateProject(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=200)
@@ -104,6 +113,21 @@ def safe_filename(name: str | None) -> str:
     if re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])", stem):
         stem = "episode_" + stem
     return stem + Path(name).suffix.lower()
+
+
+def choose_download_directory() -> str | None:
+    """Use a native folder chooser; callers never supply a destination path."""
+    import tkinter
+    from tkinter import filedialog
+
+    root = tkinter.Tk()
+    try:
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        return filedialog.askdirectory(parent=root, title="Куда сохранить видео?", mustexist=True) or None
+    finally:
+        root.destroy()
 
 
 def validate_media(path: Path) -> None:
@@ -209,6 +233,7 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             application.state.manager.close()
     application = FastAPI(title="Аниме → шортсы", lifespan=lifespan,
                           docs_url=None, redoc_url=None, openapi_url=None)
+    application.state.download_picker_lock = threading.Lock()
     application.add_middleware(UploadLimitMiddleware)
 
     @application.middleware("http")
@@ -471,6 +496,97 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         if not path.is_file():
             raise HTTPException(404, "Готовый файл не найден")
         return ranged_file(path, request)
+
+    @application.post("/api/jobs/{identifier}/save-videos")
+    def save_videos(request: Request, identifier: str, body: SaveVideos):
+        current = get_manager(request)
+        item = current.get(identifier)
+        if item["status"] != "completed":
+            raise HTTPException(404, "Готовые видео не найдены")
+        registered = item.get("outputs", [])
+        mp4_names = [name for name in registered
+                     if isinstance(name, str) and Path(name).name == name
+                     and "/" not in name and "\\" not in name and Path(name).suffix.lower() == ".mp4"]
+        if body.all and body.filename is not None or not body.all and body.filename is None:
+            raise HTTPException(422, "Укажите одно видео или выберите все видео")
+        if body.all:
+            names = mp4_names
+        else:
+            name = body.filename
+            if (not isinstance(name, str) or Path(name).name != name or "/" in name or "\\" in name
+                    or Path(name).suffix.lower() != ".mp4" or name not in mp4_names):
+                raise HTTPException(404, "Готовое видео не найдено")
+            names = [name]
+        if not names:
+            raise HTTPException(404, "В задании нет готовых MP4-видео")
+
+        output_dir = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
+        sources = []
+        for name in names:
+            path = contained(output_dir / name, output_dir)
+            if not path.is_file():
+                raise HTTPException(404, "Одно из готовых видео недоступно")
+            sources.append((name, path))
+
+        # Validate the full batch before showing the native picker. The client
+        # never sends a destination path; only this local dialog chooses one.
+        lock = request.app.state.download_picker_lock
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "Выбор папки уже открыт")
+        try:
+            try:
+                selected = choose_download_directory()
+            except Exception as error:
+                # Do not return tkinter diagnostics, which may contain local paths.
+                raise HTTPException(500, "Не удалось открыть окно выбора папки") from error
+            if not selected:
+                return {"cancelled": True, "count": 0, "files": []}
+            try:
+                destination = Path(selected).resolve(strict=True)
+            except (OSError, RuntimeError) as error:
+                raise HTTPException(400, "Выбранная папка недоступна") from error
+            if not destination.is_dir():
+                raise HTTPException(400, "Выбранная папка недоступна")
+            if destination == output_dir:
+                raise HTTPException(400, "Выберите папку вне папки готовых видео")
+
+            copied = []
+            for name, source in sources:
+                stem, suffix = Path(name).stem, Path(name).suffix
+                index = 1
+                while True:
+                    output_name = name if index == 1 else f"{stem} ({index}){suffix}"
+                    target = destination / output_name
+                    if target.exists():
+                        index += 1
+                        continue
+                    fd, temporary_name = tempfile.mkstemp(prefix=f".{stem}.", suffix=".tmp", dir=destination)
+                    temporary = Path(temporary_name)
+                    try:
+                        with os.fdopen(fd, "wb") as outgoing:
+                            with source.open("rb") as incoming:
+                                shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+                            outgoing.flush()
+                            os.fsync(outgoing.fileno())
+                        # Same-directory rename is atomic and does not overwrite
+                        # an existing destination on Windows.
+                        os.rename(temporary, target)
+                        copied.append(output_name)
+                        break
+                    except FileExistsError:
+                        temporary.unlink(missing_ok=True)
+                        index += 1
+                    except OSError:
+                        temporary.unlink(missing_ok=True)
+                        raise
+        except OSError as error:
+            # Earlier completed copies remain; report their exact count. The
+            # current partial file is removed before this response.
+            return JSONResponse({"cancelled": False, "count": len(copied), "files": copied,
+                                 "error": "Не удалось сохранить все видео в выбранную папку"}, 507)
+        finally:
+            lock.release()
+        return {"cancelled": False, "count": len(copied), "files": copied}
 
     static = config.ROOT / "app" / "static"
     @application.get("/")

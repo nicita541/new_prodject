@@ -142,7 +142,7 @@ def _run_identity(job_dir: Path) -> dict:
                            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
     return {"git_commit": revision, "source_files_sha256": files,
             "loaded_function_bytecode_sha256": loaded_code, "python_version": sys.version.split()[0],
-            "analysis_version": ANALYSIS_VERSION, "planner_version": 9, "renderer_version": 4,
+            "analysis_version": ANALYSIS_VERSION, "planner_version": 9, "renderer_version": 5,
             "pacing_version": PACING_VERSION, "semantic_identity": semantic,
             "provider": provider_identity(provider), "editorial_profile": profile,
             "editing": load_options(job_dir), "model_files": models}
@@ -259,7 +259,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     validate_analysis(analysis)
     stat = source.stat()
     identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
-                "planner_version": 9, "renderer_version": 4, "editing": options,
+                "planner_version": 9, "renderer_version": 5, "editing": options,
                 "subtitle_style": style_identity(options['caption_style'])}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     plan_path = job_dir / "plan.json"

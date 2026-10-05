@@ -103,6 +103,11 @@ async function ui(options = {}) {
       else if (url.endsWith('/reset-budget')) { data.attemptReset = true; body = {attempt:2, charged_ceiling_usd:'0'}; }
       else if (url.endsWith('/spending')) body = {limit_usd:'0.10', charged_ceiling_usd:data.attemptReset ? '0' : '0.08', remaining_usd:'0.02', attempt:data.attemptReset ? 2 : 1, job_total_usd:'0.08'};
       else if (url.endsWith("/plan")) body = data.plan ?? {warnings: ["DeepSeek недоступен: кадр выбран локально."]};
+      else if (url.endsWith('/save-videos') && request.method==='POST') {
+        if(data.saveFailure)return {ok:false,status:507,json:async()=>data.saveFailure};
+        if(data.saveError)return {ok:false,status:500,json:async()=>({detail:data.saveError})};
+        body=typeof data.saveHandler==='function' ? await data.saveHandler(JSON.parse(request.body)) : data.saveResult ?? {cancelled:false,count:1,files:['part_001.mp4']};
+      }
       else body = data.jobs.find((job) => url === `/api/jobs/${job.id}`);
       assert.notEqual(body, undefined, `Unexpected mocked route: ${url}`);
       return {ok: true, status: 200, json: async () => body};
@@ -152,7 +157,8 @@ test("processing checkpoints identify the active stage and where work runs", asy
   assert.match(html, /<li data-stage="condense"/);
   assert.match(html, /<li data-stage="framing"/);
   assert.match(css, /@media\(max-width:480px\)\{\.stages\{grid-template-columns:1fr/);
-  assert.match(html, /href="\/static\/style\.css\?v=checkpoints-1"/);
+  assert.match(html, /href="\/static\/style\.css\?v=[a-z0-9-]+"/);
+  assert.match(html, /src="\/static\/app\.js\?v=[a-z0-9-]+"/);
 });
 
 test("completed, failed, cancelled and queued jobs retain truthful checkpoint states", async () => {
@@ -378,6 +384,55 @@ test('current quality summary separates review warnings from profile information
   assert.equal(u.element('quality-note-list').children[0].textContent,'Атмосфера сохранена выбранным профилем');
   assert.match(u.element('quality-summary').textContent,/замечаний: 1/);
   assert.equal(u.checks().length,0);
+});
+
+test('MP4 save uses the selected registered file and disables both actions while choosing a folder',async()=>{
+  const u=await ui();
+  const files=[1,2].map(n=>({name:`part_00${n}.mp4`,url:`/api/jobs/save-job/files/part_00${n}.mp4`,subtitle_url:`/api/jobs/save-job/files/part_00${n}.srt`}));
+  u.data.jobs.push({id:'save-job',status:'completed',stage:'completed',files});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));u.run('selectFile(1,false)');
+  assert.equal(u.element('download-video').disabled,false);
+  let finish;u.data.saveHandler=()=>new Promise(resolve=>{finish=resolve;});
+  const saving=u.element('download-video').listeners.click();
+  assert.equal(u.element('download-video').disabled,true);assert.equal(u.element('download-all').disabled,true);
+  assert.match(u.element('download-status').textContent,/Выберите папку/);
+  const calls=u.data.calls.filter(c=>c.url.endsWith('/save-videos'));
+  assert.equal(calls.length,1);assert.deepEqual(JSON.parse(calls[0].body),{filename:'part_002.mp4'});
+  finish({cancelled:false,count:1,files:['part_002.mp4']});await saving;
+  assert.match(u.element('download-status').textContent,/MP4 сохранён/);
+  assert.equal(u.element('download-video').disabled,false);assert.equal(u.element('download-all').disabled,false);
+  assert.equal(u.element('download-subtitle').href,'http://127.0.0.1:8765/api/jobs/save-job/files/part_002.srt');
+  assert.equal(u.checks().length,0);
+});
+
+test('save all copies separate videos to a chosen folder and reports cancellation or errors',async()=>{
+  const u=await ui();
+  u.data.jobs.push({id:'save-all-job',status:'completed',stage:'completed',files:Array.from({length:14},(_,i)=>({name:`part_${i+1}.mp4`,url:`/api/jobs/save-all-job/files/part_${i+1}.mp4`}))});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  u.data.saveResult={cancelled:false,count:14,files:Array.from({length:14},(_,i)=>`part_${i+1}.mp4`)};
+  await u.element('download-all').listeners.click();
+  assert.deepEqual(JSON.parse(u.data.calls.find(c=>c.url.endsWith('/save-videos')).body),{all:true});
+  assert.match(u.element('download-status').textContent,/сохранено видео: 14/);
+  assert(!u.data.calls.some(c=>/zip|download-all|download-folder/.test(c.url)));
+  u.data.saveResult={cancelled:true,count:0,files:[]};await u.element('download-all').listeners.click();
+  assert.equal(u.element('download-status').textContent,'Сохранение отменено.');
+  u.data.saveError='Выбранная папка недоступна.';await u.element('download-video').listeners.click();
+  assert.match(u.element('download-status').textContent,/Не удалось сохранить видео: Выбранная папка недоступна/);
+  assert.equal(u.element('download-video').disabled,false);assert.equal(u.element('download-all').disabled,false);
+});
+
+test('partial save failure reports the retained receipt and an incomplete success is not claimed as all files',async()=>{
+  const u=await ui();
+  u.data.jobs.push({id:'save-partial',status:'completed',stage:'completed',files:[1,2].map(n=>({name:`part_00${n}.mp4`,url:`/api/jobs/save-partial/files/part_00${n}.mp4`}))});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  u.data.saveFailure={cancelled:false,count:1,files:['part_001.mp4'],error:'Недостаточно места в выбранной папке.'};
+  await u.element('download-all').listeners.click();
+  assert.match(u.element('download-status').textContent,/Успели сохранить видео: 1/);
+  assert.match(u.element('download-status').textContent,/Недостаточно места/);
+  delete u.data.saveFailure;u.data.saveResult={cancelled:false,count:1,files:['part_001.mp4']};
+  await u.element('download-all').listeners.click();
+  assert.match(u.element('download-status').textContent,/не подтвердил сохранение/);
+  assert.equal(u.element('download-all').disabled,false);
 });
 
 test('library opens projects then scoped episodes and separate editing/review screens', async()=>{
