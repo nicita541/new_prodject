@@ -6,13 +6,13 @@ Finish the current working branch so the user can launch montage, understand pro
 ## Current state
 Workspace: F:/new_prodject; branch: codex/montage-quality. Checkpoints: 8dcd0e0 retires monetary gates; ef90d37 adds seven processing checkpoints/two mode choices; 629b208 adds verified pure-ED authority and dense uncertain-candidate review; c75a8cec94b249089786daffac736ca837ad7653 integrates speech, pacing and diagnostics.
 
-Final job **8d0c5783-94a4-4fb8-ae4c-b4c6ce0f3c8c is completed with 14 MP4/SRT pairs**, linked to episode 926f51e4-4c81-47a9-b85c-d556493edf45, project «перекус». It is a source-bound reviewed correction; original 98291dad-343d-434c-aa2a-9fbd439af3fd and rejected Daba correction remain intact. Only parts 1–3 were re-rendered; reused parts 4–14 match prior MP4/SRT hashes.
+Latest no-label job **7153131e-e85c-4080-87f7-ee901e8d484e is completed with 14 MP4/SRT pairs**, re-rendered from reviewed copy 8d0c5783-94a4-4fb8-ae4c-b4c6ce0f3c8c, linked to episode 926f51e4-4c81-47a9-b85c-d556493edf45, project «перекус». It is a source-bound reviewed correction; original 98291dad-343d-434c-aa2a-9fbd439af3fd and rejected Daba correction remain intact. The reviewed 8d0 correction re-rendered parts 1–3 and reused unchanged parts 4–14. Latest 7153131 re-rendered all 14 with no part-number overlay; all part definitions and SRT bytes equal 8d0, which remains unchanged for download history.
 
 The final correction restores continuity at 71.120333–74.241, retains «Понимаю.» through its reviewed end 84.68 plus a 0.55-second handle (part 1 ends 85.23, before true OP at 88.005), removes verified ED/preview from 1335.042 onward, and applies 11 reviewed silent-footage removals totaling 36.193 seconds. The reaction at 262.012–263.6385, interior approach and basket pickup around 289 remain. Exact ranges/evidence are in [the QA report](../../docs/qa/fresh-export-2026-10-05.md).
 
 The actual final-job browser shows 17 distinct warnings and 69 merged reason markers. Debug is off by default, uses retained source intervals/safe text, and labels model atmosphere rationale without making it verified story fact.
 
-Chosen-folder saving passed user native acceptance after restarting the owned server in the interactive desktop context (PID 17776): the user selected a folder and confirmed all 14 separate MP4s saved. The first invisible-chooser/409 failure is recorded in the QA report. The user then requested removal of the baked-in part-number overlay; a new render-only copy of the same reviewed plan is pending.
+Chosen-folder saving passed user native acceptance after restarting the owned server in the interactive desktop context (PID 17776): the user selected a folder and confirmed all 14 separate MP4s saved. The first invisible-chooser/409 failure is recorded in the QA report. The requested baked-in part-number overlay has been removed in the completed latest 7153131 render-only copy; playlist numbering remains.
 
 ## Constraints
 - Keep tools, temporary files, media, caches and dependencies inside the workspace. Do not commit media, secrets, raw provider payloads or private job state.
@@ -29,7 +29,7 @@ Chosen-folder saving passed user native acceptance after restarting the owned se
 3. processing_checkpoints_review supplied actual-cut warning/reason helpers; montage_recovery integrated the off-default static timeline and UI regressions.
 4. Final copy was published after rendering/copying succeeded, with recomputed selected ranges/provenance; old outputs stayed unchanged.
 5. processing_checkpoints owns native-save backend; montage_recovery owns static buttons/status/tests. Single/all use POST /api/jobs/{id}/save-videos. The server validates registered sources before the chooser, streams temporary copies and suffixes collisions. UI reports cancellation, complete/incomplete receipts and partial failures. Interactive-server visibility was corrected and the user confirmed the bulk save.
-6. Coordinator owns combined gates, owned-server lifecycle/Git checkpoint and actual browser route. Complete the new no-label copy and its media/browser checks, then keep unrelated work on another branch.
+6. Coordinator owns combined gates, owned-server lifecycle/Git checkpoint and actual browser route. Independent media/browser acceptance of the published no-label copy is complete; record the final documentation checkpoint and keep unrelated work on another branch.
 
 ## Validation
 The latest combined gate, including the no-label renderer change, passed **368 Python tests in 18.274 seconds and 20 direct Node UI tests**. Regressions cover speech tails, strict production bounds, weak atmosphere versus verified reactions, stale diagnostics, safe debug selection and save receipts/states.
@@ -38,7 +38,7 @@ Independent media QA passed all 14 probes/audio/plan-duration/SRT checks, full d
 
 Mocked-chooser integration copied real MP4s: 14/14 SHA matches, 334,114,177 bytes. The first actual action failed to show the chooser, but after the interactive-server restart the user confirmed selecting a folder and saving all 14 MP4s. Separate native single-file acceptance has not been reported. Technical checks do not certify whole-episode editorial acceptance.
 
-The requested no-label renderer passed 33 focused subtitle/media tests in 13.724 seconds, including real rendered pixels proving no upper label while speech captions remain. Subtitle style identity 4 and renderer identity 5 invalidate old render caches. The private default-dry-run helper preserves all 14 part definitions/SRTs and limits the pending fresh render-only copy to two workers with no provider calls.
+The requested no-label renderer passed 33 focused subtitle/media tests in 13.724 seconds, including real rendered pixels proving no upper label while speech captions remain. Subtitle style identity 4 and renderer identity 5 invalidate old render caches. The private helper completed the fresh 7153131 render-only copy at checkpoint 3a82fc4cf8145592e6b1def4854ef71f88e6c2e0: all 14 part definitions/SRTs remain equal, all new MP4s passed export validation, ASS Part is absent, and old output sizes/timestamps remain unchanged. It used two NVENC workers, no provider calls or new ASR; publication occurred only after all 14 succeeded. Actual browser acceptance of the new route passed: latest 7153131, 14 parts, timeline/17 warnings/debug off, actual part_001 readyState 4 and playback screenshot with no upper Part label. The result is left open. Independent new-copy QA passed full FFmpeg decoding of all 14 outputs, H.264/audio/durations/SRT bounds, unchanged SRT SHA/plan parts, all ASS layers without Part and all reviewed speech/reaction/ED/pacing invariants. A decoded one-second frame independently confirms no upper Часть label. Evidence: new job qa/independent-no-part-label-media-qa.json and qa/part_001_at_1s.png.
 
 ## Risks and rollback
 Aggressive silence trimming can remove story; preserve independently evidenced quiet action/reactions. Rounded ASR ends require handles and cannot determine production transitions. Missing historical evidence must show uncertainty/unavailable rather than invented ranges. Folder save cancellation must release pending state and preserve sources; partial failure retains completed copies/reports count; Windows collision handling preserves existing files. Roll source back through Git; original jobs and reviewed copies remain available.
@@ -52,5 +52,9 @@ Aggressive silence trimming can remove story; preserve independently evidenced q
 - [x] Single/all save implementation, automated receipt tests and real-file mocked-chooser integrity pass.
 - [x] Native bulk folder selection/saving confirmed by the user after interactive-server restart.
 - [x] Remove baked-in ASS Part overlay; keep speech captions/UI numbering and bump render cache identities.
-- [ ] Render and technically check a fresh 14-part no-label copy; preserve already downloaded 8d0 outputs.
-- [ ] Record final source/docs Git checkpoint and user editorial acceptance.
+- [x] Render and export-validate fresh 7153131 no-label copy, all 14 parts/SRTs unchanged, old 8d0 outputs preserved.
+- [x] Switch and play exact latest 7153131 in the browser; confirm no upper label, timeline/14 parts/17 warnings/debug off.
+- [x] Independent no-label media QA passed all 14 full decodes, format/duration/SRT checks, exact plan/SRT equality and preserved editorial invariants.
+- [x] Final renderer/source checkpoint recorded: 3a82fc4cf8145592e6b1def4854ef71f88e6c2e0; 368 Python/20 direct Node tests passed.
+- [ ] Coordinator records this completed-delivery documentation checkpoint.
+- [ ] User editorial acceptance of the whole corrected episode remains distinct from technical/native-save acceptance.
