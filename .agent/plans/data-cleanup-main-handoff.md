@@ -46,4 +46,4 @@ Deleting old rendered media is irreversible from this workspace; no second full 
 - [x] Owned server restarted; post-cleanup runtime API QA passed current result/plan/debug, source/output HEAD/ranges and old history with no dead filenames.
 - [x] Coordinator's actual browser check passed; final main/new-branch handoff follows below.
 - [x] Cleanup totals and handoff documentation committed as scoped commits.
-- [ ] Working branch merged into main; new future codex branch created from main.
+- [x] Fast-forwarded `main` from 5354a40 to 153a90c (including verified `codex/montage-quality` work and scoped handoff docs). Created `codex/montage-next` at the same commit without checking it out; the workspace remains checked out on `main`. No remote push was performed.
