@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 import asyncio
+import os
 import shutil
 import subprocess
 import uuid
@@ -570,6 +571,49 @@ class ApiTests(unittest.TestCase):
             rejected = self.client.post(f"/api/jobs/{job['id']}/save-videos", json={"all":True})
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(rejected.json(), {"detail":"Выбранная папка недоступна"})
+
+    def test_save_videos_direct_destination_headless_and_validation(self):
+        job, output = self.completed_output_job(2)
+        target_dir = self.root / "headless_target"
+        target_dir.mkdir()
+
+        # Direct destination bypasses choose_download_directory completely
+        with patch("app.server.choose_download_directory") as chooser:
+            response = self.client.post(f"/api/jobs/{job['id']}/save-videos",
+                                        json={"all": True, "destination": str(target_dir)})
+        self.assertEqual(response.status_code, 200, response.text)
+        chooser.assert_not_called()
+        self.assertEqual(response.json()["count"], 2)
+        self.assertTrue((target_dir / "part_001.mp4").is_file())
+        self.assertTrue((target_dir / "part_002.mp4").is_file())
+
+        # Empty destination rejected
+        res_empty = self.client.post(f"/api/jobs/{job['id']}/save-videos",
+                                     json={"all": True, "destination": "   "})
+        self.assertEqual(res_empty.status_code, 400)
+        self.assertIn("пустая папка", res_empty.json()["detail"])
+
+        # Nonexistent folder rejected
+        res_missing = self.client.post(f"/api/jobs/{job['id']}/save-videos",
+                                       json={"all": True, "destination": str(self.root / "nonexistent")})
+        self.assertEqual(res_missing.status_code, 400)
+        self.assertIn("недоступна", res_missing.json()["detail"])
+
+        # Saving directly into job output dir rejected
+        res_output = self.client.post(f"/api/jobs/{job['id']}/save-videos",
+                                      json={"all": True, "destination": str(output)})
+        self.assertEqual(res_output.status_code, 400)
+        self.assertIn("вне папки готовых видео", res_output.json()["detail"])
+
+    def test_choose_download_directory_env_fallback(self):
+        from app.server import choose_download_directory
+        fallback_dir = self.root / "env_fallback_folder"
+        fallback_dir.mkdir()
+        with patch.dict(os.environ, {"AUTOSHORT_DOWNLOAD_DIR": str(fallback_dir)}):
+            with patch("tkinter.Tk") as mock_tk:
+                chosen = choose_download_directory()
+                self.assertEqual(chosen, str(fallback_dir.resolve()))
+                mock_tk.assert_not_called()
 
     def test_save_videos_partial_copy_error_reports_completed_files_and_cleans_temp(self):
         job, _ = self.completed_output_job(2)

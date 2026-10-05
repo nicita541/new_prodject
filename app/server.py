@@ -86,6 +86,7 @@ class SaveVideos(BaseModel):
     model_config = ConfigDict(extra="forbid")
     filename: str | None = None
     all: bool = False
+    destination: str | None = None
 
 
 class CreateProject(BaseModel):
@@ -127,7 +128,10 @@ def safe_filename(name: str | None) -> str:
 
 
 def choose_download_directory() -> str | None:
-    """Use a native folder chooser; callers never supply a destination path."""
+    """Use a native folder chooser or env fallback; callers may also supply destination directly."""
+    env_dest = os.environ.get("AUTOSHORT_DOWNLOAD_DIR")
+    if env_dest and Path(env_dest).is_dir():
+        return str(Path(env_dest).resolve())
     import tkinter
     from tkinter import filedialog
 
@@ -595,29 +599,46 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
                 raise HTTPException(404, "Одно из готовых видео недоступно")
             sources.append((name, path))
 
-        # Validate the full batch before showing the native picker. The client
-        # never sends a destination path; only this local dialog chooses one.
-        lock = request.app.state.download_picker_lock
-        if not lock.acquire(blocking=False):
-            raise HTTPException(409, "Выбор папки уже открыт")
-        try:
+        # Determine destination folder:
+        # 1. Direct API specification (headless/CI automation)
+        # 2. Interactive native dialog with download_picker_lock
+        if body.destination is not None:
+            raw_dest = body.destination.strip()
+            if not raw_dest:
+                raise HTTPException(400, "Указана пустая папка для сохранения")
             try:
-                selected = choose_download_directory()
-            except Exception as error:
-                # Do not return tkinter diagnostics, which may contain local paths.
-                raise HTTPException(500, "Не удалось открыть окно выбора папки") from error
-            if not selected:
-                return {"cancelled": True, "count": 0, "files": []}
-            try:
-                destination = Path(selected).resolve(strict=True)
+                destination = Path(raw_dest).resolve(strict=True)
             except (OSError, RuntimeError) as error:
-                raise HTTPException(400, "Выбранная папка недоступна") from error
+                raise HTTPException(400, "Указанная папка недоступна") from error
             if not destination.is_dir():
-                raise HTTPException(400, "Выбранная папка недоступна")
+                raise HTTPException(400, "Указанная папка недоступна")
             if destination == output_dir:
                 raise HTTPException(400, "Выберите папку вне папки готовых видео")
+        else:
+            lock = request.app.state.download_picker_lock
+            if not lock.acquire(blocking=False):
+                raise HTTPException(409, "Выбор папки уже открыт")
+            try:
+                try:
+                    selected = choose_download_directory()
+                except Exception as error:
+                    # Do not return tkinter diagnostics, which may contain local paths.
+                    raise HTTPException(500, "Не удалось открыть окно выбора папки") from error
+                if not selected:
+                    return {"cancelled": True, "count": 0, "files": []}
+                try:
+                    destination = Path(selected).resolve(strict=True)
+                except (OSError, RuntimeError) as error:
+                    raise HTTPException(400, "Выбранная папка недоступна") from error
+                if not destination.is_dir():
+                    raise HTTPException(400, "Выбранная папка недоступна")
+                if destination == output_dir:
+                    raise HTTPException(400, "Выберите папку вне папки готовых видео")
+            finally:
+                lock.release()
 
-            copied = []
+        copied = []
+        try:
             for name, source in sources:
                 stem, suffix = Path(name).stem, Path(name).suffix
                 index = 1
@@ -651,8 +672,6 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             # current partial file is removed before this response.
             return JSONResponse({"cancelled": False, "count": len(copied), "files": copied,
                                  "error": "Не удалось сохранить все видео в выбранную папку"}, 507)
-        finally:
-            lock.release()
         return {"cancelled": False, "count": len(copied), "files": copied}
 
     static = config.ROOT / "app" / "static"
