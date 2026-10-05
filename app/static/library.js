@@ -62,7 +62,7 @@ const libraryUI = {
     this.view=view; this.project=project; this.episode=episode;
     $('player').pause(); $('source-player').pause(); state.sourceSelection=null;
     state.selected=null; state.selectedJob=null; state.timeline=null; state.timelineKey=''; state.filesKey=''; state.files=[];
-    $('job-panel').hidden=true; $('timeline-panel').hidden=true; $('results-panel').hidden=true;
+    $('job-panel').hidden=true; $('timeline-panel').hidden=true; $('source-panel-review').hidden=true; $('results-panel').hidden=true;
     for(const name of ['projects','episodes','edit','review','trash']) $(`${name}-screen`).hidden=name!==view;
     if(this.notice?.hash!==location.hash) this.notice=null;
     setText('library-message',this.notice?.text ?? ''); setText('form-message','');
@@ -106,14 +106,14 @@ const libraryUI = {
     if(this.view==='projects') {
       $('projects-empty').hidden=this.projects().length>0;
       $('project-cards').replaceChildren(...this.projects().map((project,index)=>{
-        const wrapper=document.createElement('article'); wrapper.className='project-card-wrap';
-        const card=document.createElement('a'); card.className='project-card'; card.href=`#project/${project.id}`;
+        const wrapper=document.createElement('article'); wrapper.className='item-card-wrap';
+        const card=document.createElement('a'); card.className='item-card'; card.href=`#project/${project.id}`;
         const mark=document.createElement('span'); mark.className=`project-monogram color-${index%4}`; mark.textContent=project.title.slice(0,1).toUpperCase();
-        const name=document.createElement('h2'); name.textContent=project.title;
+        const name=document.createElement('h2'); name.textContent=project.title; name.className='card-title';
         const meta=document.createElement('p'); const episodes=this.episodes(project.id);
         const ready=episodes.filter(e=>this.attempts(e).some(j=>j.status==='completed')).length;
-        meta.textContent=`Серий: ${episodes.length} · готовы: ${ready}`;
-        const action=document.createElement('span'); action.className='card-action'; action.textContent='Открыть проект';
+        meta.className='card-meta'; meta.textContent=`Серий: ${episodes.length} · готовы: ${ready}`;
+        const action=document.createElement('span'); action.className='btn-text card-actions'; action.textContent='Открыть проект';
         card.append(mark,name,meta,action); wrapper.append(card,this.deleteButton('Удалить проект','project',project)); return wrapper;
       }));
     }
@@ -121,14 +121,14 @@ const libraryUI = {
       const episodes=this.episodes(this.project.id).sort((a,b)=>a.number-b.number);
       $('episodes-empty').hidden=episodes.length>0;
       $('episode-cards').replaceChildren(...episodes.map(episode=>{
-        const card=document.createElement('article'); card.className='episode-card';
-        const number=document.createElement('span'); number.className='episode-index'; number.textContent=String(episode.number).padStart(2,'0');
-        const name=document.createElement('h2'); name.textContent=episode.title;
+        const card=document.createElement('article'); card.className='item-card';
+        const number=document.createElement('span'); number.className='card-icon'; number.textContent=String(episode.number).padStart(2,'0');
+        const name=document.createElement('h2'); name.textContent=episode.title; name.className='card-title';
         const attempts=this.attempts(episode); const current=attempts[0], ready=attempts.find(j=>j.status==='completed');
-        const meta=document.createElement('p'); meta.textContent=current ? `${statuses[current.status] ?? current.status} · монтажей: ${attempts.length}` : episode.source_id ? 'Видео добавлено · монтаж не запускался' : 'Добавьте видео этой серии';
-        const actions=document.createElement('div'); actions.className='episode-card-actions';
-        const edit=document.createElement('a'); edit.className='secondary-button'; edit.textContent='Настроить монтаж'; edit.href=`#episode/${episode.id}/edit`; actions.append(edit);
-        if(ready) { const review=document.createElement('a'); review.className='text-button'; review.textContent=`Проверить шортсы (${ready.files?.length ?? 0})`; review.href=`#episode/${episode.id}/review/${ready.id}`; actions.append(review); }
+        const meta=document.createElement('p'); meta.className='card-meta'; meta.textContent=current ? `${statuses[current.status] ?? current.status} · монтажей: ${attempts.length}` : episode.source_id ? 'Видео добавлено · монтаж не запускался' : 'Добавьте видео этой серии';
+        const actions=document.createElement('div'); actions.className='card-actions';
+        const edit=document.createElement('a'); edit.className='btn-secondary'; edit.textContent='Настроить монтаж'; edit.href=`#episode/${episode.id}/edit`; actions.append(edit);
+        if(ready) { const review=document.createElement('a'); review.className='btn-text'; review.textContent=`Проверить шортсы (${ready.files?.length ?? 0})`; review.href=`#episode/${episode.id}/review/${ready.id}`; actions.append(review); }
         actions.append(this.deleteButton('Удалить серию','episode',episode));
         card.append(number,name,meta,actions); return card;
       }));
@@ -138,9 +138,9 @@ const libraryUI = {
         ...this.data.episodes.filter(e=>e.archived_at && this.projects().some(p=>p.id===e.project_id)).map(item=>({kind:'episode',item}))];
       $('trash-empty').hidden=entries.length>0;
       $('trash-cards').replaceChildren(...entries.map(({kind,item})=>{
-        const card=document.createElement('article'); card.className='episode-card';
+        const card=document.createElement('article'); card.className='item-card';
         const name=document.createElement('h2'); name.textContent=item.title;
-        const meta=document.createElement('p'); meta.textContent=kind==='project' ? 'Проект · вместе со всеми сериями' : this.data.projects.find(p=>p.id===item.project_id).title;
+        const meta=document.createElement('p'); meta.className='card-meta'; meta.textContent=kind==='project' ? 'Проект · вместе со всеми сериями' : this.data.projects.find(p=>p.id===item.project_id).title;
         const button=document.createElement('button'); button.type='button'; button.className='secondary-button'; button.textContent=kind==='project' ? 'Восстановить проект' : 'Восстановить серию';
         button.addEventListener('click',()=>this.restore(kind,item.id)); card.append(name,meta,button); return card;
       }));
@@ -195,53 +195,144 @@ const libraryUI = {
   }
 };
 const musicUI = {
-  tracks: [], current: {enabled: true, volume: 0.15, track: null},
+  tracks: [],
+  current: {enabled: true, volume: 0.15, track: null, mode: 'random_per_part', part_tracks: {}},
+  partCount: 15,
   option(value, label) { const option=document.createElement('option'); option.value=value; option.textContent=label; return option; },
   populateTracks(selected) {
-    const select=$('music-track');
-    const options=[this.option('', 'Случайный трек')];
-    for(const name of this.tracks) options.push(this.option(name, name));
+    const select = $('music-track');
+    const options = [this.option('', '🎲 Случайный трек')];
+    for (const name of this.tracks) options.push(this.option(name, `🎵 ${name}`));
     select.replaceChildren(...options);
-    select.value=selected ?? '';
+    select.value = selected ?? '';
+  },
+  renderPartsList() {
+    const container = $('music-parts-list');
+    if (!container) return;
+    const parts = this.current.part_tracks || {};
+    let count = 15;
+    const completed = libraryUI.attempts().find(j => j.status === 'completed');
+    if (completed?.files?.length) count = completed.files.length;
+    else if (state.selectedJob?.files?.length) count = state.selectedJob.files.length;
+    this.partCount = count;
+    setText('music-parts-count', `${count} фрагментов`);
+    const elements = [];
+    for (let i = 1; i <= count; i++) {
+      const row = document.createElement('div');
+      row.className = 'music-part-row';
+      const label = document.createElement('span');
+      label.className = 'music-part-label';
+      label.textContent = `Часть ${String(i).padStart(2, '0')}:`;
+      const select = document.createElement('select');
+      select.className = 'music-part-select';
+      select.dataset.part = String(i);
+      const options = [
+        this.option('', '🎲 Случайный трек'),
+        this.option('none', '🔇 Без музыки'),
+      ];
+      for (const name of this.tracks) {
+        options.push(this.option(name, `🎵 ${name}`));
+      }
+      select.replaceChildren(...options);
+      select.value = parts[String(i)] ?? '';
+      select.addEventListener('change', () => {
+        if (!this.current.part_tracks) this.current.part_tracks = {};
+        this.current.part_tracks[String(i)] = select.value || null;
+        this.save();
+      });
+      row.append(label, select);
+      elements.push(row);
+    }
+    container.replaceChildren(...elements);
   },
   render() {
-    const enabled=$('music-enabled').checked;
-    const volume=Number($('music-volume').value) || 0;
-    const track=$('music-track').value;
+    const enabled = $('music-enabled').checked;
+    const volume = Number($('music-volume').value) || 0;
+    const mode = $('music-mode').value;
+    const track = $('music-track').value;
     setText('music-volume-label', `${volume}%`);
-    setText('music-current', track ? `Текущий трек: ${track}` : 'Текущий трек: случайный выбор');
-    setText('music-summary', enabled ? (track || 'случайный') : 'выключена');
-    $('music-volume').disabled=!enabled;
-    $('music-track').disabled=!enabled;
-    $('music-random').disabled=!enabled;
+
+    $('music-single-panel').hidden = mode !== 'single';
+    $('music-parts-panel').hidden = mode !== 'per_part';
+
+    let currentDesc = '';
+    if (!enabled) currentDesc = 'Фоновая музыка выключена';
+    else if (!this.tracks.length) currentDesc = 'В папке music пока нет треков. Нажмите «Открыть папку с музыкой» и закиньте MP3/WAV.';
+    else if (mode === 'random_per_part') currentDesc = `Режим: случайный трек для каждого фрагмента (${this.tracks.length} треков в папке) · громкость ${volume}%`;
+    else if (mode === 'single') currentDesc = track ? `Режим: один трек на всю серию (${track}) · громкость ${volume}%` : `Режим: один случайный трек на всю серию · громкость ${volume}%`;
+    else if (mode === 'per_part') {
+      const countSet = Object.values(this.current.part_tracks || {}).filter(Boolean).length;
+      currentDesc = `Режим: ручной выбор по фрагментам (настроено ${countSet} частей) · громкость ${volume}%`;
+    }
+
+    setText('music-current', currentDesc);
+    setText('music-summary', enabled ? (mode === 'random_per_part' ? 'случайный для каждого' : mode === 'per_part' ? 'по фрагментам' : (track || 'один трек')) : 'выключена');
+
+    $('music-volume').disabled = !enabled;
+    $('music-mode').disabled = !enabled;
+    $('music-track').disabled = !enabled;
+    $('music-random').disabled = !enabled;
+    if (mode === 'per_part') this.renderPartsList();
   },
   async load() {
     try {
-      const data=await api('/api/music');
-      this.current=data; this.tracks=data.tracks ?? [];
-      $('music-enabled').checked=!!data.enabled;
-      $('music-volume').value=String(Math.round((data.volume ?? 0.15) * 100));
+      const data = await api('/api/music');
+      this.current = data;
+      this.tracks = data.tracks ?? [];
+      $('music-enabled').checked = !!data.enabled;
+      $('music-volume').value = String(Math.round((data.volume ?? 0.15) * 100));
+      $('music-mode').value = data.mode ?? 'random_per_part';
       this.populateTracks(data.track);
       this.render();
     } catch(error) { setText('music-message', error.message); }
   },
   async save() {
     try {
-      const body={enabled:$('music-enabled').checked, volume:(Number($('music-volume').value) || 0) / 100, track:$('music-track').value || null};
-      const saved=await api('/api/music', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-      this.current=saved; this.tracks=saved.tracks ?? [];
+      const body = {
+        enabled: $('music-enabled').checked,
+        volume: (Number($('music-volume').value) || 0) / 100,
+        track: $('music-track').value || null,
+        mode: $('music-mode').value,
+        part_tracks: this.current.part_tracks || {},
+      };
+      const saved = await api('/api/music', {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      this.current = saved;
+      this.tracks = saved.tracks ?? [];
       setText('music-message', 'Настройки музыки сохранены.');
       this.render();
     } catch(error) { setText('music-message', error.message); }
   },
+  async refresh() {
+    setText('music-message', 'Обновляем список треков из папки...');
+    await this.load();
+    setText('music-message', this.tracks.length ? `Найдено треков в папке: ${this.tracks.length}.` : 'Папка music пуста. Закиньте туда треки без АП.');
+  },
   async random() {
-    if(!this.tracks.length) { setText('music-message', 'В папке music нет аудиофайлов.'); return; }
-    $('music-track').value=this.tracks[Math.floor(Math.random() * this.tracks.length)];
+    if (!this.tracks.length) { setText('music-message', 'В папке music нет аудиофайлов.'); return; }
+    $('music-track').value = this.tracks[Math.floor(Math.random() * this.tracks.length)];
     this.render(); await this.save();
   },
   async openFolder() {
-    try { await api('/api/music/open', {method:'POST'}); setText('music-message', 'Папка музыки открыта.'); }
-    catch(error) { setText('music-message', error.message); }
+    try {
+      const res = await api('/api/music/open', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({})
+      });
+      const path = res?.path || 'F:\\new_prodject\\music';
+      setText('music-message', `Папка открыта в Проводнике Windows: ${path}. Если окно на заднем плане, проверьте панель задач Windows.`);
+    } catch(error) {
+      setText('music-message', `Папка музыки находится по адресу: F:\\new_prodject\\music (нажмите «Скопировать путь»). Ошибка автооткрытия: ${error.message}`);
+    }
+  },
+  async copyPath() {
+    const path = 'F:\\new_prodject\\music';
+    try {
+      await navigator.clipboard.writeText(path);
+      setText('music-message', `Путь скопирован в буфер обмена: ${path}`);
+    } catch {
+      setText('music-message', `Путь к папке: ${path}`);
+    }
   },
 };
 state.navigation=libraryUI;
@@ -269,10 +360,13 @@ $('save-settings').addEventListener('click',async()=>{
 $('episode-attempt').addEventListener('change',()=>{
   if(libraryUI.attempts().some(j=>j.id===$('episode-attempt').value && j.status==='completed')) location.hash=`episode/${libraryUI.episode.id}/review/${$('episode-attempt').value}`;
 });
-$('music-enabled').addEventListener('change',()=>{ musicUI.render(); musicUI.save(); });
-$('music-volume').addEventListener('input',()=>setText('music-volume-label',`${$('music-volume').value}%`));
-$('music-volume').addEventListener('change',()=>musicUI.save());
-$('music-track').addEventListener('change',()=>{ musicUI.render(); musicUI.save(); });
-$('music-random').addEventListener('click',()=>musicUI.random());
-$('music-open-folder').addEventListener('click',()=>musicUI.openFolder());
+$('music-enabled').addEventListener('change', () => { musicUI.render(); musicUI.save(); });
+$('music-volume').addEventListener('input', () => setText('music-volume-label', `${$('music-volume').value}%`));
+$('music-volume').addEventListener('change', () => musicUI.save());
+$('music-mode').addEventListener('change', () => { musicUI.render(); musicUI.save(); });
+$('music-track').addEventListener('change', () => { musicUI.render(); musicUI.save(); });
+$('music-random').addEventListener('click', () => musicUI.random());
+$('music-open-folder').addEventListener('click', () => musicUI.openFolder());
+$('music-copy-path')?.addEventListener('click', () => musicUI.copyPath());
+$('music-refresh').addEventListener('click', () => musicUI.refresh());
 libraryUI.refreshLibrary().then(()=>libraryUI.route()).catch(error=>setText('library-message',`Не удалось открыть проекты: ${error.message}`));

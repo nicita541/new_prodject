@@ -299,6 +299,16 @@ function selectFile(index, play) {
   $("playlist").querySelectorAll("button").forEach((button, current) => { button.classList.toggle("selected", current === index); button.setAttribute("aria-current", String(current === index)); });
   if (play) $("player").play().catch(() => setText("player-message", "Нажмите воспроизведение в плеере."));
   if (state.timeline?.jobId === state.selected) renderTimelineSelection(index);
+  const part = state.timeline?.plan?.parts?.[index];
+  const badge = $('part-music-badge');
+  if (badge) {
+    if (part?.music_track) {
+      badge.textContent = `🎵 Фоновая музыка: ${part.music_track}`;
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
   renderPartContext();
 }
 
@@ -419,13 +429,14 @@ function loadTimeline(job) {
   $('timeline-map').classList.toggle('zoomed',false);
   const player = $('source-player'); player.pause(); player.removeAttribute('src'); player.load();
   $('timeline-panel').hidden = true;
+  $('source-panel-review').hidden = true;
   if (!available) return;
   api(`/api/jobs/${encodeURIComponent(job.id)}/plan`).then((plan) => {
     if (state.timelineKey !== key || state.selected !== job.id || !plan.source || !Array.isArray(plan.parts)) return;
     if (!(Number.isFinite(plan.source.duration) && plan.source.duration > 0)) return;
     state.timeline = {jobId:job.id, plan};
     player.src=safeUrl(`/api/jobs/${encodeURIComponent(job.id)}/source`); player.load();
-    $('timeline-panel').hidden = false; setText('timeline-duration', sourceTime(plan.source.duration, false));
+    $('timeline-panel').hidden = false; $('source-panel-review').hidden = false; setText('timeline-duration', sourceTime(plan.source.duration, false));
     setText('source-selection', 'Выбери сохранённый или удалённый отрезок.'); setText('source-error', '');
     $('timeline-ruler').replaceChildren(...[0,.25,.5,.75,1].map(f => { const span=document.createElement('span'); span.textContent=sourceTime(plan.source.duration*f,false); return span; }));
     $('timeline-overview').replaceChildren(...timelinePieces(plan).map(piece => timelineButton(piece,plan.source.duration)));

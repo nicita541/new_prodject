@@ -9,7 +9,7 @@ from unittest.mock import patch
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media import inspect_media, render_part, run_command
 from app.music import (DEFAULT_CONFIG, list_tracks, load_config, load_settings,
-                       pick_track, save_settings, validate_config)
+                       pick_track, pick_track_for_part, save_settings, validate_config)
 
 
 @contextmanager
@@ -104,6 +104,32 @@ class TrackTests(unittest.TestCase):
             track = pick_track(directory, {"enabled": True, "volume": 0.15, "track": "gone.mp3"},
                                random.Random(0))
             self.assertEqual(track.name, "a.mp3")
+
+    def test_pick_track_for_part_per_part(self):
+        with workspace_directory() as directory:
+            (directory / "a.mp3").write_bytes(b"a")
+            (directory / "b.mp3").write_bytes(b"b")
+            config = {
+                "enabled": True,
+                "volume": 0.15,
+                "mode": "per_part",
+                "part_tracks": {"1": "b.mp3", "2": "none", "3": "a.mp3"},
+            }
+            track1 = pick_track_for_part(directory, config, part_index=1)
+            self.assertEqual(track1.name, "b.mp3")
+            track2 = pick_track_for_part(directory, config, part_index=2)
+            self.assertIsNone(track2)
+            track3 = pick_track_for_part(directory, config, part_index=3)
+            self.assertEqual(track3.name, "a.mp3")
+
+    def test_pick_track_for_part_random_per_part_is_stable(self):
+        with workspace_directory() as directory:
+            for name in ("a.mp3", "b.mp3", "c.mp3"):
+                (directory / name).write_bytes(b"x")
+            config = {"enabled": True, "volume": 0.15, "mode": "random_per_part"}
+            track1 = pick_track_for_part(directory, config, part_index=1)
+            track1_again = pick_track_for_part(directory, config, part_index=1)
+            self.assertEqual(track1.name, track1_again.name)
 
 
 class SettingsPersistenceTests(unittest.TestCase):
@@ -235,4 +261,31 @@ class MusicApiTests(unittest.TestCase):
                 self.assertFalse(again["enabled"])
                 self.assertEqual(again["volume"], 0.25)
                 self.assertEqual(again["track"], "b.wav")
+
+    def test_put_music_settings_with_modes_and_per_part(self):
+        from fastapi.testclient import TestClient
+        from app.jobs import JobManager
+        from app.server import create_app
+        with workspace_directory() as directory:
+            base = Path(directory)
+            music_dir = base / "music"
+            music_dir.mkdir()
+            (music_dir / "x.mp3").write_bytes(b"x")
+            settings_path = base / "settings" / "music.json"
+            with patch("app.music.MUSIC_SETTINGS", settings_path), \
+                    patch("app.music.MUSIC_CONFIG", base / "missing.json"), \
+                    patch("app.config.MUSIC", music_dir):
+                client = TestClient(create_app(JobManager(root=base)), base_url="http://127.0.0.1:8765")
+                updated = client.put("/api/music", json={
+                    "enabled": True,
+                    "volume": 0.15,
+                    "mode": "per_part",
+                    "part_tracks": {"1": "x.mp3", "2": "none"},
+                }).json()
+                self.assertEqual(updated["mode"], "per_part")
+                self.assertEqual(updated["part_tracks"], {"1": "x.mp3", "2": "none"})
+                get_res = client.get("/api/music").json()
+                self.assertEqual(get_res["mode"], "per_part")
+                self.assertEqual(get_res["part_tracks"], {"1": "x.mp3", "2": "none"})
+
 

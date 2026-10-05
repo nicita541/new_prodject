@@ -107,6 +107,8 @@ class MusicSettings(BaseModel):
     enabled: bool
     volume: float = Field(ge=0, le=1)
     track: str | None = None
+    mode: Literal["random_per_part", "single", "per_part"] = "random_per_part"
+    part_tracks: dict[str, str | None] | None = None
 
 
 def safe_filename(name: str | None) -> str:
@@ -344,25 +346,46 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         settings = load_settings()
         return {"enabled": settings["enabled"], "volume": settings["volume"],
                 "fade_in": settings["fade_in"], "fade_out": settings["fade_out"],
-                "track": settings["track"], "tracks": [path.name for path in list_tracks(config.MUSIC)]}
+                "track": settings["track"], "mode": settings.get("mode", "random_per_part"),
+                "part_tracks": settings.get("part_tracks", {}),
+                "tracks": [path.name for path in list_tracks(config.MUSIC)]}
 
     @application.put("/api/music")
     def save_music_settings(body: MusicSettings):
         settings = load_settings()
         track = (body.track or "").strip() or None
-        saved = save_settings({**settings, "enabled": body.enabled, "volume": body.volume, "track": track})
+        saved = save_settings({
+            **settings,
+            "enabled": body.enabled,
+            "volume": body.volume,
+            "track": track,
+            "mode": body.mode,
+            "part_tracks": body.part_tracks or {},
+        })
         return {"enabled": saved["enabled"], "volume": saved["volume"],
                 "fade_in": saved["fade_in"], "fade_out": saved["fade_out"],
-                "track": saved["track"], "tracks": [path.name for path in list_tracks(config.MUSIC)]}
+                "track": saved["track"], "mode": saved.get("mode", "random_per_part"),
+                "part_tracks": saved.get("part_tracks", {}),
+                "tracks": [path.name for path in list_tracks(config.MUSIC)]}
 
     @application.post("/api/music/open")
     def open_music_folder():
-        config.MUSIC.mkdir(parents=True, exist_ok=True)
+        target = config.MUSIC.resolve()
+        target.mkdir(parents=True, exist_ok=True)
+        errors = []
         try:
-            os.startfile(str(config.MUSIC))
-        except OSError as error:
-            raise HTTPException(500, "Не удалось открыть папку музыки") from error
-        return {"opened": True}
+            # Use string command so cmd/explorer parses the path natively,
+            # avoiding Popen list escaping issues and path resolution bugs.
+            subprocess.Popen(f'explorer "{target}"')
+            return {"opened": True, "path": str(target)}
+        except Exception as error:
+            errors.append(str(error))
+        try:
+            os.startfile(str(target))
+            return {"opened": True, "path": str(target)}
+        except Exception as error:
+            errors.append(str(error))
+        raise HTTPException(500, f"Не удалось открыть папку музыки: {'; '.join(errors)}")
 
     @application.get("/api/deepseek")
     def deepseek_status():

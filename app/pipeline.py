@@ -20,7 +20,7 @@ from .media import choose_encoder, inspect_media, render_part, validate_export
 from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
-from .music import load_settings, pick_track
+from .music import load_settings, pick_track, pick_track_for_part
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -310,35 +310,37 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     outputs = []
     missing = []
     rendering_started = time.perf_counter()
-    music_track = pick_track(MUSIC, music_config)
-    music_duration = None
-    if music_track is not None:
-        try:
-            music_duration = float(inspect_media(music_track, workdir, cancelled)
-                                   .get("format", {}).get("duration"))
-        except (RuntimeError, ValueError, TypeError):
-            music_duration = None
+    music_tracks_assigned = {}
+    if music_config.get("enabled"):
+        for part in plan["parts"]:
+            track = pick_track_for_part(MUSIC, music_config, part["index"], len(plan["parts"]))
+            if track is not None:
+                music_tracks_assigned[part["index"]] = track
+
     timings["music"] = {
         "enabled": music_config["enabled"],
         "volume": music_config["volume"],
-        "track": music_track.name if music_track else None,
-        "duration": music_duration,
-        "loop": music_track is not None,
-        "fade_in": bool(music_config["fade_in"]) if music_track else False,
-        "fade_out": bool(music_config["fade_out"]) if music_track else False,
+        "mode": music_config.get("mode", "random_per_part"),
+        "tracks": {str(k): v.name for k, v in music_tracks_assigned.items()},
+        "fade_in": bool(music_config.get("fade_in", True)),
+        "fade_out": bool(music_config.get("fade_out", True)),
     }
     if not music_config["enabled"]:
         report("rendering", 0.7, "Background music: disabled")
-    elif music_track is None:
+    elif not music_tracks_assigned:
         report("rendering", 0.7, "Background music: skipped (no audio files in music folder)")
     else:
         volume_pct = int(round(music_config["volume"] * 100))
-        duration_txt = f"{music_duration:.1f}s" if music_duration is not None else "unknown"
+        unique_names = sorted({t.name for t in music_tracks_assigned.values()})
+        tracks_desc = ", ".join(unique_names[:3]) + ("..." if len(unique_names) > 3 else "")
+        mode_label = ("случайный для каждого фрагмента" if music_config.get("mode") == "random_per_part"
+                      else "один трек" if music_config.get("mode") == "single"
+                      else "по фрагментам")
         report("rendering", 0.7,
-               f"Background music:\ntrack={music_track.name}\nvolume={volume_pct}%\n"
-               f"duration={duration_txt}\nloop=true\n"
-               f"fade_in={'true' if music_config['fade_in'] else 'false'}\n"
-               f"fade_out={'true' if music_config['fade_out'] else 'false'}")
+               f"Background music:\nmode={mode_label}\nvolume={volume_pct}%\n"
+               f"active_tracks={len(unique_names)} ({tracks_desc})\n"
+               f"fade_in={'true' if music_config.get('fade_in', True) else 'false'}\n"
+               f"fade_out={'true' if music_config.get('fade_out', True) else 'false'}")
     for part in plan["parts"]:
         check()
         started = time.perf_counter()
@@ -373,16 +375,19 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             def render(part, task_cancelled):
                 started = time.perf_counter()
                 background_music = None
-                if music_track is not None:
-                    background_music = {"path": music_track, "volume": music_config["volume"],
-                                        "fade_in": music_config["fade_in"], "fade_out": music_config["fade_out"]}
+                p_track = music_tracks_assigned.get(part["index"])
+                if p_track is not None:
+                    background_music = {"path": p_track, "volume": music_config["volume"],
+                                        "fade_in": music_config.get("fade_in", True),
+                                        "fade_out": music_config.get("fade_out", True)}
                 path = render_part(source, part, analysis["probe"], output_dir,
                                    workdir / f"part_{part['index']:03}", encoder, task_cancelled,
                                    background_music=background_music)
                 metadata = workdir / f"part_{part['index']:03}" / "render-info.json"
                 actual_encoder = json.loads(metadata.read_text(encoding="utf-8")).get("encoder") if metadata.is_file() else None
                 return {"path": path, "encoder": actual_encoder,
-                        "seconds": round(time.perf_counter() - started, 6)}
+                        "seconds": round(time.perf_counter() - started, 6),
+                        "music_track": p_track.name if p_track else None}
             def commit(part, result):
                 nonlocal completed
                 path = result["path"]
@@ -391,7 +396,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                                           "mtime_ns": path.stat().st_mtime_ns,
                                           "encoder": result["encoder"], "requested_encoder": encoder,
                                           "run_id": timings["run_id"],
+                                          "music_track": result.get("music_track"),
                                           "srt_hash": hashlib.sha256(path.with_suffix(".srt").read_bytes()).hexdigest()})
+                part["music_track"] = result.get("music_track")
                 timings["parts"].append({"index": part["index"], "cached": False,
                                          "encoder": result["encoder"],
                                          "seconds": result["seconds"]})

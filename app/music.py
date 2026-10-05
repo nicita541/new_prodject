@@ -14,6 +14,8 @@ DEFAULT_CONFIG = {
     "fade_in": True,
     "fade_out": True,
     "track": None,
+    "mode": "random_per_part",
+    "part_tracks": {},
 }
 
 SUPPORTED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
@@ -42,6 +44,18 @@ def validate_config(value) -> dict:
         if not isinstance(track, str):
             raise ValueError("music.track должно быть именем файла или null")
         config["track"] = track.strip() or None
+    mode = config.get("mode")
+    if not isinstance(mode, str) or mode not in {"random_per_part", "single", "per_part"}:
+        config["mode"] = "random_per_part" if not config.get("track") else "single"
+    part_tracks = config.get("part_tracks")
+    if isinstance(part_tracks, dict):
+        cleaned_parts = {}
+        for k, v in part_tracks.items():
+            if (isinstance(k, int) or (isinstance(k, str) and k.isdigit())) and (v is None or isinstance(v, str)):
+                cleaned_parts[str(k)] = v.strip() if isinstance(v, str) and v.strip() else None
+        config["part_tracks"] = cleaned_parts
+    else:
+        config["part_tracks"] = {}
     return config
 
 
@@ -87,16 +101,55 @@ def list_tracks(music_dir: Path) -> list[Path]:
     )
 
 
-def pick_track(music_dir: Path, config: dict, rng: random.Random | None = None) -> Path | None:
-    """Choose the configured track, a random one, or None when disabled/empty."""
+def pick_track_for_part(
+    music_dir: Path,
+    config: dict,
+    part_index: int = 1,
+    total_parts: int = 1,
+    rng: random.Random | None = None,
+) -> Path | None:
+    """Choose the track for a specific part based on mode and settings."""
     if not config.get("enabled"):
         return None
     tracks = list_tracks(music_dir)
     if not tracks:
         return None
-    requested = config.get("track")
-    if requested:
-        match = next((path for path in tracks if path.name == requested), None)
-        if match:
-            return match
-    return (rng or random).choice(tracks)
+
+    mode = config.get("mode") or ("single" if config.get("track") else "random_per_part")
+
+    if mode == "per_part":
+        part_tracks = config.get("part_tracks") or {}
+        chosen = part_tracks.get(str(part_index))
+        if chosen is None:
+            chosen = part_tracks.get(part_index)
+        if chosen in ("none", "__none__", "off", "без музыки"):
+            return None
+        if chosen and chosen not in ("random", "__random__", "случайный", ""):
+            match = next((p for p in tracks if p.name == chosen), None)
+            if match:
+                return match
+        seed = int(config.get("seed", 42))
+        r = rng or random.Random(seed + part_index * 997)
+        return r.choice(tracks)
+
+    elif mode == "single":
+        requested = config.get("track")
+        if requested and requested not in ("random", "__random__", "случайный", ""):
+            match = next((p for p in tracks if p.name == requested), None)
+            if match:
+                return match
+        seed = int(config.get("seed", 42))
+        r = rng or random.Random(seed)
+        return r.choice(tracks)
+
+    else:  # "random_per_part"
+        if rng:
+            return rng.choice(tracks)
+        seed = int(config.get("seed", 42))
+        r = random.Random(seed + part_index * 997)
+        return r.choice(tracks)
+
+
+def pick_track(music_dir: Path, config: dict, rng: random.Random | None = None) -> Path | None:
+    """Choose the configured track, a random one, or None when disabled/empty."""
+    return pick_track_for_part(music_dir, config, part_index=1, total_parts=1, rng=rng)

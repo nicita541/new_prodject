@@ -1,116 +1,460 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <title>Кадр — локальный монтаж шортсов</title>
-  <link rel="stylesheet" href="/static/style.css?v=part-context-1">
-  <script src="/static/app.js?v=part-context-1" defer></script><script src="/static/library.js" defer></script>
+  <title>КАДР STUDIO</title>
+  <link rel="stylesheet" href="/static/style.css?v=2.2">
+  <script src="/static/app.js?v=2.2" defer></script>
+  <script src="/static/library.js?v=2.2" defer></script>
 </head>
 <body>
-<header class="topbar"><a href="#projects" class="brand" aria-label="Кадр, проекты"><span class="brand-mark" aria-hidden="true">К</span>КАДР<span class="brand-note">STUDIO</span></a><nav aria-label="Главное меню"><a href="#projects">Проекты</a><a href="#trash">Корзина</a></nav><span id="connection" class="status-pill"><span class="status-dot"></span><span id="connection-label">Проверяем систему</span></span></header>
-<main class="screen-shell">
- <nav id="breadcrumbs" class="breadcrumbs" aria-label="Путь проекта"></nav>
- <div class="workspace-heading"><h1 id="workspace-title">Проекты аниме</h1><span id="screen-context" class="muted small"></span></div>
- <p id="library-message" class="message" role="status" aria-live="polite"></p>
- <section id="trash-screen" class="app-screen" aria-label="Корзина" hidden><p class="screen-description">Удалённые проекты и серии. Видео и готовые шортсы сохранены; восстановление вернёт их в меню.</p><div id="trash-cards" class="episode-cards"></div><p id="trash-empty" class="empty-library" hidden>Корзина пуста.</p></section>
- <section id="projects-screen" class="app-screen" aria-label="Проекты аниме">
-  <div class="library-layout"><div><p class="screen-description">Каждое аниме — отдельный проект. Внутри находятся его серии и готовые монтажи.</p><div id="project-cards" class="project-cards"></div><p id="projects-empty" class="empty-library" hidden>Пока нет проектов. Создайте проект с названием аниме.</p></div><form id="project-form" class="panel library-form"><h2>Новый проект</h2><label for="project-title">Название аниме</label><input id="project-title" required maxlength="200" placeholder="Например, название вашего аниме"><button class="primary-button" type="submit">Создать проект</button></form></div>
- </section>
- <section id="episodes-screen" class="app-screen" aria-label="Серии проекта" hidden>
-  <div class="screen-toolbar"><p class="screen-description">Один подпроект — одна серия. Видео, настройки и результаты хранятся отдельно.</p><form id="episode-form" class="episode-form"><label for="episode-number">Номер серии</label><input id="episode-number" type="number" min="1" max="9999" required value="1"><button class="primary-button" type="submit">Добавить серию</button></form></div><button id="delete-current-project" type="button" class="danger-button">Удалить проект</button><div id="episode-cards" class="episode-cards"></div><p id="episodes-empty" class="empty-library" hidden>Добавьте первую серию, затем выберите её видео и настройки монтажа.</p>
- </section>
- <section id="edit-screen" class="app-screen" aria-label="Настройки серии" hidden>
-  <div class="screen-toolbar"><p class="screen-description">Выберите видео и оформление этой серии. После монтажа откроется экран проверки.</p><div class="screen-actions"><button id="delete-current-episode" type="button" class="danger-button">Удалить серию</button><a id="edit-review-link" class="secondary-button" hidden>Открыть проверку</a></div></div>
-  <div class="episode-editor"><section class="panel source-panel" aria-labelledby="source-heading">
-          <div class="panel-heading"><div><p class="eyebrow">МЕДИА</p><h2 id="source-heading">Настройки монтажа</h2></div><span class="muted small">MP4 / MKV</span></div>
-          <form id="create-form">
-            <label for="source">Видео этой серии</label>
-            <select id="source" required><option value="">Загружаем список…</option></select>
-            <div class="source-meta"><span id="source-size" class="muted small"></span><button id="refresh-sources" type="button" class="text-button">Обновить список</button></div>
-            <input id="file-input" type="file" accept=".mp4,.mkv,video/mp4,video/x-matroska" hidden>
-            <button id="upload-button" type="button" class="upload-zone"><span aria-hidden="true">＋</span><span>Импортировать видео<small>MP4 / MKV · можно перетащить сюда</small></span></button>
-            <div id="upload-progress" class="upload-progress" hidden><progress id="upload-meter" max="100" value="0" aria-label="Копирование видео"></progress><span id="upload-label" class="small"></span></div>
-            <div id="readiness" class="notice" hidden><strong>Компоненты ещё не готовы</strong><p>Сначала выполните локальную настройку проекта.</p><ul id="missing-list"></ul></div>
-            <details class="settings-section" open><summary>Оформление экспорта<span>9:16</span></summary><div class="editing-choice">
-              <div class="editing-fields"><label for="layout">Оформление кадра</label><select id="layout"><option value="cinema" selected>Весь кадр + мягкий фон</option><option value="portrait">Крупный план · умное кадрирование</option></select><p id="layout-description" class="small muted field-hint">Видны все персонажи и действия. Вертикальный фон — размытая копия видео.</p>
-              <label for="caption-style">Субтитры</label><select id="caption-style"><option value="accent" selected>Яркие · короткие фразы</option><option value="classic">Спокойные · белый текст</option></select></div>
-              <div id="style-preview" class="style-preview cinema accent" aria-label="Схема оформления, не кадр вашего видео"><span class="preview-part">ЧАСТЬ 01</span><div class="preview-scene"><span>ТВОЁ ВИДЕО</span></div><strong id="preview-subtitle">ИСТОРИЯ<br>НАЧИНАЕТСЯ ЗДЕСЬ</strong><span class="preview-hint">Схема оформления</span></div>
-            </div>
-            </details><details class="settings-section"><summary>Анализ и подключение<span>AI</span></summary><div class="provider-choice">
-              <label for="analysis-provider">Анализ истории и кадров</label>
-              <select id="analysis-provider"><option value="deepseek_plan" selected>DeepSeek · сюжет и план</option><option value="local">На компьютере · без сети</option></select>
-              <p id="provider-description" class="small muted">Кадры и текст обрабатываются на компьютере, без платных запросов.</p>
-            </div>
-            <details id="deepseek-details"><summary>DeepSeek · подключение</summary><div id="deepseek-notice" class="notice" hidden>
-              <strong id="deepseek-notice-title">Кадры и текст отправятся в DeepSeek</strong>
-              <p id="deepseek-notice-description">Для анализа передаются кадры серии и распознанные реплики. Требуется интернет. Оригинальное видео и результаты сохраняются в папке проекта.</p>
-              <p id="hybrid-fallback" class="small" hidden>Если API недоступен или доступного баланса нет, обработка продолжится локально с предупреждением. При обращении к DeepSeek нужны интернет и оплата запросов.</p>
-              <div hidden><span id="deepseek-budget"></span><span id="deepseek-remaining"></span><span id="deepseek-charged"></span><span id="provider-balance-time"></span><button id="balance-refresh-button" type="button"></button></div>
-              <p id="deepseek-config" class="small" role="status" aria-live="polite"></p>
-              <button id="deepseek-check" class="secondary-button" type="button" disabled>Проверить подключение</button>
-              <p class="small muted">Кнопка выполняет бесплатную проверку подключения и баланса, без платного анализа.</p>
-              <p id="deepseek-check-message" class="message" role="status" aria-live="polite"></p>
-              <div id="deepseek-recovery" class="notice" hidden><strong>Платные запросы остановлены</strong><p id="recovery-description"></p><button id="recovery-button" type="button" class="secondary-button">Сохранить резерв и разрешить новые запросы</button><p id="recovery-message" class="message" role="status" aria-live="polite"></p></div>
-            </div>
-            <details class="settings-section" id="music-section"><summary>Фоновая музыка<span id="music-summary" class="muted small"></span></summary><div class="music-controls"><label class="toggle-label"><input id="music-enabled" type="checkbox">Включить фоновую музыку</label><div class="music-row"><label for="music-volume">Громкость</label><span id="music-volume-label" class="muted small">15%</span></div><input id="music-volume" class="music-slider" type="range" min="0" max="100" step="1" value="15"><div class="music-row"><label for="music-track">Трек</label><button id="music-random" type="button" class="text-button">Выбрать случайный</button></div><select id="music-track"><option value="">Случайный трек</option></select><p id="music-current" class="small muted" role="status"></p><div class="music-actions"><button id="music-open-folder" type="button" class="secondary-button">Папка музыки</button></div><p id="music-message" class="message" role="status" aria-live="polite"></p></div></details><p class="export-spec">1080 × 1920 <span>•</span> H.264 <span>•</span> оригинальный звук</p><p id="processing-note" class="processing-note">DeepSeek: кадры и реплики через интернет, без лимита суммы за попытку. Экспорт — на компьютере.</p>
-            <button id="save-settings" type="button" class="secondary-button">Сохранить настройки</button><button id="create-button" class="primary-button" type="submit" disabled>Создать шортсы <span aria-hidden="true">↗</span></button>
-            <p id="form-message" class="message" role="status" aria-live="polite"></p>
+<div class="app-layout">
+  
+  <!-- Sidebar Navigation -->
+  <aside class="sidebar">
+    <a href="#projects" class="brand" aria-label="Кадр, проекты">
+      <span class="brand-mark" aria-hidden="true">К</span>
+      КАДР STUDIO
+    </a>
+    
+    <nav class="nav-menu" aria-label="Главное меню">
+      <a href="#projects" class="nav-link nav-active">Проекты</a>
+      <a href="#trash" class="nav-link">Корзина</a>
+    </nav>
+    
+    <span id="connection" class="status-pill">
+      <span class="status-dot"></span>
+      <span id="connection-label">Подключение...</span>
+    </span>
+  </aside>
+
+  <!-- Main Workspace -->
+  <div class="main-content">
+    <main class="screen-shell">
+      
+      <!-- Global Headers -->
+      <nav id="breadcrumbs" class="breadcrumbs" aria-label="Путь проекта"></nav>
+      <div class="screen-toolbar">
+        <div>
+          <h1 id="workspace-title" class="page-title">Проекты аниме</h1>
+          <p id="screen-context" class="page-desc"></p>
+        </div>
+      </div>
+      <p id="library-message" class="message" role="status"></p>
+
+      <!-- SCREEN: TRASH -->
+      <section id="trash-screen" class="app-screen" aria-label="Корзина" hidden>
+        <div id="trash-cards" class="grid-cards"></div>
+        <div id="trash-empty" class="empty-state" hidden>Корзина пуста</div>
+      </section>
+
+      <!-- SCREEN: PROJECTS -->
+      <section id="projects-screen" class="app-screen" aria-label="Проекты" hidden>
+        <div class="action-bar">
+          <form id="project-form" class="action-bar-form">
+            <input type="text" id="project-title" class="form-input" placeholder="Название нового проекта (например: Магическая битва)" required style="flex:1;">
+            <button type="submit" class="btn-primary">+ Создать проект</button>
           </form>
-        </section><div class="processing-column"><section id="job-panel" class="panel" aria-labelledby="job-heading" hidden>
-          <div class="panel-heading"><div><p class="eyebrow">ЗАДАНИЕ</p><h2 id="job-heading">Обработка серии</h2></div><span id="job-status" class="small status-label"></span></div>
-          <div class="progress-heading"><strong id="stage-label">Ожидание</strong><span id="progress-label">0%</span></div>
-          <progress id="job-progress" max="1" value="0" aria-label="Прогресс обработки серии"></progress>
-          <p id="job-message" class="muted small" role="status" aria-live="polite"></p>
-          <ol class="stages" aria-label="Этапы обработки" aria-live="polite">
-            <li data-stage="prepare"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Подготовка видео</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-            <li data-stage="transcribe"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Распознавание речи</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-            <li data-stage="analyze"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Анализ сюжета и кадров</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-            <li data-stage="condense"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Сокращение сюжета</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-            <li data-stage="framing"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Кадрирование</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-            <li data-stage="plan"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Монтажный план</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-            <li data-stage="render"><span class="stage-icon" aria-hidden="true"></span><span class="stage-copy"><strong>Экспорт видео</strong><small data-stage-owner></small><small data-stage-state></small></span></li>
-          </ol>
-          <div id="job-error" class="notice error" role="alert" hidden></div>
-          <div class="job-primary-actions"><button id="cancel-button" class="secondary-button" type="button" hidden>Отменить</button><button id="retry-button" class="secondary-button" type="button" hidden>Продолжить обработку</button></div>
-          <details class="job-info"><summary>Параметры монтажа</summary><p id="job-source" class="filename"></p>
-          <p id="job-provider" class="small muted job-provider"></p>
-          <p id="job-editing" class="small muted"></p>
-          <p id="job-spending" class="small muted" hidden></p>
-          <p id="job-budget-estimate" class="small muted" hidden></p>
-          <div class="job-actions"><button id="reset-budget-button" class="secondary-button" type="button" hidden>Начать новое наблюдение</button><a id="plan-link" class="text-button" target="_blank" rel="noopener" hidden>Монтажный план ↗</a></div></details>
-        </section><div class="panel episode-guide"><h2>Монтаж этой серии</h2><p>Сохраните настройки или запустите монтаж. Можно вернуться к списку серий: обработка продолжится.</p><p>Здесь находятся только настройки и прогресс. Исходный плеер, таймлайн и шортсы — на отдельном экране проверки.</p><p id="episode-source-note" class="small muted"></p></div></div></div>
- </section>
- <section id="review-screen" class="app-screen" aria-label="Проверка монтажа" hidden>
-  <div class="screen-toolbar"><label class="attempt-label" for="episode-attempt">Монтаж <select id="episode-attempt"></select></label><a id="review-edit-link" class="secondary-button">Настройки серии</a></div><div class="review-workspace"><section id="timeline-panel" class="panel" aria-labelledby="timeline-heading" hidden>
-          <div class="panel-heading"><div><p class="eyebrow">МОНТАЖНАЯ</p><h2 id="timeline-heading">Таймлайн серии</h2></div><span id="timeline-duration" class="muted small"></span></div>
-          <p class="timeline-help muted small">Выберите часть для просмотра шортса, а склейку — для сравнения с исходником.</p>
-          <div class="timeline-tools"><div class="timeline-legend"><span><i class="kept-key"></i>В шортсах</span><span><i class="removed-key"></i>Убрано</span></div>
-          <label class="toggle-label"><input id="analysis-debug" type="checkbox">Отладка анализа</label>
-          <label class="timeline-zoom-label" for="timeline-zoom">Масштаб <select id="timeline-zoom"><option value="1">Вся серия</option><option value="2">2×</option><option value="4">4×</option><option value="8">8×</option></select></label></div>
-          <div class="timeline-scroll"><div id="timeline-map">
-          <div id="timeline-ruler" class="timeline-ruler"></div>
-          <div id="timeline-groups" class="timeline-groups" aria-label="Части на общей линии серии"></div>
-          <div class="timeline-line"><div id="timeline-overview" class="timeline-track" aria-label="Все фрагменты исходной серии"></div><span id="timeline-playhead" class="timeline-playhead" hidden></span></div>
-          <div id="analysis-debug-lane" class="analysis-debug-lane" aria-label="Причины сохранения исходных интервалов" hidden></div>
-          </div></div>
-          <div id="analysis-debug-info" class="analysis-debug-info" hidden><p id="analysis-debug-title" class="small" role="status"></p><p id="analysis-debug-detail" class="muted small"></p></div>
-          <div class="source-assembly"><div class="source-review"><video id="source-player" controls playsinline preload="metadata" aria-label="Исходная серия: просмотр выбранного фрагмента"></video><div class="source-transport"><p id="source-clock" class="muted small"></p><label class="toggle-label"><input id="source-limit" type="checkbox">Только выбранный фрагмент</label></div><p id="source-selection" class="small" role="status">Выбери сохранённый или удалённый отрезок.</p><button id="source-full-button" class="secondary-button" type="button">Смотреть исходник целиком</button><p id="source-error" class="message" role="status"></p></div>
+        </div>
+        <div id="project-cards" class="grid-cards"></div>
+        <div id="projects-empty" class="empty-state" hidden>Нет проектов. Создайте первый проект выше.</div>
+      </section>
+
+      <!-- SCREEN: EPISODES -->
+      <section id="episodes-screen" class="app-screen" aria-label="Серии" hidden>
+        <div class="action-bar" style="justify-content: space-between;">
+          <form id="episode-form" style="display: flex; align-items: center; gap: 12px;">
+            <span class="muted small" style="white-space: nowrap; font-weight: 600;">Номер серии:</span>
+            <input type="number" id="episode-number" class="form-input" min="1" step="1" required style="width: 80px;">
+            <button type="submit" class="btn-primary">+ Добавить серию</button>
+          </form>
+          <button id="delete-current-project" class="btn-danger" type="button">Удалить проект</button>
+        </div>
+        <div id="episode-cards" class="grid-cards"></div>
+        <div id="episodes-empty" class="empty-state" hidden>Нет добавленных серий.</div>
+      </section>
+
+      <!-- SCREEN: EDIT (Settings) -->
+      <section id="edit-screen" class="app-screen" aria-label="Настройки серии" hidden>
+        <div class="editor-layout">
+          
+          <!-- Left Column: Source and Configuration -->
+          <div class="panel source-panel">
+            <div class="panel-heading">
+              <h2 id="source-heading" class="panel-title">Исходник и параметры</h2>
+              <div style="display:flex; gap:10px; align-items:center;">
+                <button id="delete-current-episode" class="btn-danger" type="button">Удалить серию</button>
+                <a id="edit-review-link" class="btn-secondary" hidden>К проверке монтажа</a>
+              </div>
+            </div>
+            
+            <form id="create-form">
+              <!-- Source Selection -->
+              <div class="form-group">
+                <label class="form-label" for="source">Видеофайл</label>
+                <div style="display:flex; gap:12px;">
+                  <select id="source" class="form-select" required style="flex:1;">
+                    <option value="" hidden disabled selected>Выберите видео этой серии</option>
+                  </select>
+                  <button id="refresh-sources" type="button" class="btn-secondary" title="Обновить список">↻</button>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-top:8px;">
+                  <span id="source-size" class="small muted"></span>
+                </div>
+              </div>
+
+              <div class="upload-zone" id="upload-button" tabindex="0" role="button" aria-label="Загрузить файл">
+                <span class="upload-icon">⇪</span>
+                <span class="upload-text" id="upload-label">Перетащите или нажмите для загрузки видео</span>
+                <span class="upload-hint">MP4, MKV или WebM</span>
+                <input type="file" id="file-input" accept="video/mp4,video/x-matroska,video/webm" hidden>
+              </div>
+              <div id="upload-progress" class="form-group" hidden style="margin-top:14px;">
+                <progress id="upload-meter" max="100" value="0"></progress>
+              </div>
+
+              <!-- Layout & Styling -->
+              <div class="settings-group">
+                <div class="form-group">
+                  <label class="form-label" for="layout">Оформление кадра (9:16 Shorts)</label>
+                  <select id="layout" class="form-select">
+                    <option value="cinema" selected>Весь кадр + мягкий фон (9:16)</option>
+                    <option value="portrait">Крупный план · умное кадрирование (9:16)</option>
+                  </select>
+                  <p id="layout-description" class="muted small" style="margin-top:6px;"></p>
+                </div>
+
+                <div class="style-preview-container">
+                  <div style="flex: 1;">
+                    <label class="form-label" for="caption-style">Субтитры</label>
+                    <select id="caption-style" class="form-select" style="width: 100%;">
+                      <option value="accent" selected>Яркие · короткие фразы (Жёлтый)</option>
+                      <option value="classic">Спокойные · белый текст (Классика)</option>
+                    </select>
+                  </div>
+                  <div id="style-preview" class="style-preview cinema accent" aria-label="Схема оформления">
+                    <span class="preview-part">ЧАСТЬ 01</span>
+                    <div class="preview-scene"><span>ВИДЕО</span></div>
+                    <strong id="preview-subtitle">ИСТОРИЯ<br>НАЧИНАЕТСЯ ЗДЕСЬ</strong>
+                    <span class="preview-hint">9:16 Shorts</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- AI Provider Config -->
+              <div class="settings-group">
+                <div class="form-group">
+                  <label class="form-label" for="analysis-provider">Сценарист (Нейросеть)</label>
+                  <select id="analysis-provider" class="form-select">
+                    <option value="deepseek_plan" selected>DeepSeek · сюжет и план (Облако)</option>
+                    <option value="local">На компьютере · без сети (Быстрая)</option>
+                  </select>
+                  <p id="provider-description" class="muted small" style="margin-top:8px;"></p>
+                  <p id="deepseek-config" class="muted small" style="margin-top:8px; color:var(--danger);"></p>
+                </div>
+
+                <details id="deepseek-details" class="form-group">
+                  <summary class="settings-summary">Настройки DeepSeek <span class="muted small" id="provider-balance-time"></span></summary>
+                  <div class="settings-content">
+                    <div id="deepseek-notice" class="notice" hidden>
+                      <strong id="deepseek-notice-title"></strong>
+                      <p id="deepseek-notice-description" class="muted small" style="margin-top:4px;"></p>
+                      <p class="muted small" style="margin-top:8px;"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="hybrid-fallback"> Использовать локальную нейросеть при ошибках DeepSeek</label></p>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+                      <div><label class="form-label">Бюджет серии</label><div id="deepseek-budget" style="font-size:18px; font-weight:700; color:var(--accent-light);"></div></div>
+                      <div><label class="form-label">Остаток</label><div id="deepseek-remaining" style="font-size:18px; font-weight:700;"></div></div>
+                      <div style="grid-column: 1 / -1;"><label class="form-label">Потрачено в этом месяце</label><div id="deepseek-charged" style="font-size:14px; color:var(--text-secondary);"></div></div>
+                    </div>
+                    <div style="display:flex; gap:12px; margin-top:8px;">
+                      <a href="/docs/ai/deepseek-setup.md" class="btn-text">Инструкция по ключам</a>
+                      <button id="balance-refresh-button" type="button" class="btn-secondary">Обновить баланс</button>
+                    </div>
+                  </div>
+                </details>
+              </div>
+
+              <!-- Music Config -->
+              <div class="settings-group">
+                <details id="music-section" class="form-group" open>
+                  <summary class="settings-summary">Фоновая музыка <span id="music-summary" class="muted small"></span></summary>
+                  <div class="settings-content">
+                    <label style="display:flex; align-items:center; gap:8px; font-size:13.5px;"><input type="checkbox" id="music-enabled"> Добавлять фоновую музыку</label>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                      <button id="music-open-folder" type="button" class="btn-secondary">Открыть папку</button>
+                      <button id="music-copy-path" type="button" class="btn-secondary">Скопировать путь</button>
+                      <button id="music-refresh" type="button" class="btn-secondary">↻ Обновить</button>
+                    </div>
+                    <p id="music-folder-path" class="muted small"></p>
+                    <div class="form-group">
+                      <label id="music-volume-label" class="form-label" for="music-volume">Громкость (15%)</label>
+                      <input type="range" id="music-volume" min="0" max="100" step="1" value="15" style="width:100%;">
+                    </div>
+                    <div class="form-group">
+                      <label class="form-label" for="music-mode">Режим подстановки</label>
+                      <select id="music-mode" class="form-select">
+                        <option value="single" selected>Один трек на всё видео</option>
+                        <option value="random_per_part">Случайный трек для каждой части</option>
+                        <option value="manual_per_part">Выбрать вручную для каждой части</option>
+                      </select>
+                    </div>
+                    <div id="music-single-panel" class="form-group">
+                      <label class="form-label" for="music-track">Трек</label>
+                      <select id="music-track" class="form-select"></select>
+                      <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:12px;"><input type="checkbox" id="music-random"> Выбрать случайный при монтаже</label>
+                    </div>
+                    <div id="music-parts-panel" hidden class="form-group">
+                      <p id="music-parts-count" class="form-label"></p>
+                      <p id="music-parts-hint" class="muted small"></p>
+                      <div id="music-parts-list" style="max-height: 200px; overflow-y: auto; display:flex; flex-direction:column; gap:8px; margin-top:12px;"></div>
+                    </div>
+                    <p id="music-current" class="muted small"></p>
+                    <p id="music-message" class="message" role="status" hidden></p>
+                  </div>
+                </details>
+              </div>
+
+              <!-- Submission -->
+              <div class="settings-group">
+                <p id="processing-note" class="muted small" style="margin-bottom:12px;"></p>
+                <div style="display:flex; gap:16px; align-items:center; justify-content:space-between;">
+                  <label style="display:flex; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" id="save-settings"> Сохранить по умолчанию</label>
+                  <button id="create-button" type="submit" class="btn-primary">Смонтировать</button>
+                </div>
+                <p id="form-message" class="message" role="status" hidden></p>
+                
+                <!-- Dependencies check -->
+                <div id="readiness" class="notice" hidden style="margin-top:16px;">
+                  <strong>Требуются компоненты</strong>
+                  <ul id="missing-list" style="margin-top:8px; padding-left:16px;"></ul>
+                </div>
+                <!-- DeepSeek check -->
+                <div id="deepseek-check" class="notice" hidden style="margin-top:16px;">
+                  <strong>Проблема с DeepSeek</strong>
+                  <p id="deepseek-check-message"></p>
+                </div>
+                <!-- Recovery block -->
+                <div id="deepseek-recovery" class="notice" hidden style="margin-top:16px;">
+                  <strong>Восстановление сеанса</strong>
+                  <p id="recovery-description"></p>
+                  <button id="recovery-button" type="button" class="btn-secondary" style="margin-top:12px;">Продолжить с локальной нейросетью</button>
+                  <p id="recovery-message" class="message" role="status" hidden></p>
+                </div>
+              </div>
+            </form>
           </div>
-        </section><section id="results-panel" class="panel" aria-labelledby="results-heading" hidden>
-          <div class="panel-heading"><div><p class="eyebrow">ЭКСПОРТ</p><h2 id="results-heading">Шортсы</h2></div><span id="parts-count" class="muted small"></span></div>
-          <details id="quality-warnings" class="notice quality-warnings" hidden><summary id="quality-summary">Замечания к монтажу</summary><p id="quality-message">Модель отметила места, которые стоит проверить при просмотре. Сопоставьте их с монтажным планом и исходной серией.</p><ul id="quality-warning-list"></ul></details>
-          <details id="quality-notes" class="quality-notes" hidden><summary>Причины сохранения сцен</summary><ul id="quality-note-list"></ul></details>
-          <div class="viewer"><div class="video-frame"><video id="player" controls playsinline preload="metadata" aria-label="Просмотр шортса"></video></div><div class="playlist-column"><p class="muted small">Части по порядку · автопереход</p><ol id="playlist" class="playlist"></ol><div class="download-links"><button id="download-video" class="secondary-button" type="button" disabled>Скачать MP4</button><button id="download-all" class="secondary-button" type="button" disabled>Скачать все видео</button><a id="download-subtitle" class="text-button" download>Субтитры SRT ↓</a></div><p id="download-status" class="muted small" role="status" aria-live="polite"></p><p id="player-message" class="muted small" role="status"></p></div></div>
-          <section id="part-context" class="part-context" aria-labelledby="part-context-heading" hidden>
-            <h3 id="part-context-heading">Заставка</h3><p id="part-context-title" class="context-title"></p>
-            <p id="part-context-synopsis"></p><p id="part-context-fallback" class="muted small" hidden>Краткая выжимка из анализа; модельное описание пока недоступно.</p>
-            <details><summary>Промпт для генерации</summary><textarea id="part-context-prompt" readonly rows="7" aria-label="Промпт для заставки"></textarea></details>
-            <button id="copy-part-context" class="secondary-button" type="button">Скопировать для генерации</button>
-            <p id="context-copy-status" class="muted small" role="status" aria-live="polite"></p>
+
+          <!-- Right Column: Job Progress & History -->
+          <div style="display:flex; flex-direction:column; gap:24px;">
+            <div id="job-panel" class="panel" hidden>
+              <div class="panel-heading">
+                <h2 id="job-heading" class="panel-title">Монтаж</h2>
+                <span id="job-status" class="badge"></span>
+              </div>
+              
+              <div>
+                <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:8px;">
+                  <span id="stage-label" style="font-weight:600;"></span>
+                  <span id="progress-label" class="muted"></span>
+                </div>
+                <progress id="job-progress" max="100" value="0"></progress>
+                <p id="job-message" class="message" role="status" hidden></p>
+                <pre id="job-error" class="message" style="color:var(--danger); white-space:pre-wrap;" hidden></pre>
+              </div>
+              
+              <ul class="stages-list">
+                <li class="stage-item" data-stage="prepare"><div class="stage-icon"></div><div class="stage-copy"><strong>Подготовка видео</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+                <li class="stage-item" data-stage="transcribe"><div class="stage-icon"></div><div class="stage-copy"><strong>Распознавание речи</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+                <li class="stage-item" data-stage="analyze"><div class="stage-icon"></div><div class="stage-copy"><strong>Сценарий</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+                <li class="stage-item" data-stage="condense"><div class="stage-icon"></div><div class="stage-copy"><strong>Смысловая выжимка</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+                <li class="stage-item" data-stage="framing"><div class="stage-icon"></div><div class="stage-copy"><strong>Кадрирование</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+                <li class="stage-item" data-stage="plan"><div class="stage-icon"></div><div class="stage-copy"><strong>План монтажа</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+                <li class="stage-item" data-stage="render"><div class="stage-icon"></div><div class="stage-copy"><strong>Сборка видео</strong><div class="small muted" data-stage-owner></div><div class="small muted" data-stage-state></div></div></li>
+              </ul>
+
+              <div style="display:flex; gap:12px; margin-top:24px;">
+                <button id="cancel-button" type="button" class="btn-danger" hidden>Отменить</button>
+                <button id="retry-button" type="button" class="btn-primary" hidden>Повторить</button>
+              </div>
+              
+              <details class="settings-group" style="margin-top:24px;">
+                <summary class="settings-summary">Информация о задаче</summary>
+                <div class="settings-content">
+                  <p class="muted small">Исходник: <span id="job-source" style="color:var(--text-primary);"></span></p>
+                  <p class="muted small">Сценарист: <span id="job-provider" style="color:var(--text-primary);"></span></p>
+                  <p class="muted small">Стиль: <span id="job-editing" style="color:var(--text-primary);"></span></p>
+                  <div style="margin-top:12px;">
+                    <span class="muted small">Потрачено на сценарий:</span>
+                    <div id="job-spending" style="font-size:16px; font-weight:600; color:var(--accent-light);"></div>
+                  </div>
+                  <div style="margin-top:12px;">
+                    <span class="muted small">Оценка бюджета (до старта):</span>
+                    <div id="job-budget-estimate" style="font-size:16px; font-weight:600;"></div>
+                    <button id="reset-budget-button" type="button" class="btn-text" style="margin-top:4px;" hidden>Забыть бюджет и сбросить ошибку</button>
+                  </div>
+                  <p style="margin-top:12px;"><a id="plan-link" href="#" target="_blank" class="btn-text" hidden>План монтажа (JSON)</a></p>
+                  <p id="episode-source-note" class="muted small" style="margin-top:12px;"></p>
+                </div>
+              </details>
+            </div>
+
+            <div class="panel history-panel">
+              <div class="panel-heading">
+                <h2 class="panel-title">История монтажа (<span id="history-count">0</span>)</h2>
+              </div>
+              <div id="history-empty" class="muted small">Истории пока нет.</div>
+              <div id="history-list" class="playlist-list"></div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- SCREEN: REVIEW (NLE) -->
+      <section id="review-screen" class="app-screen" aria-label="Проверка монтажа" hidden>
+        <div class="screen-toolbar">
+          <label class="form-label" for="episode-attempt" style="display:flex; align-items:center; gap:12px; margin:0;">
+            <span class="muted small" style="font-weight:600;">Попытка монтажа:</span> 
+            <select id="episode-attempt" class="form-select" style="width:auto;"></select>
+          </label>
+          <a id="review-edit-link" class="btn-secondary">⚙ Настройки серии</a>
+        </div>
+        
+        <div class="review-workspace" style="display: flex; flex-direction: column; gap: 24px;">
+          
+          <!-- 1. В САМОМ ВЕРХУ: ТАЙМЛАЙН -->
+          <section id="timeline-panel" class="panel timeline-panel" hidden>
+            <div class="panel-heading">
+              <h2 id="timeline-heading" class="panel-title">Таймлайн серии (<span id="timeline-duration"></span>)</h2>
+              <label style="font-size:12px; display:flex; gap:8px; align-items:center;">
+                <span class="muted">Масштаб:</span>
+                <select id="timeline-zoom" class="form-select" style="padding: 6px 12px; width:auto;">
+                   <option value="1">1x · По ширине окна</option>
+                   <option value="2">2x · Крупнее</option>
+                   <option value="4">4x · Детально</option>
+                   <option value="8">8x · Максимально</option>
+                </select>
+              </label>
+            </div>
+            <div class="timeline-scroll">
+              <div id="timeline-map" class="timeline-map">
+                <div id="timeline-ruler" class="timeline-ruler"></div>
+                <div id="timeline-groups" class="timeline-groups"></div>
+                <div class="timeline-line">
+                  <div id="timeline-overview" class="timeline-track"></div>
+                  <div id="timeline-playhead" class="timeline-playhead"></div>
+                </div>
+                <div id="analysis-debug-lane" class="analysis-debug-lane" style="margin-top:10px; height:24px;" hidden></div>
+              </div>
+            </div>
+            <div id="analysis-debug-info" class="analysis-debug-info form-group" hidden>
+               <p id="analysis-debug-title" class="small font-weight:600"></p>
+               <p id="analysis-debug-detail" class="small muted" style="margin-top:4px;"></p>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:12px; margin-top:14px;"><input type="checkbox" id="analysis-debug"> Показать отладочный слой</label>
           </section>
-        </section></div><p id="review-empty" class="empty-library" hidden>Готового монтажа пока нет. Вернитесь в настройки серии.</p>
- </section>
-</main><footer><span>КАДР STUDIO</span><span id="storage-title">Локальная студия</span><span id="storage-description" class="storage-description"></span></footer>
-</body></html>
+
+          <!-- 2. ПОД ТАЙМЛАЙНОМ: БОЛЬШОЙ ИСХОДНЫЙ ВИДЕОПЛЕЕР -->
+          <section id="source-panel-review" class="panel source-panel-review" hidden>
+            <div class="panel-heading">
+              <h2 class="panel-title">Исходная серия</h2>
+              <div style="display:flex; align-items:center; gap:16px;">
+                <p id="source-clock" class="muted small" style="font-variant-numeric: tabular-nums;"></p>
+                <label style="display:flex; align-items:center; gap:8px; font-size:12px;"><input id="source-limit" type="checkbox"> Только выбранный фрагмент</label>
+                <button id="source-full-button" class="btn-secondary" type="button" style="padding: 6px 12px; font-size: 12px;">Смотреть целиком</button>
+              </div>
+            </div>
+            <div class="player-container" style="max-height: 520px; aspect-ratio: 16/9; margin: 0 auto; background: #000; border-radius: var(--radius-md); overflow: hidden; display: flex; justify-content: center; align-items: center;">
+              <video id="source-player" controls playsinline preload="metadata" style="width: 100%; height: 100%; max-height: 520px; object-fit: contain;"></video>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+              <p id="source-selection" class="small muted">Выбери фрагмент на таймлайне выше для быстрого перехода.</p>
+              <p id="source-error" class="message" hidden style="margin:0;"></p>
+            </div>
+          </section>
+
+          <!-- 3. ПОД НИМ: ГОТОВЫЕ ШОРТСЫ (ВИДЕОПЛЕЕР СЛЕВА, СПИСОК ЧАСТЕЙ СПРАВА) -->
+          <section id="results-panel" class="panel playlist-panel" hidden>
+            <div class="panel-heading">
+              <h2 id="results-heading" class="panel-title">Готовые шортсы (<span id="parts-count"></span>)</h2>
+            </div>
+            
+            <details id="quality-warnings" class="quality-warnings form-group" hidden>
+              <summary class="settings-summary"><span id="quality-summary"></span></summary>
+              <div class="settings-content">
+                 <p id="quality-message" class="muted small"></p>
+                 <ul id="quality-warning-list" style="padding-left:16px; font-size:12px;"></ul>
+              </div>
+            </details>
+            
+            <details id="quality-notes" class="quality-notes form-group" hidden>
+              <summary class="settings-summary">Комментарии</summary>
+              <div class="settings-content">
+                <ul id="quality-note-list" style="padding-left:16px; font-size:12px;"></ul>
+              </div>
+            </details>
+
+            <!-- Двухколоночный просмотрщик: Видеоплеер слева, выбор частей справа -->
+            <div class="shorts-viewer-layout">
+              <!-- СЛЕВА: Вертикальный плеер 9:16 -->
+              <div class="shorts-player-col">
+                <div class="shorts-preview-box">
+                  <video id="player" controls playsinline preload="metadata" loop></video>
+                </div>
+                <div id="part-music-badge" class="badge" hidden style="margin-top: 10px; width: 100%; justify-content: center;"></div>
+              </div>
+
+              <!-- СПРАВА: Список частей для выбора и кнопки скачивания -->
+              <div class="shorts-playlist-col">
+                <p class="small muted" style="margin-bottom: 10px; font-weight: 600;">Выберите часть для просмотра:</p>
+                <div id="playlist" class="playlist-list" style="max-height: 380px; overflow-y: auto;"></div>
+                
+                <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:18px;">
+                  <button id="download-video" class="btn-primary" type="button">Скачать видео (.mp4)</button>
+                  <button id="download-all" class="btn-secondary" type="button">Скачать все шортсы (.mp4)</button>
+                  <button id="download-subtitle" class="btn-secondary" type="button">Субтитры (.srt)</button>
+                </div>
+                <p id="download-status" class="muted small" style="margin-top:8px;"></p>
+                <p id="player-message" class="message" hidden></p>
+              </div>
+            </div>
+          </section>
+
+          <!-- 4. ПОД ШОРТСАМИ: КОНТЕКСТ ДЛЯ ИИ И ПРОМПТ -->
+          <section id="part-context" class="panel form-group" hidden>
+            <div class="panel-heading" style="margin-bottom:12px;">
+              <h3 id="part-context-heading" class="panel-title" style="font-size:15px;">Контекст для ИИ</h3>
+            </div>
+            <p id="part-context-title" style="font-weight:700; font-size:14px; margin-bottom:4px; color:var(--accent-light);"></p>
+            <p id="part-context-synopsis" class="small muted" style="line-height:1.6; margin-bottom:12px;"></p>
+            <p id="part-context-fallback" class="small" style="color:var(--danger); margin-bottom:8px;" hidden>Генерация не удалась.</p>
+            <details open>
+              <summary class="settings-summary" style="font-size:13px;">Системный промпт нейросети</summary>
+              <div class="settings-content">
+                <textarea id="part-context-prompt" readonly rows="7" class="form-input" style="font-family:monospace; font-size:11.5px; line-height:1.5;"></textarea>
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <button id="copy-part-context" type="button" class="btn-secondary">Копировать промпт</button>
+                  <span id="context-copy-status" class="small muted"></span>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <p id="review-empty" class="empty-state" hidden>Готового монтажа пока нет. Вернитесь в настройки серии.</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <span style="font-weight: 700; letter-spacing: -0.2px; color: #fff;">КАДР STUDIO</span>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="storage-badge" id="storage-title"></span>
+        <span id="storage-description"></span>
+      </div>
+    </footer>
+  </div>
+</div>
+</body>
+</html>
