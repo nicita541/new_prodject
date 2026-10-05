@@ -396,6 +396,8 @@ class ApiTests(unittest.TestCase):
         atomic_json(checkpoint.parent / "plan.json", {"parts": [{"number": 1}]})
         plan_response = self.client.get(f"/api/jobs/{job['id']}/plan").json()
         self.assertEqual(plan_response["parts"][0]["number"], 1)
+        self.assertEqual(plan_response['parts'][0]['cover_context']['method'], 'extractive')
+        self.assertIn('9:16', plan_response['parts'][0]['cover_context']['prompt'])
         self.assertEqual(plan_response["quality_summary"], {"available": False, "warnings": [], "notes": []})
         self.assertEqual(plan_response["debug_timeline"], {"available": False, "reasons": []})
         self.assertEqual(self.client.post(f"/api/jobs/{job['id']}/cancel").json()["status"], "cancelled")

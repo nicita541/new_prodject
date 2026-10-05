@@ -68,7 +68,7 @@ class PlannerTests(unittest.TestCase):
 
     def test_balances_silent_material_without_short_final_remainder(self):
         plan = build_plan(analysis())
-        self.assertEqual(len(plan['parts']), 3)
+        self.assertEqual(len(plan['parts']), 2)
         self.assertLess(max(p['duration'] for p in plan['parts'])-min(p['duration'] for p in plan['parts']),.001)
         cuts = [c for p in plan["parts"] for c in p["cuts"]]
         self.assertEqual(cuts[0]['start'],0)
@@ -82,7 +82,7 @@ class PlannerTests(unittest.TestCase):
         data=analysis(200)
         data['shots']=[{'start':i,'end':i+1} for i in range(6)]
         durations=[p['duration'] for p in build_plan(data)['parts']]
-        self.assertEqual(len(durations),3)
+        self.assertEqual(len(durations),2)
         self.assertLess(max(durations)-min(durations),.001)
 
     def test_multiple_removed_gaps_balance_on_output_time(self):
@@ -90,7 +90,7 @@ class PlannerTests(unittest.TestCase):
         data['events'][0].update(unit_selection_version=1,
             selected_ranges=[{'start':0,'end':60},{'start':100,'end':160},{'start':200,'end':220}])
         plan=build_plan(data)
-        self.assertEqual([p['duration'] for p in plan['parts']],[70,70])
+        self.assertEqual([p['duration'] for p in plan['parts']],[60,80])
         self.assertFalse(any(c['start']<100 and c['end']>60 for p in plan['parts'] for c in p['cuts']))
 
     def test_balanced_cut_chooses_whole_reply_near_target(self):
@@ -106,8 +106,8 @@ class PlannerTests(unittest.TestCase):
         replies=[{'start':i*55,'end':min(215,(i+1)*55),'text':'Реплика.'} for i in range(4)]
         data['transcript']={'segments':replies,'words':replies}
         plan=build_plan(data)
-        self.assertEqual([p['duration'] for p in plan['parts']],[55,55,55,50])
-        self.assertFalse(plan['warnings'])
+        self.assertEqual([p['duration'] for p in plan['parts']],[110,105])
+        self.assertFalse(any('Длинная реплика' in w for w in plan['warnings']))
 
     def test_causal_dependency_retains_lower_importance_scene(self):
         data = analysis(120)
@@ -152,18 +152,18 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan["parts"][0]["subtitles"][0]["text"], "Целая реплика")
 
     def test_long_reply_splits_at_words(self):
-        data = analysis(110)
-        data["transcript"]["segments"] = [{"start": 0, "end": 110, "text": "длинная реплика"}]
-        data["transcript"]["words"] = [{"start": t, "end": t + 2, "text": "слово"} for t in range(0, 110, 2)]
+        data = analysis(150)
+        data["transcript"]["segments"] = [{"start": 0, "end": 150, "text": "длинная реплика"}]
+        data["transcript"]["words"] = [{"start": t, "end": t + 2, "text": "слово"} for t in range(0, 150, 2)]
         plan = build_plan(data)
-        self.assertEqual([p["duration"] for p in plan["parts"]], [54, 56])
+        self.assertEqual([p["duration"] for p in plan["parts"]], [74, 76])
         self.assertTrue(plan["warnings"])
 
     def test_regular_reply_does_not_split_to_fill_part(self):
         data = analysis(110)
         data["transcript"]["segments"] = [{"start": 0, "end": 70, "text": "первая"}, {"start": 70, "end": 110, "text": "вторая"}]
         data["transcript"]["words"] = [{"start": 0, "end": 1, "text": "первая"}, {"start": 70, "end": 71, "text": "вторая"}]
-        self.assertEqual([p["duration"] for p in build_plan(data)["parts"]], [70, 40])
+        self.assertEqual([p["duration"] for p in build_plan(data)["parts"]], [110])
 
     def test_short_reply_moves_whole_to_fresh_part_with_only_eight_seconds_left(self):
         data = analysis(130)
@@ -171,7 +171,7 @@ class PlannerTests(unittest.TestCase):
         data['transcript'] = {'segments':[{'start':100,'end':122.74,'text':'Целая короткая реплика.'}],
                               'words':[{'start':100+i,'end':101+i,'text':'слово'} for i in range(22)]}
         plan = build_plan(data)
-        self.assertEqual([part['duration'] for part in plan['parts']], [52.735,52.735])
+        self.assertEqual([part['duration'] for part in plan['parts']], [105.47])
         self.assertTrue(any(c['start']<=100 and c['end']>=122.74 for p in plan['parts'] for c in p['cuts']))
         self.assertFalse(plan['warnings'])
 
@@ -180,7 +180,7 @@ class PlannerTests(unittest.TestCase):
         data['transcript'] = {'segments':[{'start':80,'end':103,'text':'Полная реплика.'}],
                               'words':[{'start':80+i,'end':81+i,'text':'слово'} for i in range(23)]}
         plan = build_plan(data)
-        self.assertEqual([part['duration'] for part in plan['parts']], [51.5,51.5])
+        self.assertEqual([part['duration'] for part in plan['parts']], [103])
         self.assertFalse(plan['warnings'])
 
     def test_long_reply_starts_on_fresh_part_then_legitimately_splits(self):
@@ -189,22 +189,73 @@ class PlannerTests(unittest.TestCase):
         data['transcript'] = {'segments':[{'start':40,'end':150,'text':'Длинная реплика.'}],
                               'words':[{'start':40+i,'end':42+i,'text':'слово'} for i in range(0,110,2)]}
         plan = build_plan(data)
-        self.assertEqual([part['duration'] for part in plan['parts']], [20,54.18,56])
-        self.assertTrue(plan['warnings'])
+        self.assertEqual([part['duration'] for part in plan['parts']], [20,110.18])
+        self.assertFalse(any('Длинная реплика' in w for w in plan['warnings']))
 
     def test_overlapping_short_reply_cannot_be_split_at_other_segment_end(self):
-        data = analysis(120)
+        data = analysis(150)
         data['transcript'] = {'segments':[{'start':0,'end':85,'text':'Первая.'},
-                                         {'start':80,'end':120,'text':'Вторая.'}],
-                              'words':[{'start':t,'end':t+1,'text':'слово'} for t in range(0,120)]}
-        with self.assertRaisesRegex(ValueError, '90'):
+                                         {'start':80,'end':150,'text':'Вторая.'}],
+                              'words':[{'start':t,'end':t+1,'text':'слово'} for t in range(0,150)]}
+        with self.assertRaisesRegex(ValueError, '120'):
             build_plan(data)
 
     def test_impossibly_long_word_is_rejected(self):
-        data = analysis(110)
-        data["transcript"]["words"] = [{"start": 0, "end": 110, "text": "слово"}]
-        with self.assertRaisesRegex(ValueError, "90"):
+        data = analysis(150)
+        data["transcript"]["words"] = [{"start": 0, "end": 150, "text": "слово"}]
+        with self.assertRaisesRegex(ValueError, "120"):
             build_plan(data)
+
+    def test_semantic_closure_allows_110_seconds_instead_of_stopping_at_87(self):
+        data = analysis(200)
+        data['transcript'] = {'segments': [{'start': 80, 'end': 86.45, 'text': 'Вопрос?'},
+                                            {'start': 100, 'end': 109.45, 'text': 'Ответ.'}], 'words': []}
+        data['transcript']['words'] = data['transcript']['segments']
+        data['events'][0]['part_endings'] = [{'time': 110, 'kind': 'closure', 'confidence': .95,
+                                             'evidence': 'The immediate answer completes this exchange.'}]
+        plan = build_plan(data)
+        self.assertEqual([p['duration'] for p in plan['parts']], [110, 90])
+        self.assertEqual(plan['parts'][0]['ending']['kind'], 'closure')
+        self.assertFalse(plan['warnings'])
+
+    def test_seventy_second_cliffhanger_preserves_complete_setup(self):
+        data = analysis(180)
+        data['events'][0]['part_endings'] = [{'time': 70, 'kind': 'cliffhanger', 'confidence': .95,
+                                             'evidence': 'The completed setup precedes the new reveal.'}]
+        plan = build_plan(data)
+        self.assertEqual([p['duration'] for p in plan['parts']], [70, 110])
+        self.assertFalse(plan['warnings'])
+
+    def test_semantic_endings_map_through_removed_gaps_and_do_not_resurrect_them(self):
+        data = analysis(250)
+        data['events'][0].update(unit_selection_version=1,
+            selected_ranges=[{'start': 0, 'end': 50}, {'start': 100, 'end': 250}],
+            part_endings=[{'time': 160, 'kind': 'closure', 'confidence': .95, 'evidence': 'Completed scene.'}])
+        plan = build_plan(data)
+        self.assertEqual([p['duration'] for p in plan['parts']], [110, 90])
+        self.assertEqual([(c['start'], c['end']) for c in plan['parts'][0]['cuts']], [(0, 50), (100, 160)])
+
+    def test_ending_label_cannot_split_a_complete_reply_or_word(self):
+        data = analysis(200)
+        data['transcript'] = {'segments': [{'start': 60, 'end': 110, 'text': 'Целая реплика.'}],
+                              'words': [{'start': 60, 'end': 110, 'text': 'Целая реплика.'}]}
+        data['events'][0]['part_endings'] = [{'time': 90, 'kind': 'closure', 'confidence': .95,
+                                             'evidence': 'An incorrect proposed closure.'}]
+        plan = build_plan(data)
+        self.assertFalse(any(p['cuts'][-1]['end'] == 90 for p in plan['parts']))
+        self.assertTrue(any(c['start'] <= 60 and c['end'] >= 110 for p in plan['parts'] for c in p['cuts']))
+
+    def test_semantic_reply_end_preserves_selected_tail_before_a_removed_gap(self):
+        data = analysis(300)
+        data['events'][0].update(unit_selection_version=1,
+            selected_ranges=[{'start': 0, 'end': 85.23}, {'start': 186, 'end': 300}],
+            part_endings=[{'time': 85.17, 'kind': 'closure', 'confidence': .95, 'evidence': 'Completed dialogue.'}])
+        data['transcript'] = {'segments': [{'start': 83.7, 'end': 84.62, 'text': 'Понимаю.'}],
+                              'words': [{'start': 83.7, 'end': 84.62, 'text': 'Понимаю.'}]}
+        plan = build_plan(data)
+        self.assertEqual(plan['parts'][0]['cuts'][-1]['end'], 85.23)
+        self.assertEqual(plan['parts'][1]['cuts'][0]['start'], 186)
+        self.assertEqual(plan['parts'][0]['ending']['time'], 85.23)
 
     def test_invalid_dependencies_and_nonfinite_timestamps(self):
         for mutation in [lambda d: d["events"][0].update(requires=["imaginary"]),

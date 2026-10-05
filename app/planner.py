@@ -4,7 +4,9 @@ from __future__ import annotations
 import math
 from .subtitles import make_cues, remap_words
 
-MAX_DURATION = 90.0
+MAX_DURATION = 120.0
+TARGET_DURATION = 90.0
+PLANNER_VERSION = 11
 SCHEMA_VERSION = 1
 SPEECH_TAIL = 0.55
 SPEECH_LEAD = 0.18
@@ -49,6 +51,12 @@ def validate_analysis(analysis: dict) -> None:
         for boundary in event.get("boundary_times", []):
             if not start <= _number(boundary) <= end:
                 raise ValueError("Граница находится вне события")
+        for ending in event.get('part_endings', []):
+            if (not start < _number(ending['time']) <= end
+                    or ending.get('kind') not in ('closure', 'cliffhanger', 'transition')
+                    or not isinstance(ending.get('evidence'), str) or not ending['evidence'].strip()
+                    or isinstance(ending.get('confidence'), bool) or not .85 <= _number(ending['confidence']) <= 1):
+                raise ValueError('Некорректное подтверждение концовки')
         range_end = start
         for selection in event.get("selected_ranges", []):
             left, right = _number(selection["start"]), _number(selection["end"])
@@ -113,7 +121,97 @@ def _speech_tail(end, speech, duration):
     return max(end, min(last + SPEECH_TAIL, available, duration))
 
 
-def build_plan(analysis: dict, *, _part_count: int = 0) -> dict:
+def _part_boundaries(intervals, events, segments, words, shots, duration):
+    """Choose a path on retained OUTPUT time; meaning outweighs length balance."""
+    total = sum(r['end'] - r['start'] for r in intervals)
+    if total <= MAX_DURATION + 1e-7:
+        return [(total, None)]
+    candidates = {0.0: (0, None)}
+
+    def add(time, cost, evidence=None):
+        if not _safe(time, words):
+            return
+        crossing = [s for s in segments if s['start'] < time < s['end']]
+        if any(s['end'] - s['start'] <= MAX_DURATION for s in crossing):
+            return
+        # A recognised reply longer than the ceiling can only be split at a
+        # word boundary, with an explicit warning rather than a fake ending.
+        if crossing:
+            if not any(abs(w['end'] - time) < .002 for w in words):
+                return
+            cost, evidence = 60, None
+        elapsed = 0.0
+        for interval in intervals:
+            if interval['start'] < time <= interval['end']:
+                # Keep the complete selected speech handle before a source
+                # gap. Otherwise an ASR tail 60ms before the selected end
+                # leaves an orphan consonant at the start of the next part.
+                if (0 < interval['end'] - time <= .75 and _safe(interval['end'], words)
+                        and not any(time < s['start'] < interval['end'] or s['start'] < interval['end'] < s['end']
+                                    for s in segments)):
+                    time = interval['end']
+                    if evidence:
+                        evidence = {**evidence, 'time': time,
+                                    'output_time': round(elapsed + time - interval['start'], 6)}
+                output_time = round(elapsed + time - interval['start'], 6)
+                if output_time not in candidates or cost < candidates[output_time][0]:
+                    candidates[output_time] = (cost, evidence)
+                return
+            elapsed += interval['end'] - interval['start']
+
+    for event in events:
+        for ending in event.get('part_endings', []):
+            add(ending['time'], {'closure': 0, 'cliffhanger': 1, 'transition': 3}[ending['kind']], ending)
+    for segment in segments:
+        add(_speech_tail(segment['end'], [*segments, *words], duration), 12)
+        add(_speech_lead(segment['start'], [*segments, *words]), 15)
+    for shot in shots:
+        add(shot['start'], 16)
+    for interval in intervals:
+        add(interval['end'], 18)
+    for word in words:
+        add(word['end'], 60)
+    # Legacy/silent analyses have no semantic evidence. Supply safe fallback
+    # points without forcing the new analysis to follow an arithmetic grid.
+    count = math.ceil(total / TARGET_DURATION)
+    fallback = {total * i / count for i in range(1, count)}
+    minimum_count = math.ceil(total / MAX_DURATION)
+    fallback.update(total * i / minimum_count for i in range(1, minimum_count))
+    fallback.update(float(t) for t in range(15, math.ceil(total), 15))
+    for output_time in sorted(fallback):
+        elapsed = 0.0
+        for interval in intervals:
+            span = interval['end'] - interval['start']
+            if elapsed < output_time <= elapsed + span:
+                add(interval['start'] + output_time - elapsed, 22)
+                break
+            elapsed += span
+    total = round(total, 6)
+    candidates[total] = (0, None)
+    times = sorted(candidates)
+    scores, previous = {0.0: 0.0}, {}
+    for i, end in enumerate(times[1:], 1):
+        choices = []
+        for start in reversed(times[:i]):
+            length = end - start
+            if length > MAX_DURATION + 1e-6:
+                break
+            if length < .1 or start not in scores:
+                continue
+            length_cost = ((length - TARGET_DURATION) / 35) ** 2 + (max(0, 60 - length) / 12) ** 2
+            choices.append((scores[start] + length_cost + candidates[end][0], start))
+        if choices:
+            scores[end], previous[end] = min(choices)
+    if total not in scores:
+        raise ValueError(f'Нельзя разделить реплику на части до {MAX_DURATION:g} секунд без обрыва слова')
+    boundaries, time = [], total
+    while time > 0:
+        boundaries.append((time, candidates[time][1]))
+        time = previous[time]
+    return list(reversed(boundaries))
+
+
+def build_plan(analysis: dict) -> dict:
     validate_analysis(analysis)
     from .source_roles import apply_exclusions,confirmed_exclusions
     events, probe = apply_exclusions(analysis["events"]), analysis["probe"]
@@ -165,75 +263,29 @@ def build_plan(analysis: dict, *, _part_count: int = 0) -> dict:
                         intervals[-1]["event_ids"].append(event["id"])
                 else:
                     intervals.append({"start":left,"end":right,"event_ids":[event['id']]})
-    reply_boundaries = [_speech_tail(s['end'], [*segments, *words], probe['duration']) for s in segments]
-    reply_starts = [_speech_lead(s['start'], [*segments, *words]) for s in segments]
-    event_boundaries = [t for e in events for t in [e["end"], *e.get("boundary_times", [])]]
-    total_duration = sum(interval['end'] - interval['start'] for interval in intervals)
-    expected_parts = max(1, _part_count, math.ceil((total_duration - 1e-7) / MAX_DURATION))
-    remaining_duration = total_duration
-    def split_at(start, end, limit, preferred):
-        if end - start <= preferred + 1e-7:
-            return end, False
-        target = start + min(limit, preferred)
-        ceiling = start + limit
-        def reply_safe(time):
-            return not any(s["start"] < time < s["end"] and s["end"]-s["start"] <= MAX_DURATION
-                           for s in segments)
-        whole_replies = [t for t in [*reply_boundaries, *reply_starts]
-                         if start + 0.1 < t <= min(end, ceiling) and _safe(t, words) and reply_safe(t)]
-        scene_ends = [t for t in event_boundaries if start + 0.1 < t <= min(end, ceiling) and _safe(t, words)
-                      and not any(s["start"] < t < s["end"] for s in segments)]
-        candidates = whole_replies + scene_ends
-        if end <= ceiling and _safe(end, words) and reply_safe(end):
-            candidates.append(end)
-        if _safe(target, words) and not any(s['start'] < target < s['end'] for s in segments):
-            # Silence needs no maximum-length fill. Real shot boundaries are
-            # preferred when available near the balanced target.
-            silent_shots = [t for t in shot_starts if start + .1 < t <= min(end, ceiling)
-                            and abs(t-target) <= 2 and _safe(t, words) and reply_safe(t)]
-            candidates.extend(silent_shots or [target])
-        if candidates:
-            return min(candidates, key=lambda t:(abs(t-target), -t)), False
-        word_ends = [w["end"] for w in words if start + 0.1 < w["end"] <= target
-                     and _safe(w["end"], words) and reply_safe(w["end"])]
-        if word_ends:
-            return max(word_ends), True
-        if _safe(target, words) and reply_safe(target):
-            return target, True
-        raise ValueError("Нельзя разделить реплику на части до 90 секунд без обрыва слова")
+    boundaries = _part_boundaries(intervals, events, segments, words, analysis.get('shots', []), probe['duration'])
     parts, current = [], []
-    current_duration = 0.0
+    current_duration, elapsed = 0.0, 0.0
     def finish():
-        nonlocal current, current_duration, remaining_duration
+        nonlocal current, current_duration
         if current:
             cues = make_cues(remap_words(words, current))
-            parts.append({"index": len(parts) + 1, "duration": round(current_duration, 6), "cuts": current, "subtitles": cues})
-            remaining_duration -= current_duration
+            ending = boundaries[len(parts)][1]
+            part = {"index": len(parts) + 1, "duration": round(current_duration, 6), "cuts": current, "subtitles": cues}
+            if ending:
+                part['ending'] = dict(ending)
+            elif len(parts) < len(boundaries) - 1:
+                time = current[-1]['end']
+                forced = any(s['start'] < time < s['end'] for s in segments)
+                warnings.append((f'Длинная реплика разделена без обрыва слова в {time:.3f} с' if forced else
+                                 f'Концовка в {time:.3f} с выбрана по целой реплике/плану; смысловая завершённость не подтверждена'))
+            parts.append(part)
         current, current_duration = [], 0.0
     for interval in intervals:
         start = interval["start"]
         while start < interval["end"] - 1e-7:
-            target_duration = min(MAX_DURATION, remaining_duration / max(1, expected_parts - len(parts)))
-            if current and current_duration >= target_duration - 1e-7:
-                finish()
-                continue
-            room = MAX_DURATION - current_duration
-            if room < 0.1:
-                finish()
-                continue
-            try:
-                end, forced = split_at(start, interval["end"], room, max(.1, target_duration-current_duration))
-            except ValueError:
-                if current:
-                    finish()
-                    continue
-                raise
-            if current and forced:
-                finish()
-                continue
-            if current and end - start < 5 and interval["end"] - start > room:
-                finish()
-                continue
+            room = boundaries[len(parts)][0] - elapsed
+            end = min(interval['end'], start + room)
             ids = [e["id"] for e in events if e["start"] < end and e["end"] > start]
             anchors = sorted([dict(a) for e in events if e["id"] in ids for a in e.get("focus", [])
                               if start <= a["time"] <= end], key=lambda a: a["time"])
@@ -249,17 +301,11 @@ def build_plan(analysis: dict, *, _part_count: int = 0) -> dict:
                                          for boundary in shot_starts)
             current.append({"start": round(start, 6), "end": round(end, 6), "event_ids": ids, "focus": anchors})
             current_duration += end - start
-            if forced:
-                warnings.append(f"Длинная реплика или сцена разделена без обрыва слова в {end:.3f} с")
+            elapsed += end - start
             start = end
-            if start < interval["end"] - 1e-7:
+            if elapsed >= boundaries[len(parts)][0] - 1e-6:
                 finish()
     finish()
-    if len(parts) > expected_parts:
-        # Complete replies can make the arithmetic minimum infeasible. Repack
-        # all parts with the actual required count instead of keeping a short
-        # remainder created by that first pass.
-        return build_plan(analysis, _part_count=len(parts))
     retained_ids = {identifier for part in parts for cut in part["cuts"] for identifier in cut["event_ids"]}
     plan = {"schema_version": SCHEMA_VERSION, "source": {key: probe[key] for key in ("duration", "width", "height")},
             "selected_event_ids": [e["id"] for e in events if e["id"] in selected],
@@ -291,7 +337,7 @@ def validate_plan(plan: dict, analysis: dict) -> None:
                     raise ValueError("Некорректный признак смены кадра")
             previous, duration = end, duration + end - start
         if duration > MAX_DURATION + 1e-6 or abs(duration - _number(part["duration"])) > 1e-5:
-            raise ValueError("Часть превышает 90 секунд или имеет неверную длительность")
+            raise ValueError(f"Часть превышает {MAX_DURATION:g} секунд или имеет неверную длительность")
         from .editing import validate_options
         options = validate_options(part.get('layout', 'portrait'), part.get('caption_style', 'classic'))
         expected = make_cues(remap_words(analysis["transcript"].get("words", []), part["cuts"]), options['caption_style'])

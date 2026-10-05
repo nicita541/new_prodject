@@ -681,12 +681,13 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     # Story decisions retain their established signature. Only final focus
     # depends on the layout, so switching presets cannot repeat paid story work.
     from .pacing import PACING_VERSION
+    from .endings import VERSION as ENDINGS_VERSION, RECOVERY_VERSION as ENDING_RECOVERY_VERSION
     pacing_provider = provider
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import recovery_status
         if recovery_status()['halted']:
             pacing_provider = 'local'
-    focus_key = derived_key + f':pacing-v{PACING_VERSION}:' + layout + ':' + pacing_provider
+    focus_key = derived_key + f':pacing-v{PACING_VERSION}:endings-v{ENDINGS_VERSION}:ending-recovery-v{ENDING_RECOVERY_VERSION}:' + layout + ':' + pacing_provider
     if (events_path.exists() and derived_meta.exists()
             and load_json(derived_meta).get('signature') == focus_key
             and load_json(derived_meta).get('quality_state') != 'degraded'):
@@ -793,13 +794,16 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             events = protect_speech_context(events, transcript)
         atomic_json(story_checkpoint, {'signature': derived_key, 'events': events,
             'quality_state':'degraded' if any(e.get('source_role_unresolved') for e in events) else 'complete'})
-    from .pacing import refine_pacing, BudgetPacingVision
+    from .pacing import refine_pacing, refine_silent_sequences, BudgetPacingVision
     with vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
         if pacing_provider in ('deepseek', 'deepseek_plan'):
             with BudgetPacingVision(vision, job_dir, cancelled) as paced:
                 events = refine_pacing(source, events, transcript, shots, job_dir, paced, report, cancelled)
         else:
             events = refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled)
+        events = refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled)
+        from .endings import refine_endings
+        events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
     if pacing_provider != provider:
         for event in events:
             if event.get('pacing_removed'):
@@ -813,6 +817,6 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         report('framing', 0.65, 'Сохраняем исходный кадр целиком на мягком вертикальном фоне')
     atomic_json(events_path, events)
     atomic_json(derived_meta, {'signature': focus_key,
-        'quality_state':'degraded' if any(e.get('source_role_unresolved') or e.get('pacing_degraded') for e in events) else 'complete',
+        'quality_state':'degraded' if any(e.get('source_role_unresolved') or e.get('pacing_degraded') or e.get('endings_degraded') for e in events) else 'complete',
         'requested_provider':provider,'pacing_providers':sorted({p for e in events for p in e.get('pacing_providers',[])})})
     return analysis_result(job_dir, provider, probe, transcript, shots, events)

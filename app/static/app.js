@@ -299,7 +299,36 @@ function selectFile(index, play) {
   $("playlist").querySelectorAll("button").forEach((button, current) => { button.classList.toggle("selected", current === index); button.setAttribute("aria-current", String(current === index)); });
   if (play) $("player").play().catch(() => setText("player-message", "Нажмите воспроизведение в плеере."));
   if (state.timeline?.jobId === state.selected) renderTimelineSelection(index);
+  renderPartContext();
 }
+
+function currentPartContext() {
+  if (state.timeline?.jobId !== state.selected) return null;
+  const context=state.timeline.plan.parts[state.fileIndex]?.cover_context;
+  return context && ['title','synopsis','prompt'].every(key=>typeof context[key]==='string' && context[key].trim()) ? context : null;
+}
+function renderPartContext() {
+  const context=currentPartContext();
+  $('part-context').hidden=!context;
+  setText('context-copy-status','');
+  if(!context) return;
+  setText('part-context-heading',`Заставка · часть ${String(state.fileIndex+1).padStart(2,'0')}`);
+  setText('part-context-title',context.title);
+  setText('part-context-synopsis',context.synopsis);
+  $('part-context-prompt').value=context.prompt;
+  $('part-context-fallback').hidden=context.method!=='extractive';
+}
+async function copyPartContext() {
+  const context=currentPartContext(); if(!context) return;
+  const jobId=state.selected,index=state.fileIndex;
+  try {
+    await navigator.clipboard.writeText(`Контекст: ${context.synopsis}\n\n${context.prompt}`);
+    if(state.selected===jobId && state.fileIndex===index) setText('context-copy-status','Контекст и промпт скопированы.');
+  } catch {
+    if(state.selected===jobId && state.fileIndex===index) setText('context-copy-status','Не удалось скопировать. Выделите текст промпта ниже и скопируйте вручную.');
+  }
+}
+$('copy-part-context').addEventListener('click',copyPartContext);
 
 function sourceTime(seconds, precise = true) {
   const n = Math.max(0, Number(seconds));
@@ -383,6 +412,7 @@ function loadTimeline(job) {
   const key = `${job.id}:${available ? job.status : 'pending'}`;
   if (key === state.timelineKey) return;
   state.timelineKey = key; state.timeline = null; state.sourceSelection = null;
+  renderPartContext();
   $('analysis-debug').checked=false; $('analysis-debug-info').hidden=true; $('analysis-debug-lane').hidden=true; $('analysis-debug-lane').replaceChildren();
   $('timeline-playhead').hidden = true; setText('source-clock','');
   $('timeline-zoom').value='1'; $('timeline-map').style.width='100%';
@@ -413,6 +443,7 @@ function loadTimeline(job) {
       return label;
     }));
     renderTimelineSelection(state.fileIndex < plan.parts.length ? state.fileIndex : 0);
+    renderPartContext();
     renderDebugTimeline();
   }).catch(() => { if (state.timelineKey === key) state.timelineKey = ''; });
 }

@@ -1,0 +1,7 @@
+# Provider observations instead of misleading cost totals
+
+The documented DeepSeek /user/balance contract exposes account balances, not per-key invoices. Dashboard Usage supports a selected API key but requires separate account access; the user declined login for now. The app therefore labels provider-sourced balance and its observed decrease as account observations, with a dashboard link for per-key usage. It does not invent historical or per-key billed costs.
+
+app.provider_balance stores independent snapshots/windows beside the existing ledger. New paid requests establish an attempt baseline and free checks observe later balances. UI automatically refreshes at most once per30 seconds while editing/reviewing cloud jobs, offers manual refresh, and shows timestamps/staleness. Old jobs have no fabricated full-attempt baseline. Increased balance/grants/top-ups invalidate observed-decrease attribution. A delayed provider balance can still lag invoices; account decrease is not a per-job receipt.
+
+Free reads use a separate lock/8-second timeout and sanitized errors. They do not clear reservations, alter costs or resend paid work. The user subsequently removed the $0.10 attempt cap; conservative token estimates and unknown-billing/replay guards remain independent. New state is additive; old ledger/replay guards require no migration. Key credentials remain server-side and are never added to this history.

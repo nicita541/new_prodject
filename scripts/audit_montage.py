@@ -13,6 +13,7 @@ from PIL import Image,ImageDraw,ImageFont
 from app.config import JOBS,ROOT
 from app.jobs import atomic_json
 from app.deepseek import job_spending
+from app.planner import MAX_DURATION
 
 def load(folder,name):return json.loads((folder/name).read_text('utf-8'))
 
@@ -53,7 +54,7 @@ def main():
     parts=plan['parts'];lengths=[p['duration'] for p in parts]
     merged=[]
     for part in parts:
-        if part['duration']>90.001:raise ValueError('Part exceeds 90 seconds')
+        if part['duration']>MAX_DURATION+.001:raise ValueError('Part exceeds processing duration limit')
         for cut in part['cuts']:
             if merged and cut['start']<merged[-1]['end']-.002:raise ValueError('Source chronology overlaps')
             if merged and cut['start']<=merged[-1]['end']+.002:merged[-1]['end']=cut['end']

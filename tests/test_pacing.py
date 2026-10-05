@@ -6,10 +6,39 @@ from pathlib import Path
 from unittest.mock import patch, Mock, MagicMock
 
 from app.config import TEMP
-from app.pacing import silent_units, apply_review, refine_pacing, BudgetPacingVision, retained_context, neighboring_replies
+from app.pacing import silent_units, apply_review, refine_pacing, refine_silent_sequences, BudgetPacingVision, retained_context, neighboring_replies
 
 
 class PacingTests(unittest.TestCase):
+    def test_sequence_review_crosses_artificial_event_windows_and_keeps_actual_arrival(self):
+        directory = TEMP / ('sequence_pacing_' + uuid.uuid4().hex)
+        directory.mkdir()
+        source = directory / 'source.mp4'; source.write_bytes(b'fixture')
+        events = [{'id': 'travel', 'start': 0, 'end': 20, 'kind': 'story', 'importance': 4,
+                   'requires': [], 'selected_ranges': [{'start': 0, 'end': 20}],
+                   'protected_atmosphere_ranges': [{'start': 0, 'end': 20}]},
+                  {'id': 'arrival', 'start': 20, 'end': 40, 'kind': 'story', 'importance': 4,
+                   'requires': ['travel'], 'selected_ranges': [{'start': 20, 'end': 40}]}]
+        vision = Mock(model=Path('fixture'), projector=Path('fixture'), cache_profile='fixture', supports_image_pages=True)
+        vision.query.return_value = {'uncertain': False, 'decisions': [
+            {'unit': 'q00', 'keep': False, 'reason': 'waiting', 'story_change': False,
+             'reaction_or_humor': False, 'retained_witness': 'none', 'evidence': 'Neutral routine; next arrival conveys the location.'},
+            {'unit': 'q01', 'keep': True, 'reason': 'setup', 'story_change': True,
+             'reaction_or_humor': False, 'retained_witness': 'none', 'evidence': 'Actual arrival and unique new interaction.'}]}
+        with patch('app.pacing.make_sheet'):
+            first = refine_silent_sequences(source, events, {'words': [], 'segments': []}, [], directory,
+                                            vision, lambda *a: None, lambda: False)
+            second = refine_silent_sequences(source, events, {'words': [], 'segments': []}, [], directory,
+                                             vision, lambda *a: None, lambda: False)
+        self.assertEqual(first, second)
+        vision.query.assert_called_once()
+        self.assertEqual(first[0]['selected_ranges'], [])
+        self.assertTrue(first[0]['pacing_excluded'])
+        self.assertEqual(first[0]['protected_atmosphere_ranges'], [])
+        self.assertEqual(first[1]['selected_ranges'], [{'start': 20, 'end': 40}])
+        self.assertEqual(first[1]['requires'], [])
+        self.assertEqual(events[0]['selected_ranges'], [{'start': 0, 'end': 20}])
+
     def test_cancel_during_frame_read_is_not_swallowed_as_preserve_warning(self):
         from pathlib import Path
         directory=TEMP/('pacing_cancel_'+uuid.uuid4().hex);directory.mkdir()
@@ -81,6 +110,16 @@ class PacingTests(unittest.TestCase):
                 'evidence':'A specific expression and gesture visibly changes in the current frames.'
             }],'uncertain':False})
             self.assertEqual(event['selected_ranges'],[{'start':0,'end':4}])
+
+    def test_reviewed_establishing_view_does_not_keep_a_stale_atmosphere_label(self):
+        event = {'start': 0, 'end': 4, 'selected_ranges': [{'start': 0, 'end': 4}],
+                 'protected_atmosphere_ranges': [{'start': 0, 'end': 4}], 'protected_atmosphere_units': ['old']}
+        apply_review(event, [{'id': 'A', 'start': 0, 'end': 4}], {'uncertain': False, 'decisions': [
+            {'unit': 'A', 'keep': True, 'reason': 'setup', 'story_change': False, 'reaction_or_humor': False,
+             'evidence': 'A neutral establishing view, without character emotion.'}]})
+        self.assertEqual(event['selected_ranges'], [{'start': 0, 'end': 4}])
+        self.assertEqual(event['protected_atmosphere_ranges'], [])
+        self.assertNotIn('protected_atmosphere_units', event)
 
     def test_tentative_atmosphere_units_are_sent_for_current_frame_review(self):
         directory=TEMP/('pacing_atmosphere_'+uuid.uuid4().hex)
@@ -183,7 +222,18 @@ class PacingTests(unittest.TestCase):
         units = silent_units(event, transcript, [{'start':5}, {'start':13}, {'start':24}])
         self.assertTrue(units)
         self.assertTrue(all(u['end'] <= 11.82 or u['start'] >= 16.55 for u in units))
-        self.assertTrue(all(u['end']-u['start'] <= 4.001 for u in units))
+        self.assertEqual([(u['start'],u['end']) for u in units], [(0,5),(5,11.82),(16.55,24),(24,30)])
+
+    def test_unchanged_silent_shot_gets_one_whole_decision_without_internal_holes(self):
+        event = {'start': 0, 'end': 20, 'selected_ranges': [{'start': 0, 'end': 20}]}
+        units = silent_units(event, {'segments': [], 'words': []}, [{'start': 0}, {'start': 12}])
+        self.assertEqual([(u['start'],u['end']) for u in units], [(0,12),(12,20)])
+        apply_review(event, units, {'decisions': [
+            {'unit': 's000', 'keep': False, 'reason': 'scenery', 'story_change': False,
+             'reaction_or_humor': False, 'evidence': 'Redundant neutral view; arrival is shown next.'},
+            {'unit': 's001', 'keep': True, 'reason': 'action', 'story_change': True,
+             'reaction_or_humor': False, 'evidence': 'A unique arrival completes the sequence.'}], 'uncertain': False})
+        self.assertEqual(event['selected_ranges'], [{'start': 12, 'end': 20}])
 
     def test_short_redundant_pause_is_reviewable_without_touching_speech_tail(self):
         event={'start':0,'end':10,'selected_ranges':[{'start':0,'end':10}]}

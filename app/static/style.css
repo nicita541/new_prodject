@@ -34,6 +34,7 @@ main{max-width:1920px;margin:auto;padding:26px 28px 0}.workspace-heading{display
 .source-assembly,.review-workspace .source-assembly{display:block}.timeline-group.selected{background:#293748}
 
 /* Processing checkpoints */
+.part-context{margin-top:22px;padding-top:18px;border-top:1px solid var(--line);font-size:12px;line-height:1.7;overflow-wrap:anywhere}.part-context h3{font-size:13px;margin:0 0 12px}.part-context p{margin:8px 0 14px}.part-context .context-title{font-weight:600;color:var(--accent)}.part-context summary{cursor:pointer;color:var(--muted)}.part-context textarea{width:100%;resize:vertical;margin:10px 0;background:#13161d;border:1px solid var(--line);border-radius:7px;padding:10px;color:var(--text);font:inherit;font-size:11px;line-height:1.7}.part-context button{margin-top:14px}.part-context[hidden]{display:none}
 .stages{list-style:none;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:16px 0 18px}
 .stages li{display:flex;align-items:flex-start;gap:10px;min-width:0;padding:10px 11px;border:1px solid var(--line);border-radius:8px;background:#191d25;color:var(--muted)}
 .stage-icon{display:grid;place-items:center;flex:0 0 22px;width:22px;height:22px;border:1px solid #515b6b;border-radius:50%;font-size:12px;line-height:1;color:var(--muted)}

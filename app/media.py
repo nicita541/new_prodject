@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .config import FFMPEG, FFPROBE
 from .subtitles import write_ass, write_srt
+from .planner import MAX_DURATION
 
 _FRAME_BOUNDS = {}
 
@@ -103,7 +104,7 @@ def validate_export(path: Path, expected_duration: float, workdir: Path, cancell
     if (video["codec_name"] != "h264" or audio["codec_name"] != "aac"
             or video["width"] != 1080 or video["height"] != 1920 or denominator == 0
             or abs(numerator / denominator - 30) > 0.01
-            or duration > 90.001 or abs(duration - expected_duration) > 0.15):
+            or duration > MAX_DURATION + .001 or abs(duration - expected_duration) > 0.15):
         raise ValueError("Результат не соответствует формату или длительности шортса")
     audio_duration = float(audio.get("duration", duration))
     video_duration = float(video.get("duration", duration))

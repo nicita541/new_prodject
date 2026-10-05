@@ -60,11 +60,13 @@ async function ui(options = {}) {
   const data = {
     status: {configured: true, budget_usd: null, remaining_usd: "1.00", charged_ceiling_usd: "0.0000789", model: "deepseek-flash", ...options.status},
     statusError: false, ready: true, jobs: [], calls: [],
+    copied: [],
     connection: {available: true, vision_supported: true, model: "deepseek-flash", balance_infos: [{currency: "USD", total_balance: "1.00"}]},
     providerBalance:{balance_usd:'1.00',observed_decrease_usd:'0.03',measured_at:1770000000,stale:false,scope:'account'},
   };
   const context = vm.createContext({
     console, URL, location: {origin: "http://127.0.0.1:8765", hash:'#projects'}, setInterval: () => {}, addEventListener:()=>{},
+    navigator: {clipboard: {writeText: async text => {if(data.clipboardFailure) throw new Error('denied'); data.copied.push(text);}}},
     document: {getElementById: element, createElement: tag => {const e=new Element(); e.tagName=tag.toUpperCase(); return e;}, querySelectorAll: selector => selector === "[data-stage]" ? stageElements : Array.from({length: 5}, () => new Element())},
     fetch: async (url, request = {}) => {
       data.calls.push({url, method: request.method ?? "GET", body: request.body, headers: request.headers});
@@ -140,6 +142,26 @@ test("analysis picker exposes only local and DeepSeek story planning; launch mak
   assert.equal(u.posts()[1].analysis_provider, "local");
   assert.equal(u.checks().length, 0);
   assert(!u.data.calls.some(call => /balance|spending|reset-budget/.test(call.url)));
+});
+
+test('automatic cover context follows the selected part and copies its current prompt', async () => {
+  const u=await ui();
+  u.run(`state.selected='job';state.files=[{url:'/one.mp4'},{url:'/two.mp4'}];state.timeline={jobId:'job',plan:{source:{duration:30},parts:[
+    {cuts:[{start:0,end:10}],cover_context:{title:'Магазин',synopsis:'Герой приходит в магазин.',prompt:'Магазин, 9:16.',method:'model'}},
+    {cuts:[{start:10,end:20}],cover_context:{title:'Встреча',synopsis:'Он встречает кассира.',prompt:'Встреча, 9:16.',method:'extractive'}}]}};selectFile(0,false);`);
+  assert.equal(u.element('part-context').hidden,false);
+  assert.equal(u.element('part-context-synopsis').textContent,'Герой приходит в магазин.');
+  assert.equal(u.element('part-context-fallback').hidden,true);
+  u.run('selectFile(1,false)');
+  assert.equal(u.element('part-context-heading').textContent,'Заставка · часть 02');
+  assert.equal(u.element('part-context-prompt').value,'Встреча, 9:16.');
+  assert.equal(u.element('part-context-fallback').hidden,false);
+  await u.run('copyPartContext()');
+  assert.equal(u.data.copied.at(-1),'Контекст: Он встречает кассира.\n\nВстреча, 9:16.');
+  u.data.clipboardFailure=true;await u.run('copyPartContext()');
+  assert.match(u.element('context-copy-status').textContent,/Не удалось/);
+  u.run(`state.selected='another-job';renderPartContext();`);
+  assert.equal(u.element('part-context').hidden,true);
 });
 
 test("processing checkpoints identify the active stage and where work runs", async () => {

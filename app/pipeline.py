@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import ROOT, setup_environment
 from .media import choose_encoder, render_part, validate_export
-from .planner import build_plan, validate_analysis, validate_plan
+from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
 
@@ -102,8 +102,8 @@ def _run_identity(job_dir: Path) -> dict:
     from .config import ASR_MODEL, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
     provider = analysis_provider(job_dir)
     profile = load_profile(job_dir)
-    modules = ("pipeline", "media", "analysis", "story", "closing", "pacing", "planner",
-               "production_sequence", "source_roles", "editorial", "titles", "framing", "deepseek")
+    modules = ("pipeline", "media", "analysis", "story", "closing", "pacing", "planner", "part_context",
+               "production_sequence", "source_roles", "editorial", "titles", "framing", "deepseek", "endings")
     semantic = derived_story_identity("recorded-in-events.meta.json", provider, profile)
     files, loaded_code = {}, {}
     for name in modules:
@@ -142,7 +142,7 @@ def _run_identity(job_dir: Path) -> dict:
                            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
     return {"git_commit": revision, "source_files_sha256": files,
             "loaded_function_bytecode_sha256": loaded_code, "python_version": sys.version.split()[0],
-            "analysis_version": ANALYSIS_VERSION, "planner_version": 9, "renderer_version": 5,
+            "analysis_version": ANALYSIS_VERSION, "planner_version": PLANNER_VERSION, "renderer_version": 5,
             "pacing_version": PACING_VERSION, "semantic_identity": semantic,
             "provider": provider_identity(provider), "editorial_profile": profile,
             "editing": load_options(job_dir), "model_files": models}
@@ -259,7 +259,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     validate_analysis(analysis)
     stat = source.stat()
     identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
-                "planner_version": 9, "renderer_version": 5, "editing": options,
+                "planner_version": PLANNER_VERSION, "renderer_version": 5, "editing": options,
                 "subtitle_style": style_identity(options['caption_style'])}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     plan_path = job_dir / "plan.json"
@@ -298,6 +298,10 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         plan["fingerprint"] = fingerprint
         _atomic_json(plan_path, plan)
     timings["stages_seconds"]["planning"] = round(time.perf_counter() - planning_started, 6)
+    from .part_context import generate as generate_part_context
+    with _timed_stage(timings, 'part_context'):
+        generate_part_context(plan, job_dir, report, cancelled)
+        _atomic_json(plan_path, plan)
     workdir, output_dir = job_dir / "render", job_dir / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []

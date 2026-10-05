@@ -179,6 +179,18 @@ class RenderTaskTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_export(path, 90, Path(directory))
 
+    def test_validation_accepts_110_second_part_and_enforces_new_ceiling(self):
+        info = {"format": {"duration": "110"}, "streams": [{"codec_type": "video", "codec_name": "h264", "width": 1080,
+                    "height": 1920, "avg_frame_rate": "30/1"}, {"codec_type": "audio", "codec_name": "aac"}]}
+        with workspace_directory() as directory:
+            path = Path(directory) / "output.mp4"
+            path.write_bytes(b"x" * 2000)
+            with patch("app.media.inspect_media", return_value=info):
+                self.assertEqual(validate_export(path, 110, Path(directory))['duration'], 110)
+                info['format']['duration'] = '121'
+                with self.assertRaises(ValueError):
+                    validate_export(path, 121, Path(directory))
+
 
 @unittest.skipUnless(FFMPEG.is_file() and FFPROBE.is_file(), "Portable FFmpeg has not been installed")
 class MediaIntegrationTests(unittest.TestCase):
@@ -338,9 +350,9 @@ class PipelineCheckpointTests(unittest.TestCase):
             source = base / "source.mp4"
             source.write_bytes(b"unchanged")
             (base / "source.json").write_text(json.dumps({"path": str(source)}), encoding="utf-8")
-            original = {"probe": {"duration": 200, "width": 640, "height": 360, "has_audio": True},
+            original = {"probe": {"duration": 300, "width": 640, "height": 360, "has_audio": True},
                         "transcript": {"words": [], "segments": []}, "shots": [],
-                        "events": [{"id": "a", "start": 0, "end": 200, "kind": "story", "importance": 4}]}
+                        "events": [{"id": "a", "start": 0, "end": 300, "kind": "story", "importance": 4}]}
             shorter = copy.deepcopy(original)
             shorter["events"][0]["selected_ranges"] = [{"start": 0, "end": 20}]
             def render(source, part, probe, output, work, encoder, cancelled):

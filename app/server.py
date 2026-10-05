@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app import config
 from app.jobs import BusyError, JobManager, contained, read_json
 from app.quality import debug_timeline, summarize_plan
+from app.part_context import with_context
 
 MAX_UPLOAD = 20 * 1024 ** 3
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -466,7 +467,7 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         if isinstance(result, dict):
             # Derived, bounded diagnostics use the existing plan response and
             # never expose provider payloads or filesystem metadata.
-            result = dict(result)
+            result = with_context(result)
             result["quality_summary"] = summarize_plan(result)
             result["debug_timeline"] = debug_timeline(result)
         return result
