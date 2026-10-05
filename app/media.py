@@ -221,14 +221,21 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     if background_music:
         music_path = background_music["path"]
         volume = float(background_music.get("volume", 0.15))
+        duck_volume = float(background_music.get("volume_music_duck", 0.015))
+        duck_intervals = background_music.get("duck_intervals", [])
         fade_in = bool(background_music.get("fade_in", True))
         fade_out = bool(background_music.get("fade_out", True))
         music_index = len(part["cuts"])
         args.extend(["-stream_loop", "-1", "-i", str(music_path.resolve())])
         fade_duration = min(1.0, part["duration"] / 2.0)
+        from .audio_analysis import build_volume_expression
+        vol_expr = build_volume_expression(duck_intervals, volume, duck_volume)
         chain = (f"[{music_index}:a:0]atrim=duration={part['duration']:.6f},asetpts=PTS-STARTPTS,"
                  f"aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
-                 f"volume={volume:.6f}")
+                 f"volume='{vol_expr}'" if ':eval=frame' in vol_expr else
+                 f"[{music_index}:a:0]atrim=duration={part['duration']:.6f},asetpts=PTS-STARTPTS,"
+                 f"aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
+                 f"volume={vol_expr}")
         if fade_in:
             chain += f",afade=t=in:st=0:d={fade_duration:.6f}"
         if fade_out:

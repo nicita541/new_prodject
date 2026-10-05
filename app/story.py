@@ -495,10 +495,24 @@ def _partition(raw, known):
     return excluded, narrative
 
 
+DUB_AND_TITLE_PATTERNS = (
+    'озвучено', 'перевод', 'роли дублировали', 'в ролях', 'звукорежисс',
+    'тайминг', 'субтитры', 'студийная банда', 'anilibria', 'анимевост',
+    'shiza project', 'dream cast', 'fumo dub', 'серия', 'эпизод'
+)
+
+
+def _is_dub_or_title_narration(text: str) -> bool:
+    normalized = text.lower()
+    return any(p in normalized for p in DUB_AND_TITLE_PATTERNS)
+
+
 def _protected_speech(unit, transcript):
     segments = transcript.get('segments', [])
     for index, segment in enumerate(segments):
         if segment['start'] >= unit['end'] or segment['end'] <= unit['start']:
+            continue
+        if _is_dub_or_title_narration(segment.get('text', '')):
             continue
         words = _spoken_words(segment, transcript)
         if not words:

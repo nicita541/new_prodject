@@ -37,7 +37,7 @@ def validate_analysis(analysis: dict) -> None:
             raise ValueError("События пересекаются или выходят за длительность серии")
         if not isinstance(event["id"], str) or event["id"] in seen:
             raise ValueError("Идентификаторы событий должны быть уникальны")
-        if event["kind"] not in {"story", "opening", "ending", "recap", "filler"}:
+        if event["kind"] not in {"story", "opening", "ending", "recap", "filler", "eyecatch"}:
             raise ValueError("Неизвестный тип события")
         if not 1 <= _number(event["importance"]) <= 5:
             raise ValueError("Некорректная важность события")

@@ -377,7 +377,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 background_music = None
                 p_track = music_tracks_assigned.get(part["index"])
                 if p_track is not None:
+                    from .audio_analysis import detect_transcript_music_intervals, map_cuts_to_part_duck_intervals
+                    source_music = detect_transcript_music_intervals(analysis.get("transcript", {}))
+                    duck_intervals = map_cuts_to_part_duck_intervals(part["cuts"], source_music) if music_config.get("smart_ducking", True) else []
                     background_music = {"path": p_track, "volume": music_config["volume"],
+                                        "volume_music_duck": music_config.get("volume_music_duck", 0.015),
+                                        "duck_intervals": duck_intervals,
                                         "fade_in": music_config.get("fade_in", True),
                                         "fade_out": music_config.get("fade_out", True)}
                 path = render_part(source, part, analysis["probe"], output_dir,

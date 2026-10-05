@@ -397,7 +397,7 @@ class WholeSequenceTests(unittest.TestCase):
 
         base = derived_story_identity('analysis-key', 'local')
         self.assertEqual(base['production_sequence'], VERSION)
-        self.assertEqual(base['credit_capability'], 'single-image')
+        self.assertEqual(base['credit_capability'], 'image-pages')
         for provider, capability in [('deepseek', 'image-pages'), ('deepseek_plan', 'image-pages'),
                                      ('hybrid', 'single-image')]:
             with self.subTest(provider=provider):
@@ -407,4 +407,46 @@ class WholeSequenceTests(unittest.TestCase):
             bumped = derived_story_identity('analysis-key', 'local')
         self.assertEqual(bumped['edge'], base['edge'])
         self.assertNotEqual(bumped['production_sequence'], base['production_sequence'])
+
+    def test_sequence_clusters_identifies_boundary_and_musical_events_in_full_episode(self):
+        from app.production_sequence import sequence_clusters
+        events = [{'id': f'e_{i}', 'start': i * 40, 'end': (i + 1) * 40} for i in range(36)]
+        # Total duration: 36 * 40 = 1440s (~24 min anime)
+        transcript = {
+            'words': [
+                {'start': 500, 'end': 502, 'text': 'Привет', 'probability': 0.9},
+            ]
+        }
+        clusters = sequence_clusters(events, transcript, duration=1440)
+        # Should contain beginning events (< 240s -> events 0..5)
+        flat_indices = [idx for group in clusters for idx in group]
+        self.assertIn(0, flat_indices)
+        self.assertIn(1, flat_indices)
+        # Should contain end events (> 1260s -> events 32..35)
+        self.assertIn(34, flat_indices)
+        self.assertIn(35, flat_indices)
+        # All groups must be bounded to <= 4
+        for group in clusters:
+            self.assertLessEqual(len(group), 4)
+
+    def test_protected_speech_ignores_dub_credits_and_title_narration(self):
+        from app.story import _protected_speech
+        unit = {'id': 'U001', 'start': 10.0, 'end': 20.0}
+        # Dub intro text
+        dub_transcript = {
+            'segments': [{'start': 10.0, 'end': 19.5, 'text': 'Аниме переведено и озвучено творческим объединением Studio Band специально для...'}]
+        }
+        dub_words = [{'start': 10.0 + i * 0.5, 'end': 10.4 + i * 0.5, 'text': w, 'probability': 0.95}
+                     for i, w in enumerate(dub_transcript['segments'][0]['text'].split())]
+        dub_transcript['words'] = dub_words
+        self.assertFalse(_protected_speech(unit, dub_transcript))
+
+        # Genuine character dialogue
+        story_transcript = {
+            'segments': [{'start': 10.0, 'end': 19.5, 'text': 'Ты действительно думаешь, что мы сможем добраться до дома до заката солнца?'}]
+        }
+        story_words = [{'start': 10.0 + i * 0.5, 'end': 10.4 + i * 0.5, 'text': w, 'probability': 0.95}
+                       for i, w in enumerate(story_transcript['segments'][0]['text'].split())]
+        story_transcript['words'] = story_words
+        self.assertTrue(_protected_speech(unit, story_transcript))
 

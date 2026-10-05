@@ -88,6 +88,47 @@ def original_clusters(events):
     return groups
 
 
+def sequence_clusters(events, transcript=None, duration=None):
+    """Identify candidate sequence clusters across the whole episode.
+
+    In full episodes (duration >= 600s), scans:
+    - Events with existing credit flags
+    - Boundary zones (first 240s and last 180s)
+    - Low speech density events (< 12%)
+    Each cluster is bounded to at most 4 consecutive events to keep context within VLM limits.
+    In short fixtures (duration < 600s), preserves exact original clusters.
+    """
+    total_duration = duration or max((e['end'] for e in events), default=0)
+    if total_duration < 600:
+        return original_clusters(events)
+    candidate_indices = set()
+    for i, e in enumerate(events):
+        if e.get('contains_credits') or e.get('credit_montage') or e.get('kind') in ('opening', 'ending'):
+            candidate_indices.add(i)
+        elif e['start'] < 240 or e['end'] > max(0, total_duration - 180):
+            candidate_indices.add(i)
+    if transcript and transcript.get('words'):
+        for i, e in enumerate(events):
+            event_dur = max(0.001, e['end'] - e['start'])
+            words = [w for w in transcript['words'] if w['start'] < e['end'] and w['end'] > e['start']]
+            speech_dur = sum(max(0, min(w['end'], e['end']) - max(w['start'], e['start'])) for w in words)
+            if speech_dur / event_dur < 0.12 and event_dur >= 20:
+                candidate_indices.add(i)
+    groups = []
+    current = []
+    for index in sorted(candidate_indices):
+        if not current:
+            current = [index]
+        elif index == current[-1] + 1 and len(current) < 4:
+            current.append(index)
+        else:
+            groups.append(current)
+            current = [index]
+    if current:
+        groups.append(current)
+    return groups
+
+
 def sequence_prompt(units):
     return ('Find the ONE production OP/ED sequence inside these source-chronological image pages, '
         'read left-to-right, top-to-bottom, then next page. K0=U000, K1=U001, etc. '
@@ -258,7 +299,7 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
     stat=source.stat()
     directory=job_dir/'production_sequences';directory.mkdir(exist_ok=True)
     reviews = {}
-    for group in original_clusters(events):
+    for group in sequence_clusters(events, transcript, duration):
         if cancelled():raise InterruptedError('Обработка отменена')
         left=max(0,group[0]-CONTEXT_RADIUS);right=min(len(events)-1,group[-1]+CONTEXT_RADIUS)
         units=sequence_units(events[left]['start'],events[right]['end'],transcript,shots)

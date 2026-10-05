@@ -11,6 +11,8 @@ from .config import MUSIC_CONFIG, MUSIC_SETTINGS
 DEFAULT_CONFIG = {
     "enabled": True,
     "volume": 0.15,
+    "volume_music_duck": 0.015,
+    "smart_ducking": True,
     "fade_in": True,
     "fade_out": True,
     "track": None,
@@ -36,6 +38,11 @@ def validate_config(value) -> dict:
     if not 0.0 <= volume <= 1.0:
         raise ValueError("music.volume должно быть от 0 до 1")
     config["volume"] = volume
+    v_duck = config.get("volume_music_duck", 0.015)
+    if isinstance(v_duck, bool) or not isinstance(v_duck, (int, float)):
+        v_duck = 0.015
+    config["volume_music_duck"] = max(0.0, min(1.0, float(v_duck)))
+    config["smart_ducking"] = bool(config.get("smart_ducking", True))
     for key in ("fade_in", "fade_out"):
         if not isinstance(config[key], bool):
             raise ValueError(f"music.{key} должно быть true/false")

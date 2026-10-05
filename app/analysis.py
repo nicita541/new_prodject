@@ -254,6 +254,10 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             events = refine_story(events, transcript, shots, job_dir, vision, report, cancelled)
             events = preserve_dialogue_in_credits(events, transcript)
             events = clean_credit_continuations(events, transcript, shots, job_dir, vision, report, cancelled)
+            from app.eyecatch import detect_eyecatches, apply_eyecatch_exclusions
+            eyecatches = detect_eyecatches(events, transcript, shots, probe.get('duration'))
+            if eyecatches:
+                events = apply_eyecatch_exclusions(events, eyecatches)
             from app.titles import refine_titles
             from app.closing import refine_closing_novelty
             events = refine_titles(events, transcript, shots, job_dir, vision, report, cancelled)
