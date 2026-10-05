@@ -138,7 +138,7 @@ class PartContextTests(unittest.TestCase):
             session = Mock()
             session.__enter__ = Mock(return_value=vision)
             session.__exit__ = Mock(return_value=False)
-            def render(source, part, probe, output, work, encoder, cancelled):
+            def render(source, part, probe, output, work, encoder, cancelled, **kwargs):
                 path = output / 'part_001.mp4'
                 path.write_bytes(b'video unchanged')
                 path.with_suffix('.srt').write_text('', 'utf-8')

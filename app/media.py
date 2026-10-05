@@ -170,7 +170,8 @@ def choose_encoder(workdir: Path, cancelled=lambda: False) -> str:
 
 
 def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir: Path,
-                encoder: str, cancelled=lambda: False) -> Path:
+                encoder: str, cancelled=lambda: False,
+                background_music: dict | None = None) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
     basename = f"part_{part['index']:03}"
@@ -216,9 +217,30 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     filters.append("".join(audio_inputs) + f"concat=n={len(part['cuts'])}:v=0:a=1[audio]")
     # The script and ASS names are safe ASCII relative paths, independent of source path characters.
     filters.append("[joined]ass=filename=captions.ass[video]")
+    audio_label = "[audio]"
+    if background_music:
+        music_path = background_music["path"]
+        volume = float(background_music.get("volume", 0.15))
+        fade_in = bool(background_music.get("fade_in", True))
+        fade_out = bool(background_music.get("fade_out", True))
+        music_index = len(part["cuts"])
+        args.extend(["-stream_loop", "-1", "-i", str(music_path.resolve())])
+        fade_duration = min(1.0, part["duration"] / 2.0)
+        chain = (f"[{music_index}:a:0]atrim=duration={part['duration']:.6f},asetpts=PTS-STARTPTS,"
+                 f"aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
+                 f"volume={volume:.6f}")
+        if fade_in:
+            chain += f",afade=t=in:st=0:d={fade_duration:.6f}"
+        if fade_out:
+            chain += f",afade=t=out:st={max(0.0, part['duration'] - fade_duration):.6f}:d={fade_duration:.6f}"
+        chain += "[music]"
+        filters.append(chain)
+        filters.append("[audio][music]amix=inputs=2:duration=first:normalize=0[mix]")
+        filters.append("[mix]alimiter=level=false:limit=0.95[mixed]")
+        audio_label = "[mixed]"
     (workdir / "render.ffscript").write_text(";\n".join(filters), encoding="utf-8")
     args.extend(["-filter_complex_script", "render.ffscript", "-filter_complex_threads", "2",
-                 "-map", "[video]", "-map", "[audio]", "-t", f"{part['duration']:.6f}", "-c:v", encoder])
+                 "-map", "[video]", "-map", audio_label, "-t", f"{part['duration']:.6f}", "-c:v", encoder])
     if encoder == "h264_nvenc":
         args.extend(["-preset", "p4", "-cq", "20", "-b:v", "0"])
     else:

@@ -15,11 +15,12 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import ROOT, setup_environment
-from .media import choose_encoder, render_part, validate_export
+from .config import ROOT, MUSIC, MUSIC_CONFIG, setup_environment
+from .media import choose_encoder, inspect_media, render_part, validate_export
 from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
+from .music import load_config as load_music_config, pick_track
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -142,10 +143,10 @@ def _run_identity(job_dir: Path) -> dict:
                            "size": stat.st_size, "mtime_ns": stat.st_mtime_ns})
     return {"git_commit": revision, "source_files_sha256": files,
             "loaded_function_bytecode_sha256": loaded_code, "python_version": sys.version.split()[0],
-            "analysis_version": ANALYSIS_VERSION, "planner_version": PLANNER_VERSION, "renderer_version": 5,
+            "analysis_version": ANALYSIS_VERSION, "planner_version": PLANNER_VERSION, "renderer_version": 6,
             "pacing_version": PACING_VERSION, "semantic_identity": semantic,
             "provider": provider_identity(provider), "editorial_profile": profile,
-            "editing": load_options(job_dir), "model_files": models}
+            "editing": load_options(job_dir), "music": load_music_config(MUSIC_CONFIG), "model_files": models}
 
 
 def _archive_obsolete_outputs(job_dir: Path, previous: dict | None, current: dict, cancelled) -> None:
@@ -253,13 +254,15 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             raise InterruptedError("Обработка отменена")
     check()
     options = load_options(job_dir)
+    music_config = load_music_config(MUSIC_CONFIG)
     with _timed_stage(timings, "analysis"):
         analysis = analyze(job_dir, source, report, cancelled)
     check()
     validate_analysis(analysis)
     stat = source.stat()
     identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
-                "planner_version": PLANNER_VERSION, "renderer_version": 5, "editing": options,
+                "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
+                "music": music_config,
                 "subtitle_style": style_identity(options['caption_style'])}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     plan_path = job_dir / "plan.json"
@@ -307,6 +310,35 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     outputs = []
     missing = []
     rendering_started = time.perf_counter()
+    music_track = pick_track(MUSIC, music_config)
+    music_duration = None
+    if music_track is not None:
+        try:
+            music_duration = float(inspect_media(music_track, workdir, cancelled)
+                                   .get("format", {}).get("duration"))
+        except (RuntimeError, ValueError, TypeError):
+            music_duration = None
+    timings["music"] = {
+        "enabled": music_config["enabled"],
+        "volume": music_config["volume"],
+        "track": music_track.name if music_track else None,
+        "duration": music_duration,
+        "loop": music_track is not None,
+        "fade_in": bool(music_config["fade_in"]) if music_track else False,
+        "fade_out": bool(music_config["fade_out"]) if music_track else False,
+    }
+    if not music_config["enabled"]:
+        report("rendering", 0.7, "Background music: disabled")
+    elif music_track is None:
+        report("rendering", 0.7, "Background music: skipped (no audio files in music folder)")
+    else:
+        volume_pct = int(round(music_config["volume"] * 100))
+        duration_txt = f"{music_duration:.1f}s" if music_duration is not None else "unknown"
+        report("rendering", 0.7,
+               f"Background music:\ntrack={music_track.name}\nvolume={volume_pct}%\n"
+               f"duration={duration_txt}\nloop=true\n"
+               f"fade_in={'true' if music_config['fade_in'] else 'false'}\n"
+               f"fade_out={'true' if music_config['fade_out'] else 'false'}")
     for part in plan["parts"]:
         check()
         started = time.perf_counter()
@@ -340,8 +372,13 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                    f"Создаём оставшиеся части: {len(missing)}")
             def render(part, task_cancelled):
                 started = time.perf_counter()
+                background_music = None
+                if music_track is not None:
+                    background_music = {"path": music_track, "volume": music_config["volume"],
+                                        "fade_in": music_config["fade_in"], "fade_out": music_config["fade_out"]}
                 path = render_part(source, part, analysis["probe"], output_dir,
-                                   workdir / f"part_{part['index']:03}", encoder, task_cancelled)
+                                   workdir / f"part_{part['index']:03}", encoder, task_cancelled,
+                                   background_music=background_music)
                 metadata = workdir / f"part_{part['index']:03}" / "render-info.json"
                 actual_encoder = json.loads(metadata.read_text(encoding="utf-8")).get("encoder") if metadata.is_file() else None
                 return {"path": path, "encoder": actual_encoder,

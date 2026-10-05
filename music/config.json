@@ -1,0 +1,8 @@
+{
+  "music": {
+    "enabled": true,
+    "volume": 0.15,
+    "fade_in": true,
+    "fade_out": true
+  }
+}

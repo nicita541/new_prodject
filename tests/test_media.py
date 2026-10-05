@@ -355,7 +355,7 @@ class PipelineCheckpointTests(unittest.TestCase):
                         "events": [{"id": "a", "start": 0, "end": 300, "kind": "story", "importance": 4}]}
             shorter = copy.deepcopy(original)
             shorter["events"][0]["selected_ranges"] = [{"start": 0, "end": 20}]
-            def render(source, part, probe, output, work, encoder, cancelled):
+            def render(source, part, probe, output, work, encoder, cancelled, **kwargs):
                 path = output / f"part_{part['index']:03}.mp4"
                 path.write_bytes(b"rendered" * 1000)
                 path.with_suffix(".srt").write_text("subtitles", encoding="utf-8")
@@ -394,7 +394,7 @@ class PipelineCheckpointTests(unittest.TestCase):
             analysis = {"probe": {"duration": 5, "width": 640, "height": 360, "has_audio": True},
                         "transcript": {"words": [], "segments": []}, "shots": [],
                         "events": [{"id": "a", "start": 0, "end": 5, "kind": "story", "importance": 4}]}
-            def fake_render(source, part, probe, output, work, encoder, cancelled):
+            def fake_render(source, part, probe, output, work, encoder, cancelled, **kwargs):
                 path = output / "part_001.mp4"
                 path.write_bytes(b"rendered" * 1000)
                 path.with_suffix(".srt").write_text("original subtitles", encoding="utf-8")
