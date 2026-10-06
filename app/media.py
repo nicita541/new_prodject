@@ -90,7 +90,7 @@ def inspect_media(path: Path, workdir: Path, cancelled=lambda: False) -> dict:
                                    "-of", "json", str(path.resolve())], workdir, cancelled, 45))
 
 
-def validate_export(path: Path, expected_duration: float, workdir: Path, cancelled=lambda: False) -> dict:
+def validate_export(path: Path, expected_duration: float, workdir: Path, cancelled=lambda: False, max_duration: float | None = None) -> dict:
     if not path.is_file() or path.stat().st_size < 1000:
         raise ValueError("Недописанный или пустой результат")
     info = inspect_media(path, workdir, cancelled)
@@ -101,10 +101,11 @@ def validate_export(path: Path, expected_duration: float, workdir: Path, cancell
     video, audio = videos[0], audios[0]
     numerator, denominator = map(int, video["avg_frame_rate"].split("/"))
     duration = float(info["format"]["duration"])
+    ceiling = max_duration if max_duration is not None else MAX_DURATION
     if (video["codec_name"] != "h264" or audio["codec_name"] != "aac"
             or video["width"] != 1080 or video["height"] != 1920 or denominator == 0
             or abs(numerator / denominator - 30) > 0.01
-            or duration > MAX_DURATION + .001 or abs(duration - expected_duration) > 0.15):
+            or duration > ceiling + .001 or abs(duration - expected_duration) > 0.15):
         raise ValueError("Результат не соответствует формату или длительности шортса")
     audio_duration = float(audio.get("duration", duration))
     video_duration = float(video.get("duration", duration))
@@ -260,7 +261,8 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
         if encoder != "h264_nvenc":
             raise
         return render_part(source, part, probe, output_dir, workdir, "libx264", cancelled)
-    validate_export(partial, part["duration"], workdir, cancelled)
+    validate_export(partial, part["duration"], workdir, cancelled,
+                    max_duration=150.0 if part.get("duration", 0) > MAX_DURATION else None)
     if cancelled():
         raise InterruptedError("Обработка отменена")
     # The requested hardware encoder can fall back per part. Record the actual

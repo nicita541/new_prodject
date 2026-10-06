@@ -22,12 +22,12 @@ from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
 from .titles import _subtract
 
-TARGET_SHORT_MIN = 60.0
-TARGET_SHORT_OPTIMAL = 100.0
-TARGET_SHORT_MAX = 115.0
-MAX_SHORT_DURATION = 120.0
-MIN_PARTS = 4
-MAX_PARTS = 12
+TARGET_SHORT_MIN = 85.0
+TARGET_SHORT_OPTIMAL = 135.0
+TARGET_SHORT_MAX = 145.0
+MAX_SHORT_DURATION = 148.0
+MIN_PARTS = 6
+MAX_PARTS = 9
 
 
 def _align_words_to_shot_boundaries(words: list[dict], shots: list[dict]) -> list[dict]:
@@ -132,8 +132,8 @@ def _compress_dialogue_turns(
     while i < len(ev_speech):
         turn_start = ev_speech[i]['start']
         turn_end = ev_speech[i]['end']
-        # Group contiguous turns (gap <= 2.2s so natural speech pauses aren't cut out)
-        while i + 1 < len(ev_speech) and ev_speech[i + 1]['start'] - turn_end <= 2.2:
+        # Group contiguous turns (gap <= 1.4s so natural speech pauses aren't cut out)
+        while i + 1 < len(ev_speech) and ev_speech[i + 1]['start'] - turn_end <= 1.4:
             i += 1
             turn_end = max(turn_end, ev_speech[i]['end'])
 
@@ -244,16 +244,16 @@ def _build_dramatic_boundaries(
 
     # 2. Interval ends (scene cuts)
     for interval in intervals:
-        add(interval['end'], 4.0)
+        add(interval['end'], 8.0)
 
     # 3. Speech tails
     for segment in segments:
         tail = _speech_tail(segment['end'], [*segments, *words], duration)
-        add(tail, 7.0)
+        add(tail, 14.0)
 
     # 4. Shot cuts
     for shot in shots:
-        add(_number(shot['start']), 10.0)
+        add(_number(shot['start']), 20.0)
 
     # 5. Fallback grid
     ideal_len = total / max(1, target_part_count)
@@ -273,66 +273,100 @@ def _build_dramatic_boundaries(
         candidates[total] = (0.0, None)
     times = sorted(candidates)
 
-    # DP optimization: find sequence of cuts matching target length & count
-    scores: dict[float, float] = {0.0: 0.0}
-    previous: dict[float, float] = {}
+    # 2D k-stage DP: find sequence of cuts matching target length & EXACT part count
+    max_k = min(MAX_PARTS, max(target_part_count + 2, math.ceil(total / max(1.0, TARGET_SHORT_MIN))))
+    min_k = max(1, min(target_part_count - 2, math.floor(total / MAX_SHORT_DURATION)))
 
-    for i, end in enumerate(times[1:], 1):
-        choices = []
-        has_ending = candidates[end][1] is not None
-        min_allowed = 0.1 if total <= TARGET_SHORT_MIN else (8.0 if has_ending else TARGET_SHORT_MIN * 0.65)
-        for start in reversed(times[:i]):
-            length = end - start
-            if length > MAX_SHORT_DURATION + 1e-6:
-                break
-            if length < min_allowed or start not in scores:
-                continue
+    dp: dict[tuple[int, float], tuple[float, float]] = {(0, 0.0): (0.0, 0.0)}
 
-            # Length penalty: optimal is TARGET_SHORT_OPTIMAL (55-70s)
-            if total <= TARGET_SHORT_MIN:
-                length_cost = 0.0
-            elif length < TARGET_SHORT_MIN:
-                length_cost = ((TARGET_SHORT_MIN - length) / 5.0) ** 2 + (2.0 if has_ending else 10.0)
-            elif length > TARGET_SHORT_MAX:
-                length_cost = ((length - TARGET_SHORT_MAX) / 10.0) ** 2 + 5.0
-            else:
-                length_cost = ((length - TARGET_SHORT_OPTIMAL) / 25.0) ** 2
+    for k in range(1, max_k + 1):
+        for end in times[1:]:
+            has_ending = candidates[end][1] is not None
+            min_allowed = 0.1 if total <= TARGET_SHORT_MIN else (10.0 if (has_ending and k > 1) else TARGET_SHORT_MIN * 0.55)
+            best_tuple = None
 
-            boundary_cost = candidates[end][0]
-            total_cost = scores[start] + length_cost + boundary_cost
-            choices.append((total_cost, start))
+            for start in times:
+                if start >= end:
+                    break
+                length = end - start
+                if length > MAX_SHORT_DURATION + 1e-6:
+                    continue
+                if length < min_allowed:
+                    continue
+                if (k - 1, start) not in dp:
+                    continue
 
-        if choices:
-            best_cost, best_start = min(choices)
-            scores[end] = best_cost
-            previous[end] = best_start
+                if total <= TARGET_SHORT_MIN:
+                    length_cost = 0.0
+                elif length < TARGET_SHORT_MIN:
+                    length_cost = ((TARGET_SHORT_MIN - length) / 5.0) ** 2 + (2.0 if has_ending else 10.0)
+                elif length > TARGET_SHORT_MAX:
+                    length_cost = ((length - TARGET_SHORT_MAX) / 10.0) ** 2 + 5.0
+                else:
+                    length_cost = ((length - TARGET_SHORT_OPTIMAL) / 25.0) ** 2
 
-    if total not in scores:
-        # Fallback if strict bounds failed: relax to MAX_DURATION
+                boundary_cost = candidates[end][0]
+                total_cost = dp[(k - 1, start)][0] + length_cost + boundary_cost
+
+                if best_tuple is None or total_cost < best_tuple[0]:
+                    best_tuple = (total_cost, start)
+
+            if best_tuple is not None:
+                dp[(k, end)] = best_tuple
+
+    # Prefer target_part_count (e.g. 8), then 8 +/- 1 (e.g. 9 or 7)
+    candidates_k = [target_part_count]
+    for delta in range(1, 6):
+        if target_part_count - delta >= min_k:
+            candidates_k.append(target_part_count - delta)
+        if target_part_count + delta <= max_k:
+            candidates_k.append(target_part_count + delta)
+
+    chosen_k = None
+    for k in candidates_k:
+        if (k, total) in dp:
+            chosen_k = k
+            break
+
+    if chosen_k is None:
+        valid_k = [k for k in range(1, max_k + 1) if (k, total) in dp]
+        if valid_k:
+            chosen_k = min(valid_k, key=lambda k: (abs(k - target_part_count), dp[(k, total)][0]))
+
+    if chosen_k is None:
+        # Fallback if strict bounds failed
+        scores: dict[float, float] = {0.0: 0.0}
+        previous: dict[float, float] = {}
         for i, end in enumerate(times[1:], 1):
             choices = []
             for start in reversed(times[:i]):
                 length = end - start
-                if length > MAX_DURATION + 1e-6:
+                if length > 150.0 + 1e-6:
                     break
                 if length < 5.0 or start not in scores:
                     continue
-                length_cost = ((length - 60.0) / 30.0) ** 2
+                length_cost = ((length - TARGET_SHORT_OPTIMAL) / 30.0) ** 2
                 choices.append((scores[start] + length_cost + candidates[end][0], start))
             if choices:
-                best_cost, best_start = min(choices)
-                scores[end] = best_cost
-                previous[end] = best_start
-
-    if total not in scores:
-        raise ValueError(f'Невозможно разделить таймлайн на части до {MAX_DURATION:g} с')
+                scores[end], previous[end] = min(choices)
+        if total not in scores:
+            raise ValueError(f'Невозможно разделить таймлайн на части до 150 с')
+        boundaries, t = [], total
+        while t > 0:
+            boundaries.append((t, candidates[t][1]))
+            t = previous[t]
+        return list(reversed(boundaries))
 
     boundaries = []
-    t = total
-    while t > 0:
-        boundaries.append((t, candidates[t][1]))
-        t = previous[t]
+    curr_k = chosen_k
+    curr_t = total
+    while curr_k > 0:
+        prev_t = dp[(curr_k, curr_t)][1]
+        boundaries.append((curr_t, candidates[curr_t][1]))
+        curr_t = prev_t
+        curr_k -= 1
     return list(reversed(boundaries))
+
 
 
 def build_dramatic_plan(analysis: dict) -> dict:
@@ -358,6 +392,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
         e for e in events
         if not e.get('pacing_excluded') and not e.get('global_excluded')
         and (e.get('narrative_bridge') or (e["kind"] == "story" and e.get("importance", 3) >= 3) or e.get("importance", 3) >= 4)
+        and (e["id"] != "event_0000" or len(events) <= 5)
     ]
     if not eligible:
         eligible = [e for e in events if e["kind"] == "story"
@@ -374,7 +409,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
             for req in by_id.get(curr, {}).get('requires', []):
                 if req in by_id and req not in result:
                     r_ev = by_id[req]
-                    if not r_ev.get('pacing_excluded') and not r_ev.get('global_excluded'):
+                    if not r_ev.get('pacing_excluded') and not r_ev.get('global_excluded') and (req != 'event_0000' or len(events) <= 5):
                         result.add(req)
                         stack.append(req)
         return result
@@ -448,7 +483,10 @@ def build_dramatic_plan(analysis: dict) -> dict:
 
     # 3. Target optimal parts
     total_retained = sum(r['end'] - r['start'] for r in intervals)
-    target_parts = max(MIN_PARTS, min(MAX_PARTS, round(total_retained / TARGET_SHORT_OPTIMAL)))
+    if total_retained <= TARGET_SHORT_MIN:
+        target_parts = max(1, min(MAX_PARTS, round(total_retained / TARGET_SHORT_OPTIMAL)))
+    else:
+        target_parts = max(MIN_PARTS, min(MAX_PARTS, round(total_retained / TARGET_SHORT_OPTIMAL)))
 
     boundaries = _build_dramatic_boundaries(
         intervals, events, segments, words, shots, duration, target_parts

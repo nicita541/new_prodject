@@ -363,7 +363,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 if (saved.get("fingerprint") == fingerprint and saved.get("size") == path.stat().st_size
                         and saved.get("mtime_ns") == path.stat().st_mtime_ns
                         and saved.get("srt_hash") == hashlib.sha256(path.with_suffix(".srt").read_bytes()).hexdigest()):
-                    validate_export(path, part["duration"], workdir, cancelled)
+                    validate_export(path, part["duration"], workdir, cancelled,
+                                    max_duration=150.0 if part.get("duration", 0) > 120.0 else None)
                     valid = True
             except (ValueError, KeyError, RuntimeError):
                 pass

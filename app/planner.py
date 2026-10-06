@@ -336,8 +336,9 @@ def validate_plan(plan: dict, analysis: dict) -> None:
                 if "hard_cut" in anchor and not isinstance(anchor["hard_cut"], bool):
                     raise ValueError("Некорректный признак смены кадра")
             previous, duration = end, duration + end - start
-        if duration > MAX_DURATION + 1e-6 or abs(duration - _number(part["duration"])) > 1e-5:
-            raise ValueError(f"Часть превышает {MAX_DURATION:g} секунд или имеет неверную длительность")
+        max_allowed = 150.0 if plan.get('dramatic_montage') else MAX_DURATION
+        if duration > max_allowed + 1e-6 or abs(duration - _number(part["duration"])) > 1e-5:
+            raise ValueError(f"Часть превышает {max_allowed:g} секунд или имеет неверную длительность")
         from .editing import validate_options
         options = validate_options(part.get('layout', 'portrait'), part.get('caption_style', 'classic'))
         expected = make_cues(remap_words(analysis["transcript"].get("words", []), part["cuts"]), options['caption_style'])
