@@ -22,12 +22,12 @@ from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
 from .titles import _subtract
 
-TARGET_SHORT_MIN = 85.0
-TARGET_SHORT_OPTIMAL = 135.0
-TARGET_SHORT_MAX = 145.0
-MAX_SHORT_DURATION = 148.0
-MIN_PARTS = 6
-MAX_PARTS = 9
+TARGET_SHORT_MIN = 60.0
+TARGET_SHORT_OPTIMAL = 85.0
+TARGET_SHORT_MAX = 105.0
+MAX_SHORT_DURATION = 115.0
+MIN_PARTS = 4
+MAX_PARTS = 7
 
 
 def _align_words_to_shot_boundaries(words: list[dict], shots: list[dict]) -> list[dict]:
@@ -400,42 +400,41 @@ def build_dramatic_plan(analysis: dict) -> dict:
     if not eligible:
         raise ValueError("В серии не найдены сюжетные сцены для драматического монтажа")
 
-    # Transitive prerequisite closure helper
-    def _get_all_prereqs(eid: str) -> set[str]:
-        result = set()
-        stack = [eid]
-        while stack:
-            curr = stack.pop()
-            for req in by_id.get(curr, {}).get('requires', []):
-                if req in by_id and req not in result:
-                    r_ev = by_id[req]
-                    if not r_ev.get('pacing_excluded') and not r_ev.get('global_excluded') and (req != 'event_0000' or len(events) <= 5):
-                        result.add(req)
-                        stack.append(req)
-        return result
-
-    # Initial selection: narrative bridges, cliffhanger/closure events, and high importance events
-    selected_ids = {
-        e['id'] for e in eligible
-        if e.get('narrative_bridge') or e.get('part_endings') or e.get('importance', 3) >= 4
+    # Initial selection: narrative bridges are the core dramatic spine
+    bridge_ids = {
+        e['id'] for e in events
+        if e.get('narrative_bridge')
+        and not e.get('pacing_excluded') and not e.get('global_excluded')
     }
-    if not selected_ids:
-        selected_ids = {e['id'] for e in eligible}
+    selected_ids = set(bridge_ids)
 
-    for eid in list(selected_ids):
-        selected_ids.update(_get_all_prereqs(eid))
-
+    # Scored dramatic events
     scored_events = sorted(
         eligible,
         key=lambda e: _event_dramatic_score(e, segments),
         reverse=True
     )
-    for ev in scored_events:
-        selected_ids.add(ev['id'])
-        selected_ids.update(_get_all_prereqs(ev['id']))
 
-    # Contiguous Sequence Closure: if event A and event B are selected,
-    # fill any in-between story events where gap <= 160s to prevent Swiss cheese plot jumps
+    # Distillation quota: target ~500s - 540s of raw event content (~60% cut out)
+    TARGET_RAW_DURATION = 520.0
+    for ev in scored_events:
+        cur_dur = sum(by_id[i]['end'] - by_id[i]['start'] for i in selected_ids)
+        if cur_dur >= TARGET_RAW_DURATION and len(selected_ids) >= 8:
+            break
+        selected_ids.add(ev['id'])
+        for req in ev.get('requires', []):
+            if req in by_id and by_id[req].get('narrative_bridge'):
+                selected_ids.add(req)
+
+    if len(selected_ids) < min(len(eligible), 5):
+        for ev in scored_events:
+            selected_ids.add(ev['id'])
+            if len(selected_ids) >= 5:
+                break
+
+    # Immediate Narrative Continuity: if selected events A and B sandwich an immediate
+    # conversational/story scene C (gap to A <= 10s and gap to B <= 10s), include C
+    # so active dialogue scenes aren't artificially cut in half.
     sorted_eligible = sorted([e for e in eligible], key=lambda e: e['start'])
     changed = True
     while changed:
@@ -444,13 +443,13 @@ def build_dramatic_plan(analysis: dict) -> dict:
         for i in range(len(sorted_sel) - 1):
             e_a = sorted_sel[i]
             e_b = sorted_sel[i + 1]
-            if 0 < e_b['start'] - e_a['end'] <= 160.0:
-                for cand in sorted_eligible:
-                    if e_a['end'] <= cand['start'] and cand['end'] <= e_b['start']:
-                        if cand['id'] not in selected_ids:
-                            selected_ids.add(cand['id'])
-                            selected_ids.update(_get_all_prereqs(cand['id']))
-                            changed = True
+            for cand in sorted_eligible:
+                if cand['id'] not in selected_ids and cand['start'] >= e_a['end'] - 1.0 and cand['end'] <= e_b['start'] + 1.0:
+                    gap_left = max(0.0, cand['start'] - e_a['end'])
+                    gap_right = max(0.0, e_b['start'] - cand['end'])
+                    if gap_left <= 10.0 and gap_right <= 10.0:
+                        selected_ids.add(cand['id'])
+                        changed = True
 
     # 2. Build snappy intervals for each selected event
     excluded_ranges = [r for event in events for r in confirmed_exclusions(event)]
