@@ -22,18 +22,18 @@ from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
 from .titles import _subtract
 
-TARGET_SHORT_MIN = 35.0
-TARGET_SHORT_OPTIMAL = 60.0
-TARGET_SHORT_MAX = 85.0
-MAX_SHORT_DURATION = 115.0
-MIN_PARTS = 5
-MAX_PARTS = 8
+TARGET_SHORT_MIN = 65.0
+TARGET_SHORT_OPTIMAL = 95.0
+TARGET_SHORT_MAX = 112.0
+MAX_SHORT_DURATION = 118.0
+MIN_PARTS = 4
+MAX_PARTS = 7
 
 
 def _event_dramatic_score(event: dict, segments: list[dict]) -> float:
     score = 0.0
     if event.get('narrative_bridge'):
-        score += 20.0
+        score += 25.0
     score += float(event.get('importance', 3)) * 6.0
     for ending in event.get('part_endings', []):
         kind = ending.get('kind')
@@ -52,15 +52,33 @@ def _event_dramatic_score(event: dict, segments: list[dict]) -> float:
     return score
 
 
+def _normalize_shots(shots: list[dict], duration: float) -> list[dict]:
+    """Ensure every shot has both start and end, inferring end from next shot or duration."""
+    normalized = []
+    for i, s in enumerate(shots):
+        st = _number(s['start'])
+        if 'end' in s:
+            en = _number(s['end'])
+        elif i + 1 < len(shots):
+            en = _number(shots[i + 1]['start'])
+        else:
+            en = duration
+        if en > st:
+            normalized.append({'start': st, 'end': en})
+    return normalized
+
+
 def _compress_dialogue_turns(
     event: dict,
     segments: list[dict],
     words: list[dict],
     speech_all: list[dict],
-    duration: float
+    duration: float,
+    shots: list[dict] | None = None
 ) -> list[dict]:
     """Compress dialogue turns within an event: trim dead pauses >1.2s down to ~0.5s."""
     ev_start, ev_end = _number(event['start']), _number(event['end'])
+    norm_shots = _normalize_shots(shots, duration) if shots else []
     ev_speech = sorted(
         [s for s in segments if s['start'] < ev_end and s['end'] > ev_start],
         key=lambda s: s['start']
@@ -78,7 +96,7 @@ def _compress_dialogue_turns(
             for sel in selections:
                 s_st, s_en = _number(sel['start']), _number(sel['end'])
                 if s_en - s_st > 3.0:
-                    beats = condense_beat({'start': s_st, 'end': s_en}, max_hold=1.5)
+                    beats = condense_beat({'start': s_st, 'end': s_en}, max_hold=2.5)
                     ranges.extend(beats)
                 else:
                     ranges.append({'start': s_st, 'end': s_en})
@@ -117,16 +135,54 @@ def _compress_dialogue_turns(
                     r for r in event.get('protected_atmosphere_ranges', [])
                     if r['start'] < gap_end and r['end'] > gap_start
                 ]
-                for act in action_in_gap:
-                    act_s = max(gap_start, act['start'])
-                    act_e = min(gap_end, act['end'])
-                    if act_e - act_s > 0.5:
-                        turn_ranges.append({'start': round(act_s, 6), 'end': round(act_e, 6)})
+                if action_in_gap:
+                    for act in action_in_gap:
+                        act_s = max(gap_start, act['start'])
+                        act_e = min(gap_end, act['end'])
+                        if act_e - act_s > 0.5:
+                            turn_ranges.append({'start': round(act_s, 6), 'end': round(act_e, 6)})
+                elif event.get('narrative_bridge') or (norm_shots and (gap_end - gap_start > 3.0)):
+                    # Narrative action beat within dialogue gap: preserve visual action continuity
+                    # rather than abruptly jumping across plot/physical states (e.g. capture/ropes).
+                    gap_shots = [
+                        s for s in norm_shots
+                        if s['start'] < gap_end and s['end'] > gap_start
+                    ]
+                    valid_shots = [
+                        {'start': max(gap_start, s['start']), 'end': min(gap_end, s['end']),
+                         'orig_start': s['start'], 'orig_end': s['end']}
+                        for s in gap_shots
+                        if min(gap_end, s['end']) - max(gap_start, s['start']) >= 0.4
+                    ]
+                    if valid_shots:
+                        if len(valid_shots) == 1:
+                            vs = valid_shots[0]
+                            dur = min(3.0, vs['end'] - vs['start'])
+                            turn_ranges.append({'start': round(vs['start'], 6), 'end': round(vs['start'] + dur, 6)})
+                        elif len(valid_shots) == 2:
+                            for vs in valid_shots:
+                                dur = min(2.8, vs['end'] - vs['start'])
+                                turn_ranges.append({'start': round(vs['start'], 6), 'end': round(vs['start'] + dur, 6)})
+                        else:
+                            # 3+ shots: pick initiation action shot and climax/major action shot
+                            init_shot = next((s for s in valid_shots if s['orig_start'] >= gap_start - 0.2), valid_shots[0])
+                            dur1 = min(2.8, init_shot['end'] - init_shot['start'])
+                            turn_ranges.append({'start': round(init_shot['start'], 6), 'end': round(init_shot['start'] + dur1, 6)})
+
+                            remaining = [s for s in valid_shots if s != init_shot]
+                            if remaining:
+                                main_shot = max(remaining, key=lambda s: s['end'] - s['start'])
+                                dur2 = min(3.2, main_shot['end'] - main_shot['start'])
+                                turn_ranges.append({'start': round(main_shot['start'], 6), 'end': round(main_shot['start'] + dur2, 6)})
+                    elif event.get('narrative_bridge') and gap_end - gap_start > 3.0:
+                        beats = condense_beat({'start': gap_start, 'end': gap_end}, max_hold=2.5)
+                        for b in beats:
+                            turn_ranges.append({'start': round(b['start'], 6), 'end': round(b['end'], 6)})
         i += 1
 
     # If event has pre-action before the first speech line, retain a brief initiation beat
     if has_pre_action and ev_start < first_speech_time - 0.5:
-        pre_len = min(1.8, first_speech_time - ev_start)
+        pre_len = min(2.5, first_speech_time - ev_start)
         turn_ranges.insert(0, {'start': round(ev_start, 6), 'end': round(ev_start + pre_len, 6)})
 
     return turn_ranges
@@ -312,20 +368,30 @@ def build_dramatic_plan(analysis: dict) -> dict:
     bridge_ids = {e['id'] for e in events if e.get('narrative_bridge')
                   and not e.get('pacing_excluded') and not e.get('global_excluded')}
 
-    # Select core dramatic events targeting 5-8 punchy Shorts (~360s - 480s total)
+    # Select core dramatic events targeting 5-7 richer Shorts (~600s - 800s total before compression)
     selected_ids = set(bridge_ids)
     for ev in scored_events:
         cur_dur = sum(by_id[i]['end'] - by_id[i]['start'] for i in selected_ids)
-        if cur_dur >= 450.0 and len(selected_ids) >= 7:
+        if cur_dur >= 680.0 and len(selected_ids) >= 7:
             break
         selected_ids.add(ev['id'])
         for req in ev.get('requires', []):
-            if req in by_id and by_id[req].get('narrative_bridge'):
+            if req in by_id and not by_id[req].get('pacing_excluded') and not by_id[req].get('global_excluded'):
+                selected_ids.add(req)
+
+    # Conversational setup guarantee: ensure direct prerequisites of all selected events are pulled in
+    for ev_id in list(selected_ids):
+        ev = by_id[ev_id]
+        for req in ev.get('requires', []):
+            if req in by_id and not by_id[req].get('pacing_excluded') and not by_id[req].get('global_excluded'):
                 selected_ids.add(req)
 
     if len(selected_ids) < min(len(eligible), 5):
         for ev in scored_events:
             selected_ids.add(ev['id'])
+            for req in ev.get('requires', []):
+                if req in by_id and not by_id[req].get('pacing_excluded') and not by_id[req].get('global_excluded'):
+                    selected_ids.add(req)
             if len(selected_ids) >= 5:
                 break
 
@@ -334,7 +400,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
     raw_intervals = []
 
     for event in sorted([by_id[i] for i in selected_ids], key=lambda e: e['start']):
-        turn_ranges = _compress_dialogue_turns(event, segments, words, speech_all, duration)
+        turn_ranges = _compress_dialogue_turns(event, segments, words, speech_all, duration, shots=shots)
         for tr in turn_ranges:
             raw_intervals.append({'start': tr['start'], 'end': tr['end'], 'event_id': event['id']})
 

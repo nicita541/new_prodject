@@ -128,6 +128,55 @@ class DramaticPlannerTests(unittest.TestCase):
         has_ending = any('ending' in p for p in plan['parts'])
         self.assertTrue(has_ending)
 
+    def test_action_beat_continuity_preserved_in_dialogue_gap(self):
+        # In a narrative bridge with dialogue (e.g. kidnapping scene),
+        # action shots between dialogue turns should be retained rather than jumping 0.0s.
+        event = {
+            'id': 'e_kidnap', 'start': 0.0, 'end': 30.0, 'kind': 'story', 'importance': 4,
+            'summary': 'Похищение на улице', 'requires': [],
+            'narrative_bridge': True,
+            'focus': [{'time': 5.0, 'x': 0.5, 'y': 0.5, 'confidence': 0.8}]
+        }
+        # Dialogue: turn 1 (5.0 - 7.5s), turn 2 (22.0 - 24.0s). Gap is 14.5s.
+        # Shots inside gap: ambush at 10.0-13.0s, ropes at 15.0-18.0s
+        gap_shots = [
+            {'start': 0.0, 'end': 8.0},
+            {'start': 10.0, 'end': 13.0},
+            {'start': 15.0, 'end': 18.0},
+            {'start': 20.0, 'end': 30.0}
+        ]
+        turns = _compress_dialogue_turns(
+            event, self.segments, self.words, [*self.segments, *self.words],
+            duration=30.0, shots=gap_shots
+        )
+        # Should contain dialogue turns AND action beats in the gap
+        self.assertGreaterEqual(len(turns), 3)
+        # Verify an action beat falling within the 7.5-22.0s gap was retained
+        has_mid_action = any(7.5 < t['start'] < 20.0 for t in turns)
+        self.assertTrue(has_mid_action)
+
+    def test_prerequisite_setup_pair_included(self):
+        # e02 requires e01 (e.g. question "Мою форму?" -> answer "Нет, школьную")
+        events = [
+            {'id': 'e01', 'start': 0.0, 'end': 20.0, 'kind': 'story', 'importance': 3,
+             'summary': 'Горничная приносит одежду в комнату.', 'requires': [],
+             'focus': [{'time': 5.0, 'x': 0.5, 'y': 0.5, 'confidence': 0.8}]},
+            {'id': 'e02', 'start': 20.0, 'end': 60.0, 'kind': 'story', 'importance': 4,
+             'summary': 'Разговор о школьной форме и поступлении.', 'requires': ['e01'],
+             'focus': [{'time': 22.0, 'x': 0.5, 'y': 0.5, 'confidence': 0.8}]}
+        ]
+        analysis = {
+            'probe': {'duration': 100.0, 'width': 1920, 'height': 1080, 'has_audio': True},
+            'events': events,
+            'transcript': {'words': self.words, 'segments': self.segments},
+            'shots': self.shots
+        }
+        plan = build_dramatic_plan(analysis)
+        validate_plan(plan, analysis)
+        # Both e02 and its prerequisite e01 must be retained in the plan
+        self.assertIn('e01', plan['selected_event_ids'])
+        self.assertIn('e02', plan['selected_event_ids'])
+
 
 if __name__ == '__main__':
     unittest.main()

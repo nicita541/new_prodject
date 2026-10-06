@@ -268,11 +268,23 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     metadata = workdir / "render-info.json"
     temporary = metadata.with_suffix(".json.tmp")
     temporary.write_text(json.dumps({"encoder": encoder}), encoding="utf-8")
-    os.replace(temporary, metadata)
+    _safe_replace(temporary, metadata)
     # Sidecars are written before the MP4 is published as the commit marker.
     srt_partial = workdir / (basename + ".srt")
     write_srt(srt_partial, part["subtitles"])
-    os.replace(srt_partial, output_dir / (basename + ".srt"))
-    os.replace(ass_path, output_dir / (basename + ".ass"))
-    os.replace(partial, destination)
+    _safe_replace(srt_partial, output_dir / (basename + ".srt"))
+    _safe_replace(ass_path, output_dir / (basename + ".ass"))
+    _safe_replace(partial, destination)
     return destination
+
+
+def _safe_replace(src: Path, dst: Path, retries: int = 8, delay: float = 0.5) -> None:
+    """Atomic replace with retries to gracefully handle transient Windows file locks."""
+    for attempt in range(retries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
