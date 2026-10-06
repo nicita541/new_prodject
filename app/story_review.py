@@ -123,6 +123,7 @@ def apply_global_selection(events, decisions, editorial_profile=None):
         omission = omissions.get(event['id'])
         if (omission and omission['confidence'] >= .85 and not event.get('uncertain')
                 and not event.get('selection_uncertain')
+                and not event.get('narrative_bridge')
                 and not omission.get('reaction_or_humor') and not event.get('protected_atmosphere_units')
                 and not verified_story_ranges(event)
                 and not (omission['reason'] in ('redundant_exchange','repeated_information')
@@ -150,11 +151,15 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
         'Preserve nearly all short reactions, jokes, banter and atmospheric exchanges even without plot progress. '
         'A whole repeated exchange can be removed only when it adds no distinct reaction, humor or emotional beat. '
         'Never drop an unresolved cause or needed context. '
+        'Never omit a narrative bridge: an event or non-verbal transition connecting State A to State B '
+        '(e.g. capture, departure, sudden accident, transport, handover) where omitting it would cause '
+        'an unexplained jump or broken causal continuity between surrounding events. '
         'For each removed event supply a concrete explanation of redundancy/nonstory evidence and confidence; '
         'uncertainty preserves it. An event with summary_complete=false has missing facts and MUST remain. '
         'No target duration, clip count or removal percentage. '
         'Return JSON {"keep":[event ids],"omit":[{"event":id,"reason":"redundant_exchange|repeated_information|nonstory",'
         '"evidence":"concrete explanation","confidence":0..1,"reaction_or_humor":boolean}],'
+        '"narrative_bridges":[event ids connecting state changes or transitions],'
         '"dependencies":[{"event":id,"requires":[earlier ids]}],"summary":"Russian episode storyline"}. '
         'For an omission containing any reaction, joke or atmospheric beat mark reaction_or_humor=true; such events remain. Events: ')
     # Measure actual model tokens and leave room for template and output. Keep
@@ -174,6 +179,7 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
     known = {e['id'] for e in events}
     id_list = {'type': 'array', 'items': {'type': 'string', 'enum': sorted(known)}}
     schema = {'type': 'object', 'properties': {'keep': id_list,
+        'narrative_bridges': id_list,
         'dependencies': {'type': 'array', 'items': {'type': 'object', 'properties': {
             'event': {'type': 'string', 'enum': sorted(known)}, 'requires': id_list},
             'required': ['event', 'requires'], 'additionalProperties': False}}, 'summary': {'type': 'string'}},
@@ -193,6 +199,10 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
             dependencies = []
         if not isinstance(dependencies, list) or any(not isinstance(item, dict) for item in dependencies):
             raise ValueError('Модель вернула некорректные связи событий')
+        bridges = decisions.get('narrative_bridges')
+        if bridges is not None:
+            if not isinstance(bridges, list) or any(not isinstance(e, str) or e not in known for e in bridges):
+                raise ValueError('Модель вернула некорректные связи narrative_bridges')
         decisions['dependencies'] = dependencies
         if 'omit' in decisions:
             validate_global_omissions(decisions, known)
@@ -204,6 +214,9 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
                 max_tokens=1800 if isinstance(vision, DeepSeekVision) else 2200, schema=schema,
                 validator=validate_decisions, validation_profile='global-existing-events-v2')
             decisions['incomplete_event_ids']=[s['id'] for s in summary if not s['summary_complete']]
+            for event in events:
+                if event['id'] in decisions.get('narrative_bridges', []):
+                    event['narrative_bridge'] = True
             return decisions
         except (ValueError, urllib.error.URLError, TimeoutError) as error:
             last_error = error

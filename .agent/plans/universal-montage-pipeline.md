@@ -199,4 +199,4 @@ The pipeline runs in three sequential stages:
 - [x] Milestone 3: Eyecatch/TV bumper detection
 - [x] Milestone 4: Smart audio ducking (Content ID protection)
 - [x] Milestone 5: Dramatic part structure (Hook → Story → Cliffhanger)
-- [ ] Milestone 6: Integration, cross-validation, and documentation
+- [x] Milestone 6: Integration, cross-validation, and documentation

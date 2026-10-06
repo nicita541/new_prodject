@@ -95,6 +95,21 @@ def silent_units(event, transcript, shots):
     return result
 
 
+def condense_beat(unit: dict, max_hold: float = 1.6) -> list[dict]:
+    """Condense a long silent action / narrative bridge hold (>3.0s) down to key beats.
+    
+    Preserves start beat (initiation) and end beat (payoff/completion) while
+    trimming intermediate static holds to maintain snappy Shorts pacing.
+    """
+    duration = unit['end'] - unit['start']
+    if duration <= 3.0:
+        return [{'start': unit['start'], 'end': unit['end']}]
+    beat_len = min(max_hold, round(duration * 0.35, 3))
+    head = {'start': round(unit['start'], 3), 'end': round(unit['start'] + beat_len, 3)}
+    tail = {'start': round(unit['end'] - beat_len, 3), 'end': round(unit['end'], 3)}
+    return [head, tail]
+
+
 def apply_review(event, units, raw, editorial_profile=None):
     from .editorial import DEFAULT_PROFILE
     profile=editorial_profile or DEFAULT_PROFILE
@@ -106,7 +121,7 @@ def apply_review(event, units, raw, editorial_profile=None):
     ids = [item.get('unit') for item in decisions if isinstance(item, dict)]
     if len(ids) != len(decisions) or len(ids) != len(set(ids)) or set(ids) != set(known):
         raise ValueError('Проверка темпа должна покрывать все исходные фрагменты ровно один раз')
-    allowed = {'action', 'setup', 'reaction', 'waiting', 'production_credit', 'repeat', 'scenery'}
+    allowed = {'action', 'setup', 'reaction', 'waiting', 'production_credit', 'repeat', 'scenery', 'narrative_bridge'}
     by_id={item['unit']:item for item in decisions}
     blocked = set()
     for item in decisions:
@@ -155,6 +170,20 @@ def apply_review(event, units, raw, editorial_profile=None):
         if not event['protected_atmosphere_ranges']:
             event.pop('protected_atmosphere_units', None)
     selections = _subtract(event.get('selected_ranges') or [event], excluded)
+    condensed_removals = []
+    for item in decisions:
+        if item.get('condense') and item.get('keep', True):
+            u_info = known[item['unit']]
+            dur = u_info['end'] - u_info['start']
+            if dur > 3.0:
+                beat_len = min(1.6, round(dur * 0.35, 3))
+                t_start = round(u_info['start'] + beat_len, 3)
+                t_end = round(u_info['end'] - beat_len, 3)
+                if t_end > t_start:
+                    condensed_removals.append({'start': t_start, 'end': t_end})
+    if condensed_removals:
+        selections = _subtract(selections, condensed_removals)
+        event.setdefault('condensed_beats', []).extend(condensed_removals)
     event.setdefault('pacing_removed', []).extend(excluded)
     event['selected_ranges'] = selections
     if not selections:
@@ -281,8 +310,9 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
         schema = {'type': 'object', 'properties': {'uncertain': {'type': 'boolean'},
             'decisions': {'type': 'array', 'items': {'type': 'object', 'properties': {
                 'unit': {'type': 'string', 'enum': ids}, 'keep': {'type': 'boolean'},
-                'reason': {'type': 'string', 'enum': ['action', 'setup', 'reaction', 'waiting', 'repeat', 'scenery']},
+                'reason': {'type': 'string', 'enum': ['action', 'setup', 'reaction', 'waiting', 'repeat', 'scenery', 'narrative_bridge']},
                 'story_change': {'type': 'boolean'}, 'reaction_or_humor': {'type': 'boolean'},
+                'condense': {'type': 'boolean'},
                 'evidence': {'type': 'string'}, 'retained_witness': {'type': 'string', 'enum': ['none', *ids]}},
                 'required': ['unit', 'keep', 'reason', 'story_change', 'reaction_or_humor', 'evidence', 'retained_witness'],
                 'additionalProperties': False}}}, 'required': ['decisions', 'uncertain'], 'additionalProperties': False}
@@ -421,8 +451,10 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                         'decisions': {'type':'array', 'items': {'type':'object', 'properties': {
                             'unit': {'type':'string', 'enum':[u['id'] for u in batch]},
                             'keep': {'type':'boolean'},
-                            'reason': {'type':'string', 'enum':['action','setup','reaction','waiting','repeat','scenery','production_credit']},
-                            'story_change':{'type':'boolean'}, 'reaction_or_humor':{'type':'boolean'}, 'evidence': {'type':'string'},
+                            'reason': {'type':'string', 'enum':['action','setup','reaction','waiting','repeat','scenery','production_credit','narrative_bridge']},
+                            'story_change':{'type':'boolean'}, 'reaction_or_humor':{'type':'boolean'},
+                            'condense': {'type': 'boolean'},
+                            'evidence': {'type':'string'},
                             'retained_witness':{'type':'string','enum':sorted({'none','before','after',
                                 *(e['id'] for e in previous),*(u['id'] for u in batch)})}},
                             'required':['unit','keep','reason','story_change','reaction_or_humor','evidence'], 'additionalProperties':False}},
@@ -432,6 +464,9 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                                            'The editorial profile disables empty-hold removal: keep neutral travel and holds even when they add no new plot fact.')
                     prompt = (
                         instruction(editorial_profile)+' Condense this episode using ONLY the supplied speech-free source rows A..H, exactly once each. '
+                        'Keep narrative bridges: non-verbal transitions connecting state changes (e.g. capture, injury, departure, arrival). '
+                        'If removing an action makes the next dialogue logically unexplained, classify reason as narrative_bridge and keep=true, story_change=true. '
+                        'For long action or narrative bridge holds (>3s) with an intermediate static pause, set condense=true to preserve snappy initiation and payoff beats. '
                         'Each row: CONTEXT BEFORE, five CURRENT UNIT frames, CONTEXT AFTER. Only the middle five are deletable. '
                         'A row is a whole continuous silent shot, not a two-second slice. Judge neighboring rows as one sequence: '
                         'retain the shortest sufficient establishing shot or representative emotional beat; omit repeated neutral views WHOLE. '

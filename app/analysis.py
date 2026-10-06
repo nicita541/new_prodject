@@ -94,14 +94,34 @@ def analysis_provider(job_dir: Path) -> str:
 
 
 def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict, shots: list[dict], events: list[dict]) -> dict:
-    from .pacing import pacing_warnings
-    record = {'provider': provider, 'duration': probe['duration'], 'width': probe['width'], 'height': probe['height'],
-              'fps': probe['fps'], 'audio_stream': probe.get('audio_stream', 0), 'events': events,
-              'story_warnings': sorted({w for e in events for w in e.get('story_warnings', [])})}
+    record = {
+        'probe': probe,
+        'transcript': transcript,
+        'shots': shots,
+        'events': events,
+        'provider': provider,
+        'duration': probe['duration'],
+        'width': probe['width'],
+        'height': probe['height'],
+        'fps': probe['fps'],
+        'audio_stream': probe.get('audio_stream', 0),
+        'story_warnings': sorted({w for e in events for w in e.get('story_warnings', [])})
+    }
     story = job_dir / 'story.json'
     if story.is_file():
         record['story'] = load_json(story)
-    record['story_warnings'] = sorted(set(record['story_warnings'] + pacing_warnings(events, record.get('story', {}))))
+    if provider == 'hybrid':
+        from .hybrid import review_summary
+        summary = review_summary(job_dir)
+        record['hybrid_review'] = summary
+        warnings = []
+        if summary.get('unresolved'):
+            warnings.append(
+                f"Гибридная проверка: {summary['unresolved']} сомнительных ответов остались локальными; "
+                f"DeepSeek проверил {summary['reviewed']}. Проверьте сюжет и кадрирование.")
+        if summary.get('remote_disabled'):
+            warnings.append('DeepSeek недоступен или средств недостаточно: обработка продолжена локально.')
+        record['warnings'] = warnings
     return record
 
 

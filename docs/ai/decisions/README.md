@@ -1,5 +1,9 @@
 # Architecture Decision Records
 
+- [0018: Universal montage pipeline and smart audio ducking](0018-universal-pipeline-and-smart-audio.md) — multimodal full-episode OP/ED scanning, eyecatch removal, and dynamic Content ID audio ducking.
+
+- [0017: Variable part lengths and sequence pacing](0017-variable-parts-and-sequence-pacing.md) — 70–120s parts anchored to narrative endings and verified cliffhangers.
+
 - [0016: Derived plan diagnostics for review](0016-plan-review-diagnostics.md) — filtered to final retained intervals; no new endpoint.
 
 - [0015: Direct requests without monetary launch gates](0015-simple-provider-retries.md) — current contract; supersedes monetary gating in earlier records.
