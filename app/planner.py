@@ -343,3 +343,9 @@ def validate_plan(plan: dict, analysis: dict) -> None:
         expected = make_cues(remap_words(analysis["transcript"].get("words", []), part["cuts"]), options['caption_style'])
         if part["subtitles"] != expected:
             raise ValueError("Субтитры не соответствуют исходным словам и монтажу")
+
+
+def build_dramatic_plan(analysis: dict) -> dict:
+    from .dramatic_planner import build_dramatic_plan as _build_dramatic_plan
+    return _build_dramatic_plan(analysis)
+

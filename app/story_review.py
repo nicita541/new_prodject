@@ -90,6 +90,9 @@ def apply_unit_selection(event: dict, raw: dict, units: list[dict]) -> None:
     event['selected_ranges'] = [{'start': u['start'], 'end': u['end']} for u in units if u['id'] in selection]
 
 
+VALID_OMIT_REASONS = {'redundant_exchange', 'repeated_information', 'nonstory', 'low_stakes_filler', 'exposition_without_action'}
+
+
 def validate_global_omissions(decisions, known):
     omissions = decisions.get('omit')
     if not isinstance(omissions, list):
@@ -97,7 +100,7 @@ def validate_global_omissions(decisions, known):
     ids = []
     for item in omissions:
         if (not isinstance(item, dict) or item.get('event') not in known
-                or item.get('reason') not in {'redundant_exchange','repeated_information','nonstory'}
+                or item.get('reason') not in VALID_OMIT_REASONS
                 or not isinstance(item.get('evidence'), str) or not item['evidence'].strip()
                 or ('reaction_or_humor' in item and type(item['reaction_or_humor']) is not bool)
                 or isinstance(item.get('confidence'), bool) or not isinstance(item.get('confidence'), (float,int))
@@ -124,11 +127,12 @@ def apply_global_selection(events, decisions, editorial_profile=None):
         if (omission and omission['confidence'] >= .85 and not event.get('uncertain')
                 and not event.get('selection_uncertain')
                 and not event.get('narrative_bridge')
-                and not omission.get('reaction_or_humor') and not event.get('protected_atmosphere_units')
+                and not (omission.get('reaction_or_humor') and not profile.get('dramatic_condensation'))
+                and not event.get('protected_atmosphere_units')
                 and not verified_story_ranges(event)
                 and not (omission['reason'] in ('redundant_exchange','repeated_information')
                          and not profile['remove_exact_repetition'])
-                and not (omission['reason']=='nonstory' and not profile['remove_empty_holds'])
+                and not (omission['reason'] in ('nonstory','low_stakes_filler','exposition_without_action') and not profile['remove_empty_holds'])
                 and event['id'] not in decisions.get('incomplete_event_ids',[])):
             event['global_excluded'] = True
             event['global_omission'] = omission
@@ -143,25 +147,40 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
         vision = copy.copy(vision)
         vision.text_budget = 64000
     from .editorial import instruction as policy_instruction, DEFAULT_PROFILE
-    instruction = (policy_instruction(editorial_profile or DEFAULT_PROFILE)+' '
-        'Edit a concise chronological episode, not an almost complete episode merely split into clips. '
-        'Keep setup/payoff, causes/results, new information, significant relationship changes and consequential silent action. '
-        'Only when the applied editorial profile permits repetition removal, remove whole exact redundant exchanges '
-        'or repeated information when all necessary facts are conveyed by kept events. '
-        'Preserve nearly all short reactions, jokes, banter and atmospheric exchanges even without plot progress. '
-        'A whole repeated exchange can be removed only when it adds no distinct reaction, humor or emotional beat. '
-        'Never drop an unresolved cause or needed context. '
-        'Never omit a narrative bridge: an event or non-verbal transition connecting State A to State B '
-        '(e.g. capture, departure, sudden accident, transport, handover) where omitting it would cause '
-        'an unexplained jump or broken causal continuity between surrounding events. '
+    profile = editorial_profile or DEFAULT_PROFILE
+    dramatic = profile.get('dramatic_condensation', False)
+    if dramatic:
+        mode_instruction = (
+            'DRAMATIC CONDENSATION MODE: Condense the episode into 5-8 focused, high-impact dramatic shorts. '
+            'Focus strictly on the main dramatic conflicts, major revelations, emotional turning points, and decisive character actions. '
+            'Omit low-stakes filler scenes, prolonged routine conversations with no plot development, and repetitive exchanges. '
+            'Mark omissions with reason in redundant_exchange, repeated_information, nonstory, low_stakes_filler, exposition_without_action. '
+            'Mark reaction_or_humor=true if the scene is primarily light comedy or banter without plot consequences. '
+            'CRITICAL: NEVER omit a narrative bridge: an event or non-verbal transition connecting State A to State B '
+            '(e.g. capture, departure, sudden accident, transport, handover) where omitting it would cause '
+            'an unexplained jump or broken causal continuity between surrounding events. Put such events into "narrative_bridges". '
+        )
+    else:
+        mode_instruction = (
+            'Edit a concise chronological episode, not an almost complete episode merely split into clips. '
+            'Keep setup/payoff, causes/results, new information, significant relationship changes and consequential silent action. '
+            'Only when the applied editorial profile permits repetition removal, remove whole exact redundant exchanges '
+            'or repeated information when all necessary facts are conveyed by kept events. '
+            'Preserve nearly all short reactions, jokes, banter and atmospheric exchanges even without plot progress. '
+            'A whole repeated exchange can be removed only when it adds no distinct reaction, humor or emotional beat. '
+            'Never drop an unresolved cause or needed context. '
+            'Never omit a narrative bridge: an event or non-verbal transition connecting State A to State B '
+            '(e.g. capture, departure, sudden accident, transport, handover) where omitting it would cause '
+            'an unexplained jump or broken causal continuity between surrounding events. '
+        )
+    instruction = (policy_instruction(profile)+' '+mode_instruction+
         'For each removed event supply a concrete explanation of redundancy/nonstory evidence and confidence; '
         'uncertainty preserves it. An event with summary_complete=false has missing facts and MUST remain. '
-        'No target duration, clip count or removal percentage. '
-        'Return JSON {"keep":[event ids],"omit":[{"event":id,"reason":"redundant_exchange|repeated_information|nonstory",'
+        'Return JSON {"keep":[event ids],"omit":[{"event":id,"reason":"redundant_exchange|repeated_information|nonstory|low_stakes_filler|exposition_without_action",'
         '"evidence":"concrete explanation","confidence":0..1,"reaction_or_humor":boolean}],'
         '"narrative_bridges":[event ids connecting state changes or transitions],'
         '"dependencies":[{"event":id,"requires":[earlier ids]}],"summary":"Russian episode storyline"}. '
-        'For an omission containing any reaction, joke or atmospheric beat mark reaction_or_humor=true; such events remain. Events: ')
+        'Events: ')
     # Measure actual model tokens and leave room for template and output. Keep
     # every event ID in this global view instead of truncating the episode tail.
     length = max((len(e['summary']) for e in events), default=1500)
@@ -186,7 +205,7 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
         'required': ['keep', 'omit', 'dependencies', 'summary'], 'additionalProperties': False}
     schema['properties']['omit'] = {'type':'array', 'items':{'type':'object', 'properties':{
         'event': {'type':'string', 'enum':sorted(known)},
-        'reason': {'type':'string', 'enum':['redundant_exchange','repeated_information','nonstory']},
+        'reason': {'type':'string', 'enum':sorted(VALID_OMIT_REASONS)},
         'evidence': {'type':'string'}, 'confidence':{'type':'number'},'reaction_or_humor':{'type':'boolean'}},
         'required':['event','reason','evidence','confidence','reaction_or_humor'], 'additionalProperties':False}}
     last_error = None

@@ -50,7 +50,7 @@ from app.story_review import (
 )
 
 ANALYSIS_VERSION = 8
-GLOBAL_STORY_VERSION = 5
+GLOBAL_STORY_VERSION = 6
 STORYBOARD_VERSION = 2
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
 

@@ -103,8 +103,9 @@ def _run_identity(job_dir: Path) -> dict:
     from .config import ASR_MODEL, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
     provider = analysis_provider(job_dir)
     profile = load_profile(job_dir)
-    modules = ("pipeline", "media", "analysis", "story", "closing", "pacing", "planner", "part_context",
-               "production_sequence", "source_roles", "editorial", "titles", "framing", "deepseek", "endings")
+    modules = ("pipeline", "media", "analysis", "story", "closing", "pacing", "planner", "dramatic_planner",
+               "part_context", "production_sequence", "source_roles", "editorial", "titles", "framing",
+               "deepseek", "endings")
     semantic = derived_story_identity("recorded-in-events.meta.json", provider, profile)
     files, loaded_code = {}, {}
     for name in modules:
@@ -258,10 +259,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     with _timed_stage(timings, "analysis"):
         analysis = analyze(job_dir, source, report, cancelled)
     check()
-    validate_analysis(analysis)
+    from .editorial import load_profile
+    editorial_prof = load_profile(job_dir)
     stat = source.stat()
     identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
                 "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
+                "editorial_profile": editorial_prof,
                 "music": music_config,
                 "subtitle_style": style_identity(options['caption_style'])}
     fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
@@ -290,7 +293,13 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     planning_started = time.perf_counter()
     if plan is None:
         report("planning", 0.67, "Собираем последовательность событий и целые реплики")
-        plan = build_plan(analysis)
+        from .editorial import load_profile
+        editorial_prof = load_profile(job_dir)
+        if editorial_prof.get('dramatic_condensation', False):
+            from .dramatic_planner import build_dramatic_plan
+            plan = build_dramatic_plan(analysis)
+        else:
+            plan = build_plan(analysis)
         plan['editing'] = options
         for part in plan['parts']:
             part.update(options)
