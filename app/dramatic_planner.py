@@ -22,12 +22,29 @@ from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
 from .titles import _subtract
 
-TARGET_SHORT_MIN = 65.0
-TARGET_SHORT_OPTIMAL = 95.0
-TARGET_SHORT_MAX = 112.0
-MAX_SHORT_DURATION = 118.0
+TARGET_SHORT_MIN = 60.0
+TARGET_SHORT_OPTIMAL = 100.0
+TARGET_SHORT_MAX = 115.0
+MAX_SHORT_DURATION = 120.0
 MIN_PARTS = 4
-MAX_PARTS = 7
+MAX_PARTS = 12
+
+
+def _align_words_to_shot_boundaries(words: list[dict], shots: list[dict]) -> list[dict]:
+    """Snap ASR word onsets that erroneously precede a shot change across silence/exclamations."""
+    if not shots or not words:
+        return words
+    shot_starts = [_number(s['start']) for s in shots]
+    aligned = []
+    for w in words:
+        w_copy = dict(w)
+        w_st = _number(w_copy['start'])
+        w_en = _number(w_copy['end'])
+        snap = next((s for s in shot_starts if w_st + 0.05 <= s <= min(w_en - 0.15, w_st + 0.45)), None)
+        if snap is not None:
+            w_copy['start'] = snap
+        aligned.append(w_copy)
+    return aligned
 
 
 def _event_dramatic_score(event: dict, segments: list[dict]) -> float:
@@ -115,8 +132,8 @@ def _compress_dialogue_turns(
     while i < len(ev_speech):
         turn_start = ev_speech[i]['start']
         turn_end = ev_speech[i]['end']
-        # Group contiguous turns (gap <= 1.0s)
-        while i + 1 < len(ev_speech) and ev_speech[i + 1]['start'] - turn_end <= 1.0:
+        # Group contiguous turns (gap <= 2.2s so natural speech pauses aren't cut out)
+        while i + 1 < len(ev_speech) and ev_speech[i + 1]['start'] - turn_end <= 2.2:
             i += 1
             turn_end = max(turn_end, ev_speech[i]['end'])
 
@@ -141,40 +158,24 @@ def _compress_dialogue_turns(
                         act_e = min(gap_end, act['end'])
                         if act_e - act_s > 0.5:
                             turn_ranges.append({'start': round(act_s, 6), 'end': round(act_e, 6)})
-                elif event.get('narrative_bridge') or (norm_shots and (gap_end - gap_start > 3.0)):
+                elif event.get('narrative_bridge') and gap_end - gap_start > 2.5:
                     # Narrative action beat within dialogue gap: preserve visual action continuity
-                    # rather than abruptly jumping across plot/physical states (e.g. capture/ropes).
+                    # as one unbroken span rather than choppy isolated frames.
                     gap_shots = [
                         s for s in norm_shots
                         if s['start'] < gap_end and s['end'] > gap_start
                     ]
                     valid_shots = [
-                        {'start': max(gap_start, s['start']), 'end': min(gap_end, s['end']),
-                         'orig_start': s['start'], 'orig_end': s['end']}
+                        {'start': max(gap_start, s['start']), 'end': min(gap_end, s['end'])}
                         for s in gap_shots
                         if min(gap_end, s['end']) - max(gap_start, s['start']) >= 0.4
                     ]
                     if valid_shots:
-                        if len(valid_shots) == 1:
-                            vs = valid_shots[0]
-                            dur = min(3.0, vs['end'] - vs['start'])
-                            turn_ranges.append({'start': round(vs['start'], 6), 'end': round(vs['start'] + dur, 6)})
-                        elif len(valid_shots) == 2:
-                            for vs in valid_shots:
-                                dur = min(2.8, vs['end'] - vs['start'])
-                                turn_ranges.append({'start': round(vs['start'], 6), 'end': round(vs['start'] + dur, 6)})
-                        else:
-                            # 3+ shots: pick initiation action shot and climax/major action shot
-                            init_shot = next((s for s in valid_shots if s['orig_start'] >= gap_start - 0.2), valid_shots[0])
-                            dur1 = min(2.8, init_shot['end'] - init_shot['start'])
-                            turn_ranges.append({'start': round(init_shot['start'], 6), 'end': round(init_shot['start'] + dur1, 6)})
-
-                            remaining = [s for s in valid_shots if s != init_shot]
-                            if remaining:
-                                main_shot = max(remaining, key=lambda s: s['end'] - s['start'])
-                                dur2 = min(3.2, main_shot['end'] - main_shot['start'])
-                                turn_ranges.append({'start': round(main_shot['start'], 6), 'end': round(main_shot['start'] + dur2, 6)})
-                    elif event.get('narrative_bridge') and gap_end - gap_start > 3.0:
+                        # Keep a continuous unbroken action beat (up to 9s) across contiguous action shots
+                        action_start = valid_shots[0]['start']
+                        action_end = min(valid_shots[-1]['end'], action_start + 9.0)
+                        turn_ranges.append({'start': round(action_start, 6), 'end': round(action_end, 6)})
+                    elif gap_end - gap_start > 3.0:
                         beats = condense_beat({'start': gap_start, 'end': gap_end}, max_hold=2.5)
                         for b in beats:
                             turn_ranges.append({'start': round(b['start'], 6), 'end': round(b['end'], 6)})
@@ -200,6 +201,7 @@ def _build_dramatic_boundaries(
     """Determine part boundaries targeting 5-8 shorts using dynamic programming."""
     total = round(sum(r['end'] - r['start'] for r in intervals), 6)
     candidates: dict[float, tuple[float, dict | None]] = {0.0: (0.0, None)}
+    shot_starts = [_number(s['start']) for s in shots]
 
     def add(time: float, cost: float, evidence: dict | None = None):
         if not _safe(time, words):
@@ -233,7 +235,12 @@ def _build_dramatic_boundaries(
         for ending in event.get('part_endings', []):
             kind = ending.get('kind', 'transition')
             cost = {'cliffhanger': 0.0, 'closure': 1.0, 'transition': 3.0}.get(kind, 3.0)
-            add(_number(ending['time']), cost, ending)
+            end_t = _number(ending['time'])
+            shot_snap = next((s for s in shot_starts if end_t - 0.02 <= s <= end_t + 0.85), None)
+            if shot_snap and _safe(shot_snap, words):
+                add(shot_snap, cost, {**ending, 'time': shot_snap})
+            else:
+                add(end_t, cost, ending)
 
     # 2. Interval ends (scene cuts)
     for interval in intervals:
@@ -334,13 +341,14 @@ def build_dramatic_plan(analysis: dict) -> dict:
     events = apply_exclusions(analysis["events"])
     probe = analysis["probe"]
     duration = _number(probe["duration"])
-    words = analysis["transcript"].get("words", [])
+    raw_words = analysis["transcript"].get("words", [])
     segments = analysis["transcript"].get("segments", [])
-    speech_all = [*segments, *words]
     shots = analysis.get("shots", [])
+    words = _align_words_to_shot_boundaries(raw_words, shots)
+    speech_all = [*segments, *words]
     shot_starts = [_number(shot["start"]) for shot in shots]
 
-    if segments and not words:
+    if segments and not raw_words:
         raise ValueError("Распознавание должно содержать временные отметки слов")
 
     by_id = {event["id"]: event for event in events}
@@ -349,7 +357,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
     eligible = [
         e for e in events
         if not e.get('pacing_excluded') and not e.get('global_excluded')
-        and (e.get('narrative_bridge') or (e["kind"] == "story" and e["importance"] >= 3) or e["importance"] >= 4)
+        and (e.get('narrative_bridge') or (e["kind"] == "story" and e.get("importance", 3) >= 3) or e.get("importance", 3) >= 4)
     ]
     if not eligible:
         eligible = [e for e in events if e["kind"] == "story"
@@ -357,43 +365,57 @@ def build_dramatic_plan(analysis: dict) -> dict:
     if not eligible:
         raise ValueError("В серии не найдены сюжетные сцены для драматического монтажа")
 
-    # Score events by dramatic intensity
+    # Transitive prerequisite closure helper
+    def _get_all_prereqs(eid: str) -> set[str]:
+        result = set()
+        stack = [eid]
+        while stack:
+            curr = stack.pop()
+            for req in by_id.get(curr, {}).get('requires', []):
+                if req in by_id and req not in result:
+                    r_ev = by_id[req]
+                    if not r_ev.get('pacing_excluded') and not r_ev.get('global_excluded'):
+                        result.add(req)
+                        stack.append(req)
+        return result
+
+    # Initial selection: narrative bridges, cliffhanger/closure events, and high importance events
+    selected_ids = {
+        e['id'] for e in eligible
+        if e.get('narrative_bridge') or e.get('part_endings') or e.get('importance', 3) >= 4
+    }
+    if not selected_ids:
+        selected_ids = {e['id'] for e in eligible}
+
+    for eid in list(selected_ids):
+        selected_ids.update(_get_all_prereqs(eid))
+
     scored_events = sorted(
         eligible,
         key=lambda e: _event_dramatic_score(e, segments),
         reverse=True
     )
-
-    # Narrative bridges are always mandatory
-    bridge_ids = {e['id'] for e in events if e.get('narrative_bridge')
-                  and not e.get('pacing_excluded') and not e.get('global_excluded')}
-
-    # Select core dramatic events targeting 5-7 richer Shorts (~600s - 800s total before compression)
-    selected_ids = set(bridge_ids)
     for ev in scored_events:
-        cur_dur = sum(by_id[i]['end'] - by_id[i]['start'] for i in selected_ids)
-        if cur_dur >= 680.0 and len(selected_ids) >= 7:
-            break
         selected_ids.add(ev['id'])
-        for req in ev.get('requires', []):
-            if req in by_id and not by_id[req].get('pacing_excluded') and not by_id[req].get('global_excluded'):
-                selected_ids.add(req)
+        selected_ids.update(_get_all_prereqs(ev['id']))
 
-    # Conversational setup guarantee: ensure direct prerequisites of all selected events are pulled in
-    for ev_id in list(selected_ids):
-        ev = by_id[ev_id]
-        for req in ev.get('requires', []):
-            if req in by_id and not by_id[req].get('pacing_excluded') and not by_id[req].get('global_excluded'):
-                selected_ids.add(req)
-
-    if len(selected_ids) < min(len(eligible), 5):
-        for ev in scored_events:
-            selected_ids.add(ev['id'])
-            for req in ev.get('requires', []):
-                if req in by_id and not by_id[req].get('pacing_excluded') and not by_id[req].get('global_excluded'):
-                    selected_ids.add(req)
-            if len(selected_ids) >= 5:
-                break
+    # Contiguous Sequence Closure: if event A and event B are selected,
+    # fill any in-between story events where gap <= 160s to prevent Swiss cheese plot jumps
+    sorted_eligible = sorted([e for e in eligible], key=lambda e: e['start'])
+    changed = True
+    while changed:
+        changed = False
+        sorted_sel = sorted([by_id[eid] for eid in selected_ids if eid in by_id], key=lambda e: e['start'])
+        for i in range(len(sorted_sel) - 1):
+            e_a = sorted_sel[i]
+            e_b = sorted_sel[i + 1]
+            if 0 < e_b['start'] - e_a['end'] <= 160.0:
+                for cand in sorted_eligible:
+                    if e_a['end'] <= cand['start'] and cand['end'] <= e_b['start']:
+                        if cand['id'] not in selected_ids:
+                            selected_ids.add(cand['id'])
+                            selected_ids.update(_get_all_prereqs(cand['id']))
+                            changed = True
 
     # 2. Build snappy intervals for each selected event
     excluded_ranges = [r for event in events for r in confirmed_exclusions(event)]
@@ -404,24 +426,27 @@ def build_dramatic_plan(analysis: dict) -> dict:
         for tr in turn_ranges:
             raw_intervals.append({'start': tr['start'], 'end': tr['end'], 'event_id': event['id']})
 
-    # Subtract confirmed exclusions and merge close sub-cuts (<0.04s)
+    # Subtract confirmed exclusions and merge close sub-cuts (gap <= 1.2s)
     intervals = []
     for raw in sorted(raw_intervals, key=lambda r: r['start']):
         for piece in _subtract([{'start': raw['start'], 'end': raw['end']}], excluded_ranges):
             left, right = round(piece['start'], 6), round(piece['end'], 6)
             if right - left < 0.2:
                 continue
-            if intervals and left <= intervals[-1]['end'] + 0.04:
+            if intervals and left <= intervals[-1]['end'] + 1.2:
                 intervals[-1]['end'] = max(right, intervals[-1]['end'])
-                if raw['event_id'] not in intervals[-1]['event_ids']:
-                    intervals[-1]['event_ids'].append(raw['event_id'])
+                raw_eids = raw['event_id'] if isinstance(raw['event_id'], list) else [raw['event_id']]
+                for eid in raw_eids:
+                    if eid not in intervals[-1]['event_ids']:
+                        intervals[-1]['event_ids'].append(eid)
             else:
-                intervals.append({'start': left, 'end': right, 'event_ids': [raw['event_id']]})
+                raw_eids = raw['event_id'] if isinstance(raw['event_id'], list) else [raw['event_id']]
+                intervals.append({'start': left, 'end': right, 'event_ids': list(raw_eids)})
 
     if not intervals:
         raise ValueError("После исключений не осталось фрагментов для монтажа")
 
-    # 3. Target 5-8 parts
+    # 3. Target optimal parts
     total_retained = sum(r['end'] - r['start'] for r in intervals)
     target_parts = max(MIN_PARTS, min(MAX_PARTS, round(total_retained / TARGET_SHORT_OPTIMAL)))
 
@@ -441,7 +466,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
         nonlocal current_cuts, current_duration
         if current_cuts:
             part_index = len(parts) + 1
-            cues = make_cues(remap_words(words, current_cuts))
+            cues = make_cues(remap_words(raw_words, current_cuts))
             ending = boundaries[len(parts)][1]
             part = {
                 "index": part_index,

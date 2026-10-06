@@ -177,6 +177,36 @@ class DramaticPlannerTests(unittest.TestCase):
         self.assertIn('e01', plan['selected_event_ids'])
         self.assertIn('e02', plan['selected_event_ids'])
 
+    def test_contiguous_sequence_closure_fills_gaps(self):
+        # e01 (intro), e02 (in-between context bridge), e03 (high dramatic climax)
+        events = [
+            {'id': 'e01', 'start': 0.0, 'end': 20.0, 'kind': 'story', 'importance': 4,
+             'summary': 'Начало сцены', 'requires': [],
+             'focus': [{'time': 5.0, 'x': 0.5, 'y': 0.5, 'confidence': 0.8}]},
+            {'id': 'e02', 'start': 20.0, 'end': 40.0, 'kind': 'story', 'importance': 3,
+             'summary': 'Связующий диалог / контекст', 'requires': [],
+             'focus': [{'time': 22.0, 'x': 0.5, 'y': 0.5, 'confidence': 0.8}]},
+            {'id': 'e03', 'start': 40.0, 'end': 70.0, 'kind': 'story', 'importance': 5,
+             'summary': 'Кульминация сцены', 'requires': [],
+             'part_endings': [{
+                 'time': 62.0 + SPEECH_TAIL,
+                 'kind': 'cliffhanger',
+                 'evidence': 'Клиффхэнгер',
+                 'confidence': 0.95
+             }],
+             'focus': [{'time': 50.0, 'x': 0.5, 'y': 0.5, 'confidence': 0.8}]}
+        ]
+        analysis = {
+            'probe': {'duration': 100.0, 'width': 1920, 'height': 1080, 'has_audio': True},
+            'events': events,
+            'transcript': {'words': self.words, 'segments': self.segments},
+            'shots': self.shots
+        }
+        plan = build_dramatic_plan(analysis)
+        validate_plan(plan, analysis)
+        # In-between story event e02 must not be omitted (no Swiss-cheese gap)
+        self.assertIn('e02', plan['selected_event_ids'])
+
 
 if __name__ == '__main__':
     unittest.main()
