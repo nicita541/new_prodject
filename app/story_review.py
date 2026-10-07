@@ -48,28 +48,45 @@ def validated_event(raw: dict, event_id: str, start: float, end: float, timestam
             'uncertain': bool(raw.get('uncertain', False))}
 
 
-def candidate_units(start: float, end: float, transcript: dict, shots: list[dict] | None = None) -> list[dict]:
-    """Actual reply boundaries, never an LLM-generated timestamp."""
-    boundaries = [start]
-    for segment in transcript['segments']:
-        value = float(segment['end'])
-        if start < value < end and value - boundaries[-1] >= 2.5:
-            if not any(w['start'] < value < w['end'] for w in transcript['words']):
-                boundaries.append(value)
-    # A speech-free window otherwise becomes one indivisible forty-second
-    # unit. Real shot boundaries let the model retain silent actions while
-    # dropping travel/waiting. Never split a spoken reply to create a unit.
+def candidate_units(start: float, end: float, transcript: dict, shots: list[dict] | None = None,
+                    *, visual_during_speech=True, annotated=False) -> list[dict]:
+    """Separate visible beats even during speech; never cut an ASR word."""
+    words = transcript.get('words', [])
+    segments = transcript.get('segments', [])
+    boundaries = {start: ['interval_start'], end: ['interval_end']}
+
+    def add(value, reason):
+        if start < value < end and not any(w['start'] < value < w['end'] for w in words):
+            nearest = min(boundaries, key=lambda b: abs(b-value))
+            if abs(nearest-value) < .08:
+                boundaries[nearest].append(reason)
+            else:
+                boundaries.setdefault(value, []).append(reason)
+
+    for segment in segments:
+        add(float(segment['end']), 'speech_boundary')
     for shot in shots or []:
         value = float(shot['start'])
-        if start + 2.5 < value < end - 2.5:
-            if not any(s['start'] - 0.25 < value < s['end'] + 0.3 for s in transcript['segments']):
-                if all(abs(value - b) >= 2.5 for b in boundaries):
-                    boundaries.append(value)
-    boundaries = sorted(boundaries)
-    boundaries.append(end)
+        if not start < value < end:
+            continue
+        if not visual_during_speech and any(s['start']-.25 < value < s['end']+.3 for s in segments):
+            continue
+        # Prefer the nearest real word edge around a camera cut. Overlapping
+        # ASR words may leave no safe edge; preserve that ambiguity explicitly.
+        if any(w['start'] < value < w['end'] for w in words):
+            edges = [float(w[key]) for w in words for key in ('start', 'end')
+                     if abs(float(w[key])-value) <= .75
+                     and not any(other['start'] < float(w[key]) < other['end'] for other in words)]
+            if not edges:
+                continue
+            value = min(edges, key=lambda t: (abs(t-value), t))
+        add(value, 'shot_transition')
+    ordered = sorted(boundaries)
     return [{'id': f'u{i:03d}', 'start': a, 'end': b,
-             'text': ' '.join(s['text'] for s in transcript['segments'] if s['start'] < b and s['end'] > a)}
-            for i, (a, b) in enumerate(zip(boundaries, boundaries[1:]))]
+             **({'boundary_reason': sorted(set(boundaries[a]))} if annotated else {}),
+             'text': ' '.join(w['text'] for w in (words or segments)
+                              if w['start'] < b and w['end'] > a)}
+            for i, (a, b) in enumerate(zip(ordered, ordered[1:])) if b > a]
 
 
 def apply_unit_selection(event: dict, raw: dict, units: list[dict]) -> None:

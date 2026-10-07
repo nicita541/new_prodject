@@ -284,7 +284,10 @@ def sequence_units(start,end,transcript,shots):
     # truncate the tail that the planner would otherwise restore.
     padded={**transcript,'segments':[{**s,'end':_speech_tail(s['end'],speech,end)}
                                     for s in transcript['segments']]}
-    return candidate_units(start,end,padded,shots)
+    # Production-boundary proofs use complete acoustic replies. Narrative
+    # action units may split at word-safe camera cuts, but must not change the
+    # ownership/tail of an independently confirmed opening or ending.
+    return candidate_units(start,end,padded,shots,visual_during_speech=False)
 
 
 def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, cancelled):

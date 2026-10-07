@@ -168,22 +168,45 @@ def vision_session(job_dir: Path, cancelled, provider='local', **local_settings)
     return _analysis.LocalVision(job_dir, cancelled, **local_settings)
 
 
-def storyboard_times(start: float, end: float, shots: list, transcript: dict) -> list[float]:
-    """Cover every selectable unit before supplementary shot/action samples."""
+def storyboard_samples(start: float, end: float, shots: list, transcript: dict) -> list[dict]:
+    """Mandatory beat coverage and before/current/after visual evidence."""
     import app.analysis as _analysis
-    units = _analysis.candidate_units(start, end, transcript, shots)
-    anchors = {round((unit['start'] + unit['end']) / 2, 6) for unit in units}
-    supplementary = [start + (end-start)*f for f in (.02, .25, .5, .75, .98)]
+    units = _analysis.candidate_units(start, end, transcript, shots, annotated=True)
+    samples = {}
+
+    def add(timestamp, reason, unit_id=None):
+        timestamp = round(min(end-1e-6, max(start, timestamp)), 6)
+        item = samples.setdefault(timestamp, {'time': timestamp, 'reasons': [], 'unit_ids': []})
+        if reason not in item['reasons']:
+            item['reasons'].append(reason)
+        if unit_id is not None and unit_id not in item['unit_ids']:
+            item['unit_ids'].append(unit_id)
+
+    for unit in units:
+        a, b = unit['start'], unit['end']
+        add((a+b)/2, 'unit_center', unit['id'])
+        if b-a <= 3:
+            for f in (.15, .5, .85):
+                add(a+(b-a)*f, 'short_action_burst', unit['id'])
+        if 'speech_boundary' in unit.get('boundary_reason', []):
+            add(a, 'speech_boundary', unit['id'])
     for shot in shots:
-        left, right = max(start, shot['start']), min(end, shot['end'])
-        if left < right:
-            supplementary.extend(left + (right-left)*f for f in (.2, .8))
-    extras = sorted({round(t, 6) for t in supplementary if start <= t < end} - anchors)
-    count = max(17, len(anchors)) - len(anchors)
-    if len(extras) > count:
-        extras = ([extras[round(i*(len(extras)-1)/(count-1))] for i in range(count)]
-                  if count > 1 else extras[:count])
-    return sorted(anchors | set(extras))
+        boundary = shot['start']
+        if start < boundary < end:
+            for offset in (-.2, .02, .2):
+                add(boundary+offset, 'shot_transition')
+    add(start+min(.15, (end-start)*.1), 'scene_boundary_after')
+    add(end-min(.15, (end-start)*.1), 'scene_boundary_before')
+    # Keep a coarse temporal overview without displacing mandatory short beats.
+    for fraction in (.02, .25, .5, .75, .98):
+        add(start+(end-start)*fraction, 'temporal_overview')
+    for i in range(17):
+        add(start+(end-start)*(i+.5)/17, 'temporal_overview')
+    return [samples[t] for t in sorted(samples)]
+
+
+def storyboard_times(start: float, end: float, shots: list, transcript: dict) -> list[float]:
+    return [item['time'] for item in storyboard_samples(start, end, shots, transcript)]
 
 
 def storyboard(source: Path, start: float, end: float, shots: list, transcript: dict, destination: Path, cancelled) -> list[float]:
@@ -196,8 +219,16 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
         raise ValueError('В выбранном исходном интервале нет видеокадра')
     candidates = sorted({min(last, max(first, timestamp))
                          for timestamp in _analysis.storyboard_times(left, right, shots, transcript)})
-    canvas = Image.new('RGB', (960, 294 * math.ceil(len(candidates) / 2)), '#111111')
+    # Retain a canonical overview for legacy consumers; keep detailed pages
+    # readable for providers that accept image arrays. Avoid JPEG's 65500px
+    # dimension limit on a dense action scene.
+    columns = max(2, math.ceil(len(candidates) / 80))
+    canvas = Image.new('RGB', (480*columns, 294 * math.ceil(len(candidates) / columns)), '#111111')
     draw = ImageDraw.Draw(canvas)
+    pages = []
+    if len(candidates) > 36:
+        pages = [Image.new('RGB', (960, 294*math.ceil(min(36, len(candidates)-offset)/2)), '#111111')
+                 for offset in range(0, len(candidates), 36)]
     stat = source.stat()
     source_key = hashlib.sha256(json.dumps({'path': str(source.resolve()), 'size': stat.st_size,
         'mtime_ns': stat.st_mtime_ns}, sort_keys=True).encode('utf-8')).hexdigest()[:16]
@@ -207,9 +238,29 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
             _analysis.run_process([FFMPEG, '-y', '-v', 'error', '-ss', f'{timestamp:.6f}', '-i', source, '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2', '-pix_fmt', 'yuvj420p', frame], destination.parent / 'frames.log', cancelled, timeout=30)
         if not frame.is_file() or frame.stat().st_size == 0:
             raise ValueError('FFmpeg не создал исходный видеокадр')
-        x, y = (i % 2) * 480, (i // 2) * 294
+        x, y = (i % columns) * 480, (i // columns) * 294
         with Image.open(frame) as picture:
             canvas.paste(picture, (x, y + 24))
+            if pages:
+                position = i % 36
+                page_x, page_y = position % 2 * 480, position // 2 * 294
+                pages[i//36].paste(picture, (page_x, page_y+24))
+                ImageDraw.Draw(pages[i//36]).text((page_x+6, page_y+5), f'Frame {i+1} | source {timestamp:.2f}s', fill='white')
         draw.text((x + 6, y + 5), f'Frame {i + 1} | source {timestamp:.2f}s', fill='white')
     canvas.save(destination, quality=84)
+    page_paths = []
+    for number, page in enumerate(pages):
+        path = destination.with_name(destination.stem+f'.page-{number:03d}.jpg')
+        page.save(path, quality=84)
+        page_paths.append(str(path))
+    from .media_probe import atomic_json
+    samples = storyboard_samples(left, right, shots, transcript)
+    audit = []
+    for timestamp in candidates:
+        matching = [s for s in samples if min(last, max(first, s['time'])) == timestamp]
+        audit.append({'time': timestamp,
+                      'reasons': sorted({r for s in matching for r in s['reasons']}) or ['frame_bounds_clamp'],
+                      'unit_ids': sorted({u for s in matching for u in s['unit_ids']})})
+    atomic_json(destination.with_suffix('.storyboard.json'), {'start': start, 'end': end, 'frames': audit,
+                                                            'pages': page_paths or [str(destination)]})
     return candidates

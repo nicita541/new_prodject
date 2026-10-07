@@ -247,7 +247,17 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
         collage = (visual_root / (str(event["id"]) + ".jpg")).resolve()
         if not collage.is_relative_to(visual_root):
             raise ValueError("Некорректный идентификатор события")
-        image_hash = hashlib.sha256(collage.read_bytes()).hexdigest() if collage.is_file() else None
+        image_pages = [collage]
+        frame_times = None
+        board_meta = collage.with_suffix('.storyboard.json')
+        if collage.is_file() and board_meta.is_file():
+            board = json.loads(board_meta.read_text(encoding='utf-8'))
+            frame_times = [f['time'] for f in board['frames']]
+            if getattr(vision, 'supports_image_pages', False):
+                image_pages = [Path(p) for p in board.get('pages', [str(collage)])]
+                if any(not p.resolve().is_relative_to(visual_root) for p in image_pages):
+                    raise ValueError('Некорректная страница storyboard')
+        image_hash = hashlib.sha256(b''.join(p.read_bytes() for p in image_pages)).hexdigest() if collage.is_file() else None
         identity = {"version": STORY_VERSION, "source": source_identity, "model": model_identity,
                     "editorial_profile":editorial_profile,
                     "thinking": bool(getattr(vision, 'thinking', False)),
@@ -290,7 +300,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                                    '(contains_credits) and continuous narrative action. Both can be true in a mixed interval. '
                                    'credit_montage means non-narrative production-credit/title montage. Return JSON booleans '
                                    'contains_credits, credit_montage, continuous_narrative and confidence.',
-                                   collage, max_tokens=130, schema=credit_schema)
+                                   image_pages if len(image_pages)>1 else collage, max_tokens=130, schema=credit_schema)
                 pure_credit = _credit_decision(raw)
                 if raw.get('contains_credits', raw.get('credit_montage', False)) and raw['confidence'] >= 0.85:
                     event['contains_credits'] = True
@@ -309,7 +319,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
             use_images = collage.is_file()
             frame_map = [{'frame':i+1, 'source':t,
                           'unit':next(u['id'] for u in units if u['start'] <= t < u['end'])}
-                         for i,t in enumerate(storyboard_times(event['start'],event['end'],shots,transcript))]
+                         for i,t in enumerate(frame_times or storyboard_times(event['start'],event['end'],shots,transcript))]
             empty_hold_guidance = ('Omit neutral empty waiting/scenery only when the actual next scene conveys the needed context.'
                                    if editorial_profile['remove_empty_holds'] else
                                    'The editorial profile disables empty-hold removal: preserve neutral waiting and scenery even when plot-neutral.')
@@ -366,7 +376,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     'reason': {'type':'string', 'enum':sorted(OMISSION_REASONS)},
                     'reaction_or_humor':{'type':'boolean'}},
                     'required':['unit','reason','reaction_or_humor'], 'additionalProperties':False}}
-                raw = vision.query(prompt, collage if use_images else None, max_tokens=650, schema=schema)
+                raw = vision.query(prompt, (image_pages if len(image_pages)>1 else collage) if use_images else None, max_tokens=650, schema=schema)
                 if not isinstance(raw, dict) or not isinstance(raw.get("summary"), str) or not raw["summary"].strip():
                     raise ValueError("Модель не описала фактические события")
                 keep = _unit_ids(raw, "keep_units", known)
@@ -402,7 +412,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     warnings.append("Модель попыталась убрать событие целиком: необходимый контекст сохранён")
                 if omissions:
                     approved,proof=verify_omissions(units,keep|preserve,omissions,
-                                                   collage,frame_map,vision,editorial_profile)
+                                                   image_pages if len(image_pages)>1 else collage,frame_map,vision,editorial_profile)
                     restored={d['unit'] for d in omissions}-{d['unit'] for d in approved}
                     preserve|=restored
                     omissions=approved

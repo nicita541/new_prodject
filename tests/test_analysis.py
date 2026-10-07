@@ -78,7 +78,7 @@ class AnalysisValidationTests(unittest.TestCase):
         shots=[{'start':i*.5,'end':(i+1)*.5} for i in range(80)]
         units=candidate_units(0,40,transcript,shots)
         times=storyboard_times(0,40,shots,transcript)
-        self.assertEqual(len(times),max(17,len(units)))
+        self.assertGreaterEqual(len(times),max(17,len(units)))
         self.assertEqual(times,sorted(set(times)))
         self.assertTrue(all(0 <= t < 40 for t in times))
         for unit in units:

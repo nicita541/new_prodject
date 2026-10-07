@@ -11,7 +11,7 @@ import time
 
 from app.config import FFMPEG, FFPROBE, ROOT
 
-SHOT_DETECTOR_VERSION = 3
+SHOT_DETECTOR_VERSION = 4
 BASE_SCENE_THRESHOLD = 0.14
 SCENE_THRESHOLD = 0.20
 
@@ -163,7 +163,10 @@ def detect_shots(source: Path, duration: float, job_dir: Path, cancelled) -> lis
     raw_log = log.read_text('utf-8', errors='replace')
     candidates = parse_shot_candidates(raw_log)
     times = adaptive_cut_times(candidates, duration)
-    return [{'id': f'shot_{i:04d}', 'start': round(start, 3), 'end': round(end, 3)} for i, (start, end) in enumerate(zip(times, times[1:]))]
+    scores = dict(candidates)
+    return [{'id': f'shot_{i:04d}', 'start': round(start, 3), 'end': round(end, 3),
+             'scene_score': scores.get(start, 0.0), 'accepted': True}
+            for i, (start, end) in enumerate(zip(times, times[1:]))]
 
 
 def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Path, cancelled) -> list[dict]:
@@ -172,7 +175,10 @@ def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Pa
     identity = {'source': fingerprint, 'duration': duration,
                 'version': SHOT_DETECTOR_VERSION, 'threshold': 'adaptive',
                 'width': 320, 'minimum_gap': .4}
-    shots = (load_json(path) if path.exists() and meta.exists() and load_json(meta) == identity
+    hit = path.exists() and meta.exists() and load_json(meta) == identity
+    from .pipeline_diagnostics import Diagnostics
+    Diagnostics(job_dir).event('shot_detection', 'cache_hit' if hit else 'cache_miss', detector_version=SHOT_DETECTOR_VERSION)
+    shots = (load_json(path) if hit
              else _analysis.detect_shots(source, duration, job_dir, cancelled))
     atomic_json(path, shots)
     atomic_json(meta, identity)

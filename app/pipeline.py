@@ -215,18 +215,46 @@ def run_job(job_dir: Path, report, cancelled) -> list[str]:
     manifest_path = job_dir / "runs" / (run_id + ".json")
     started = time.perf_counter()
     failed = False
+    from .pipeline_diagnostics import Diagnostics
+    diagnostics = Diagnostics(job_dir)
+    diagnostics.start(job_id=job_dir.name)
+    active = {'stage': None, 'started': time.perf_counter()}
+
+    def close_stage():
+        if active['stage']:
+            diagnostics.event(active['stage'], 'end', elapsed_seconds=round(time.perf_counter()-active['started'], 6))
+
+    def audited_report(stage, progress, message):
+        if stage != active['stage']:
+            close_stage()
+            active.update(stage=stage, started=time.perf_counter())
+            diagnostics.event(stage, 'start', progress=progress, message=message)
+        report(stage, progress, message)
+
     try:
         timings["identity"] = _run_identity(job_dir)
         _atomic_json(manifest_path, timings)
-        outputs = _run_job(job_dir, report, cancelled, timings)
+        outputs = _run_job(job_dir, audited_report, cancelled, timings)
         timings["status"] = "completed"
         return outputs
     except BaseException as error:
         failed = True
         timings["status"] = "cancelled" if isinstance(error, InterruptedError) else "failed"
         timings["error_type"] = type(error).__name__
+        try:
+            diagnostics.event(active['stage'] or 'pipeline', 'exception', error_type=type(error).__name__, error=str(error))
+        except OSError as diagnostic_error:
+            error.add_note('Diagnostic write failed: '+str(diagnostic_error))
         raise
     finally:
+        try:
+            close_stage()
+            diagnostics.event('pipeline', 'end', status=timings['status'], elapsed_seconds=round(time.perf_counter()-started, 6))
+            previous_run = json.loads((diagnostics.path/'run.json').read_text(encoding='utf-8'))
+            diagnostics.write('run.json', {**previous_run, 'job_id': job_dir.name, 'status': timings['status']})
+        except OSError:
+            if not failed:
+                raise
         timings["finished_at"] = datetime.now(timezone.utc).isoformat()
         timings["elapsed_seconds"] = round(time.perf_counter() - started, 6)
         timings["parts"].sort(key=lambda part: part["index"])
@@ -310,6 +338,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         plan["fingerprint"] = fingerprint
         _atomic_json(plan_path, plan)
     timings["stages_seconds"]["planning"] = round(time.perf_counter() - planning_started, 6)
+    from .pipeline_diagnostics import Diagnostics
+    diagnostics = Diagnostics(job_dir)
+    diagnostics.summary(selected_events=len(plan.get('selected_event_ids', [])), parts=len(plan['parts']),
+                        final_duration=sum(p['duration'] for p in plan['parts']), warnings=len(plan.get('warnings', [])))
+    for warning in plan.get('warnings', []):
+        diagnostics.warning('planning', str(warning))
     from .part_context import generate as generate_part_context
     with _timed_stage(timings, 'part_context'):
         generate_part_context(plan, job_dir, report, cancelled)
