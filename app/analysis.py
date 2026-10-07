@@ -50,7 +50,7 @@ from app.story_review import (
     global_story_review,
 )
 
-ANALYSIS_VERSION = 12
+ANALYSIS_VERSION = 13
 GLOBAL_STORY_VERSION = 8
 STORYBOARD_VERSION = 3
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
@@ -219,7 +219,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     meta = job_dir / 'analysis.meta.json'
     if meta.exists() and load_json(meta) != identity:
         previous = load_json(meta)
-        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+        if previous.get('source') != fingerprint or previous.get('version') not in range(1, ANALYSIS_VERSION):
             raise ValueError('Исходник или версия анализа изменились. Создайте новое задание.')
         # Preserve factual audio/ASR/shot checkpoints, archive the old model's
         # derived decisions so an upgrade cannot silently reuse stale framing.
@@ -267,14 +267,22 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         'suppressed_candidates': [c for c in raw_candidates if not c.get('accepted')]})
     from .scene_detection import scene_checkpoint, SCENE_DETECTOR_VERSION
     from .episode_profile import build_episode_profile, scene_settings
+    from .media_evidence import perception_checkpoint
+    with diagnostics.stage('media_perception', source_duration=probe['duration']):
+        perception = perception_checkpoint(source, probe['duration'], shots, transcript, job_dir, cancelled,
+                                           audio_stream=probe.get('audio_stream', 0))
+    diagnostics.write('media_evidence.json', perception)
     initial_profile = build_episode_profile(probe['duration'], transcript, shots, raw_candidates=raw_candidates)
     grouping_settings = scene_settings(initial_profile)
     diagnostics.write('episode_profile.json', {'initial': initial_profile, 'scene_settings': grouping_settings})
     report('scenes', .21, 'Объединение планов в смысловые сцены')
     scene_cache = {}
     with diagnostics.stage('scene_detection', shots=len(shots)):
-        scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled,
-                                  settings=grouping_settings, cache_status=scene_cache)
+        with vision_session(job_dir, cancelled, provider) as boundary_vision:
+            scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled,
+                                      settings=grouping_settings, cache_status=scene_cache,
+                                      vision=boundary_vision, perception=perception,
+                                      audio_stream=probe.get('audio_stream', 0))
     diagnostics.event('scene_detection', 'cache_hit' if scene_cache.get('cache_hit') else 'cache_miss', **scene_cache)
     diagnostics.write('scenes.json', scenes)
     for scene in scenes:

@@ -17,8 +17,8 @@ import re
 from .config import FFMPEG
 from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
 
-SCENE_DETECTOR_VERSION = 2
-SCENE_GROUPING_VERSION = 2
+SCENE_DETECTOR_VERSION = 3
+SCENE_GROUPING_VERSION = 3
 VISUAL_FEATURE_VERSION = 2
 DEFAULT_SETTINGS = {
     'visual_change_threshold': .62,
@@ -173,7 +173,8 @@ def _audio_state(feature: dict, audio_features, shot: dict):
 
 
 def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float, *,
-                           visual_features=None, audio_features=None, settings: dict | None = None) -> list[dict]:
+                           visual_features=None, audio_features=None, settings: dict | None = None,
+                           boundary_verifications=None) -> list[dict]:
     """Pure grouping: outputs only source boundaries, never generated timestamps.
 
     Optional shot evidence can contain verified ``location``, ``background``,
@@ -185,6 +186,7 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
     config = _settings(settings)
     source_shots = _candidate_segments(_shots(shots, float(duration)))
     features = _feature_map(source_shots, visual_features)
+    proofs = boundary_verifications or {}
     decisions = []
     groups = []
     group_start = 0
@@ -266,7 +268,11 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
                         and (_distance(right, features[source_shots[index + 1]['id']]) or 0) >= config['visual_change_threshold'])
 
         cut, confidence, uncertain = False, .86, False
-        if location_change:
+        proof = proofs.get(round(current['start'], 6))
+        if proof and not proof.get('uncertain', True) and proof.get('confidence', 0) >= .88:
+            cut, confidence = bool(proof['accepted']), proof['confidence']
+            reasons.extend(proof['reasons'])
+        elif location_change:
             cut, confidence = True, .97
             reasons.append('location_change')
         elif state_change or explicit_transition:
@@ -301,17 +307,24 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
             if character_change:
                 reasons.append('character_change')
         else:
-            if history_match or return_to_context or location_same:
+            if proof and not proof.get('uncertain', True) and proof.get('confidence', 0) >= .88:
+                pass
+            elif history_match or return_to_context or location_same:
                 reasons.append('camera_or_background_continuity')
             else:
                 reasons.append('insufficient_boundary_evidence')
                 uncertain = True
                 confidence = .55
+        if proof and proof.get('uncertain', True):
+            uncertain = True
+            confidence = min(confidence, .59)
+            reasons.append('semantic_boundary_unresolved')
         decision = {'time': current['start'], 'left_shot_id': previous['id'], 'right_shot_id': current['id'],
                     'left_original_shot_id': previous.get('parent_shot_id', previous['id']),
                     'right_original_shot_id': current.get('parent_shot_id', current['id']),
                     'source_candidate': current.get('source_candidate'),
                     'accepted': cut, 'reasons': reasons, 'confidence': round(confidence, 4), 'uncertain': uncertain,
+                    'boundary_verification': copy_proof(proof),
                     'signals': {**signal, 'visual_distance': round(visual_distance, 4) if visual_distance is not None else None,
                                 'location_change': location_change, 'background_change': background_change,
                                 'character_change': character_change, 'shared_characters': shared_characters,
@@ -328,6 +341,103 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
             boundary = {'reasons': reasons, 'confidence': confidence, 'uncertain': uncertain}
     close(len(source_shots))
     return _word_safe_scene_boundaries(groups, transcript)
+
+
+def copy_proof(proof):
+    # JSON-copy preserves immutable cached/source decisions for later provenance.
+    return json.loads(json.dumps(proof, allow_nan=False)) if proof else None
+
+
+def production_shots(shots, proposals, duration):
+    """Production consumes measured shot candidates, never supplied story facts."""
+    fields = ('id', 'start', 'end', 'scene_score', 'accepted')
+    raw_fields = ('id', 'time', 'score', 'scene_score', 'accepted', 'accepted_time',
+                  'local_density', 'adaptive_threshold', 'threshold', 'decision',
+                  'suppression_reason', 'cluster_peak_time', 'origins', 'reasons', 'scores')
+    result = []
+    for shot in _shots(shots, duration):
+        result.append({**{key: shot[key] for key in fields if key in shot},
+                       'raw_shot_candidates': [{key: row[key] for key in raw_fields if key in row}
+                                               for row in shot.get('raw_shot_candidates', [])]})
+    existing = {round(row['time'], 3) for shot in result for row in shot['raw_shot_candidates']}
+    for proposal in proposals:
+        time = float(proposal['time'])
+        if not math.isfinite(time) or time <= .001 or time >= duration-.001:
+            continue
+        owner = next((shot for shot in result if shot['start'] < time < shot['end']), None)
+        if owner is None:
+            continue
+        if round(time, 3) in existing:
+            for row in owner['raw_shot_candidates']:
+                if abs(row['time']-time) <= .001:
+                    row.update(origins=proposal.get('origins', []), scores=proposal.get('scores', {}))
+            continue
+        owner['raw_shot_candidates'].append({**{key: proposal[key] for key in raw_fields if key in proposal},
+            'accepted': False, 'decision': 'secondary_evidence_proposal',
+            'suppression_reason': 'not_a_montage_cut'})
+        existing.add(round(time, 3))
+    for shot in result:
+        shot['raw_shot_candidates'].sort(key=lambda row: row['time'])
+    return result
+
+
+def production_boundaries(source, source_shots, features, transcript, job_dir, vision, cancelled, config,
+                          audio_features=None):
+    from .semantic_boundary import classify_boundary, embedding_distance, verify_boundary
+    from .pipeline_diagnostics import Diagnostics
+    intervals = _candidate_segments(source_shots)
+    proofs = {}
+    diagnostics = Diagnostics(job_dir)
+    for index in range(1, len(intervals)):
+        if cancelled():
+            raise InterruptedError('Обработка отменена')
+        previous, current = intervals[index-1], intervals[index]
+        left, right = features.get(previous['id'], {}), features.get(current['id'], {})
+        proposal = current.get('source_candidate') or {}
+        history = intervals[max(0,index-12):index-1]
+        lookahead = intervals[index+1:index+1+config['reverse_shot_lookahead']]
+        def related(a, b):
+            distance = embedding_distance(a, b)
+            return distance is not None and distance < .035
+        recurrent = any(related(features.get(row['id'], {}), right) for row in history)
+        recurrent |= any(related(left, features.get(row['id'], {})) for row in lookahead)
+        signal = _speech_signal(current['start'], transcript, config['dialogue_gap_seconds'])
+        measured = classify_boundary(left, right, proposal=proposal, recurrent=recurrent, speech=signal)
+        audio_near = [row for row in audio_features or [] if row['start'] <= current['start']+.5
+                      and row['end'] >= current['start']-.5]
+        measured.update(asr_continuity=signal,
+            audio={'available': bool(audio_near),
+                   'silence': all(row.get('silence',False) for row in audio_near) if audio_near else None,
+                   'discontinuity_score': max((row.get('discontinuity_score',0) for row in audio_near),default=0),
+                   'ambient_change_score': max((row.get('ambient_change_score',0) for row in audio_near),default=0),
+                   'speech': any(row.get('speech',False) for row in audio_near),
+                   'rms_dbfs': [row.get('dbfs') for row in audio_near],
+                   'spectral_centroid': [row.get('spectral_centroid') for row in audio_near]})
+        diagnostics.event('semantic_boundary', 'level_a', source_time=current['start'],
+                          source_candidate=proposal.get('id'), **measured)
+        classification = measured['classification']
+        if classification != 'ambiguous_boundary':
+            proof = {'accepted': classification == 'obvious_scene_change', 'confidence': measured['confidence'],
+                     'uncertain': False, 'source': 'measured_level_a', 'level_a': measured,
+                     'reasons': [classification]}
+        elif vision is None:
+            proof = {'accepted': False, 'confidence': 0, 'uncertain': True,
+                     'source': 'semantic_boundary_unavailable', 'level_a': measured,
+                     'reasons': ['semantic_boundary_verification_required']}
+        else:
+            proof = verify_boundary(source, current['start'], previous['start'], current['end'], transcript,
+                                    measured, job_dir, vision, cancelled)
+            trusted = not proof.get('uncertain', True) and proof.get('confidence', 0) >= .88
+            physical = any(proof.get(key) for key in ('physical_transition', 'character_state_changed', 'object_state_changed'))
+            proof['accepted'] = trusted and bool(proof.get('location_changed') or physical)
+            proof['reasons'] = (['verified_physical_transition'] if physical else
+                                ['verified_location_change'] if proof.get('location_changed') else ['verified_same_scene']) if trusted else ['semantic_boundary_unresolved']
+            proof['uncertain'] = not trusted
+            proof['narrative_bridge_candidate'] = trusted and physical
+        proofs[round(current['start'],6)] = proof
+        diagnostics.append('boundary_decisions.jsonl', {'source_time': current['start'],
+                           'candidate_id': proposal.get('id'), 'decision': proof})
+    return proofs
 
 
 def _word_safe_scene_boundaries(scenes: list[dict], transcript: dict) -> list[dict]:
@@ -583,7 +693,7 @@ def _cached(path: Path, metadata: Path, identity):
 
 def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: list[dict], transcript: dict,
                      job_dir: Path, cancelled, *, settings: dict | None = None, audio_features=None,
-                     cache_status: dict | None = None) -> list[dict]:
+                     cache_status: dict | None = None, vision=None, perception=None, audio_stream=0) -> list[dict]:
     """Production boundary: real source frames are mandatory, separately cached."""
     if cancelled():
         raise InterruptedError('Обработка отменена')
@@ -593,31 +703,49 @@ def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: lis
     stat = source.stat()
     source_identity = {'fingerprint': fingerprint, 'path': str(source.resolve()),
                        'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns, 'duration': duration}
+    if vision is not None and perception is None:
+        from .media_evidence import perception_checkpoint
+        perception = perception_checkpoint(source, duration, shots, transcript, job_dir, cancelled,
+                                           audio_stream=audio_stream)
+    if perception is not None:
+        from .media_evidence import visual_feature_map
+        shots = production_shots(shots, perception.get('proposals', []), duration)
+        audio_features = perception.get('audio_features', [])
     feature_identity = {'source': source_identity, 'shots': _hash(shots), 'version': VISUAL_FEATURE_VERSION,
                         'sample_interval': config['feature_sample_interval'],
-                        'semantic_component': component_identity('visual_features')}
+                        'semantic_component': component_identity('visual_features'),
+                        'perception_signature': perception.get('signature') if perception is not None else None}
     feature_path, feature_meta = job_dir / 'scene-features.json', job_dir / 'scene-features.meta.json'
     features = _cached(feature_path, feature_meta, feature_identity)
     feature_hit = features is not None
     if not feature_hit:
-        features = extract_visual_features(source, shots, duration, job_dir, cancelled, settings=config)
+        features = (visual_feature_map(perception, _candidate_segments(shots)) if perception is not None else
+                    extract_visual_features(source, shots, duration, job_dir, cancelled, settings=config))
         atomic_json(feature_path, features)
         atomic_json(feature_meta, feature_identity)
     identity = {'source': source_identity, 'features': _hash(features), 'shots': _hash(shots),
                 'transcript': _hash({'words': transcript.get('words', []), 'segments': transcript.get('segments', [])}),
                 'audio': _hash(audio_features), 'settings': config,
                 'detector_version': SCENE_DETECTOR_VERSION, 'grouping_version': SCENE_GROUPING_VERSION,
-                'semantic_component': component_identity('scene_detector')}
+                'semantic_component': component_identity('scene_detector'),
+                'boundary_model': None}
+    if perception is not None and vision is not None:
+        from .semantic_boundary import _identity
+        identity['boundary_model'] = _identity(vision)
     path, meta = job_dir / 'scenes.json', job_dir / 'scenes.meta.json'
     scenes = _cached(path, meta, identity)
     scene_hit = scenes is not None
     if not scene_hit:
+        proofs = (production_boundaries(source, shots, features, transcript, job_dir, vision, cancelled, config,
+                                       audio_features=audio_features)
+                  if perception is not None else None)
         scenes = detect_semantic_scenes(shots, transcript, duration, visual_features=features,
-                                        audio_features=audio_features, settings=config)
+                                        audio_features=audio_features, settings=config, boundary_verifications=proofs)
         atomic_json(path, scenes)
         atomic_json(meta, identity)
     if cache_status is not None:
         cache_status.update({'cache_hit': scene_hit, 'visual_cache_hit': feature_hit})
     for scene in scenes:
-        scene['evidence']['checkpoint'] = {'visual_origin': 'source_frames', 'identity': _hash(identity)}
+        scene['evidence']['checkpoint'] = {'visual_origin': 'source_frames', 'identity': _hash(identity),
+                                           'perception': perception is not None}
     return scenes

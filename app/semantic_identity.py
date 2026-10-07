@@ -18,9 +18,9 @@ SEMANTIC_IDENTITY_VERSION = 1
 _ROOT = Path(__file__).resolve().parent
 _COMPONENTS = {
     'shot_detector': ('media_probe',),
-    'scene_detector': ('scene_detection', 'episode_profile', 'media_probe'),
-    'scene_grouping': ('scene_detection',),
-    'visual_features': ('scene_detection', 'media_probe'),
+    'scene_detector': ('scene_detection', 'semantic_boundary', 'media_evidence', 'episode_profile', 'media_probe'),
+    'scene_grouping': ('scene_detection', 'semantic_boundary'),
+    'visual_features': ('scene_detection', 'media_evidence', 'media_probe'),
     'storyboard': ('vision', 'story_review', 'media_probe'),
     'local_prompt': ('scene_analysis', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek'),
     'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek'),
@@ -35,6 +35,8 @@ _CONSTANTS = {
     'media_probe': ('SHOT_DETECTOR_VERSION', 'BASE_SCENE_THRESHOLD'),
     'scene_detection': ('SCENE_DETECTOR_VERSION', 'SCENE_GROUPING_VERSION', 'VISUAL_FEATURE_VERSION', 'DEFAULT_SETTINGS'),
     'scene_analysis': ('SCENE_PROMPT',),
+    'semantic_boundary': ('SEMANTIC_BOUNDARY_VERSION', 'BOUNDARY_PROMPT', 'BOUNDARY_RECOVERY_PROMPT', 'FLAGS', 'TRANSITIONS'),
+    'media_evidence': ('VERSION', 'POLICY'),
     'scene_understanding': ('SCENE_UNDERSTANDING_VERSION', 'RECOVERY_PROMPT', 'CONFIDENCE_FIELDS', 'UNCERTAINTY_REASONS', 'KINDS'),
     'global_verification': ('GLOBAL_VERIFICATION_VERSION', 'GLOBAL_VISUAL_PROMPT'),
     'episode_profile': ('EPISODE_PROFILE_VERSION', 'EPISODE_PROFILE_POLICY'),
