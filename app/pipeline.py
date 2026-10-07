@@ -318,6 +318,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 plan = cached
         except (ValueError, KeyError, TypeError):
             pass
+    planning_cache_hit = plan is not None
     planning_started = time.perf_counter()
     if plan is None:
         report("planning", 0.67, "Собираем последовательность событий и целые реплики")
@@ -342,6 +343,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     diagnostics = Diagnostics(job_dir)
     diagnostics.summary(selected_events=len(plan.get('selected_event_ids', [])), parts=len(plan['parts']),
                         final_duration=sum(p['duration'] for p in plan['parts']), warnings=len(plan.get('warnings', [])))
+    diagnostics.write('planner.json', {'cache_hit': planning_cache_hit,
+        'episode_profile': plan.get('episode_profile', analysis.get('episode_profile')),
+        'retention_budget': plan.get('retention_budget'),
+        'budget_exceeded': plan.get('retention_budget_exceeded', False),
+        'selected_event_ids': plan.get('selected_event_ids', []),
+        'parts': [{'index': p['index'], 'duration': p['duration'], 'ending': p.get('ending')} for p in plan['parts']]})
     for warning in plan.get('warnings', []):
         diagnostics.warning('planning', str(warning))
     from .part_context import generate as generate_part_context

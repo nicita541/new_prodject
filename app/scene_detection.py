@@ -15,11 +15,11 @@ from pathlib import Path
 import re
 
 from .config import FFMPEG
-from .media_probe import atomic_json, load_json, run_process
+from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
 
-SCENE_DETECTOR_VERSION = 1
-SCENE_GROUPING_VERSION = 1
-VISUAL_FEATURE_VERSION = 1
+SCENE_DETECTOR_VERSION = 2
+SCENE_GROUPING_VERSION = 2
+VISUAL_FEATURE_VERSION = 2
 DEFAULT_SETTINGS = {
     'visual_change_threshold': .62,
     'background_change_threshold': .53,
@@ -78,6 +78,44 @@ def _feature_map(shots: list[dict], supplied) -> dict[str, dict]:
     return features
 
 
+def _candidate_segments(shots: list[dict]) -> list[dict]:
+    """Probe retained raw cuts without relabeling them as accepted montage shots.
+
+    Subsegments are internal evidence intervals. Public scenes retain original
+    accepted shot IDs, with raw candidate IDs as a separate provenance level.
+    """
+    evidence = raw_shot_evidence(shots)
+    if not evidence:
+        return shots
+    result = []
+    for shot in shots:
+        current_features = _feature_map([shot], None)[shot['id']]
+        interior = [row for row in evidence if not row.get('accepted')
+                    and shot['start'] + .001 < float(row['time']) < shot['end'] - .001]
+        starts = [(shot['start'], None), *((float(row['time']), row) for row in interior)]
+        for number, (start, candidate) in enumerate(starts):
+            end = starts[number + 1][0] if number + 1 < len(starts) else shot['end']
+            if number:
+                # State labels persist; the act of changing state is an edge,
+                # so it must not create a scene at every later raw probe.
+                current_features.update(state_transition=False, action_transition=False)
+            if candidate:
+                # Optional verified labels support synthetic/annotated evidence;
+                # production descriptors still come from these actual intervals.
+                labels = ('location', 'background', 'characters', 'character_state', 'state_transition',
+                          'action_transition', 'audio_state', 'music_state', 'descriptor', 'reliability')
+                current_features.update({key: candidate[key] for key in labels if key in candidate})
+                current_features.update(candidate.get('features') or candidate.get('visual_features') or {})
+            else:
+                candidate = next((row for row in evidence if row.get('accepted') and
+                                  abs(row.get('accepted_time', row['time']) - start) <= .001), None)
+            identifier = shot['id'] if number == 0 else f'{shot["id"]}:candidate:{candidate["id"]}'
+            result.append({**shot, 'id': identifier, 'start': start, 'end': end,
+                           'features': dict(current_features), 'parent_shot_id': shot['id'],
+                           'source_candidate': candidate})
+    return result
+
+
 def _distance(left: dict, right: dict) -> float | None:
     """Border histograms tolerate foreground faces better than a whole frame."""
     a, b = left.get('descriptor'), right.get('descriptor')
@@ -126,7 +164,7 @@ def _audio_state(feature: dict, audio_features, shot: dict):
     if 'audio_state' in feature or 'music_state' in feature:
         return feature.get('audio_state', feature.get('music_state'))
     if isinstance(audio_features, dict):
-        entry = audio_features.get(shot['id'])
+        entry = audio_features.get(shot['id'], audio_features.get(shot.get('parent_shot_id')))
         return entry.get('state', entry.get('audio_state')) if isinstance(entry, dict) else entry
     for entry in audio_features or []:
         if entry['start'] <= (shot['start'] + shot['end']) / 2 < entry['end']:
@@ -145,7 +183,7 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
     fragmentation. A verified location/state transition overrides recurrence.
     """
     config = _settings(settings)
-    source_shots = _shots(shots, float(duration))
+    source_shots = _candidate_segments(_shots(shots, float(duration)))
     features = _feature_map(source_shots, visual_features)
     decisions = []
     groups = []
@@ -169,7 +207,8 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
         if boundary['uncertain']:
             uncertainty_reasons.append('unverified_scene_boundary')
         groups.append({'id': f'scene_{len(groups):04d}', 'start': group[0]['start'],
-                       'end': group[-1]['end'], 'shot_ids': [s['id'] for s in group],
+                       'end': group[-1]['end'], 'shot_ids': list(dict.fromkeys(s.get('parent_shot_id', s['id']) for s in group)),
+                       'candidate_ids': [s['source_candidate']['id'] for s in group if s.get('source_candidate')],
                        'boundary_reason': list(boundary['reasons']), 'confidence': round(confidence, 4),
                        'uncertain': uncertain,
                        'evidence': {'algorithm': 'local_visual_continuity',
@@ -179,6 +218,11 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
                                     'uncertainty_reasons': uncertainty_reasons,
                                     'sampled_times': sorted({float(sample['time']) for s in group
                                         for sample in features[s['id']].get('samples', []) if 'time' in sample}),
+                                    'source_segments': [{'id': s['id'], 'shot_id': s.get('parent_shot_id', s['id']),
+                                        'start': s['start'], 'end': s['end'],
+                                        'candidate_id': s['source_candidate']['id'] if s.get('source_candidate') else None,
+                                        'suppressed_candidate': bool(s.get('source_candidate') and not s['source_candidate'].get('accepted'))}
+                                        for s in group],
                                     'boundary_decisions': group_decisions}})
 
     for index in range(1, len(source_shots)):
@@ -246,6 +290,8 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
             reasons.append('short_visual_transition')
 
         if cut:
+            if current.get('source_candidate') and not current['source_candidate'].get('accepted'):
+                reasons.append('suppressed_shot_recovered')
             if signal['dialogue_break']:
                 reasons.append('dialogue_break')
             if signal['new_dialogue']:
@@ -262,6 +308,9 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
                 uncertain = True
                 confidence = .55
         decision = {'time': current['start'], 'left_shot_id': previous['id'], 'right_shot_id': current['id'],
+                    'left_original_shot_id': previous.get('parent_shot_id', previous['id']),
+                    'right_original_shot_id': current.get('parent_shot_id', current['id']),
+                    'source_candidate': current.get('source_candidate'),
                     'accepted': cut, 'reasons': reasons, 'confidence': round(confidence, 4), 'uncertain': uncertain,
                     'signals': {**signal, 'visual_distance': round(visual_distance, 4) if visual_distance is not None else None,
                                 'location_change': location_change, 'background_change': background_change,
@@ -327,7 +376,8 @@ def _word_safe_scene_boundaries(scenes: list[dict], transcript: dict) -> list[di
                          'shot_ids': s['shot_ids'], 'boundary_reason': s['boundary_reason']}
                         for s in chain]
             merged['end'] = last
-            merged['shot_ids'] = [shot_id for s in chain for shot_id in s['shot_ids']]
+            merged['shot_ids'] = list(dict.fromkeys(shot_id for s in chain for shot_id in s['shot_ids']))
+            merged['candidate_ids'] = list(dict.fromkeys(candidate_id for s in chain for candidate_id in s.get('candidate_ids', [])))
             merged['uncertain'] = True
             merged['confidence'] = min(merged['confidence'], .5)
             merged['evidence']['raw_end'] = last
@@ -335,6 +385,7 @@ def _word_safe_scene_boundaries(scenes: list[dict], transcript: dict) -> list[di
             merged['evidence']['uncertainty_reasons'].append('no_word_safe_scene_partition')
             merged['evidence']['boundary_decisions'] = [d for s in chain for d in s['evidence']['boundary_decisions']]
             merged['evidence']['sampled_times'] = sorted({t for s in chain for t in s['evidence']['sampled_times']})
+            merged['evidence']['source_segments'] = [segment for s in chain for segment in s['evidence']['source_segments']]
             result.append(merged)
             offset = stop
             continue
@@ -464,7 +515,7 @@ def extract_visual_features(source: Path, shots: list[dict], duration: float, jo
     The sample labels use showinfo's actual PTS, not the requested seek times.
     """
     config = _settings(settings)
-    source_shots = _shots(shots, duration)
+    source_shots = _candidate_segments(_shots(shots, duration))
     if cancelled():
         raise InterruptedError('Обработка отменена')
     directory = job_dir / 'scene-features'

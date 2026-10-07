@@ -1,6 +1,7 @@
 """Media probing, shot detection, windows chunking, and transcript normalization."""
 from __future__ import annotations
 
+import bisect
 import json
 import math
 from pathlib import Path
@@ -11,7 +12,7 @@ import time
 
 from app.config import FFMPEG, FFPROBE, ROOT
 
-SHOT_DETECTOR_VERSION = 4
+SHOT_DETECTOR_VERSION = 5
 BASE_SCENE_THRESHOLD = 0.14
 SCENE_THRESHOLD = 0.20
 
@@ -98,58 +99,67 @@ def parse_shot_candidates(log_text: str) -> list[tuple[float, float]]:
     return sorted(score_by_pts.items(), key=lambda x: x[0])
 
 
-def adaptive_cut_times(candidates: list[tuple[float, float]], duration: float, window: float = 4.0) -> list[float]:
-    """Dynamically adjust shot cut threshold based on local visual motion density.
-    
-    Calm dialogue maintains fine sensitivity (0.18-0.22).
-    Action and sakuga elevate threshold (up to 0.52) and resolve bursts to peak frames.
-    """
-    if not candidates:
-        return [0.0, duration]
-
-    candidate_times = [c[0] for c in candidates]
-    filtered = []
-    for t, score in candidates:
-        if t <= 0.3 or t >= duration - 0.3:
-            continue
-        local_triggers = sum(1 for other_t in candidate_times if abs(other_t - t) <= window)
-        density = local_triggers / (2.0 * window)
-        adaptive_threshold = min(0.52, max(0.18, 0.20 + 0.16 * max(0.0, density - 0.4)))
-        if score >= adaptive_threshold:
-            filtered.append((t, score, density))
-
-    if not filtered:
-        return [0.0, duration]
-
+def adaptive_shot_evidence(candidates: list[tuple[float, float]], duration: float,
+                           window: float = 4.0) -> list[dict]:
+    """Preserve every raw cut and the exact adaptive/cluster suppression reason."""
+    if not math.isfinite(duration) or duration <= 0 or not math.isfinite(window) or window <= 0:
+        raise ValueError('Некорректные параметры монтажных границ')
+    ordered = sorted((float(t), float(score)) for t, score in candidates)
+    if any(not math.isfinite(t) or not math.isfinite(score) or not 0 <= t <= duration
+           or not 0 <= score <= 1 for t, score in ordered):
+        raise ValueError('Некорректный кандидат монтажной границы')
+    times = [t for t, _ in ordered]
+    evidence, filtered = [], []
+    for index, (timestamp, score) in enumerate(ordered):
+        count = bisect.bisect_right(times, timestamp + window) - bisect.bisect_left(times, timestamp - window)
+        density = count / (2 * window)
+        threshold = min(.52, max(.18, .20 + .16 * max(0.0, density - .4)))
+        reason = ('near_source_boundary' if timestamp <= .3 or timestamp >= duration - .3 else
+                  'below_adaptive_threshold' if score < threshold else 'clustered_to_peak')
+        item = {'id': f'candidate_{index:05d}', 'time': timestamp, 'scene_score': score, 'score': score,
+                'local_density': density, 'adaptive_threshold': threshold, 'accepted': False,
+                'decision': 'suppressed', 'suppression_reason': reason, 'preserved_as_candidate': True}
+        evidence.append(item)
+        if reason == 'clustered_to_peak':
+            filtered.append(item)
     clusters = []
-    current_cluster = [filtered[0]]
-    for item in filtered[1:]:
-        if item[0] - current_cluster[-1][0] < 0.45:
-            current_cluster.append(item)
+    for item in filtered:
+        if clusters and item['time'] - clusters[-1][-1]['time'] < .45:
+            clusters[-1].append(item)
         else:
-            clusters.append(current_cluster)
-            current_cluster = [item]
-    if current_cluster:
-        clusters.append(current_cluster)
-
-    peak_times = []
+            clusters.append([item])
+    last = 0.0
     for cluster in clusters:
-        best = max(cluster, key=lambda x: x[1])
-        avg_density = sum(x[2] for x in cluster) / len(cluster)
-        peak_times.append((best[0], avg_density))
+        peak = max(cluster, key=lambda item: item['score'])
+        average_density = sum(item['local_density'] for item in cluster) / len(cluster)
+        for item in cluster:
+            item['cluster_peak_time'] = peak['time']
+        gap = .65 if average_density > 1 else .40
+        if peak['time'] - last < gap:
+            peak['suppression_reason'] = 'minimum_gap'
+        elif peak['time'] >= duration - .35:
+            peak['suppression_reason'] = 'source_tail_margin'
+        else:
+            peak.update(accepted=True, decision='accepted', suppression_reason=None,
+                        accepted_time=round(peak['time'], 3))
+            last = peak['time']
+    return evidence
 
-    times = [0.0]
-    for t, density in peak_times:
-        min_gap = 0.65 if density > 1.0 else 0.40
-        if t - times[-1] >= min_gap and t < duration - 0.35:
-            times.append(t)
 
-    if duration - times[-1] >= 0.35:
-        times.append(duration)
-    else:
-        times[-1] = duration
+def adaptive_cut_times(candidates: list[tuple[float, float]], duration: float, window: float = 4.0) -> list[float]:
+    """Keep the stable montage representation; suppressed candidates remain queryable."""
+    return [0.0, *(item['time'] for item in adaptive_shot_evidence(candidates, duration, window)
+                   if item['accepted']), duration]
 
-    return times
+
+def raw_shot_evidence(shots: list[dict], job_dir: Path | None = None) -> list[dict]:
+    """Read additive raw evidence without changing the legacy list-of-shots API."""
+    rows = [item for shot in shots for item in shot.get('raw_shot_candidates', [])]
+    if not rows and job_dir is not None:
+        path = Path(job_dir) / 'shots.candidates.json'
+        rows = load_json(path) if path.is_file() else []
+    unique = {item.get('id', f"time:{item['time']}"): item for item in rows}
+    return sorted(unique.values(), key=lambda item: (item['time'], item.get('id', '')))
 
 
 def detect_shots(source: Path, duration: float, job_dir: Path, cancelled) -> list[dict]:
@@ -162,11 +172,20 @@ def detect_shots(source: Path, duration: float, job_dir: Path, cancelled) -> lis
     ], log, cancelled)
     raw_log = log.read_text('utf-8', errors='replace')
     candidates = parse_shot_candidates(raw_log)
-    times = adaptive_cut_times(candidates, duration)
+    evidence = adaptive_shot_evidence(candidates, duration)
+    times = [0.0, *(item['time'] for item in evidence if item['accepted']), duration]
     scores = dict(candidates)
-    return [{'id': f'shot_{i:04d}', 'start': round(start, 3), 'end': round(end, 3),
+    shots = [{'id': f'shot_{i:04d}', 'start': round(start, 3), 'end': round(end, 3),
              'scene_score': scores.get(start, 0.0), 'accepted': True}
             for i, (start, end) in enumerate(zip(times, times[1:]))]
+    for shot in shots:
+        shot['raw_shot_candidates'] = []
+    for item in evidence:
+        timestamp = item.get('accepted_time', item['time'])
+        owner = next((shot for shot in shots if shot['start'] <= timestamp < shot['end']), shots[-1])
+        owner['raw_shot_candidates'].append(item)
+    atomic_json(job_dir / 'shots.candidates.json', evidence)
+    return shots
 
 
 def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Path, cancelled) -> list[dict]:
@@ -174,7 +193,7 @@ def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Pa
     path, meta = job_dir / 'shots.json', job_dir / 'shots.meta.json'
     identity = {'source': fingerprint, 'duration': duration,
                 'version': SHOT_DETECTOR_VERSION, 'threshold': 'adaptive',
-                'width': 320, 'minimum_gap': .4}
+                'width': 320, 'minimum_gap': .4, 'candidate_policy': 'preserve-all-v1'}
     hit = path.exists() and meta.exists() and load_json(meta) == identity
     from .pipeline_diagnostics import Diagnostics
     Diagnostics(job_dir).event('shot_detection', 'cache_hit' if hit else 'cache_miss', detector_version=SHOT_DETECTOR_VERSION)
@@ -182,6 +201,18 @@ def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Pa
              else _analysis.detect_shots(source, duration, job_dir, cancelled))
     atomic_json(path, shots)
     atomic_json(meta, identity)
+    evidence = raw_shot_evidence(shots)
+    atomic_json(job_dir / 'shots.candidates.json', evidence)
+    from .pipeline_diagnostics import Diagnostics
+    diagnostics = Diagnostics(job_dir)
+    diagnostics.write('shots.candidates.json', evidence)
+    diagnostics.summary(raw_shot_candidates=len(evidence), accepted_shot_candidates=sum(item['accepted'] for item in evidence),
+                        suppressed_shot_candidates=sum(not item['accepted'] for item in evidence))
+    for item in evidence:
+        diagnostics.event('shot_detection', item['decision'], candidate_id=item['id'], source_time=item['time'],
+                          score=item['scene_score'], local_density=item['local_density'],
+                          adaptive_threshold=item['adaptive_threshold'], reason=item['suppression_reason'],
+                          preserved_as_candidate=True)
     return shots
 
 

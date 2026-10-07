@@ -50,7 +50,7 @@ from app.story_review import (
     global_story_review,
 )
 
-ANALYSIS_VERSION = 10
+ANALYSIS_VERSION = 11
 GLOBAL_STORY_VERSION = 7
 STORYBOARD_VERSION = 3
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
@@ -62,6 +62,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
     from .scene_refinement import SCENE_REFINEMENT_VERSION
     from .global_verification import GLOBAL_VERIFICATION_VERSION
     from .scene_understanding import SCENE_UNDERSTANDING_VERSION
+    from .episode_profile import EPISODE_PROFILE_VERSION
     from .framing import FOCUS_VERSION
     from .closing import CLOSING_VERSION
     from .titles import TITLES_VERSION
@@ -80,6 +81,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
     return {'visual': analysis_key, 'story': STORY_VERSION, 'edge': EDGE_VERSION,
             'scene_refinement': SCENE_REFINEMENT_VERSION,
             'scene_understanding': SCENE_UNDERSTANDING_VERSION,
+            'episode_profile': EPISODE_PROFILE_VERSION,
             'global_visual_verification': GLOBAL_VERIFICATION_VERSION,
             'credit_routing': 'original-evidence-unioned-sequences-v2',
             'production_sequence': SEQUENCE_VERSION, 'credit_context_radius': CONTEXT_RADIUS,
@@ -117,8 +119,19 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
     scenes_path = job_dir / 'scenes.json'
     if scenes_path.is_file():
         record['scenes'] = load_json(scenes_path)
+    from .episode_profile import build_episode_profile, adaptive_retention_budget, scene_settings
+    from .media_probe import raw_shot_evidence
+    profile = build_episode_profile(probe['duration'], transcript, shots, record.get('scenes'), events,
+                                    raw_candidates=raw_shot_evidence(shots, job_dir))
+    profile['retention_budget'] = adaptive_retention_budget(profile)
+    profile['initial_profile'] = build_episode_profile(probe['duration'], transcript, shots,
+                                                      raw_candidates=raw_shot_evidence(shots, job_dir))
+    profile['scene_settings'] = scene_settings(profile['initial_profile'])
+    record['episode_profile'] = profile
+    atomic_json(job_dir/'episode_profile.json', profile)
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)
+    diagnostics.write('episode_profile.json', profile)
     diagnostics.summary(story_events=len(events),
         raw_selected_duration=sum(r['end']-r['start'] for e in events
                                   if not e.get('global_excluded') for r in e.get('selected_ranges', [])),
@@ -171,7 +184,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     meta = job_dir / 'analysis.meta.json'
     if meta.exists() and load_json(meta) != identity:
         previous = load_json(meta)
-        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
             raise ValueError('Исходник или версия анализа изменились. Создайте новое задание.')
         # Preserve factual audio/ASR/shot checkpoints, archive the old model's
         # derived decisions so an upgrade cannot silently reuse stale framing.
@@ -213,12 +226,20 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     report('scenes', 0.19, 'Определение смены планов')
     with diagnostics.stage('shot_detection', source_duration=probe['duration']):
         shots = shot_checkpoint(source, fingerprint, probe['duration'], job_dir, cancelled)
-    diagnostics.write('shots.json', [{**shot, 'scene_score': shot.get('scene_score'), 'accepted': True} for shot in shots])
+    from .media_probe import raw_shot_evidence
+    raw_candidates = raw_shot_evidence(shots, job_dir)
+    diagnostics.write('shots.json', {'accepted_shots': shots, 'raw_candidates': raw_candidates,
+        'suppressed_candidates': [c for c in raw_candidates if not c.get('accepted')]})
     from .scene_detection import scene_checkpoint, SCENE_DETECTOR_VERSION
+    from .episode_profile import build_episode_profile, scene_settings
+    initial_profile = build_episode_profile(probe['duration'], transcript, shots, raw_candidates=raw_candidates)
+    grouping_settings = scene_settings(initial_profile)
+    diagnostics.write('episode_profile.json', {'initial': initial_profile, 'scene_settings': grouping_settings})
     report('scenes', .21, 'Объединение планов в смысловые сцены')
     scene_cache = {}
     with diagnostics.stage('scene_detection', shots=len(shots)):
-        scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled, cache_status=scene_cache)
+        scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled,
+                                  settings=grouping_settings, cache_status=scene_cache)
     diagnostics.event('scene_detection', 'cache_hit' if scene_cache.get('cache_hit') else 'cache_miss', **scene_cache)
     diagnostics.write('scenes.json', scenes)
     for scene in scenes:
@@ -231,7 +252,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
                       for path in (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)]
     analysis_key = hashlib.sha256(json.dumps({'identity': identity, 'models': model_identity,
         'provider': provider_profile,
-        'transcript': transcript, 'shots': shots, 'scenes': scenes, 'scene_detector': SCENE_DETECTOR_VERSION}, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
+        'transcript': transcript, 'shots': shots, 'scenes': scenes, 'scene_detector': SCENE_DETECTOR_VERSION,
+        'episode_profile': initial_profile, 'scene_settings': grouping_settings}, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
     derived_key = hashlib.sha256(json.dumps(derived_story_identity(analysis_key, provider, editorial_profile),
         sort_keys=True).encode('utf-8')).hexdigest()
     derived_meta = job_dir / 'events.meta.json'

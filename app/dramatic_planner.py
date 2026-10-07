@@ -1,6 +1,6 @@
 """Dramatic Shorts montage planner.
 
-Condenses full anime episodes into 5-8 punchy, high-impact Shorts (40-85s each)
+Condenses full anime episodes using a factual episode profile and retention budget,
 using a three-beat dramatic structure:
 1. Hook (0-3s): cut starts immediately on the opening line/action, trimming leading dead air.
 2. Story Core: snappy conversational pacing (compressing pauses >1.2s down to ~0.5s while
@@ -21,6 +21,7 @@ from .subtitles import make_cues, remap_words
 from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
 from .titles import _subtract
+from .episode_profile import build_episode_profile, adaptive_retention_budget
 
 TARGET_SHORT_MIN = 60.0
 TARGET_SHORT_OPTIMAL = 85.0
@@ -95,6 +96,22 @@ def _compress_dialogue_turns(
 ) -> list[dict]:
     """Compress dialogue turns within an event: trim dead pauses >1.2s down to ~0.5s."""
     ev_start, ev_end = _number(event['start']), _number(event['end'])
+    if event.get('unit_selection_version') == 1 and event.get('selected_ranges'):
+        # Accepted source-unit decisions already distinguish action from waiting.
+        # Rescanning all ASR here would restore omitted exchanges and erase recovery fallback.
+        protected = []
+        for selection in event['selected_ranges']:
+            left, right = _number(selection['start']), _number(selection['end'])
+            for word in words:
+                if word['start'] < left < word['end']:
+                    left = word['start']
+                if word['start'] < right < word['end']:
+                    right = word['end']
+            left = max(ev_start, _speech_lead(left, speech_all))
+            right = min(ev_end, _speech_tail(right, speech_all, duration))
+            protected.append({'start': left, 'end': right})
+        from .source_roles import merge_ranges
+        return merge_ranges(protected)
     norm_shots = _normalize_shots(shots, duration) if shots else []
     ev_speech = sorted(
         [s for s in segments if s['start'] < ev_end and s['end'] > ev_start],
@@ -370,7 +387,7 @@ def _build_dramatic_boundaries(
 
 
 def build_dramatic_plan(analysis: dict) -> dict:
-    """Build a 5-8 part dramatic Shorts plan with conversational pacing and cliffhangers."""
+    """Build a source-evidenced montage with adaptive retention and complete replies."""
     validate_analysis(analysis)
     events = apply_exclusions(analysis["events"])
     probe = analysis["probe"]
@@ -386,6 +403,11 @@ def build_dramatic_plan(analysis: dict) -> dict:
         raise ValueError("Распознавание должно содержать временные отметки слов")
 
     by_id = {event["id"]: event for event in events}
+    from .media_probe import raw_shot_evidence
+    episode_profile = build_episode_profile(duration, analysis['transcript'], shots,
+                                            analysis.get('scenes'), events,
+                                            raw_candidates=raw_shot_evidence(shots) or None)
+    retention_budget = adaptive_retention_budget(episode_profile)
 
     # 1. Base eligibility: non-excluded story events and narrative bridges
     eligible = [
@@ -415,22 +437,20 @@ def build_dramatic_plan(analysis: dict) -> dict:
         reverse=True
     )
 
-    # Distillation quota: target ~500s - 540s of raw event content (~60% cut out)
-    TARGET_RAW_DURATION = 520.0
+    # Measure candidate cost after actual dialogue compression, not the scene envelope.
+    candidate_ranges = {e['id']: _compress_dialogue_turns(e, segments, words, speech_all, duration, shots)
+                        for e in eligible}
+    def selected_cost():
+        from .source_roles import merge_ranges
+        return sum(r['end']-r['start'] for r in merge_ranges(
+            [r for identifier in selected_ids for r in candidate_ranges.get(identifier, [])]))
     for ev in scored_events:
-        cur_dur = sum(by_id[i]['end'] - by_id[i]['start'] for i in selected_ids)
-        if cur_dur >= TARGET_RAW_DURATION and len(selected_ids) >= 8:
+        if selected_ids and selected_cost() >= retention_budget['optimal']:
             break
         selected_ids.add(ev['id'])
         for req in ev.get('requires', []):
             if req in by_id and by_id[req].get('narrative_bridge'):
                 selected_ids.add(req)
-
-    if len(selected_ids) < min(len(eligible), 5):
-        for ev in scored_events:
-            selected_ids.add(ev['id'])
-            if len(selected_ids) >= 5:
-                break
 
     # Immediate Narrative Continuity: if selected events A and B sandwich an immediate
     # conversational/story scene C (gap to A <= 10s and gap to B <= 10s), include C
@@ -562,7 +582,10 @@ def build_dramatic_plan(analysis: dict) -> dict:
         "events": [dict(e) for e in events if e["id"] in retained_ids],
         "parts": parts,
         "warnings": list(dict.fromkeys(warnings)),
-        "dramatic_montage": True
+        "dramatic_montage": True,
+        "episode_profile": episode_profile,
+        "retention_budget": retention_budget,
+        "retention_budget_exceeded": total_retained > retention_budget['max'] + 0.002
     }
     validate_plan(plan, analysis)
     return plan

@@ -29,10 +29,12 @@ Visual heuristics are evidence, not calibrated probabilities. Preserve uncertain
 
 - [x] Read attached requirements, check branch/HEAD/worktree, baseline tests.
 - [x] Stage 1 committed as `52ce612`: 493 Python tests, 23 UI tests, real FFmpeg scene/action-frame integration.
-- [x] Stage 2 implemented and verified: 536 Python tests and 23 UI tests; separate commit follows.
-- [ ] Stage 3 implemented, verified and committed.
+- [x] Stage 2 committed as `e340521`: 536 Python tests and 23 UI tests.
+- [x] Stage 3 implemented and verified: 566 Python tests and 23 UI tests; separate commit follows.
 - [ ] Stage 4 implemented, verified and committed.
 
 Baseline UI fixes committed separately as `1eb2d9c`: progress scaling and visible processing messages. User's original server/UI/API changes remain unstaged. Stage 1 uses at most 96 requested frames per technical chunk and bounded neighbor pages; the existing story refiner consumes these children and merges evidence back under the original semantic parent.
 
 Stage 2 adds strict semantic/visual/context confidence, fresh dense-frame recovery, word-safe minimal fallback and an independent visual verification checkpoint. Confirmed source exclusions remain authoritative. Original, recovery and global decisions are preserved even when a later decision corrects the summary.
+
+Stage 3 preserves all FFmpeg candidates above the base 0.14 threshold, including suppression provenance. Real descriptors probe suppressed boundaries and retain original shot IDs. Initial/refined episode profiles adapt grouping and source-bounded budgets; the planner measures actual retained material. A real FFmpeg regression recovers a suppressed location change inside one accepted shot.

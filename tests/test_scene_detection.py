@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from app.config import FFMPEG, TEMP
 from app.media import run_command
+from app.media_probe import adaptive_shot_evidence, load_json
 from app.scene_detection import analysis_chunks, detect_semantic_scenes, scene_checkpoint
 
 
@@ -169,6 +170,57 @@ class SemanticSceneTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             detect_semantic_scenes([], EMPTY, float('nan'))
 
+    def test_suppressed_location_change_preserves_original_shot_and_word_safe_coverage(self):
+        source_shot = shot(0, 0, 20, 'room')
+        raw = adaptive_shot_evidence([(10, .17)], 20)
+        raw[0]['features'] = {'location': 'car', 'character_state': 'bound'}
+        source_shot['raw_shot_candidates'] = raw
+        transcript = {'words': [{'start': 9.8, 'end': 10.1, 'text': 'word'}], 'segments': []}
+        scenes = detect_semantic_scenes([source_shot], transcript, 20)
+        self.assertEqual([(s['start'], s['end']) for s in scenes], [(0, 10.1), (10.1, 20)])
+        self.assertTrue(all(s['shot_ids'] == ['shot_0000'] for s in scenes))
+        self.assertEqual(scenes[1]['candidate_ids'], [raw[0]['id']])
+        self.assertIn('suppressed_shot_recovered', scenes[1]['boundary_reason'])
+        self.assertEqual(scenes[1]['evidence']['raw_boundary_time'], 10)
+        decision = scenes[1]['evidence']['boundary_decisions'][0]
+        self.assertEqual(decision['source_candidate'], raw[0])
+        self.assertEqual(decision['right_original_shot_id'], 'shot_0000')
+        self.assertFalse(any(9.8 < s['start'] < 10.1 or 9.8 < s['end'] < 10.1 for s in scenes))
+        self.assertEqual(scenes, detect_semantic_scenes([source_shot], transcript, 20))
+        self.assertNotIn('parent_shot_id', source_shot)
+        self.assertEqual(source_shot['raw_shot_candidates'], raw)
+
+    def test_dense_suppressed_camera_motion_remains_one_scene_but_is_auditable(self):
+        raw = adaptive_shot_evidence([(5 + index * .1, .22) for index in range(12)], 20)
+        source_shot = {**shot(0, 0, 20, 'room'), 'raw_shot_candidates': raw}
+        scenes = detect_semantic_scenes([source_shot], EMPTY, 20)
+        self.assertEqual(len(scenes), 1)
+        self.assertEqual((scenes[0]['start'], scenes[0]['end']), (0, 20))
+        self.assertEqual(scenes[0]['candidate_ids'], [row['id'] for row in raw])
+        self.assertEqual(len(scenes[0]['evidence']['boundary_decisions']), 12)
+        self.assertTrue(all(not d['accepted'] for d in scenes[0]['evidence']['boundary_decisions']))
+        self.assertFalse(scenes[0]['uncertain'])
+
+    def test_indivisible_word_retains_all_suppressed_transition_evidence(self):
+        raw = adaptive_shot_evidence([(10, .17), (11, .17)], 20)
+        raw[0]['features'], raw[1]['features'] = {'location': 'street'}, {'location': 'car'}
+        scenes = detect_semantic_scenes([{**shot(0, 0, 20, 'room'), 'raw_shot_candidates': raw}],
+                                        {'words': [{'start': 0, 'end': 20, 'text': 'word'}], 'segments': []}, 20)
+        self.assertEqual([(s['start'], s['end']) for s in scenes], [(0, 20)])
+        self.assertEqual(scenes[0]['candidate_ids'], [row['id'] for row in raw])
+        self.assertEqual(len(scenes[0]['evidence']['source_segments']), 3)
+        self.assertEqual(len(scenes[0]['evidence']['boundary_decisions']), 2)
+        self.assertTrue(scenes[0]['uncertain'])
+
+    def test_suppressed_physical_transition_flag_is_not_repeated_on_later_probes(self):
+        raw = adaptive_shot_evidence([(5, .17), (6, .17), (7, .17)], 20)
+        raw[0]['features'] = {'character_state': 'bound', 'state_transition': True}
+        source_shot = {**shot(0, 0, 20, 'room', character_state='free'), 'raw_shot_candidates': raw}
+        scenes = detect_semantic_scenes([source_shot], EMPTY, 20)
+        self.assertEqual([(s['start'], s['end']) for s in scenes], [(0, 5), (5, 20)])
+        self.assertIn('physical_state_transition', scenes[1]['boundary_reason'])
+        self.assertEqual(sum(d['accepted'] for s in scenes for d in s['evidence']['boundary_decisions']), 1)
+
 
 class SceneCheckpointTests(unittest.TestCase):
     def setUp(self):
@@ -216,6 +268,31 @@ class SceneCheckpointTests(unittest.TestCase):
             scene_checkpoint(self.directory / 'missing.mp4', 'hash', 10, [], EMPTY, self.directory, lambda: True)
         extract.assert_not_called()
 
+    def test_raw_candidate_change_invalidates_features_and_same_inputs_reuse_scenes(self):
+        raw = adaptive_shot_evidence([(5, .17)], 10)
+        shots = [{**shot(0, 0, 10), 'raw_shot_candidates': raw}]
+        features = {'shot_0000': {'location': 'room', 'samples': [{'time': 2}], 'origin': 'source_frames'},
+                    f"shot_0000:candidate:{raw[0]['id']}": {'location': 'car', 'samples': [{'time': 7}],
+                                                           'origin': 'source_frames'}}
+        with patch('app.scene_detection.extract_visual_features', return_value=features) as extract:
+            first = scene_checkpoint(self.source, 'source', 10, shots, EMPTY, self.directory, lambda: False)
+            reused_status = {}
+            reused = scene_checkpoint(self.source, 'source', 10, shots, EMPTY, self.directory, lambda: False,
+                                      cache_status=reused_status)
+            self.assertEqual(first, reused)
+            self.assertTrue(reused_status['cache_hit'])
+            self.assertTrue(reused_status['visual_cache_hit'])
+            self.assertEqual(extract.call_count, 1)
+            raw[0]['scene_score'] = raw[0]['score'] = .19
+            changed_status = {}
+            changed = scene_checkpoint(self.source, 'source', 10, shots, EMPTY, self.directory, lambda: False,
+                                       cache_status=changed_status)
+            self.assertEqual(extract.call_count, 2)
+            self.assertFalse(changed_status['cache_hit'])
+            self.assertFalse(changed_status['visual_cache_hit'])
+            self.assertNotEqual(first[0]['evidence']['checkpoint']['identity'],
+                                changed[0]['evidence']['checkpoint']['identity'])
+
     @unittest.skipUnless(FFMPEG.is_file(), 'Portable FFmpeg has not been installed')
     def test_real_source_frames_and_actual_pts_drive_scene_grouping(self):
         run_command([str(FFMPEG), '-y', '-v', 'error', '-f', 'lavfi', '-i',
@@ -234,6 +311,41 @@ class SceneCheckpointTests(unittest.TestCase):
         self.assertTrue(all(s['evidence']['checkpoint']['visual_origin'] == 'source_frames' for s in scenes))
         self.assertTrue((self.directory / 'scene-features.json').is_file())
         self.assertTrue((self.directory / 'scene-features' / 'frame-000001.jpg').is_file())
+
+    @unittest.skipUnless(FFMPEG.is_file(), 'Portable FFmpeg has not been installed')
+    def test_real_source_location_change_is_recovered_from_dense_suppressed_candidates(self):
+        run_command([str(FFMPEG), '-y', '-v', 'error', '-f', 'lavfi', '-i',
+                     "color=red:s=160x90:r=10:d=3,drawgrid=w=20:h=20:t=2:c=white",
+                     '-f', 'lavfi', '-i', "color=blue:s=160x90:r=10:d=3,drawgrid=w=20:h=20:t=2:c=white",
+                     '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0[v]', '-map', '[v]',
+                     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(self.source)], self.directory)
+        raw = adaptive_shot_evidence([(index * .5, .22) for index in range(1, 12)], 6)
+        self.assertTrue(all(not row['accepted'] for row in raw))
+        shots = [{**shot(0, 0, 6), 'raw_shot_candidates': raw}]
+        transcript = {'words': [{'start': 2.85, 'end': 3.1, 'text': 'crossing'}], 'segments': []}
+        scenes = scene_checkpoint(self.source, 'real-source', 6, shots, transcript, self.directory, lambda: False)
+        self.assertEqual([(s['start'], s['end']) for s in scenes], [(0, 3.1), (3.1, 6)])
+        self.assertTrue(all(s['shot_ids'] == ['shot_0000'] for s in scenes))
+        self.assertIn('suppressed_shot_recovered', scenes[1]['boundary_reason'])
+        self.assertIn('visual_context_change', scenes[1]['boundary_reason'])
+        self.assertTrue(scenes[1]['uncertain'])  # Image descriptors cannot label the real location.
+        boundary = next(d for d in scenes[1]['evidence']['boundary_decisions'] if d['accepted'])
+        self.assertEqual(boundary['time'], 3)
+        self.assertEqual(boundary['source_candidate']['suppression_reason'], 'below_adaptive_threshold')
+        self.assertEqual(scenes[1]['evidence']['raw_boundary_time'], 3)
+        features = load_json(self.directory / 'scene-features.json')
+        self.assertEqual(len(features), len(raw) + 1)
+        candidate_feature = features[f"shot_0000:candidate:{boundary['source_candidate']['id']}"]
+        self.assertEqual(candidate_feature['origin'], 'source_frames')
+        self.assertTrue(all(3 <= sample['time'] < 3.5 for sample in candidate_feature['samples']))
+        self.assertTrue(scenes[0]['evidence']['sampled_times'])
+        self.assertTrue(scenes[1]['evidence']['sampled_times'])
+        status = {}
+        reused = scene_checkpoint(self.source, 'real-source', 6, shots, transcript, self.directory, lambda: False,
+                                  cache_status=status)
+        self.assertEqual(scenes, reused)
+        self.assertTrue(status['cache_hit'])
+        self.assertTrue(status['visual_cache_hit'])
 
 
 if __name__ == '__main__':
