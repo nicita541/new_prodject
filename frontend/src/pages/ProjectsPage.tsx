@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { useLibrary } from '../hooks/useLibrary';
 import { api } from '../api/client';
 import { Link } from 'react-router-dom';
+import { activeProjects, episodesForProject, completedJobsForEpisode, projectHasRunningJob } from '../library/selectors';
 
 export function ProjectsPage() {
   const { data, isLoading, error, refetch } = useLibrary();
   const [title, setTitle] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
-  const projects = data?.projects || [];
+  const projects = activeProjects(data);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -77,12 +78,10 @@ export function ProjectsPage() {
         {projects.length > 0 ? (
           <div id="project-cards" className="grid-cards">
             {projects.map((project, index) => {
-              const episodesCount = project.episodes?.length || 0;
-              const readyCount = project.episodes?.filter(e => 
-                // @ts-ignore - jobs might not be populated cleanly here, or we need to check if there are completed jobs
-                e.jobs && e.jobs.some((job: import('../api/types').Job) => job.status === 'completed')
-              ).length || 0;
-              const isDeleting = false;
+              const episodes = episodesForProject(data, project.id);
+              const episodesCount = episodes.length;
+              const readyCount = episodes.filter(episode => completedJobsForEpisode(episode).length > 0).length;
+              const isDeleting = projectHasRunningJob(data, project.id);
               
               return (
                 <div key={project.id} className="item-card-wrap">

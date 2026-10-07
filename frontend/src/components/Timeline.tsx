@@ -147,6 +147,7 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
                     onClick={(e) => {
                       e.stopPropagation();
                       setActiveDebugInfo(p);
+                      setSourceSelection({ start: p.start, end: p.end, retained: p.partIndex !== null });
                       handleSeek(p.start);
                     }}
                   />

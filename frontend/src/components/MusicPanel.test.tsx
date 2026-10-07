@@ -55,7 +55,7 @@ describe('MusicPanel', () => {
     await userEvent.selectOptions(selects[2], 'none');
 
     expect(client.api.saveMusicSettings).toHaveBeenCalledWith(expect.objectContaining({
-      part_tracks: { '1': 'track1.mp3' } // '2' should be deleted (it wasn't there anyway, but make sure it doesn't add 'none')
+      part_tracks: { '1': 'track1.mp3', '2': 'none' } // choose_track explicitly recognizes this silent override
     }));
   });
 

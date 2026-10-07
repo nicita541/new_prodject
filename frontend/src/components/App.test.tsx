@@ -1,50 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render } from '@testing-library/react';
-import App from '../App';
-
-vi.mock('../hooks/useLibrary', () => ({
-  useLibrary: () => ({ data: null, isLoading: true, error: null })
-}));
-
-describe('App Routing backward compatibility', () => {
-  let locationReplaceSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    locationReplaceSpy = vi.spyOn(window.location, 'replace').mockImplementation(() => {});
-  });
-
-  afterEach(() => {
-    locationReplaceSpy.mockRestore();
-    window.location.hash = '';
-  });
-
-  it('translates /#projects to /projects', () => {
-    window.location.hash = '#projects';
-    render(<App />);
-    expect(locationReplaceSpy).toHaveBeenCalledWith('/projects');
-  });
-
-  it('translates /#trash to /trash', () => {
-    window.location.hash = '#trash';
-    render(<App />);
-    expect(locationReplaceSpy).toHaveBeenCalledWith('/trash');
-  });
-
-  it('translates /#project/123 to /project/123', () => {
-    window.location.hash = '#project/123';
-    render(<App />);
-    expect(locationReplaceSpy).toHaveBeenCalledWith('/project/123');
-  });
-
-  it('translates /#episode/123/edit to /episode/123/edit', () => {
-    window.location.hash = '#episode/123/edit';
-    render(<App />);
-    expect(locationReplaceSpy).toHaveBeenCalledWith('/episode/123/edit');
-  });
-
-  it('translates /#episode/123/review/job to /episode/123/review/job', () => {
-    window.location.hash = '#episode/123/review/job';
-    render(<App />);
-    expect(locationReplaceSpy).toHaveBeenCalledWith('/episode/123/review/job');
-  });
+import {describe,it,expect,vi} from 'vitest';
+import {redirectLegacyHash} from '../navigation';
+describe('App legacy hash route adapter',()=>{
+ for(const route of ['projects','trash','project/123','episode/123/edit','episode/123/review/job']) {
+  it(`translates #${route}`,()=>{const replace=vi.fn();redirectLegacyHash('#'+route,replace);expect(replace).toHaveBeenCalledWith('/'+route);});
+ }
+ it('ignores an unknown hash',()=>{const replace=vi.fn();redirectLegacyHash('#unknown',replace);expect(replace).not.toHaveBeenCalled();});
 });

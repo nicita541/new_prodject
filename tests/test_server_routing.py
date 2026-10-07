@@ -1,9 +1,7 @@
-import pytest
-import httpx
 from fastapi.testclient import TestClient
 from app.server import app
 
-client = TestClient(app)
+client = TestClient(app, base_url="http://127.0.0.1")
 
 def test_react_routes_serve_index():
     # When hitting React app routes, it should return the frontend index.html

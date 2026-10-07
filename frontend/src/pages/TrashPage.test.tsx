@@ -1,67 +1,32 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import { TrashPage } from './TrashPage';
-import { BrowserRouter } from 'react-router-dom';
-import * as client from '../api/client';
-import * as hooks from '../hooks/useLibrary';
-
-vi.mock('../api/client');
-vi.mock('../hooks/useLibrary');
-
-describe('TrashPage', () => {
-  const refetch = vi.fn();
-
-  beforeEach(() => {
-    vi.mocked(hooks.useLibrary).mockReturnValue({
-      data: {
-        projects: [],
-        trash: {
-          projects: [{ id: 'p1', title: 'Trashed Project' }],
-          episodes: [{ episode: { id: 'e1', number: 1 }, project_title: 'Trashed Project' }]
-        }
-      },
-      isLoading: false,
-      error: null,
-      refetch
-    } as any);
-  });
-
-  it('renders trashed items', () => {
-    render(<BrowserRouter><TrashPage /></BrowserRouter>);
-    expect(screen.getAllByText('Trashed Project')[0]).toBeInTheDocument();
-    expect(screen.getByText('Серия 1')).toBeInTheDocument();
-  });
-
-  it('restores project', async () => {
-    vi.mocked(client.api.restoreProject).mockResolvedValue({} as any);
-    render(<BrowserRouter><TrashPage /></BrowserRouter>);
-    
-    const restoreBtns = screen.getAllByRole('button', { name: /Восстановить/ });
-    await userEvent.click(restoreBtns[0]); // project
-    
-    expect(client.api.restoreProject).toHaveBeenCalledWith('p1');
-    expect(refetch).toHaveBeenCalled();
-  });
-
-  it('restores episode', async () => {
-    vi.mocked(client.api.restoreEpisode).mockResolvedValue({} as any);
-    render(<BrowserRouter><TrashPage /></BrowserRouter>);
-    
-    const restoreBtns = screen.getAllByRole('button', { name: /Восстановить/ });
-    await userEvent.click(restoreBtns[1]); // episode
-    
-    expect(client.api.restoreEpisode).toHaveBeenCalledWith('e1');
-    expect(refetch).toHaveBeenCalled();
-  });
-
-  it('renders empty state', () => {
-    vi.mocked(hooks.useLibrary).mockReturnValue({
-      data: { trash: { projects: [], episodes: [] } },
-      isLoading: false,
-      error: null
-    } as any);
-    render(<BrowserRouter><TrashPage /></BrowserRouter>);
-    expect(screen.getByText('Корзина пуста.')).toBeInTheDocument();
-  });
+import {describe,it,expect,vi,beforeEach} from 'vitest';
+import {render,screen} from '@testing-library/react';import userEvent from '@testing-library/user-event';
+import {MemoryRouter} from 'react-router-dom';import {TrashPage} from './TrashPage';
+import {api} from '../api/client';import {useLibrary} from '../hooks/useLibrary';
+import {libraryCopy,archivedProject,archivedEpisode} from '../test/fixtures/library';
+vi.mock('../api/client');vi.mock('../hooks/useLibrary');const refetch=vi.fn();
+const page=()=>render(<MemoryRouter><TrashPage/></MemoryRouter>);
+beforeEach(()=>{vi.clearAllMocks();vi.mocked(useLibrary).mockReturnValue({data:libraryCopy(),isLoading:false,error:null,refetch});});
+describe('Trash archived_at contract',()=>{
+ it('shows archived project and episode under its active parent, without nested children',()=>{
+  page();expect(screen.getByText('Archived Project')).toBeInTheDocument();expect(screen.getByText('Серия 3')).toBeInTheDocument();
+  expect(screen.getByText('Project 1')).toBeInTheDocument();expect(screen.queryByText('Серия 2')).not.toBeInTheDocument();
+  expect(screen.getByText('Проект · вместе со всеми сериями')).toBeInTheDocument();
+ });
+ it('restores project using actual id/archived response then refetches',async()=>{
+  vi.mocked(api.restoreProject).mockResolvedValue({id:archivedProject.id,archived:false});page();
+  await userEvent.click(screen.getByRole('button',{name:'Восстановить проект'}));
+  expect(api.restoreProject).toHaveBeenCalledWith(archivedProject.id);expect(refetch).toHaveBeenCalled();
+ });
+ it('restored episode disappears from trash after refetch',async()=>{
+  vi.mocked(api.restoreEpisode).mockResolvedValue({id:archivedEpisode.id,archived:false});
+  const view=page();const data=libraryCopy();delete data.episodes[4].archived_at;
+  refetch.mockImplementationOnce(async()=>{vi.mocked(useLibrary).mockReturnValue({data,isLoading:false,error:null,refetch});});
+  await userEvent.click(screen.getByRole('button',{name:'Восстановить серию'}));
+  expect(api.restoreEpisode).toHaveBeenCalledWith(archivedEpisode.id);
+  view.rerender(<MemoryRouter><TrashPage/></MemoryRouter>);expect(screen.queryByText('Серия 3')).not.toBeInTheDocument();
+ });
+ it('renders empty state for real flat arrays with no archived entries',()=>{
+  vi.mocked(useLibrary).mockReturnValue({data:{projects:[],episodes:[]},isLoading:false,error:null,refetch});
+  page();expect(screen.getByText('Корзина пуста.')).toBeInTheDocument();
+ });
 });

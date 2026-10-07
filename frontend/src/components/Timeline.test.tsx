@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Timeline } from './Timeline';
 import type { Job, Plan } from '../api/types';
+import { jobDetails, completedJob } from '../test/fixtures/library';
 
 describe('Timeline Component', () => {
   const mockPlan: Plan = {
@@ -10,25 +11,17 @@ describe('Timeline Component', () => {
     parts: [
       { index: 0, cuts: [{ start: 10, end: 20 }] },
       { index: 1, cuts: [{ start: 30, end: 40 }] }
-    ]
+    ],
+    debug_timeline: { available: true, reasons: [{kind:'story',title:'Plot',detail:'Info',start:12,end:18,retained:true}] }
   };
 
-  const mockJob: Job = {
-    id: 'job1',
-    status: 'completed',
-    plan: mockPlan,
-    debug_timeline: {
-      available: true,
-      reasons: [
-        { kind: 'story', title: 'Plot', detail: 'Info', start: 12, end: 18, retained: true }
-      ]
-    }
-  } as any;
+  const mockJob: Job = jobDetails(completedJob.id);
 
   beforeEach(() => {
     // Mock HTMLMediaElement prototype methods for tests
     window.HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
     window.HTMLMediaElement.prototype.pause = vi.fn();
+    window.HTMLMediaElement.prototype.load = vi.fn();
   });
 
   it('click retained interval changes selected part', async () => {
@@ -71,10 +64,11 @@ describe('Timeline Component', () => {
     expect(limitCheckbox).toBeChecked();
   });
 
-  it('debug click sets detail and limits source player', async () => {
+  it('reads debug reasons from plan, seeks and respects the enabled interval limit', async () => {
     const { container } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
     const debugCheckbox = screen.getByLabelText(/Анализ/);
     await userEvent.click(debugCheckbox);
+    await userEvent.click(screen.getByLabelText(/В пределах части/));
     
     const debugItems = container.querySelectorAll('.timeline-reason');
     expect(debugItems.length).toBeGreaterThan(0);
@@ -83,11 +77,17 @@ describe('Timeline Component', () => {
     
     expect(screen.getByText('Plot')).toBeInTheDocument();
     expect(screen.getByText('Info')).toBeInTheDocument();
+    const video = container.querySelector('video')!;
+    expect(video.currentTime).toBe(12);
+    video.currentTime = 18;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalled();
     
     const resetBtn = screen.getByRole('button', { name: /Смотреть всё/ });
     expect(resetBtn).toBeInTheDocument();
     
     await userEvent.click(resetBtn);
-    expect(screen.queryByText('Plot')).not.toBeInTheDocument(); // Detail panel is hidden
+    expect(screen.getByLabelText(/В пределах части/)).not.toBeChecked();
+    expect(container.querySelector('#source-selection')).toBeEmptyDOMElement();
   });
 });

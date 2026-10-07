@@ -1,19 +1,22 @@
 import { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useLibrary } from '../hooks/useLibrary';
 import { api } from '../api/client';
 import { JobProgressPanel } from '../components/JobProgressPanel';
 import { SourceSelect } from '../components/SourceSelect';
 import { DeepSeekPanel } from '../components/DeepSeekPanel';
 import { MusicPanel } from '../components/MusicPanel';
+import { episodeById, projectById, activeJobForEpisode, completedJobsForEpisode,
+  episodeHasRunningJob } from '../library/selectors';
 
 export function EditEpisodePage() {
   const { episodeId } = useParams<{ episodeId: string }>();
+  const navigate = useNavigate();
   const { data, isLoading, error, refetch } = useLibrary();
 
   // Find project and episode
-  const project = data?.projects.find(p => p.episodes.some(e => e.id === episodeId));
-  const episode = project?.episodes.find(e => e.id === episodeId);
+  const episode = episodeById(data, episodeId);
+  const project = projectById(data, episode?.project_id);
 
   // Settings states
   const [sourceId, setSourceId] = useState<string>('');
@@ -75,7 +78,8 @@ export function EditEpisodePage() {
     if (!confirm('Точно удалить серию?')) return;
     try {
       await api.deleteEpisode(episodeId);
-      window.location.href = `/project/${project?.id}`;
+      await refetch();
+      navigate(`/project/${project?.id}`);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Ошибка при удалении');
     }
@@ -87,38 +91,20 @@ export function EditEpisodePage() {
   const [partCount, setPartCount] = useState<number>(15);
 
   useEffect(() => {
-    if (episode && episode.jobs && episode.jobs.length > 0) {
-      Promise.all(episode.jobs.map(id => api.getJob(id).catch(() => null)))
-        .then(jobs => {
-          const validJobs = jobs.filter(j => j !== null);
-          validJobs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-          
-          let active = null;
-          const running = validJobs.find(j => j.status === 'running' || j.status === 'queued');
-          if (running) active = running;
-          else if (validJobs.length > 0) active = validJobs[validJobs.length - 1]; // latest
-          
-          setActiveJobId(active ? active.id : null);
-
-          // Compute partCount
-          const completed = validJobs.filter(j => j.status === 'completed');
-          const lastCompleted = completed.length > 0 ? completed[completed.length - 1] : null;
-          if (lastCompleted && lastCompleted.files) {
-            setPartCount(lastCompleted.files.length);
-          } else if (active && active.files) {
-            setPartCount(active.files.length);
-          } else {
-            setPartCount(15);
-          }
-        });
-    } else {
-      setActiveJobId(null);
-      setPartCount(15);
-    }
+    let live = true;
+    const active = activeJobForEpisode(episode);
+    const completed = completedJobsForEpisode(episode)[0];
+    setActiveJobId(active?.id ?? null);
+    setPartCount(15);
+    const countJob = completed ?? active;
+    if (countJob) api.getJob(countJob.id).then(job => {
+      if (live && job.files?.length) setPartCount(job.files.length);
+    }).catch(() => {});
+    return () => { live = false; };
   }, [episode]);
 
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
-  if (error || !episode) return <p className="message">Серия не найдена</p>;
+  if (error || !episode || episode.archived_at || !project || project.archived_at) return <p className="message">Серия не найдена</p>;
 
   return (
     <main className="screen-shell">
@@ -142,7 +128,7 @@ export function EditEpisodePage() {
             <div className="panel-heading">
               <h2 id="source-heading" className="panel-title">Исходник и параметры</h2>
               <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                <button id="delete-current-episode" className="btn-danger" type="button" onClick={handleDeleteEpisode}>Удалить серию</button>
+                <button id="delete-current-episode" className="btn-danger" type="button" disabled={episodeHasRunningJob(episode)} onClick={handleDeleteEpisode}>Удалить серию</button>
               </div>
             </div>
             

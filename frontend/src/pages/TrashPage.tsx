@@ -1,6 +1,7 @@
 import { useLibrary } from '../hooks/useLibrary';
 import { api } from '../api/client';
 import { Link } from 'react-router-dom';
+import { archivedProjects, archivedEpisodes, projectById } from '../library/selectors';
 
 export function TrashPage() {
   const { data, isLoading, error, refetch } = useLibrary();
@@ -26,8 +27,8 @@ export function TrashPage() {
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
   if (error) return <p className="message" style={{ color: 'var(--danger)' }}>{error.message}</p>;
 
-  const trashProjects = data?.trash.projects || [];
-  const trashEpisodes = data?.trash.episodes || [];
+  const trashProjects = archivedProjects(data);
+  const trashEpisodes = archivedEpisodes(data);
   const hasItems = trashProjects.length > 0 || trashEpisodes.length > 0;
 
   return (
@@ -55,10 +56,10 @@ export function TrashPage() {
                 </button>
               </article>
             ))}
-            {trashEpisodes.map(({ episode, project_title }) => (
+            {trashEpisodes.map(episode => (
               <article key={`e-${episode.id}`} className="item-card">
                 <h2 className="card-title">Серия {episode.number}</h2>
-                <p className="card-meta">{project_title}</p>
+                <p className="card-meta">{projectById(data, episode.project_id)?.title}</p>
                 <button type="button" className="secondary-button" onClick={() => handleRestoreEpisode(episode.id)}>
                   Восстановить серию
                 </button>

@@ -2,14 +2,16 @@ import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useLibrary } from '../hooks/useLibrary';
 import { api } from '../api/client';
+import { projectById, episodesForProject, jobsForEpisode, completedJobsForEpisode,
+  projectHasRunningJob, episodeHasRunningJob } from '../library/selectors';
 
 export function EpisodesPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const { data, isLoading, error, refetch } = useLibrary();
   
-  const project = data?.projects.find(p => p.id === projectId);
-  const episodes = project?.episodes || [];
+  const project = projectById(data, projectId);
+  const episodes = episodesForProject(data, projectId);
   
   const [episodeNumber, setEpisodeNumber] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -61,7 +63,7 @@ export function EpisodesPage() {
 
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
   if (error) return <p className="message" style={{ color: 'var(--danger)' }}>{error.message}</p>;
-  if (!project) return <p className="message">Проект не найден</p>;
+  if (!project || project.archived_at) return <p className="message">Проект не найден</p>;
 
   // Recommend next episode number
   const nextNumber = Math.max(0, ...episodes.map(e => e.number)) + 1;
@@ -102,7 +104,7 @@ export function EpisodesPage() {
             className="btn-danger" 
             type="button" 
             onClick={handleDeleteProject}
-            disabled={isDeleting}
+            disabled={isDeleting || projectHasRunningJob(data, projectId)}
           >
             Удалить проект
           </button>
@@ -111,8 +113,8 @@ export function EpisodesPage() {
         {episodes.length > 0 ? (
           <div id="episode-cards" className="grid-cards">
             {episodes.map(episode => {
-              const jobs = episode.jobs || [];
-              const lastJobId = jobs[jobs.length - 1];
+              const jobs = jobsForEpisode(episode);
+              const completedJob = completedJobsForEpisode(episode)[0];
               
               const metaText = jobs.length > 0
                 ? `монтажей: ${jobs.length}`
@@ -125,14 +127,15 @@ export function EpisodesPage() {
                   <p className="card-meta">{metaText}</p>
                   <div className="card-actions">
                     <Link className="btn-secondary" to={`/episode/${episode.id}/edit`}>Настроить монтаж</Link>
-                    {jobs.length > 0 && (
-                      <Link className="btn-text" to={`/episode/${episode.id}/review/${lastJobId}`}>
+                    {completedJob && (
+                      <Link className="btn-text" to={`/episode/${episode.id}/review/${completedJob.id}`}>
                         Посмотреть результаты
                       </Link>
                     )}
                     <button 
                       className="danger-button" 
                       type="button"
+                      disabled={episodeHasRunningJob(episode)}
                       onClick={(e) => handleDeleteEpisode(e, episode.id)}
                     >
                       Удалить серию

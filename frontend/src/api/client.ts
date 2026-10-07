@@ -7,11 +7,14 @@ import type {
   DeepSeekCheck,
   LibrarySnapshot,
   LibraryProject,
-  LibraryEpisode,
+  EpisodeRecord,
+  ArchiveResponse,
+  MusicSettingsRequest,
   HealthStatus,
   EpisodeSettings,
   ResetBudgetResponse
 } from './types';
+import { parseLibrarySnapshot } from '../library/contract';
 
 export class ApiError extends Error {
   status?: number;
@@ -46,22 +49,22 @@ export const api = {
   getHealth: () => fetchApi<HealthStatus>('/api/health'),
   
   // Library
-  getLibrary: () => fetchApi<LibrarySnapshot>('/api/library'),
+  getLibrary: (): Promise<LibrarySnapshot> => fetchApi<unknown>('/api/library').then(parseLibrarySnapshot),
   createProject: (title: string) => fetchApi<LibraryProject>('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
   }),
-  createEpisode: (projectId: string, number?: number) => fetchApi<LibraryEpisode>(`/api/projects/${projectId}/episodes`, {
+  createEpisode: (projectId: string, number?: number) => fetchApi<EpisodeRecord>(`/api/projects/${projectId}/episodes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ number: number || null }),
+    body: JSON.stringify({ number: number ?? null }),
   }),
-  deleteProject: (id: string) => fetchApi<{ archived: boolean }>(`/api/projects/${id}`, { method: 'DELETE' }),
-  deleteEpisode: (id: string) => fetchApi<{ archived: boolean }>(`/api/episodes/${id}`, { method: 'DELETE' }),
-  restoreProject: (id: string) => fetchApi<{ restored: boolean }>(`/api/projects/${id}/restore`, { method: 'POST' }),
-  restoreEpisode: (id: string) => fetchApi<{ restored: boolean }>(`/api/episodes/${id}/restore`, { method: 'POST' }),
-  saveEpisodeSettings: (id: string, settings: EpisodeSettings) => fetchApi<LibraryEpisode>(`/api/episodes/${id}/settings`, {
+  deleteProject: (id: string) => fetchApi<ArchiveResponse>(`/api/projects/${id}`, { method: 'DELETE' }),
+  deleteEpisode: (id: string) => fetchApi<ArchiveResponse>(`/api/episodes/${id}`, { method: 'DELETE' }),
+  restoreProject: (id: string) => fetchApi<ArchiveResponse>(`/api/projects/${id}/restore`, { method: 'POST' }),
+  restoreEpisode: (id: string) => fetchApi<ArchiveResponse>(`/api/episodes/${id}/restore`, { method: 'POST' }),
+  saveEpisodeSettings: (id: string, settings: EpisodeSettings) => fetchApi<EpisodeRecord>(`/api/episodes/${id}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
@@ -87,7 +90,7 @@ export const api = {
   
   // Settings
   getMusicSettings: () => fetchApi<MusicSettings>('/api/music'),
-  saveMusicSettings: (settings: Partial<MusicSettings>) => fetchApi<MusicSettings>('/api/music', {
+  saveMusicSettings: (settings: MusicSettingsRequest) => fetchApi<MusicSettings>('/api/music', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),

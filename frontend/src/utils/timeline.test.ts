@@ -61,8 +61,8 @@ describe('timeline utilities', () => {
 
   it('mergeDebugPieces merges adjacent identical items', () => {
     const rawPieces = [
-      { kind: 'story', title: 'Plot', detail: '', start: 10, end: 15, retained: true, partIndex: 0 },
-      { kind: 'story', title: 'Plot', detail: '', start: 15, end: 20, retained: true, partIndex: 0 }
+      { kind: 'story', title: 'Plot', detail: '', start: 10, end: 15, retained: true, partIndex: 0, cutIndex: 0 },
+      { kind: 'story', title: 'Plot', detail: '', start: 15, end: 20, retained: true, partIndex: 0, cutIndex: 0 }
     ];
     const merged = mergeDebugPieces(rawPieces);
     expect(merged).toHaveLength(1);

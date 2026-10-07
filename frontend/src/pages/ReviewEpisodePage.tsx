@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useLibrary } from '../hooks/useLibrary';
 import { api } from '../api/client';
 import type { Job, Plan } from '../api/types';
+import { episodeById, projectById, completedJobsForEpisode } from '../library/selectors';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { Playlist } from '../components/Playlist';
 import { DownloadControls } from '../components/DownloadControls';
@@ -15,29 +16,17 @@ export function ReviewEpisodePage() {
   const navigate = useNavigate();
   const { data, isLoading, error } = useLibrary();
   
-  const project = data?.projects.find(p => p.episodes.some(e => e.id === episodeId));
-  const episode = project?.episodes.find(e => e.id === episodeId);
+  const episode = episodeById(data, episodeId);
+  const project = projectById(data, episode?.project_id);
 
   const [job, setJob] = useState<Job | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [fetchError, setFetchError] = useState<string>('');
-  const [allEpisodeJobs, setAllEpisodeJobs] = useState<Job[]>([]);
-
-  // Load all jobs for the dropdown
-  useEffect(() => {
-    if (episode && episode.jobs) {
-      Promise.all(episode.jobs.map(id => api.getJob(id).catch(() => null)))
-        .then(jobs => {
-          const validJobs = jobs.filter((j): j is Job => j !== null && j.status === 'completed');
-          validJobs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-          setAllEpisodeJobs(validJobs);
-        });
-    }
-  }, [episode]);
+  const allEpisodeJobs = completedJobsForEpisode(episode);
 
   useEffect(() => {
-    if (!episode || !episode.jobs) return;
+    let live = true;
     
     const fetchJob = async () => {
       setFetchError('');
@@ -46,42 +35,43 @@ export function ReviewEpisodePage() {
       setSelectedIndex(0); // Reset selectedIndex on job switch
 
       try {
+        if (!episode || episode.archived_at || !project || project.archived_at) return;
+        const completed = completedJobsForEpisode(episode);
         let targetJobId = jobId;
-        
-        if (targetJobId && !episode.jobs!.includes(targetJobId)) {
+        if (targetJobId && !episode.jobs.some(ref => ref.id === targetJobId)) {
           setFetchError('Монтаж не принадлежит данной серии');
           return;
         }
 
-        if (!targetJobId) {
-          // Find latest completed job dynamically
-          const allJobs = await Promise.all(episode.jobs!.map(id => api.getJob(id).catch(() => null)));
-          const completed = allJobs.filter((j): j is Job => j !== null && j.status === 'completed');
-          if (completed.length > 0) {
-            completed.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-            targetJobId = completed[0].id;
-          }
+        if (targetJobId && !completed.some(ref => ref.id === targetJobId)) {
+          setFetchError('Монтаж ещё не завершён');
+          return;
         }
+        targetJobId ??= completed[0]?.id;
 
         if (targetJobId) {
           const j = await api.getJob(targetJobId);
+          if (!live) return;
           setJob(j);
           if (j.status === 'completed') {
             const p = await api.getJobPlan(targetJobId);
-            setPlan(p);
+            if (live) setPlan(p);
+          } else {
+            setFetchError('Монтаж ещё не завершён');
           }
         } else {
           setFetchError('Нет завершённых монтажей для проверки');
         }
       } catch (e) {
-        setFetchError(e instanceof Error ? e.message : 'Ошибка загрузки данных');
+        if (live) setFetchError(e instanceof Error ? e.message : 'Ошибка загрузки данных');
       }
     };
     fetchJob();
-  }, [episode, jobId]);
+    return () => { live = false; };
+  }, [episode, project, jobId]);
 
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
-  if (error || !episode) return <p className="message">Серия не найдена</p>;
+  if (error || !episode || episode.archived_at || !project || project.archived_at) return <p className="message">Серия не найдена</p>;
 
   const filesCount = job?.files?.length || 0;
   const partsCount = plan?.parts?.length || 0;

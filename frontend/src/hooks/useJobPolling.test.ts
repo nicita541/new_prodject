@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook } from '@testing-library/react';
 import { useJobPolling } from './useJobPolling';
-import * as client from '../api/client';
 
 vi.mock('../api/client', () => ({ api: { getJob: vi.fn() } }));
 

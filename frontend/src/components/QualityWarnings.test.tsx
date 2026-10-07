@@ -5,18 +5,20 @@ import type { Plan } from '../api/types';
 
 describe('QualityWarnings', () => {
   it('renders nothing when there are no warnings or notes', () => {
-    const plan = { summary: { warnings: [], notes: [] } } as Plan;
+    const plan: Plan = { source: { duration: 10 }, parts: [], quality_summary: { available: true, warnings: [], notes: [] } };
     const { container } = render(<QualityWarnings plan={plan} />);
     expect(container.firstChild).toBeNull();
   });
 
   it('renders strings and objects correctly', () => {
-    const plan = {
+    const plan: Plan = {
+      source: { duration: 10 }, parts: [],
       quality_summary: {
-        warnings: ['String warning', { text: 'Object warning' }],
-        notes: ['String note', { text: 'Object note' }]
+        available: true,
+        warnings: [{ text: 'String warning' }, { text: 'Object warning' }],
+        notes: [{ text: 'String note' }, { text: 'Object note' }]
       }
-    } as any;
+    };
     render(<QualityWarnings plan={plan} />);
 
     expect(screen.getByText(/String warning/)).toBeInTheDocument();

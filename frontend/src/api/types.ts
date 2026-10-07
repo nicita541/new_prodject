@@ -2,14 +2,16 @@ export interface JobFile {
   name: string;
   url: string;
   subtitle_url: string | null;
-  duration?: number;
+  duration?: number | null;
 }
+
+export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
 export interface Job {
   id: string;
   source_id: string;
   source_name: string;
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  status: JobStatus;
   analysis_provider: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan';
   layout: 'portrait' | 'cinema';
   caption_style: 'classic' | 'accent';
@@ -59,6 +61,7 @@ export interface DebugTimeline {
 }
 
 export interface QualitySummary {
+  available: boolean;
   warnings: Array<{text: string} | string>;
   notes: Array<{text: string} | string>;
 }
@@ -99,22 +102,25 @@ export interface DeepSeekStatus {
 }
 
 export interface HealthStatus {
-  status: string;
-  ready?: boolean;
-  busy?: boolean;
-  [key: string]: unknown;
+  ready: boolean;
+  busy: boolean;
+  missing: string[];
 }
 
 export interface EpisodeSettings {
-  source_id?: string;
+  source_id: string;
   layout?: 'portrait' | 'cinema';
   caption_style?: 'classic' | 'accent';
   analysis_provider?: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan';
 }
 
 export interface ResetBudgetResponse {
-  success: boolean;
-  [key: string]: unknown;
+  accounting_enabled: false;
+  attempt: number;
+  limit_usd: number | null;
+  charged_ceiling_usd: number | null;
+  remaining_usd: number | null;
+  job_total_usd: number | null;
 }
 
 export interface QualityWarningItem {
@@ -128,28 +134,47 @@ export interface DeepSeekCheck {
   balance_infos: Array<{ currency: string; total_balance: string | number }>;
 }
 
+export interface LibraryJobRef {
+  id: string;
+  status: JobStatus;
+  created_at: string;
+}
+
 export interface LibraryEpisode {
   id: string;
+  project_id: string;
   number: number;
-  source_id?: string | null;
-  settings?: {
+  title: string;
+  source_id: string | null;
+  settings: {
     layout: 'portrait' | 'cinema';
     caption_style: 'classic' | 'accent';
     analysis_provider: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan';
   };
-  jobs?: string[];
+  created_at: string;
+  archived_at?: string | null;
+  jobs: LibraryJobRef[];
 }
 
 export interface LibraryProject {
   id: string;
   title: string;
-  episodes: LibraryEpisode[];
+  created_at: string;
+  archived_at?: string | null;
 }
 
 export interface LibrarySnapshot {
   projects: LibraryProject[];
-  trash: {
-    projects: LibraryProject[];
-    episodes: Array<{ episode: LibraryEpisode; project_id: string; project_title: string }>;
-  };
+  episodes: LibraryEpisode[];
+}
+
+// Mutation responses contain the stored episode; jobs are added by snapshot().
+export type EpisodeRecord = Omit<LibraryEpisode, 'jobs'>;
+export interface ArchiveResponse { id: string; archived: boolean }
+export interface MusicSettingsRequest {
+  enabled: boolean;
+  volume: number;
+  track?: string | null;
+  mode?: MusicSettings['mode'];
+  part_tracks?: Record<string, string | null> | null;
 }
