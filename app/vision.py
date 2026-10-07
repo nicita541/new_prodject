@@ -209,7 +209,8 @@ def storyboard_times(start: float, end: float, shots: list, transcript: dict) ->
     return [item['time'] for item in storyboard_samples(start, end, shots, transcript)]
 
 
-def storyboard(source: Path, start: float, end: float, shots: list, transcript: dict, destination: Path, cancelled) -> list[float]:
+def storyboard(source: Path, start: float, end: float, shots: list, transcript: dict, destination: Path, cancelled,
+               *, sampling_interval=None) -> list[float]:
     import app.analysis as _analysis
     from PIL import Image, ImageDraw
     from .media import video_frame_bounds
@@ -217,8 +218,15 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
     left, right = max(start, first), min(end, last + .000001)
     if left >= right:
         raise ValueError('В выбранном исходном интервале нет видеокадра')
-    candidates = sorted({min(last, max(first, timestamp))
-                         for timestamp in _analysis.storyboard_times(left, right, shots, transcript)})
+    requested = _analysis.storyboard_times(left, right, shots, transcript)
+    dense_samples = []
+    if sampling_interval is not None:
+        if not math.isfinite(sampling_interval) or sampling_interval <= 0:
+            raise ValueError('Некорректный шаг дополнительных визуальных кадров')
+        dense_samples = [left+(i+.5)*sampling_interval for i in range(math.ceil((right-left)/sampling_interval))
+                         if left+(i+.5)*sampling_interval < right]
+        requested.extend(dense_samples)
+    candidates = sorted({min(last, max(first, timestamp)) for timestamp in requested})
     # Retain a canonical overview for legacy consumers; keep detailed pages
     # readable for providers that accept image arrays. Avoid JPEG's 65500px
     # dimension limit on a dense action scene.
@@ -259,8 +267,9 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
     for timestamp in candidates:
         matching = [s for s in samples if min(last, max(first, s['time'])) == timestamp]
         audit.append({'time': timestamp,
-                      'reasons': sorted({r for s in matching for r in s['reasons']}) or ['frame_bounds_clamp'],
+                      'reasons': sorted({r for s in matching for r in s['reasons']}
+                                        | ({'recovery_dense_sample'} if timestamp in dense_samples else set())) or ['frame_bounds_clamp'],
                       'unit_ids': sorted({u for s in matching for u in s['unit_ids']})})
     atomic_json(destination.with_suffix('.storyboard.json'), {'start': start, 'end': end, 'frames': audit,
-                                                            'pages': page_paths or [str(destination)]})
+                                                            'pages': page_paths or [str(destination)], 'sampling_interval': sampling_interval})
     return candidates

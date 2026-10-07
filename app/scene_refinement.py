@@ -193,6 +193,11 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
     for parent in parents:
         if cancelled():
             raise InterruptedError('Обработка отменена')
+        if parent.get('understanding_status') == 'unresolved':
+            # Recovery already selected bounded safety context. A second
+            # generic keep-all uncertainty fallback must not expand it again.
+            owners.append((0, 0, None))
+            continue
         chunks = parent.get('analysis_chunks')
         if not chunks:
             owners.append((len(children), len(children) + 1, False))
@@ -210,7 +215,7 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
         if abs(float(start) - parent['end']) > .000001:
             raise ValueError('Технические фрагменты не покрывают конец смысловой сцены')
         owners.append((first, len(children), True))
-    refined = refine_story(children, transcript, shots, Path(job_dir), vision, report, cancelled)
+    refined = refine_story(children, transcript, shots, Path(job_dir), vision, report, cancelled) if children else []
     if len(refined) != len(children) or any((a['id'], a['start'], a['end']) != (b['id'], b['start'], b['end'])
                                           for a, b in zip(children, refined)):
         raise ValueError('Сокращение изменило владельца или границы исходного фрагмента')
@@ -219,5 +224,11 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
     for parent, (first, stop, chunked) in zip(parents, owners):
         if cancelled():
             raise InterruptedError('Обработка отменена')
-        result.append(_merge_parent(parent, refined[first:stop], profile) if chunked else refined[first])
+        if chunked is None:
+            result.append(parent)
+        else:
+            updated = _merge_parent(parent, refined[first:stop], profile) if chunked else refined[first]
+            updated['refinement_summary'] = updated['summary']
+            updated['final_summary'] = updated['summary']
+            result.append(updated)
     return result

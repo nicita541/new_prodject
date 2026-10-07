@@ -50,8 +50,8 @@ from app.story_review import (
     global_story_review,
 )
 
-ANALYSIS_VERSION = 9
-GLOBAL_STORY_VERSION = 6
+ANALYSIS_VERSION = 10
+GLOBAL_STORY_VERSION = 7
 STORYBOARD_VERSION = 3
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
 
@@ -60,6 +60,8 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
     """Every semantic dependency that can bypass a story-stage checkpoint."""
     from .story import STORY_VERSION, EDGE_VERSION
     from .scene_refinement import SCENE_REFINEMENT_VERSION
+    from .global_verification import GLOBAL_VERIFICATION_VERSION
+    from .scene_understanding import SCENE_UNDERSTANDING_VERSION
     from .framing import FOCUS_VERSION
     from .closing import CLOSING_VERSION
     from .titles import TITLES_VERSION
@@ -77,6 +79,8 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
         raise ValueError('Неизвестный способ анализа')
     return {'visual': analysis_key, 'story': STORY_VERSION, 'edge': EDGE_VERSION,
             'scene_refinement': SCENE_REFINEMENT_VERSION,
+            'scene_understanding': SCENE_UNDERSTANDING_VERSION,
+            'global_visual_verification': GLOBAL_VERIFICATION_VERSION,
             'credit_routing': 'original-evidence-unioned-sequences-v2',
             'production_sequence': SEQUENCE_VERSION, 'credit_context_radius': CONTEXT_RADIUS,
             'source_roles': SOURCE_ROLE_VERSION,
@@ -119,7 +123,9 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
         raw_selected_duration=sum(r['end']-r['start'] for e in events
                                   if not e.get('global_excluded') for r in e.get('selected_ranges', [])),
         globally_omitted=sum(bool(e.get('global_excluded')) for e in events),
-        narrative_bridges=sum(bool(e.get('narrative_bridge')) for e in events))
+        narrative_bridges=sum(bool(e.get('narrative_bridge')) for e in events),
+        uncertain_final=sum(bool(e.get('uncertain')) for e in events),
+        global_corrections=sum(e.get('summary_source')=='global_correction' for e in events))
     story = job_dir / 'story.json'
     if story.is_file():
         record['story'] = load_json(story)
@@ -165,7 +171,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     meta = job_dir / 'analysis.meta.json'
     if meta.exists() and load_json(meta) != identity:
         previous = load_json(meta)
-        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8):
+        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8, 9):
             raise ValueError('Исходник или версия анализа изменились. Создайте новое задание.')
         # Preserve factual audio/ASR/shot checkpoints, archive the old model's
         # derived decisions so an upgrade cannot silently reuse stale framing.
@@ -276,9 +282,23 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             from .source_roles import refine_source_roles
             events = refine_source_roles(events, transcript, shots, job_dir, vision, report, cancelled)
             report('analyze', 0.49, 'Проверка связности истории целиком')
+            from .global_verification import verify_global_visual
+            with diagnostics.stage('global_visual_verification', provider=provider):
+                events = verify_global_visual(source,events,transcript,shots,job_dir,vision,report,cancelled)
             # Global pass references only existing event IDs, never generated time ranges.
             decisions = global_story_review(vision, events, editorial_profile)
             apply_global_selection(events, decisions, editorial_profile)
+            global_path = diagnostics.path/'global_story.json'
+            global_audit = load_json(global_path) if global_path.exists() else {'events':{}}
+            global_audit['text_review'] = decisions
+            for event in events:
+                entry = global_audit.setdefault('events',{}).setdefault(event['id'],{})
+                entry['global_selection'] = {'selected':event['id'] in decisions.get('keep',[]),
+                    'omission':event.get('global_omission'), 'dependencies':[d for d in decisions.get('dependencies',[]) if d.get('event')==event['id']]}
+                entry['final_decision'] = {'summary':event.get('final_summary',event['summary']),
+                    'summary_source':event.get('summary_source','local'), 'uncertain':event.get('uncertain',False),
+                    'confidence':event.get('confidence'), 'selected_ranges':event.get('selected_ranges',[])}
+            diagnostics.write('global_story.json',global_audit)
             known = {e['id'] for e in events}
             keep = decisions.get('keep')
             if not isinstance(keep, list) or not keep or any(not isinstance(e, str) or e not in known for e in keep):

@@ -28,6 +28,10 @@ class FakeVision:
     def query(self, prompt, image=None, max_tokens=1000, schema=None):
         self.requests.append((prompt, image))
         return {'summary': 'Текущие действия.', 'kind': 'story', 'importance': 4, 'uncertain': False,
+                'semantic_confidence':.95,'visual_confidence':.95,'context_confidence':.95,
+                'uncertainty_reasons':[], 'action_units':[], 'narrative_bridge':False,
+                'state_before':{'locations':[],'character_state':'','objects':[]},
+                'state_after':{'locations':[],'character_state':'','objects':[]},
                 'keep_units': schema['properties']['keep_units']['items']['enum']}
 
 
@@ -41,7 +45,7 @@ class SemanticPipelineTests(unittest.TestCase):
         shutil.rmtree(self.job)
 
     @staticmethod
-    def fake_board(source, start, end, shots, transcript, destination, cancelled):
+    def fake_board(source, start, end, shots, transcript, destination, cancelled, **settings):
         destination.write_bytes(b'actual-collage-placeholder')
         frames = storyboard_samples(start, end, shots, transcript)
         atomic_json(destination.with_suffix('.storyboard.json'), {'start': start, 'end': end, 'frames': frames})
@@ -155,6 +159,61 @@ class SemanticPipelineTests(unittest.TestCase):
         self.assertNotIn('private', (self.job/'diagnostics/pipeline/run.json').read_text())
         self.assertNotIn('secret-value', (self.job/'diagnostics/pipeline/timeline.jsonl').read_text())
         self.assertEqual(load_json(self.job/'diagnostics/pipeline/warnings.json')[0]['reason'], 'missing_context')
+
+    def test_uncertain_initial_analysis_runs_fresh_recovery_and_clears_uncertainty(self):
+        from app.scene_understanding import RECOVERY_PROMPT
+        class Recovering(FakeVision):
+            def query(self,prompt,image=None,max_tokens=1000,schema=None):
+                answer = super().query(prompt,image,max_tokens,schema)
+                if prompt.startswith(RECOVERY_PROMPT):
+                    answer.update(summary='Героев связывают.',action_units=answer['keep_units'],narrative_bridge=True)
+                else:
+                    answer.update(summary='Разговор.',uncertain=True,visual_confidence=.4,uncertainty_reasons=['visual_ambiguity'])
+                return answer
+        shots=[{'id':'s','start':0,'end':10,'location':'room'}]
+        vision=Recovering()
+        event=self.analyze(detect_semantic_scenes(shots,EMPTY,10),shots,vision)[0]
+        self.assertEqual(len(vision.requests),2)
+        self.assertTrue(event['initial_uncertain'])
+        self.assertFalse(event['uncertain'])
+        self.assertEqual(event['summary_source'],'recovery')
+        self.assertEqual(event['local_summary'],'Разговор.')
+        self.assertEqual(event['final_summary'],'Героев связывают.')
+        self.assertTrue((self.job/'diagnostics/pipeline/scene_recovery.jsonl').is_file())
+
+    def test_unresolved_recovery_retains_bounded_context_through_refinement(self):
+        from app.scene_refinement import refine_scene_story
+        class Unresolved(FakeVision):
+            def query(self,*args,**kwargs):
+                answer=super().query(*args,**kwargs)
+                answer.update(uncertain=True,semantic_confidence=.4,uncertainty_reasons=['missing_context'])
+                return answer
+        shots=[{'id':'s','start':0,'end':180,'location':'room'}]
+        events=self.analyze(detect_semantic_scenes(shots,EMPTY,180),shots,Unresolved())
+        event=events[0]
+        self.assertEqual(event['understanding_status'],'unresolved')
+        self.assertLess(sum(r['end']-r['start'] for r in event['selected_ranges']),25)
+        with patch('app.story.refine_story') as refiner:
+            refined=refine_scene_story(events,EMPTY,shots,self.job,FakeVision(),lambda *a:None,lambda:False)
+            refiner.assert_not_called()
+        self.assertEqual(refined[0]['selected_ranges'],event['selected_ranges'])
+
+    def test_recovery_model_failure_keeps_original_error_and_bounded_fallback(self):
+        from app.scene_understanding import RECOVERY_PROMPT
+        class Failing(FakeVision):
+            def query(self,prompt,*args,**kwargs):
+                if prompt.startswith(RECOVERY_PROMPT):
+                    raise urllib.error.URLError('recovery network symptom')
+                answer=super().query(prompt,*args,**kwargs)
+                answer.update(uncertain=True,visual_confidence=.4)
+                return answer
+        shots=[{'id':'s','start':0,'end':30,'location':'room'}]
+        event=self.analyze(detect_semantic_scenes(shots,EMPTY,30),shots,Failing())[0]
+        self.assertTrue(event['uncertain'])
+        self.assertEqual(event['summary_source'],'local')
+        self.assertLess(sum(r['end']-r['start'] for r in event['selected_ranges']),6)
+        records=[json.loads(line) for line in (self.job/'diagnostics/pipeline/scene_recovery.jsonl').read_text().splitlines()]
+        self.assertIn('recovery network symptom',records[-1]['error'])
 
 
 if __name__ == '__main__':
