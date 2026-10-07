@@ -2,6 +2,16 @@
 import copy
 
 
+def finalized_profile(data, budget=None):
+    """Exercise the production profile handoff; these remain authored mechanism inputs."""
+    from app.episode_profile import build_episode_profile
+    data['episode_profile'] = build_episode_profile(data['probe']['duration'], data['transcript'],
+        data['shots'], data.get('scenes'), data['events'], perception=data.get('perception'))
+    if budget is not None:
+        data['episode_profile']['retention_budget'] = dict(budget)
+    return data
+
+
 def state(place='room', character='free', objects=None, topic='story'):
     return {'locations': [place], 'character_state': character, 'objects': objects or [],
             'relationship': 'known', 'topic': topic}

@@ -12,7 +12,7 @@ from app.scene_detection import detect_semantic_scenes
 from app.semantic_identity import semantic_identity
 from app.scene_analysis import SCENE_PROMPT
 from app.vision import storyboard_samples
-from tests.montage_fixtures import event, state, source_episode, kidnapping_episode, five_arcs_episode
+from tests.montage_fixtures import event, state, source_episode, kidnapping_episode, five_arcs_episode, finalized_profile
 from tests import test_semantic_pipeline as semantic_test_support
 
 
@@ -61,12 +61,17 @@ class LongMontageRegressionTests(unittest.TestCase):
         self.assertEqual(len(plan['parts']), 1)
         self.assertEqual(plan['parts'][0]['duration'], 90)
 
-    def test_04_fast_action_gets_adaptive_visual_profile_and_valid_source_cuts(self):
+    def test_04_editing_candidates_cannot_assert_motion_and_measured_motion_controls_profile(self):
         data = source_episode()
         data['shots'] = [{'id': 'accepted', 'start': 0, 'end': 1440,
             'raw_shot_candidates': [{'id': f'raw{i}', 'time': i+.5, 'scene_score': .55, 'accepted': False}
                                     for i in range(1000)]}]
         plan = build_dramatic_plan(data)
+        self.assertEqual(plan['episode_profile']['profile'], 'balanced')
+        self.assertIsNone(plan['episode_profile']['motion_score'])
+        data['perception'] = {'motion': {'available': True, 'adequate_coverage': True,
+            'measurement_coverage': .9, 'evidence': 'source_optical_flow', 'physical_motion_density': .8}}
+        plan = build_dramatic_plan(finalized_profile(data))
         self.assertEqual(plan['episode_profile']['profile'], 'action_dense')
         validate_plan(plan, data)
         self.assertLess(sum(p['duration'] for p in plan['parts']), 1440)
@@ -125,8 +130,7 @@ class LongMontageRegressionTests(unittest.TestCase):
 
     def test_08_five_complete_arcs_beat_preferred_six_parts(self):
         data = five_arcs_episode()
-        with patch('app.dramatic_planner.adaptive_retention_budget', return_value={'min': 420, 'optimal': 420, 'max': 420}):
-            plan = build_dramatic_plan(data)
+        plan = build_dramatic_plan(finalized_profile(data, {'min': 420, 'optimal': 420, 'max': 420}))
         self.assertEqual(len(plan['parts']), 5)
         self.assertEqual([p['duration'] for p in plan['parts']], [84]*5)
         self.assertEqual(plan['planner_diagnostics']['part_policy']['preferred_part_count'], 6)
@@ -141,8 +145,7 @@ class LongMontageRegressionTests(unittest.TestCase):
 
     def test_10_real_quota_pressure_omits_low_ranked_material_with_complete_audit(self):
         data = source_episode()
-        with patch('app.dramatic_planner.adaptive_retention_budget', return_value={'min': 100, 'optimal': 125, 'max': 150}):
-            plan = build_dramatic_plan(data)
+        plan = build_dramatic_plan(finalized_profile(data, {'min': 100, 'optimal': 125, 'max': 150}))
         self.assertLess(len(plan['selected_event_ids']), 10)
         self.assertLessEqual(sum(p['duration'] for p in plan['parts']), 150)
         audit = plan['planner_diagnostics']

@@ -134,11 +134,15 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
         record['scenes'] = load_json(scenes_path)
     from .episode_profile import build_episode_profile, adaptive_retention_budget, scene_settings
     from .media_probe import raw_shot_evidence
+    perception_path = job_dir/'media-evidence.json'
+    perception = load_json(perception_path) if perception_path.is_file() else None
+    if perception is not None:
+        record['perception'] = perception
     profile = build_episode_profile(probe['duration'], transcript, shots, record.get('scenes'), events,
-                                    raw_candidates=raw_shot_evidence(shots, job_dir))
+                                    raw_candidates=raw_shot_evidence(shots, job_dir), perception=perception)
     profile['retention_budget'] = adaptive_retention_budget(profile)
     profile['initial_profile'] = build_episode_profile(probe['duration'], transcript, shots,
-                                                      raw_candidates=raw_shot_evidence(shots, job_dir))
+                                                      raw_candidates=raw_shot_evidence(shots, job_dir), perception=perception)
     profile['scene_settings'] = scene_settings(profile['initial_profile'])
     record['episode_profile'] = profile
     atomic_json(job_dir/'episode_profile.json', profile)
@@ -307,7 +311,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         perception = perception_checkpoint(source, probe['duration'], shots, transcript, job_dir, cancelled,
                                            audio_stream=probe.get('audio_stream', 0))
     diagnostics.write('media_evidence.json', perception)
-    initial_profile = build_episode_profile(probe['duration'], transcript, shots, raw_candidates=raw_candidates)
+    initial_profile = build_episode_profile(probe['duration'], transcript, shots,
+        raw_candidates=raw_candidates, perception=perception)
     grouping_settings = scene_settings(initial_profile)
     diagnostics.write('episode_profile.json', {'initial': initial_profile, 'scene_settings': grouping_settings})
     report('scenes', .21, 'Объединение планов в смысловые сцены')

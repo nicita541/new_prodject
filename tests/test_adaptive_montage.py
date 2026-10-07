@@ -1,13 +1,13 @@
 import unittest
 import shutil
 import uuid
-from unittest.mock import patch
 
 from app.dramatic_planner import build_dramatic_plan, _compress_dialogue_turns
 from app.planner import validate_plan
 from app.analysis import analysis_result
 from app.config import TEMP
 from app.media_probe import atomic_json, load_json
+from tests.montage_fixtures import finalized_profile
 
 
 def episode(count=30):
@@ -70,10 +70,8 @@ class AdaptiveMontageTests(unittest.TestCase):
 
     def test_real_quota_changes_retained_output_under_pressure(self):
         analysis = episode()
-        with patch('app.dramatic_planner.adaptive_retention_budget', return_value={'min': 80, 'optimal': 100, 'max': 150}):
-            short = build_dramatic_plan(analysis)
-        with patch('app.dramatic_planner.adaptive_retention_budget', return_value={'min': 250, 'optimal': 300, 'max': 400}):
-            long = build_dramatic_plan(analysis)
+        short = build_dramatic_plan(finalized_profile(analysis, {'min': 80, 'optimal': 100, 'max': 150}))
+        long = build_dramatic_plan(finalized_profile(analysis, {'min': 250, 'optimal': 300, 'max': 400}))
         for plan in (short, long):
             validate_plan(plan, analysis)
         self.assertLess(sum(p['duration'] for p in short['parts']), sum(p['duration'] for p in long['parts']))
@@ -84,8 +82,7 @@ class AdaptiveMontageTests(unittest.TestCase):
         analysis = episode()
         for event in analysis['events']:
             event['selected_ranges'][0]['end'] = event['start'] + 4
-        with patch('app.dramatic_planner.adaptive_retention_budget', return_value={'min': 35, 'optimal': 40, 'max': 60}):
-            plan = build_dramatic_plan(analysis)
+        plan = build_dramatic_plan(finalized_profile(analysis, {'min': 35, 'optimal': 40, 'max': 60}))
         self.assertEqual(len(plan['selected_event_ids']), 10)
         self.assertAlmostEqual(sum(p['duration'] for p in plan['parts']), 40)
 

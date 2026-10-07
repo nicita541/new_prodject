@@ -10,6 +10,7 @@ using a three-beat dramatic structure:
 from __future__ import annotations
 
 import math
+import copy
 from pathlib import Path
 
 from .planner import (
@@ -448,10 +449,22 @@ def build_dramatic_plan(analysis: dict) -> dict:
 
     by_id = {event["id"]: event for event in events}
     from .media_probe import raw_shot_evidence
-    episode_profile = build_episode_profile(duration, analysis['transcript'], shots,
-                                            analysis.get('scenes'), events,
-                                            raw_candidates=raw_shot_evidence(shots) or None)
-    retention_budget = adaptive_retention_budget(episode_profile)
+    # Production finalizes one profile after semantic adjudication. Reuse that
+    # snapshot exactly; old saved analyses without a profile remain readable.
+    episode_profile = copy.deepcopy(analysis.get('episode_profile'))
+    if episode_profile is None:
+        episode_profile = build_episode_profile(duration, analysis['transcript'], shots,
+            analysis.get('scenes'), events, raw_candidates=raw_shot_evidence(shots) or None,
+            perception=analysis.get('perception'))
+    if not isinstance(episode_profile, dict) or abs(_number(episode_profile['source_duration'])-duration) > .002:
+        raise ValueError('Монтажный профиль не соответствует исходной серии')
+    retention_budget = copy.deepcopy(episode_profile.get('retention_budget') or
+                                    episode_profile.get('planner_budget'))
+    if retention_budget is None:
+        retention_budget = adaptive_retention_budget(episode_profile)
+    budget_min, budget_optimal, budget_max = (_number(retention_budget[key]) for key in ('min','optimal','max'))
+    if not 0 <= budget_min <= budget_optimal <= budget_max <= duration+.002:
+        raise ValueError('Некорректный бюджет финального профиля серии')
     from .story_structure import build_story_arcs, resolve_continuity
     arcs = build_story_arcs(events, analysis['transcript'])
     arc_by_event = {identifier: arc for arc in arcs for identifier in arc['event_ids']}
@@ -468,9 +481,6 @@ def build_dramatic_plan(analysis: dict) -> dict:
     if not eligible:
         raise ValueError("В серии не найдены сюжетные сцены для драматического монтажа")
 
-    selected_ids = set()
-    selection_reasons = {}
-
     # Scored dramatic events
     scored_events = sorted(
         eligible,
@@ -481,32 +491,11 @@ def build_dramatic_plan(analysis: dict) -> dict:
     # Measure candidate cost after actual dialogue compression, not the scene envelope.
     candidate_ranges = {e['id']: _compress_dialogue_turns(e, segments, words, speech_all, duration, shots)
                         for e in eligible}
-    def selected_cost():
-        from .source_roles import merge_ranges
-        return sum(r['end']-r['start'] for r in merge_ranges(
-            [r for identifier in selected_ids for r in candidate_ranges.get(identifier, [])]))
-    for ev in scored_events:
-        if selected_ids and selected_cost() >= retention_budget['optimal']:
-            break
-        group = {ev['id']}
-        arc = arc_by_event.get(ev['id'])
-        if arc and not arc.get('uncertain', True):
-            arc_ids = set(arc['event_ids']) & set(candidate_ranges)
-            arc_cost = sum(r['end']-r['start'] for identifier in arc_ids for r in candidate_ranges[identifier])
-            if arc_cost <= retention_budget['max']:
-                group = arc_ids
-        cost = sum(r['end']-r['start'] for identifier in group-selected_ids for r in candidate_ranges[identifier])
-        if selected_ids and selected_cost()+cost > retention_budget['max']:
-            selection_reasons[ev['id']] = ['adaptive_max_budget_pressure']
-            continue
-        selected_ids.update(group)
-        for identifier in group:
-            selection_reasons[identifier] = [f"importance_{by_id[identifier]['importance']}",
-                'complete_story_arc' if len(group)>1 else 'ranked_source_story',
-                'narrative_bridge' if by_id[identifier].get('narrative_bridge') else 'dramatic_story_score']
-
-    # Dependencies and state changes request bounded context, never transitive restoration.
-    continuity = resolve_continuity(events, selected_ids, analysis['transcript'], duration)
+    from .retention_allocation import allocate_retention
+    allocation = allocate_retention(events, candidate_ranges, [event['id'] for event in scored_events],
+        arcs, analysis['transcript'], duration, retention_budget, resolve_continuity)
+    continuity = allocation['continuity']
+    selection_reasons = allocation['selection_reasons']
     events, selected_ids = continuity['events'], set(continuity['selected_ids'])
     by_id = {event['id']: event for event in events}
     for bridge in continuity['bridges']:
@@ -634,6 +623,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
         "dramatic_montage": True,
         "episode_profile": episode_profile,
         "retention_budget": retention_budget,
+        "retention_allocation": allocation,
         "retention_budget_exceeded": total_retained > retention_budget['max'] + 0.002
     }
     from .planner_audit import planner_audit
@@ -650,5 +640,6 @@ def build_dramatic_plan(analysis: dict) -> dict:
             'reasons': reasons, 'candidate_duration': sum(r['end']-r['start'] for r in candidate_ranges.get(event['id'], []))})
     plan['planner_diagnostics'] = planner_audit({**analysis, 'events': events}, plan,
         candidates=candidates, arcs=arcs, continuity=continuity, part_policy=part_policy)
+    plan['planner_diagnostics']['retention_allocation'] = allocation
     validate_plan(plan, analysis)
     return plan
