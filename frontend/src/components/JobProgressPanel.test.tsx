@@ -11,14 +11,14 @@ vi.mock('../hooks/useJobPolling', () => ({
 import { useJobPolling } from '../hooks/useJobPolling';
 
 describe('JobProgressPanel', () => {
-  const mockJob: Job = {
+  const mockJob = {
     id: 'test-job',
     status: 'running',
     stage: 'extract_audio',
     progress: 0.45,
     message: 'Извлекаем аудио',
     files: []
-  };
+  } as unknown as Job;
 
   it('renders running state correctly', () => {
     vi.mocked(useJobPolling).mockReturnValue({ job: mockJob, isLoading: false, error: null } as any);
