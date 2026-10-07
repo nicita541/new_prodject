@@ -29,8 +29,8 @@ export function ReviewEpisodePage() {
     if (episode && episode.jobs) {
       Promise.all(episode.jobs.map(id => api.getJob(id).catch(() => null)))
         .then(jobs => {
-          const validJobs = jobs.filter((j): j is Job => j !== null);
-          // Sort or preserve order (usually newest is last in episode.jobs, but let's check completion)
+          const validJobs = jobs.filter((j): j is Job => j !== null && j.status === 'completed');
+          validJobs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
           setAllEpisodeJobs(validJobs);
         });
     }
@@ -43,7 +43,7 @@ export function ReviewEpisodePage() {
       setFetchError('');
       setJob(null);
       setPlan(null);
-      setSelectedIndex(0);
+      setSelectedIndex(0); // Reset selectedIndex on job switch
 
       try {
         let targetJobId = jobId;
@@ -58,8 +58,8 @@ export function ReviewEpisodePage() {
           const allJobs = await Promise.all(episode.jobs!.map(id => api.getJob(id).catch(() => null)));
           const completed = allJobs.filter((j): j is Job => j !== null && j.status === 'completed');
           if (completed.length > 0) {
-            // Assume the last one in the array is the latest
-            targetJobId = completed[completed.length - 1].id;
+            completed.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+            targetJobId = completed[0].id;
           }
         }
 
@@ -110,7 +110,7 @@ export function ReviewEpisodePage() {
               <option value="" disabled>Загрузка...</option>
               {allEpisodeJobs.map((j, i) => (
                 <option key={j.id} value={j.id}>
-                  Монтаж {i + 1} ({j.id.substring(0, 8)}) {j.status === 'completed' ? '· Готово' : '· Ошибка'}
+                  {i === 0 ? 'Последний монтаж' : 'Предыдущий монтаж'} ({new Date(j.created_at).toLocaleString()})
                 </option>
               ))}
             </select>

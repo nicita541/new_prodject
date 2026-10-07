@@ -81,13 +81,44 @@ export function EditEpisodePage() {
     }
   };
 
+
+  // Job states
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [partCount, setPartCount] = useState<number>(15);
+
+  useEffect(() => {
+    if (episode && episode.jobs && episode.jobs.length > 0) {
+      Promise.all(episode.jobs.map(id => api.getJob(id).catch(() => null)))
+        .then(jobs => {
+          const validJobs = jobs.filter(j => j !== null);
+          validJobs.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+          
+          let active = null;
+          const running = validJobs.find(j => j.status === 'running' || j.status === 'queued');
+          if (running) active = running;
+          else if (validJobs.length > 0) active = validJobs[validJobs.length - 1]; // latest
+          
+          setActiveJobId(active ? active.id : null);
+
+          // Compute partCount
+          const completed = validJobs.filter(j => j.status === 'completed');
+          const lastCompleted = completed.length > 0 ? completed[completed.length - 1] : null;
+          if (lastCompleted && lastCompleted.files) {
+            setPartCount(lastCompleted.files.length);
+          } else if (active && active.files) {
+            setPartCount(active.files.length);
+          } else {
+            setPartCount(15);
+          }
+        });
+    } else {
+      setActiveJobId(null);
+      setPartCount(15);
+    }
+  }, [episode]);
+
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
   if (error || !episode) return <p className="message">Серия не найдена</p>;
-
-  // Get current active job (the latest appended job)
-  const activeJobId = episode.jobs && episode.jobs.length > 0 
-    ? episode.jobs[episode.jobs.length - 1] 
-    : null;
 
   return (
     <main className="screen-shell">
@@ -161,7 +192,7 @@ export function EditEpisodePage() {
                 <DeepSeekPanel />
               </div>
 
-              <MusicPanel />
+              <MusicPanel partCount={partCount} />
 
               <div className="settings-group">
                 <p id="form-message" className="message" role="status" hidden={!saveMessage}>{saveMessage}</p>
@@ -185,7 +216,7 @@ export function EditEpisodePage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <JobProgressPanel jobId={typeof activeJobId === 'string' ? activeJobId : (activeJobId as any)?.id || null} episodeId={episode.id} />
+            <JobProgressPanel jobId={activeJobId} episodeId={episode.id} />
           </div>
         </div>
       </section>

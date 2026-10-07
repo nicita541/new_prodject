@@ -64,6 +64,7 @@ export interface DebugPiece {
   detail?: string;
   lane: number;
   partIndex: number | null;
+  cutIndex: number | null;
 }
 
 export function sourceTime(timeSec: number): string {
@@ -90,10 +91,12 @@ export const DEBUG_KIND_LABELS: Record<string, string> = {
   waiting: 'Ожидание',
   manual: 'Вручную',
   uncertainty: 'Неясно',
+  atmosphere: 'Атмосфера',
+  reaction: 'Реакция'
 };
 
 export function buildDebugPieces(reasons: TimelineReason[], pieces: TimelineInterval[], duration: number): DebugPiece[] {
-  let rawPieces: (TimelineReason & { partIndex: number | null })[] = [];
+  let rawPieces: (TimelineReason & { partIndex: number | null, cutIndex: number | null })[] = [];
 
   for (const reason of reasons) {
     if (!reason.kind || typeof reason.start !== 'number' || typeof reason.end !== 'number' || !reason.title) continue;
@@ -110,7 +113,8 @@ export function buildDebugPieces(reasons: TimelineReason[], pieces: TimelineInte
             ...reason,
             start: intersectionStart,
             end: intersectionEnd,
-            partIndex: p.partIndex
+            partIndex: p.partIndex,
+            cutIndex: p.cutIndex
           });
         }
       }
@@ -130,7 +134,8 @@ export function buildDebugPieces(reasons: TimelineReason[], pieces: TimelineInte
       if (!overlaps) {
         rawPieces.push({
           ...reason,
-          partIndex: null
+          partIndex: null,
+          cutIndex: null
         });
       }
     }
@@ -139,21 +144,17 @@ export function buildDebugPieces(reasons: TimelineReason[], pieces: TimelineInte
   return mergeDebugPieces(rawPieces);
 }
 
-export function mergeDebugPieces(rawPieces: (TimelineReason & { partIndex: number | null })[]): DebugPiece[] {
+export function mergeDebugPieces(rawPieces: (TimelineReason & { partIndex: number | null, cutIndex: number | null })[]): DebugPiece[] {
   if (rawPieces.length === 0) return [];
 
   // Sort by start
   rawPieces.sort((a, b) => a.start - b.start);
 
-  const merged: (TimelineReason & { partIndex: number | null })[] = [];
+  const merged: (TimelineReason & { partIndex: number | null, cutIndex: number | null })[] = [];
   let current = rawPieces[0];
 
   for (let i = 1; i < rawPieces.length; i++) {
     const next = rawPieces[i];
-    // Check if can merge: adjacent (start == current.end or close enough), same part, same kind, same title, same detail
-    // Wait, the prompt says: "Соседние доказательства можно объединять только если совпадают event_id, kind, title, detail, partIndex, cutIndex. При этом нельзя объединять через настоящий source gap."
-    // Let's implement strict merging based on the properties available.
-    // Assuming `event_id` exists in legacy but might not be in the current types. We'll use title, detail, kind, partIndex.
     
     // We allow tiny float differences but not large gaps
     const isAdjacent = Math.abs(current.end - next.start) < 0.05;
@@ -161,9 +162,10 @@ export function mergeDebugPieces(rawPieces: (TimelineReason & { partIndex: numbe
     const isSameTitle = current.title === next.title;
     const isSameDetail = current.detail === next.detail;
     const isSamePart = current.partIndex === next.partIndex;
+    const isSameCut = current.cutIndex === next.cutIndex;
     const isSameEventId = current.event_id === next.event_id;
 
-    if (isAdjacent && isSameKind && isSameTitle && isSameDetail && isSamePart && isSameEventId) {
+    if (isAdjacent && isSameKind && isSameTitle && isSameDetail && isSamePart && isSameCut && isSameEventId) {
       current.end = Math.max(current.end, next.end);
     } else {
       merged.push(current);
@@ -191,7 +193,8 @@ export function mergeDebugPieces(rawPieces: (TimelineReason & { partIndex: numbe
       title: p.title,
       detail: p.detail,
       lane,
-      partIndex: p.partIndex
+      partIndex: p.partIndex,
+      cutIndex: p.cutIndex
     });
   }
 

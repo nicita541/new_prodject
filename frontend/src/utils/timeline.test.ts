@@ -68,4 +68,76 @@ describe('timeline utilities', () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ start: 10, end: 20 });
   });
+  it('buildTimelinePieces supports multiple parts and cuts', () => {
+    const multiPlan: Plan = {
+      source: { duration: 100 },
+      parts: [
+        { index: 0, cuts: [{ start: 10, end: 20 }, { start: 25, end: 30 }] },
+        { index: 1, cuts: [{ start: 40, end: 50 }] }
+      ]
+    };
+    const pieces = buildTimelinePieces(multiPlan, 100);
+    expect(pieces).toHaveLength(7); // gap, cut0-0, gap, cut0-1, gap, cut1-0, gap
+    expect(pieces[5]).toMatchObject({ start: 40, end: 50, retained: true, partIndex: 1, cutIndex: 0 });
+  });
+
+  it('mergeDebugPieces does not merge with different cutIndex', () => {
+    const rawPieces = [
+      { kind: 'story', title: 'Plot', detail: '', start: 10, end: 15, retained: true, partIndex: 0, cutIndex: 0 },
+      { kind: 'story', title: 'Plot', detail: '', start: 15, end: 20, retained: true, partIndex: 0, cutIndex: 1 }
+    ] as any;
+    const merged = mergeDebugPieces(rawPieces);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('mergeDebugPieces does not merge through source gap', () => {
+    const rawPieces = [
+      { kind: 'story', title: 'Plot', detail: '', start: 10, end: 15, retained: true, partIndex: 0, cutIndex: 0 },
+      { kind: 'story', title: 'Plot', detail: '', start: 20, end: 25, retained: true, partIndex: 0, cutIndex: 0 }
+    ] as any;
+    const merged = mergeDebugPieces(rawPieces);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('buildDebugPieces assigns different lanes to overlapping items', () => {
+    const pieces = buildTimelinePieces(mockPlan, 100);
+    const reasons: TimelineReason[] = [
+      { kind: 'story', title: 'A', detail: '', start: 10, end: 20, retained: true },
+      { kind: 'emotional_pause', title: 'B', detail: '', start: 12, end: 18, retained: true }
+    ];
+    const debugPieces = buildDebugPieces(reasons, pieces, 100);
+    expect(debugPieces).toHaveLength(2);
+    expect(debugPieces[0].lane).not.toBe(debugPieces[1].lane);
+  });
+
+  it('buildDebugPieces ignores invalid intervals', () => {
+    const pieces = buildTimelinePieces(mockPlan, 100);
+    const reasons: TimelineReason[] = [
+      { kind: 'story', title: 'Invalid', detail: '', start: 20, end: 10, retained: true },
+      { kind: 'story', title: 'Invalid2', detail: '', start: -5, end: 10, retained: true }
+    ];
+    const debugPieces = buildDebugPieces(reasons, pieces, 100);
+    expect(debugPieces).toHaveLength(0);
+  });
+
+  it('buildDebugPieces ignores out of bounds intervals', () => {
+    const pieces = buildTimelinePieces(mockPlan, 100);
+    const reasons: TimelineReason[] = [
+      { kind: 'story', title: 'OutOfBounds', detail: '', start: 10, end: 150, retained: true }
+    ];
+    const debugPieces = buildDebugPieces(reasons, pieces, 100);
+    expect(debugPieces).toHaveLength(0);
+  });
+
+  it('buildDebugPieces handles unknown kinds and legacy kinds safely', () => {
+    const pieces = buildTimelinePieces(mockPlan, 100);
+    const reasons: TimelineReason[] = [
+      { kind: 'atmosphere', title: 'Legacy Atmosphere', detail: '', start: 10, end: 20, retained: true },
+      { kind: 'weird_alien_kind', title: 'Unknown', detail: '', start: 25, end: 30, retained: true }
+    ];
+    const debugPieces = buildDebugPieces(reasons, pieces, 100);
+    expect(debugPieces).toHaveLength(2);
+    expect(debugPieces[0].kind).toBe('atmosphere');
+    expect(debugPieces[1].kind).toBe('weird_alien_kind');
+  });
 });

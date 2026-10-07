@@ -37,7 +37,7 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
   const handleCancel = async () => {
     try {
       await api.cancelJob(job.id);
-    } catch (e) {
+    } catch {
       alert('Ошибка отмены');
     }
   };
@@ -90,14 +90,14 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
         )}
         {['failed', 'cancelled', 'interrupted'].includes(job.status) && (
           <button id="retry-button" type="button" className="btn-primary" onClick={async () => {
-            try { await api.retryJob(job.id); } catch (e) { alert('Ошибка повтора'); }
+            try { await api.retryJob(job.id); } catch { alert('Ошибка повтора'); }
           }}>
             Повторить
           </button>
         )}
         {['failed', 'cancelled', 'interrupted'].includes(job.status) && job.error?.includes('budget') && (
           <button id="reset-budget-button" type="button" className="btn-secondary" onClick={async () => {
-            try { await api.resetJobBudget(job.id); alert('Лимит сброшен, можно повторить запуск.'); } catch (e) { alert('Ошибка'); }
+            try { await api.resetJobBudget(job.id); alert('Лимит сброшен, можно повторить запуск.'); } catch { alert('Ошибка'); }
           }}>
             Сбросить лимит
           </button>

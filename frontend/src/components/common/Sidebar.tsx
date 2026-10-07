@@ -20,7 +20,7 @@ export function Sidebar() {
         } else {
           setLabel('Требуется настройка');
         }
-      } catch (err) {
+      } catch {
         if (!mounted) return;
         setLabel('Ошибка подключения');
       }

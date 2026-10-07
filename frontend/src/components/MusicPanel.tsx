@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../api/client';
 import type { MusicSettings } from '../api/types';
 
-export function MusicPanel() {
+export function MusicPanel({ partCount = 15 }: { partCount?: number }) {
   const [settings, setSettings] = useState<MusicSettings | null>(null);
   const [msg, setMsg] = useState('');
 
@@ -48,10 +48,11 @@ export function MusicPanel() {
   const handlePartTrackChange = (partIndex: number, track: string) => {
     if (!settings) return;
     const newPartTracks = { ...(settings.part_tracks || {}) };
+    const key = String(partIndex + 1); // 1-based indexing for legacy compatibility
     if (track) {
-      newPartTracks[partIndex] = track;
+      newPartTracks[key] = track;
     } else {
-      delete newPartTracks[partIndex];
+      delete newPartTracks[key];
     }
     handleChange({ part_tracks: newPartTracks });
   };
@@ -105,17 +106,18 @@ export function MusicPanel() {
           {settings.mode === 'per_part' && (
             <div id="music-parts-panel" className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               <label className="form-label">Музыка для частей</label>
-              {Array.from({ length: 15 }).map((_, i) => (
+              {Array.from({ length: partCount }).map((_, i) => (
                 <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                   <span style={{ fontSize: '13px', width: '60px' }}>Часть {String(i + 1).padStart(2, '0')}</span>
                   <select 
                     className="form-select" 
                     style={{ flex: 1 }}
-                    value={settings.part_tracks?.[i] || ''}
+                    value={settings.part_tracks?.[String(i + 1)] || ''}
                     onChange={e => handlePartTrackChange(i, e.target.value)}
                     disabled={!settings.enabled}
                   >
                     <option value="">🎲 Случайный трек</option>
+                    <option value="none">🔇 Без музыки</option>
                     {settings.tracks?.map(t => (
                       <option key={t} value={t}>🎵 {t}</option>
                     ))}
