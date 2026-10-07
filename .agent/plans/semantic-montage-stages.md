@@ -4,7 +4,7 @@ Implement the four-stage semantic montage plan on `codex/dramatic-montage`: fact
 
 # Current state
 
-Starting HEAD `5ee376f5781164648cff4b0d9f616ec6c64ed7a7`. Baseline: 456 unittest tests pass. Existing unstaged server/UI/API-test changes belong to other work and must remain outside stage commits. `analysis.analyze` creates events from roughly forty-second ASR windows. `candidate_units` ignores visual boundaries inside speech. Adaptive shot suppression discards raw candidates. Dramatic planner uses a fixed 520-second target and preferential exact part count.
+Starting HEAD `5ee376f5781164648cff4b0d9f616ec6c64ed7a7`. Baseline: 456 unittest tests pass. Initial unstaged server/UI/API-test changes belonged to other work and were excluded from stage 1–3 commits. The user subsequently preserved those changes and the stage 4 core implementation in commit `6d16060577cf2a0381876bf7573df7cff4dcbf58` (`11`). The final completion commit builds on that user commit without rewriting it. Originally `analysis.analyze` created events from roughly forty-second ASR windows, `candidate_units` ignored visual boundaries inside speech, adaptive shot suppression discarded raw candidates, and dramatic planning used a fixed 520-second target and preferential exact part count.
 
 # Constraints
 
@@ -30,11 +30,15 @@ Visual heuristics are evidence, not calibrated probabilities. Preserve uncertain
 - [x] Read attached requirements, check branch/HEAD/worktree, baseline tests.
 - [x] Stage 1 committed as `52ce612`: 493 Python tests, 23 UI tests, real FFmpeg scene/action-frame integration.
 - [x] Stage 2 committed as `e340521`: 536 Python tests and 23 UI tests.
-- [x] Stage 3 implemented and verified: 566 Python tests and 23 UI tests; separate commit follows.
-- [ ] Stage 4 implemented, verified and committed.
+- [x] Stage 3 committed as `550af11`: 566 Python tests and 23 UI tests.
+- [x] Stage 4 implemented and verified: 622 Python tests, 23 UI tests, complete source-interval audits and saved long synthetic planning diagnostics. Core implementation is preserved in user commit `6d16060`; final audit fixes/documentation receive a separate completion commit.
 
-Baseline UI fixes committed separately as `1eb2d9c`: progress scaling and visible processing messages. User's original server/UI/API changes remain unstaged. Stage 1 uses at most 96 requested frames per technical chunk and bounded neighbor pages; the existing story refiner consumes these children and merges evidence back under the original semantic parent.
+Baseline UI fixes committed separately as `1eb2d9c`: progress scaling and visible processing messages. Stage 1 uses at most 96 requested frames per technical chunk and bounded neighbor pages; the existing story refiner consumes these children and merges evidence back under the original semantic parent.
 
 Stage 2 adds strict semantic/visual/context confidence, fresh dense-frame recovery, word-safe minimal fallback and an independent visual verification checkpoint. Confirmed source exclusions remain authoritative. Original, recovery and global decisions are preserved even when a later decision corrects the summary.
 
 Stage 3 preserves all FFmpeg candidates above the base 0.14 threshold, including suppression provenance. Real descriptors probe suppressed boundaries and retain original shot IDs. Initial/refined episode profiles adapt grouping and source-bounded budgets; the planner measures actual retained material. A real FFmpeg regression recovers a suppressed location change inside one accepted shot.
+
+Stage 4 builds arcs before selection, shares bounded continuity across planners, protects dialogue/action boundaries, compares alternative part counts and partitions all source intervals into explained decisions. Component signatures cover actual prompt text and policies in outer and nested checkpoints. The committed core passed 617 Python tests. The requirement audit then added explicit neighbor-recovery coverage, missing question/answer rescue under quota, the complete diagnostic catalog, post-level durations and cache-safe uncertainty counters. The independent review agent stopped at a service usage limit; final review and verification are completed by the coordinator.
+
+Final validation: `tools/python/python.exe -m unittest discover -s tests -q` ran 622 tests successfully; `tools/node/node.exe --test --test-isolation=none tests/test_ui.cjs` ran 23 successfully; `git diff --check` passed. Saved 1,440-second fixtures explain all source intervals: kidnapping retains 68 seconds with two exact bridges; five arcs retain 420 seconds in five parts despite a preferred count of six. Requirement mapping and per-stage/final reports are in `scratch/semantic-montage-*-report.md` and `scratch/semantic-montage-completion-audit.md`. No production vision-model episode-quality claim is made.

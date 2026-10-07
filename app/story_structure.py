@@ -423,6 +423,45 @@ def resolve_continuity(events, selected_ids, transcript, duration, *, max_bridge
             warnings.append({'reason': limitation, 'from': audit['from'], 'to': audit['to'],
                              'source_event': event['id'], 'ranges': copy.deepcopy(node['ranges'])})
 
+    # A question and its immediate source response are one causal exchange.
+    # Protect the missing reply itself, even when no model dependency was supplied.
+    speech = transcript.get('segments', []) if isinstance(transcript, dict) else []
+    for question, answer in zip(speech, speech[1:]):
+        if (not str(question.get('text', '')).strip().endswith('?')
+                or not 0 <= answer['start']-question['end'] <= 3
+                or answer['end']-question['start'] > 115):
+            continue
+        def retained(reply):
+            return any(row['start'] <= reply['start'] and reply['end'] <= row['end']
+                       for event in source if event['id'] in selected
+                       for row in event.get('selected_ranges', [event]))
+        q_kept, a_kept = retained(question), retained(answer)
+        if q_kept == a_kept:
+            continue
+        needed = answer if q_kept else question
+        owner = next((event for event in source if event['start'] <= needed['start']
+                      and needed['end'] <= event['end']), None)
+        counterpart = question if q_kept else answer
+        other = next((event for event in source if event['start'] <= counterpart['start']
+                      and counterpart['end'] <= event['end']), None)
+        if owner is None or other is None or _pure_credit(owner) or any(
+                piece['start'] < needed['end'] and piece['end'] > needed['start'] for piece in exclusions):
+            warnings.append({'reason': 'question_response_context_unavailable',
+                             'source_start': needed['start'], 'source_end': needed['end']})
+            continue
+        unit = {'id': f"reply:{needed['start']}:{needed['end']}",
+                'start': needed['start'], 'end': needed['end']}
+        # Preserve this complete bounded reply; a longer response is an explicit
+        # exception to the usual bridge budget, never authority for its whole scene.
+        cap = max(max_bridge_seconds, needed['end']-needed['start'])
+        ranges, limitations, evidence = _material(owner, words, exclusions, cap, unit=unit)
+        if needed['end']-needed['start'] > max_bridge_seconds:
+            limitations.append('complete_reply_exceeds_bridge_cap')
+        node = {'event': owner, 'unit': unit, 'ranges': ranges, 'limitations': limitations,
+                'evidence': evidence, 'confidence': _confidence(owner) or .5}
+        restore(node, other if q_kept else owner, owner if q_kept else other,
+                'immediate_question_response_context', ['dialogue'])
+
     for offset, right in enumerate(initial):
         left = initial[offset - 1] if offset else None
         comparison = _compare(_state(left, 'after'), _state(right, 'before')) if left else None

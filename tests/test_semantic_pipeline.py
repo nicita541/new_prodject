@@ -160,6 +160,44 @@ class SemanticPipelineTests(unittest.TestCase):
         self.assertNotIn('secret-value', (self.job/'diagnostics/pipeline/timeline.jsonl').read_text())
         self.assertEqual(load_json(self.job/'diagnostics/pipeline/warnings.json')[0]['reason'], 'missing_context')
 
+    def test_complete_diagnostic_catalog_exists_even_when_no_recovery_runs(self):
+        diagnostics = Diagnostics(self.job)
+        diagnostics.start(provider='local')
+        expected = ('run.json','timeline.jsonl','shots.json','scenes.json','storyboard.json',
+                    'scene_analysis.jsonl','scene_recovery.jsonl','global_story.json',
+                    'episode_profile.json','planner.json','decisions.jsonl','warnings.json','summary.json')
+        self.assertTrue(all((diagnostics.path/name).is_file() for name in expected))
+        self.assertEqual((diagnostics.path/'scene_recovery.jsonl').read_text(), '')
+
+    def test_recovery_uses_doubt_and_hinako_neighbor_replies_to_explain_current_transition(self):
+        transcript = {'words': [{'start': 15, 'end': 18, 'text': 'Я не уверен, что справлюсь.'},
+                                {'start': 45, 'end': 48, 'text': 'Нужна помощь.'},
+                                {'start': 122, 'end': 126, 'text': 'Хинако, что ты тут делаешь?'}],
+                      'segments': [{'start': 15, 'end': 18, 'text': 'Я не уверен, что справлюсь.'},
+                                   {'start': 45, 'end': 48, 'text': 'Нужна помощь.'},
+                                   {'start': 122, 'end': 126, 'text': 'Хинако, что ты тут делаешь?'}]}
+        scenes = [{'id': f'scene_{i}', 'start': start, 'end': end, 'confidence': .9,
+                   'boundary_reason': ['location_change']} for i,(start,end) in enumerate(((0,20),(20,120),(120,150)))]
+        class ContextVision(FakeVision):
+            def query(self, prompt, image=None, max_tokens=1000, schema=None):
+                raw = super().query(prompt, image, max_tokens, schema)
+                payload = json.loads(prompt.rsplit('\n',1)[-1])
+                if 'initial_analysis' in payload:
+                    assert 'Я не уверен, что справлюсь.' in prompt and 'Хинако, что ты тут делаешь?' in prompt
+                    raw.update(summary='Объясняющий разговор связывает сомнение и появление Хинако.', narrative_bridge=True)
+                elif payload['CURRENT SCENE']['start'] >= 20 and payload['CURRENT SCENE']['end'] <= 120:
+                    raw.update(uncertain=True, semantic_confidence=.4, visual_confidence=.4,
+                               context_confidence=.4, uncertainty_reasons=['missing_context'])
+                return raw
+        vision = ContextVision()
+        with patch('app.vision.storyboard', side_effect=self.fake_board):
+            events = analyze_scenes(self.job/'source.mp4', scenes, transcript, [], self.job, vision,
+                                    'neighbors', lambda *args: None, lambda: False)
+        self.assertFalse(events[1]['uncertain'])
+        self.assertEqual(events[1]['summary_source'], 'recovery')
+        self.assertTrue(events[1]['narrative_bridge'])
+        self.assertIn('Хинако', events[1]['recovery_summary'])
+
     def test_uncertain_initial_analysis_runs_fresh_recovery_and_clears_uncertainty(self):
         from app.scene_understanding import RECOVERY_PROMPT
         class Recovering(FakeVision):

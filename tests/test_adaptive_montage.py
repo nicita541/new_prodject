@@ -28,6 +28,7 @@ class AdaptiveMontageTests(unittest.TestCase):
         job.mkdir(parents=True)
         self.addCleanup(lambda: shutil.rmtree(job) if job.resolve().is_relative_to(TEMP.resolve()) else None)
         analysis = episode(1)
+        analysis['events'][0].update(initial_uncertain=True, uncertain_after_recovery=True, uncertain=False)
         atomic_json(job/'scenes.json', [{'start': 0, 'end': 40}])
         shots = [{'id': 's0', 'start': 0, 'end': 40,
                   'raw_shot_candidates': [{'id': 'c0', 'time': 10, 'scene_score': .25, 'accepted': False}]}]
@@ -38,6 +39,34 @@ class AdaptiveMontageTests(unittest.TestCase):
         self.assertEqual(saved['initial_profile']['phase'], 'initial')
         self.assertEqual(saved['metrics']['raw_candidates'], 1)
         self.assertIn('scene_settings', saved)
+        summary = load_json(job/'diagnostics'/'pipeline'/'summary.json')
+        self.assertEqual(summary['uncertain_initial'], 1)
+        self.assertEqual(summary['uncertain_after_recovery'], 1)
+        self.assertEqual(summary['uncertain_final'], 0)
+        from app.pipeline_diagnostics import Diagnostics
+        from app.analysis import selection_snapshot
+        diagnostics = Diagnostics(job)
+        selection_snapshot(diagnostics, 'story_refinement', analysis['events'])
+        analysis_result(job, 'local', analysis['probe'], analysis['transcript'], shots, analysis['events'])
+        diagnostics.start(provider='local')
+        analysis_result(job, 'local', analysis['probe'], analysis['transcript'], shots, analysis['events'])
+        cached_summary = load_json(diagnostics.path/'summary.json')
+        self.assertEqual(cached_summary['duration_after_story_refinement'], 25)
+        self.assertEqual(cached_summary['uncertain_after_recovery'], 1)
+        diagnostics.summary(duration_after_story_refinement=21)
+        analysis_result(job, 'local', analysis['probe'], analysis['transcript'], shots, analysis['events'])
+        self.assertEqual(load_json(diagnostics.path/'summary.json')['duration_after_story_refinement'], 21)
+
+    def test_corrupt_diagnostic_summary_does_not_block_valid_analysis_cache(self):
+        job = TEMP / ('adaptive-summary-' + uuid.uuid4().hex)
+        job.mkdir(parents=True)
+        self.addCleanup(lambda: shutil.rmtree(job) if job.resolve().is_relative_to(TEMP.resolve()) else None)
+        analysis = episode(1)
+        result = analysis_result(job, 'local', analysis['probe'], analysis['transcript'], [], analysis['events'])
+        (job/'diagnostics/pipeline/analysis-summary.json').write_text('{broken', encoding='utf-8')
+        self.assertEqual(result, analysis_result(job, 'local', analysis['probe'], analysis['transcript'], [], analysis['events']))
+        warnings = load_json(job/'diagnostics/pipeline/warnings.json')
+        self.assertEqual(warnings[-1]['reason'], 'cached_analysis_summary_invalid')
 
     def test_real_quota_changes_retained_output_under_pressure(self):
         analysis = episode()

@@ -198,3 +198,26 @@ class LongMontageRegressionTests(unittest.TestCase):
         broken['parts'][0]['cuts'][0]['start'] = 10
         with self.assertRaisesRegex(ValueError, 'ASR-слово'):
             validate_plan(broken, data)
+
+    def test_quota_cannot_remove_immediate_response_when_dependency_is_missing(self):
+        speech = [{'start': 8, 'end': 10, 'text': 'Ты поможешь?'},
+                  {'start': 10.5, 'end': 13, 'text': 'Да, помогу.'}]
+        data = source_episode([event('question', 0, 10, 5), event('reply', 10, 180, 1)],
+                              transcript={'words': speech, 'segments': speech})
+        for builder in (build_plan, build_dramatic_plan):
+            plan = builder(data)
+            self.assertIn('reply', plan['selected_event_ids'])
+            self.assertTrue(any(c['start'] <= 10.5 and c['end'] >= 13 for c in coverage(plan)))
+            self.assertLess(retained_event_seconds(plan, data, 'reply'), 5)
+            self.assertTrue(any(b['reason'] == 'immediate_question_response_context'
+                                for b in plan['planner_diagnostics']['bridges']))
+
+    def test_selected_response_receives_only_its_short_immediate_question(self):
+        speech = [{'start': 8, 'end': 10, 'text': 'Ты поможешь?'},
+                  {'start': 10.5, 'end': 13, 'text': 'Да, помогу.'}]
+        data = source_episode([event('question', 0, 10, 1), event('reply', 10, 40, 5)],
+                              transcript={'words': speech, 'segments': speech})
+        plan = build_dramatic_plan(data)
+        self.assertIn('question', plan['selected_event_ids'])
+        self.assertLessEqual(retained_event_seconds(plan, data, 'question'), 3)
+        self.assertTrue(any(c['start'] <= 8 and c['end'] >= 10 for c in coverage(plan)))

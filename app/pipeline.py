@@ -344,6 +344,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)
     diagnostics.summary(selected_events=len(plan.get('selected_event_ids', [])), parts=len(plan['parts']),
+                        cuts=sum(len(p['cuts']) for p in plan['parts']),
                         final_duration=sum(p['duration'] for p in plan['parts']), warnings=len(plan.get('warnings', [])))
     diagnostics.write('planner.json', {'cache_hit': planning_cache_hit,
         'episode_profile': plan.get('episode_profile', analysis.get('episode_profile')),

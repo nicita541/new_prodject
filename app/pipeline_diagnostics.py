@@ -49,6 +49,13 @@ class Diagnostics:
         self.write('run.json', {'run_id': self.run_id, 'status': 'running', **fields})
         self.write('summary.json', {})
         self.write('warnings.json', [])
+        for name in ('scene_analysis.jsonl', 'scene_recovery.jsonl', 'decisions.jsonl'):
+            (self.path/name).touch(exist_ok=True)
+        for name, empty in (('shots.json', []), ('scenes.json', []), ('storyboard.json', []),
+                            ('global_story.json', {'events': {}}), ('episode_profile.json', {}),
+                            ('planner.json', {})):
+            if not (self.path/name).exists():
+                self.write(name, empty)
         self.event('pipeline', 'start', **fields)
 
     @contextmanager

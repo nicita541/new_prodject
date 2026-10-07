@@ -247,6 +247,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                         confidence_known=False, local_summary=current['summary'], final_summary=current['summary'],
                         summary_source='local', uncertainty_reasons=['invalid_json' if isinstance(error.__cause__,ValueError) else 'model_failure'])
                 current['initial_uncertain'] = bool(current.get('uncertain')) or current.get('confidence',0)<.85
+                current['initial_selected_ranges'] = [dict(r) for r in current.get('selected_ranges', [])]
                 current.update(scene_id=scene['id'],chunk_id=chunk['id'])
                 if recovery_trigger(current):
                     recovery_image = visual_dir/f'{event_id}_chunk_{number:03d}_recovery.jpg'
@@ -278,6 +279,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         for field in ('semantic_confidence','visual_confidence','context_confidence','confidence'):
             event[field] = min(r.get(field) if type(r.get(field)) in (int,float) else 0 for r in chunk_results)
         event.update(initial_uncertain=any(r.get('initial_uncertain') for r in chunk_results),
+                     uncertain_after_recovery=any(r.get('uncertain') for r in chunk_results),
                      confidence_known=all(r.get('confidence_known',False) for r in chunk_results),
                      understanding_status='unresolved' if any(r.get('understanding_status')=='unresolved' for r in chunk_results) else 'accepted',
                      uncertainty_reasons=sorted({reason for r in chunk_results for reason in r.get('uncertainty_reasons',[])}),
@@ -306,5 +308,8 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         events.append(event)
     diagnostics.write('storyboard.json', storyboards)
     diagnostics.summary(story_events=len(events), uncertain_initial=sum(bool(e.get('initial_uncertain')) for e in events),
-                        uncertain_after_recovery=sum(bool(e.get('uncertain')) for e in events))
+                        uncertain_after_recovery=sum(bool(e.get('uncertain')) for e in events),
+                        duration_after_local_analysis=sum(r['end']-r['start'] for e in events
+                            for c in e.get('chunk_analyses', []) for r in c.get('initial_selected_ranges', c.get('selected_ranges', []))),
+                        duration_after_recovery=sum(r['end']-r['start'] for e in events for r in e.get('selected_ranges', [])))
     return events
