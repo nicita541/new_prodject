@@ -190,10 +190,12 @@ def detect_shots(source: Path, duration: float, job_dir: Path, cancelled) -> lis
 
 def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Path, cancelled) -> list[dict]:
     import app.analysis as _analysis
+    from .semantic_identity import component_identity
     path, meta = job_dir / 'shots.json', job_dir / 'shots.meta.json'
     identity = {'source': fingerprint, 'duration': duration,
                 'version': SHOT_DETECTOR_VERSION, 'threshold': 'adaptive',
-                'width': 320, 'minimum_gap': .4, 'candidate_policy': 'preserve-all-v1'}
+                'width': 320, 'minimum_gap': .4, 'candidate_policy': 'preserve-all-v1',
+                'semantic_component': component_identity('shot_detector')}
     hit = path.exists() and meta.exists() and load_json(meta) == identity
     from .pipeline_diagnostics import Diagnostics
     Diagnostics(job_dir).event('shot_detection', 'cache_hit' if hit else 'cache_miss', detector_version=SHOT_DETECTOR_VERSION)

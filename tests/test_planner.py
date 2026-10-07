@@ -109,7 +109,7 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual([p['duration'] for p in plan['parts']],[110,105])
         self.assertFalse(any('Длинная реплика' in w for w in plan['warnings']))
 
-    def test_causal_dependency_retains_lower_importance_scene(self):
+    def test_causal_dependency_retains_only_minimal_lower_importance_context(self):
         data = analysis(120)
         original = data["events"][0]
         data["events"] = [{**original, "id": "context", "end": 20, "importance": 1, "kind": "recap"},
@@ -117,7 +117,9 @@ class PlannerTests(unittest.TestCase):
                           {**original, "id": "payoff", "start": 60, "end": 120, "importance": 5, "requires": ["context"]}]
         plan = build_plan(data)
         self.assertEqual(plan["selected_event_ids"], ["context", "payoff"])
-        self.assertEqual(plan["parts"][0]["duration"], 80)
+        self.assertEqual(plan["parts"][0]["duration"], 63)
+        self.assertEqual(plan['planner_diagnostics']['bridges'][0]['source_event'], 'context')
+        self.assertEqual(plan['planner_diagnostics']['bridges'][0]['ranges'], [{'start': 17, 'end': 20}])
         self.assertEqual(len(plan["parts"][0]["cuts"]), 2)
 
     def test_silent_narrative_inside_ending_is_retained(self):

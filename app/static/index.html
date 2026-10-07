@@ -411,9 +411,10 @@
                 <div id="playlist" class="playlist-list" style="max-height: 380px; overflow-y: auto;"></div>
                 
                 <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:18px;">
-                  <button id="download-video" class="btn-primary" type="button">Скачать видео (.mp4)</button>
-                  <button id="download-all" class="btn-secondary" type="button">Скачать все шортсы (.mp4)</button>
-                  <button id="download-subtitle" class="btn-secondary" type="button">Субтитры (.srt)</button>
+                  <a id="download-video" class="btn-primary" href="#" download>Скачать видео (.mp4)</a>
+                  <button id="download-all" class="btn-secondary" type="button">Сохранить все в папку...</button>
+                  <a id="download-subtitle" class="btn-secondary" href="#" download>Субтитры (.srt)</a>
+                  <button id="open-output-folder" class="btn-secondary" type="button">📁 Открыть папку с видео</button>
                 </div>
                 <p id="download-status" class="muted small" style="margin-top:8px;"></p>
                 <p id="player-message" class="message" hidden></p>

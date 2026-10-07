@@ -290,7 +290,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     from .editorial import load_profile
     editorial_prof = load_profile(job_dir)
     stat = source.stat()
+    from .semantic_identity import semantic_identity
     identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+                "semantic_components": semantic_identity(),
                 "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
                 "editorial_profile": editorial_prof,
                 "music": music_config,
@@ -349,6 +351,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         'budget_exceeded': plan.get('retention_budget_exceeded', False),
         'selected_event_ids': plan.get('selected_event_ids', []),
         'parts': [{'index': p['index'], 'duration': p['duration'], 'ending': p.get('ending')} for p in plan['parts']]})
+    planner_debug = plan.get('planner_diagnostics', {})
+    if planner_debug:
+        diagnostics.write('planner.json', {**planner_debug, 'cache_hit': planning_cache_hit,
+                                          'semantic_components': identity['semantic_components']})
+        for decision in planner_debug.get('decisions', []):
+            diagnostics.append('decisions.jsonl', {'stage': 'planning', **decision})
     for warning in plan.get('warnings', []):
         diagnostics.warning('planning', str(warning))
     from .part_context import generate as generate_part_context

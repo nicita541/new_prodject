@@ -50,8 +50,8 @@ from app.story_review import (
     global_story_review,
 )
 
-ANALYSIS_VERSION = 11
-GLOBAL_STORY_VERSION = 7
+ANALYSIS_VERSION = 12
+GLOBAL_STORY_VERSION = 8
 STORYBOARD_VERSION = 3
 EDITORIAL_POLICY = 'balanced-atmosphere-v1'
 
@@ -63,6 +63,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
     from .global_verification import GLOBAL_VERIFICATION_VERSION
     from .scene_understanding import SCENE_UNDERSTANDING_VERSION
     from .episode_profile import EPISODE_PROFILE_VERSION
+    from .semantic_identity import semantic_identity
     from .framing import FOCUS_VERSION
     from .closing import CLOSING_VERSION
     from .titles import TITLES_VERSION
@@ -78,7 +79,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
         paged = bool(getattr(LocalVision, 'supports_image_pages', False))
     else:
         raise ValueError('Неизвестный способ анализа')
-    return {'visual': analysis_key, 'story': STORY_VERSION, 'edge': EDGE_VERSION,
+    return {'visual': analysis_key, 'semantic_components': semantic_identity(), 'story': STORY_VERSION, 'edge': EDGE_VERSION,
             'scene_refinement': SCENE_REFINEMENT_VERSION,
             'scene_understanding': SCENE_UNDERSTANDING_VERSION,
             'episode_profile': EPISODE_PROFILE_VERSION,
@@ -184,7 +185,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     meta = job_dir / 'analysis.meta.json'
     if meta.exists() and load_json(meta) != identity:
         previous = load_json(meta)
-        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+        if previous.get('source') != fingerprint or previous.get('version') not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
             raise ValueError('Исходник или версия анализа изменились. Создайте новое задание.')
         # Preserve factual audio/ASR/shot checkpoints, archive the old model's
         # derived decisions so an upgrade cannot silently reuse stale framing.
@@ -250,7 +251,11 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     events_path = job_dir / 'events.json'
     model_identity = [{'path': str(path), 'size': path.stat().st_size, 'mtime_ns': path.stat().st_mtime_ns}
                       for path in (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)]
+    from .semantic_identity import semantic_identity
+    component_signatures = semantic_identity()
+    diagnostics.event('analysis', 'semantic_identity', components=component_signatures)
     analysis_key = hashlib.sha256(json.dumps({'identity': identity, 'models': model_identity,
+        'semantic_components': component_signatures,
         'provider': provider_profile,
         'transcript': transcript, 'shots': shots, 'scenes': scenes, 'scene_detector': SCENE_DETECTOR_VERSION,
         'episode_profile': initial_profile, 'scene_settings': grouping_settings}, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()

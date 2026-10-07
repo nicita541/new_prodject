@@ -218,6 +218,8 @@ def _valid_cache(saved, signature: str, event: dict, editorial_profile=None) -> 
 
 def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vision, report, cancelled) -> list[dict]:
     from .analysis import candidate_units, storyboard_times
+    from .semantic_identity import component_identity
+    semantic_component = component_identity('story')
     from .editorial import load_profile, instruction
     editorial_profile=load_profile(job_dir)
     result = copy.deepcopy(events)
@@ -259,6 +261,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     raise ValueError('Некорректная страница storyboard')
         image_hash = hashlib.sha256(b''.join(p.read_bytes() for p in image_pages)).hexdigest() if collage.is_file() else None
         identity = {"version": STORY_VERSION, "source": source_identity, "model": model_identity,
+                    "semantic_component": semantic_component,
                     "editorial_profile":editorial_profile,
                     "thinking": bool(getattr(vision, 'thinking', False)),
                     "event": event, "units": units, "words": words, "credit_candidate": candidate_credit,

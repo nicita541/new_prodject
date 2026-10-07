@@ -261,9 +261,52 @@ function renderFiles(job) {
   renderDownloadButtons();
 }
 function renderDownloadButtons() {
-  const ready=state.selectedJob?.status==='completed' && state.selectedJob.id===state.selected;
-  $('download-video').disabled=state.savingVideos || !ready || !state.files[state.fileIndex];
-  $('download-all').disabled=state.savingVideos || !ready || !state.files.length;
+  const ready = state.selectedJob?.status === 'completed' && state.selectedJob.id === state.selected;
+  const hasFiles = Boolean(ready && state.files.length);
+  const currentFile = hasFiles ? state.files[state.fileIndex] : null;
+
+  const downloadVideo = $('download-video');
+  if (downloadVideo) {
+    if (currentFile && ready) {
+      downloadVideo.href = `${safeUrl(currentFile.url)}?download=1`;
+      downloadVideo.download = currentFile.name || 'video.mp4';
+      downloadVideo.classList.remove('disabled');
+      downloadVideo.removeAttribute('aria-disabled');
+    } else {
+      downloadVideo.href = '#';
+      downloadVideo.removeAttribute('download');
+      downloadVideo.classList.add('disabled');
+      downloadVideo.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  const downloadSub = $('download-subtitle');
+  if (downloadSub) {
+    const subtitleUrl = currentFile?.subtitle_url ? safeUrl(currentFile.subtitle_url) : null;
+    if (subtitleUrl && ready) {
+      downloadSub.href = `${subtitleUrl}?download=1`;
+      downloadSub.download = `${(currentFile.name || 'subtitles').replace(/\.[^.]+$/, '')}.srt`;
+      downloadSub.hidden = false;
+      downloadSub.classList.remove('disabled');
+      downloadSub.removeAttribute('aria-disabled');
+    } else {
+      downloadSub.href = '#';
+      downloadSub.removeAttribute('download');
+      downloadSub.hidden = !subtitleUrl;
+      downloadSub.classList.add('disabled');
+      downloadSub.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  const downloadAll = $('download-all');
+  if (downloadAll) {
+    downloadAll.disabled = state.savingVideos || !ready || !hasFiles;
+  }
+
+  const openFolder = $('open-output-folder');
+  if (openFolder) {
+    openFolder.disabled = !ready || !hasFiles;
+  }
 }
 async function saveVideos(all) {
   const job=state.selectedJob,file=state.files[state.fileIndex];
@@ -289,14 +332,26 @@ async function saveVideos(all) {
     if(state.selected===job.id)setText('download-status',`Не удалось сохранить видео: ${error.message}`);
   } finally {state.savingVideos=false;renderDownloadButtons();}
 }
-$('download-video').addEventListener('click',()=>saveVideos(false));
-$('download-all').addEventListener('click',()=>saveVideos(true));
+$('download-video')?.addEventListener('click',(event)=>{if($('download-video').classList.contains('disabled'))event.preventDefault();});
+$('download-subtitle')?.addEventListener('click',(event)=>{if($('download-subtitle').classList.contains('disabled'))event.preventDefault();});
+$('download-all')?.addEventListener('click',()=>saveVideos(true));
+$('open-output-folder')?.addEventListener('click',async ()=>{
+  const job=state.selectedJob;
+  if(!job || job.id!==state.selected || job.status!=='completed') return;
+  setText('download-status','Открываем папку с видео в проводнике...');
+  try {
+    const res=await api(`/api/jobs/${encodeURIComponent(job.id)}/open-folder`,{method:'POST'});
+    if(res?.opened && state.selected===job.id) {
+      setText('download-status',`Папка с видео открыта в проводнике: ${res.path}`);
+    }
+  } catch(error) {
+    if(state.selected===job.id)setText('download-status',`Не удалось открыть папку: ${error.message}`);
+  }
+});
 function selectFile(index, play) {
   const file = state.files[index]; if (!file) return;
   state.fileIndex = index; setText("player-message", "");
   $("player").src = safeUrl(file.url); renderDownloadButtons();
-  const subtitleUrl = safeUrl(file.subtitle_url); $("download-subtitle").hidden = !subtitleUrl;
-  if (subtitleUrl) $("download-subtitle").href = subtitleUrl;
   $("playlist").querySelectorAll("button").forEach((button, current) => { button.classList.toggle("selected", current === index); button.setAttribute("aria-current", String(current === index)); });
   if (play) $("player").play().catch(() => setText("player-message", "Нажмите воспроизведение в плеере."));
   if (state.timeline?.jobId === state.selected) renderTimelineSelection(index);

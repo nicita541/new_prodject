@@ -685,6 +685,42 @@ class ApiTests(unittest.TestCase):
         get_res = self.client.get(f"/api/jobs/{job_id}")
         self.assertEqual(get_res.status_code, 404)
 
+    def test_file_download_attachment_header(self):
+        job, output = self.completed_output_job(1)
+        res_view = self.client.get(f"/api/jobs/{job['id']}/files/part_001.mp4")
+        self.assertEqual(res_view.status_code, 200)
+        self.assertIn("inline", res_view.headers.get("content-disposition", ""))
+
+        res_dl = self.client.get(f"/api/jobs/{job['id']}/files/part_001.mp4?download=1")
+        self.assertEqual(res_dl.status_code, 200)
+        self.assertIn("attachment", res_dl.headers.get("content-disposition", ""))
+        self.assertIn("part_001.mp4", res_dl.headers.get("content-disposition", ""))
+
+    def test_open_output_folder_endpoint(self):
+        job, output = self.completed_output_job(1)
+        with patch("app.server.subprocess.Popen") as mock_popen:
+            res = self.client.post(f"/api/jobs/{job['id']}/open-folder")
+            self.assertEqual(res.status_code, 200)
+            self.assertTrue(res.json()["opened"])
+            self.assertEqual(res.json()["path"], str(output.resolve()))
+            mock_popen.assert_called_once()
+
+        # Non-existent job
+        self.assertEqual(self.client.post("/api/jobs/missing-job/open-folder").status_code, 404)
+
+        # Incomplete job
+        uncompleted = self.start_job()
+        self.assertEqual(self.client.post(f"/api/jobs/{uncompleted['id']}/open-folder").status_code, 400)
+
+    def test_choose_download_directory_powershell(self):
+        from app.server import choose_download_directory
+        target = self.root / "ps_chosen"
+        target.mkdir()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("os.name", "nt"), \
+                 patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout=f"{target}\n")):
+                self.assertEqual(choose_download_directory(), str(target.resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()

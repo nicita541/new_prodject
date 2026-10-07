@@ -148,6 +148,8 @@ def recover_fallback_endings(result, candidates, retained, transcript, shots, pr
     """Assess all alternatives for actual unverified part ends, including replies
     missed by a proposal. Safe IDs and independent local evidence remain required.
     """
+    from .semantic_identity import component_identity
+    semantic_component = component_identity('ending')
     plan = build_plan({'events': result, 'transcript': transcript, 'shots': shots, 'probe': probe})
     elapsed = 0.0
     visited = set()
@@ -167,6 +169,7 @@ def recover_fallback_endings(result, candidates, retained, transcript, shots, pr
         for offset in range(0, len(choices), 12):
             batch = choices[offset:offset + 12]
             identity = {'version': RECOVERY_VERSION, 'candidates': batch,
+                        'semantic_component': semantic_component,
                         'transcript': transcript['segments'], 'retained': retained,
                         'provider': getattr(vision, 'cache_profile', str(vision.projector))}
             digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -210,6 +213,8 @@ def recover_fallback_endings(result, candidates, retained, transcript, shots, pr
 
 
 def refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled):
+    from .semantic_identity import component_identity
+    semantic_component = component_identity('ending')
     result = copy.deepcopy(events)
     for event in result:
         event.pop('part_endings', None)
@@ -254,9 +259,8 @@ def refine_endings(events, transcript, shots, probe, job_dir, vision, report, ca
                   if context[0]['start'] < s['end'] and context[-1]['end'] > s['start']
                   and any(r['start'] <= s['start'] and s['end'] <= r['end'] for r in retained)]
         identity = {'version': VERSION, 'summaries': summaries, 'speech': speech, 'candidates': choices,
+                    'semantic_component': semantic_component,
                     'provider': getattr(vision, 'cache_profile', str(vision.projector))}
-        digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-        checkpoint = directory / (digest + '.json')
         report('condense', .645, 'Ищем завершённые моменты и интригу для концовок частей')
         ids = [c['id'] for c in choices]
         schema = {'type': 'object', 'properties': {
@@ -282,6 +286,9 @@ def refine_endings(events, transcript, shots, probe, job_dir, vision, report, ca
             'prefer completion after the response/farewell over an earlier step in the same exchange. '
             'If the context does not support a boundary, leave it out. '
             + json.dumps({'context': summaries, 'retained_dialogue': speech, 'boundaries': choices}, ensure_ascii=False))
+        identity['prompt_hash'] = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+        digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        checkpoint = directory / (digest + '.json')
         try:
             from .analysis import analysis_context_limit
             if vision.token_count(prompt) > analysis_context_limit(vision):

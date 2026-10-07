@@ -108,11 +108,51 @@ def query_scene(vision, prompt, image, units, event_id, start, end, timestamps, 
     raise RuntimeError(f'Не удалось проанализировать {event_id}: {errors[-1]}') from errors[-1]
 
 
+def _scene_image_hashes(boards, visual_dir):
+    if not isinstance(boards, list) or not boards:
+        return None
+    result = {}
+    root = visual_dir.resolve()
+    for board in boards:
+        if (not isinstance(board, dict) or not isinstance(board.get('image'), str)
+                or not isinstance(board.get('pages', []), list)):
+            return None
+        paths = [board['image'], *board.get('pages', [])]
+        for value in paths:
+            if not isinstance(value, str):
+                return None
+            path = Path(value).resolve()
+            if not path.is_relative_to(root) or not path.is_file():
+                return None
+            result[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
 def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature, report, cancelled):
     from .vision import storyboard
+    from .semantic_identity import component_identity
     diagnostics = Diagnostics(job_dir)
     visual_dir = Path(job_dir) / 'visual'
     visual_dir.mkdir(exist_ok=True)
+    components = {name: component_identity(name)['digest'] for name in ('local_prompt', 'recovery', 'storyboard')}
+    source_path = Path(source)
+    source_stat = source_path.stat() if source_path.is_file() else None
+    model_files = []
+    for name in ('model', 'projector'):
+        path = Path(str(getattr(vision, name, 'unknown')))
+        stat = path.stat() if path.is_file() else None
+        model_files.append({'path': str(path), 'size': stat.st_size if stat else None,
+                            'mtime_ns': stat.st_mtime_ns if stat else None})
+    base_identity = {'source': {'path': str(source_path.resolve()),
+                     'size': source_stat.st_size if source_stat else None,
+                     'mtime_ns': source_stat.st_mtime_ns if source_stat else None},
+                     'transcript': transcript, 'shots': shots,
+                     'provider': {'type': type(vision).__name__, 'model': str(getattr(vision, 'model', 'unknown')),
+                     'projector': str(getattr(vision, 'projector', 'unknown')),
+                     'profile': getattr(vision, 'cache_profile', None),
+                     'model_files': model_files,
+                     'image_pages': bool(getattr(vision, 'supports_image_pages', False)),
+                     'thinking': bool(getattr(vision, 'thinking', False))}}
     events, storyboards = [], []
     for index, scene in enumerate(scenes):
         if cancelled():
@@ -120,8 +160,16 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         event_id = f'event_{index:04d}'
         checkpoint = visual_dir / f'{event_id}.json'
         saved = load_json(checkpoint) if checkpoint.exists() else {}
+        semantic_cache = {'components': components,
+            'input_hash': hashlib.sha256(json.dumps({**base_identity, 'scene': scene,
+                'previous': scenes[index-1] if index else None,
+                'next': scenes[index+1] if index+1 < len(scenes) else None},
+                ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()}
         report('analyze', .22+.26*index/max(1, len(scenes)), f'Смысловая сцена {index+1} из {len(scenes)}')
-        if saved.get('signature') == signature and saved.get('event', {}).get('scene_id') == scene['id']:
+        if (saved.get('signature') == signature and saved.get('semantic_identity') == semantic_cache
+                and saved.get('event', {}).get('scene_id') == scene['id']
+                and isinstance(saved.get('image_hashes'), dict)
+                and _scene_image_hashes(saved.get('storyboards', []), visual_dir) == saved['image_hashes']):
             event = saved['event']
             storyboards.extend(saved.get('storyboards', []))
             diagnostics.event('scene_analysis', 'cache_hit', scene_id=scene['id'], event_id=event_id)
@@ -251,7 +299,9 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         canonical_board = load_json(canonical.with_suffix('.storyboard.json'))
         canonical_board.update(scene_id=scene['id'], role='legacy_overview', image=str(canonical))
         scene_boards.append(canonical_board)
-        atomic_json(checkpoint, {'signature': signature, 'event': event, 'storyboards': scene_boards})
+        atomic_json(checkpoint, {'signature': signature, 'semantic_identity': semantic_cache,
+                                'image_hashes': _scene_image_hashes(scene_boards, visual_dir),
+                                'event': event, 'storyboards': scene_boards})
         storyboards.extend(scene_boards)
         events.append(event)
     diagnostics.write('storyboard.json', storyboards)

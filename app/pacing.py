@@ -262,6 +262,8 @@ def retained_context(events, transcript, retained_ids=None):
 def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled):
     """Reconsider long silent travel/routine as a sequence across analysis windows."""
     from .editorial import load_profile, instruction
+    from .semantic_identity import component_identity
+    semantic_component = component_identity('pacing')
     from .source_roles import apply_exclusions, verified_story_ranges
     from .speech_context import _retained
     from .titles import _subtract
@@ -297,6 +299,7 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
         neighbors = neighboring_replies({'start': group[0]['start'], 'end': group[-1]['end']},
                                         transcript, result, retained_ids)
         identity = {'version': PACING_VERSION, 'source': str(source), 'size': stat.st_size,
+                    'semantic_component': semantic_component,
                     'mtime': stat.st_mtime_ns, 'units': group, 'neighbors': neighbors, 'profile': profile,
                     'provider': getattr(vision, 'cache_profile', str(vision.projector))}
         digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -393,6 +396,8 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
 
 def refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled):
     from .editorial import load_profile,instruction
+    from .semantic_identity import component_identity
+    semantic_component = component_identity('pacing')
     editorial_profile=load_profile(job_dir)
     from .source_roles import apply_exclusions,verified_story_ranges
     result = apply_exclusions(events)
@@ -435,6 +440,7 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                 unit['repeat_witnesses'] += [u['id'] for u in batch if u['end']<=unit['start']]
             duration = max(e['end'] for e in events)
             identity = {'version': PACING_VERSION, 'source': str(source), 'size': source_stat.st_size,
+                        'semantic_component': semantic_component,
                         'mtime': source_stat.st_mtime_ns, 'event': events[index], 'units': batch,
                         'context': previous, 'neighbors':neighbors, 'editorial_profile':editorial_profile, 'model': str(vision.model),
                         'profile': getattr(vision, 'cache_profile', str(vision.projector))}

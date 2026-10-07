@@ -6,7 +6,7 @@ from .subtitles import make_cues, remap_words
 
 MAX_DURATION = 120.0
 TARGET_DURATION = 90.0
-PLANNER_VERSION = 13
+PLANNER_VERSION = 14
 SCHEMA_VERSION = 1
 SPEECH_TAIL = 0.55
 SPEECH_LEAD = 0.18
@@ -131,6 +131,9 @@ def _part_boundaries(intervals, events, segments, words, shots, duration):
     def add(time, cost, evidence=None):
         if not _safe(time, words):
             return
+        from .dramatic_planner import _protected_boundary
+        if _protected_boundary(time, events, segments, words, intervals):
+            return
         crossing = [s for s in segments if s['start'] < time < s['end']]
         if any(s['end'] - s['start'] <= MAX_DURATION for s in crossing):
             return
@@ -233,12 +236,13 @@ def build_plan(analysis: dict) -> dict:
         warnings.append("Важность событий не определена уверенно: сохранены все сюжетные сцены")
     if not selected:
         raise ValueError("В серии не найдены сюжетные сцены; проверьте анализ")
-    pending = list(selected)
-    while pending:
-        for dep in by_id[pending.pop()].get("requires", []):
-            if dep not in selected:
-                selected.add(dep)
-                pending.append(dep)
+    from .story_structure import build_story_arcs, resolve_continuity
+    arcs = build_story_arcs(events, analysis['transcript'])
+    continuity = resolve_continuity(events, selected, analysis['transcript'], probe['duration'])
+    events, selected = continuity['events'], set(continuity['selected_ids'])
+    warnings.extend('Связность: '+str(w.get('reason', 'unknown'))+
+                    (f" ({w.get('from')} → {w.get('to')})" if w.get('to') else '')
+                    for w in continuity['warnings'] if w.get('reason') != 'unknown_transition_state')
     intervals = []
     excluded_ranges = [r for event in events for r in confirmed_exclusions(event)]
     from .titles import _subtract
@@ -254,7 +258,12 @@ def build_plan(analysis: dict) -> dict:
             selections.extend(s for s in [*segments, *words]
                               if s['start'] < event['end'] and s['end'] > event['start'])
         for selection in sorted(selections, key=lambda s: s['start']):
-            start, end = _expand(selection["start"], selection["end"], segments, words, probe["duration"])
+            if event.get('minimal_context_ranges'):
+                start, end = selection['start'], selection['end']
+            else:
+                start, end = _expand(selection["start"], selection["end"],
+                                     [] if event.get('unit_selection_version') == 1 else segments,
+                                     words, probe["duration"])
             for piece in _subtract([{'start':start,'end':end}], excluded_ranges):
                 left, right = piece['start'], piece['end']
                 if intervals and left <= intervals[-1]["end"] + 0.002:
@@ -311,6 +320,8 @@ def build_plan(analysis: dict) -> dict:
             "selected_event_ids": [e["id"] for e in events if e["id"] in selected],
             "events": [dict(e) for e in events if e["id"] in retained_ids],
             "parts": parts, "warnings": list(dict.fromkeys(warnings))}
+    from .planner_audit import planner_audit
+    plan['planner_diagnostics'] = planner_audit({**analysis, 'events': events}, plan, arcs=arcs, continuity=continuity)
     validate_plan(plan, analysis)
     return plan
 
@@ -328,6 +339,8 @@ def validate_plan(plan: dict, analysis: dict) -> None:
             start, end = _number(cut["start"]), _number(cut["end"])
             if not 0 <= start < end <= analysis["probe"]["duration"] + 0.002 or start < previous - 1e-6:
                 raise ValueError("Монтаж повторяет, переставляет или выдумывает материал")
+            if not _safe(start, analysis['transcript'].get('words', [])) or not _safe(end, analysis['transcript'].get('words', [])):
+                raise ValueError('Монтажная граница обрывает исходное ASR-слово')
             if not cut["event_ids"] or any(i not in ids for i in cut["event_ids"]):
                 raise ValueError("Неизвестное исходное событие")
             for anchor in cut["focus"]:
@@ -336,7 +349,7 @@ def validate_plan(plan: dict, analysis: dict) -> None:
                 if "hard_cut" in anchor and not isinstance(anchor["hard_cut"], bool):
                     raise ValueError("Некорректный признак смены кадра")
             previous, duration = end, duration + end - start
-        max_allowed = 150.0 if plan.get('dramatic_montage') else MAX_DURATION
+        max_allowed = MAX_DURATION
         if duration > max_allowed + 1e-6 or abs(duration - _number(part["duration"])) > 1e-5:
             raise ValueError(f"Часть превышает {max_allowed:g} секунд или имеет неверную длительность")
         from .editing import validate_options

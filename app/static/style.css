@@ -274,12 +274,20 @@ button { cursor: pointer; border: none; background: none; }
   box-shadow: 0 4px 18px rgba(99, 102, 241, 0.45);
 }
 
-.btn-primary:disabled {
+.btn-primary:disabled, .btn-primary.disabled {
   background: rgba(255, 255, 255, 0.08);
   color: var(--text-muted);
   box-shadow: none;
   cursor: not-allowed;
+  pointer-events: none;
   transform: none;
+  opacity: 0.6;
+}
+
+.btn-secondary:disabled, .btn-secondary.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .btn-secondary, .secondary-button {

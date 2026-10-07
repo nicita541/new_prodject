@@ -128,21 +128,64 @@ def safe_filename(name: str | None) -> str:
 
 
 def choose_download_directory() -> str | None:
-    """Use a native folder chooser or env fallback; callers may also supply destination directly."""
+    """Use a native folder chooser, PowerShell dialog, or env fallback; callers may also supply destination directly."""
     env_dest = os.environ.get("AUTOSHORT_DOWNLOAD_DIR")
     if env_dest and Path(env_dest).is_dir():
         return str(Path(env_dest).resolve())
-    import tkinter
-    from tkinter import filedialog
 
-    root = tkinter.Tk()
+    # 1. On Windows, use native FolderBrowserDialog via PowerShell (works cleanly without Tcl/Tk)
+    if os.name == "nt":
+        try:
+            ps_script = (
+                "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$d.Description = 'Куда сохранить видео?'; "
+                "$d.ShowNewFolderButton = $true; "
+                "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { "
+                "  Write-Output $d.SelectedPath "
+                "}"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+                capture_output=True, text=True, timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            )
+            selected = result.stdout.strip()
+            if selected and Path(selected).is_dir():
+                return str(Path(selected).resolve())
+            if result.returncode == 0 and not selected:
+                # User clicked Cancel in dialog
+                return None
+        except Exception:
+            pass
+
+    # 2. Try Tkinter fallback if available
     try:
-        root.withdraw()
-        root.attributes("-topmost", True)
-        root.update()
-        return filedialog.askdirectory(parent=root, title="Куда сохранить видео?", mustexist=True) or None
-    finally:
-        root.destroy()
+        import tkinter
+        from tkinter import filedialog
+
+        root = tkinter.Tk()
+        try:
+            root.withdraw()
+            root.attributes("-topmost", True)
+            root.update()
+            selected = filedialog.askdirectory(parent=root, title="Куда сохранить видео?", mustexist=True)
+            if selected:
+                return str(Path(selected).resolve())
+            return None
+        finally:
+            try:
+                root.destroy()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 3. Graceful fallback to user's standard Downloads folder
+    downloads = Path.home() / "Downloads"
+    if downloads.is_dir():
+        return str(downloads.resolve())
+    return str(Path.home().resolve())
 
 
 def validate_media(path: Path) -> None:
@@ -192,7 +235,7 @@ def public_job(job: dict, manager: JobManager | None = None) -> dict:
     return result
 
 
-def ranged_file(path: Path, request: Request):
+def ranged_file(path: Path, request: Request, as_attachment: bool = False):
     """Single-range streaming with bounded reads and correct 416 responses."""
     length = path.stat().st_size
     start, end, status = 0, length - 1, 200
@@ -215,8 +258,9 @@ def ranged_file(path: Path, request: Request):
             return JSONResponse({"detail": "Диапазон за пределами файла"}, 416,
                                 headers={"Content-Range": f"bytes */{length}", "Accept-Ranges": "bytes"})
         status = 206
+    disposition = "attachment" if as_attachment else "inline"
     headers = {"Accept-Ranges": "bytes", "Content-Length": str(max(0, end - start + 1)),
-               "Content-Disposition": "inline; filename*=UTF-8''" + quote(path.name, safe=""),
+               "Content-Disposition": f"{disposition}; filename*=UTF-8''" + quote(path.name, safe=""),
                "X-Content-Type-Options": "nosniff"}
     if status == 206:
         headers["Content-Range"] = f"bytes {start}-{end}/{length}"
@@ -566,7 +610,25 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         path = contained(directory / filename, directory)
         if not path.is_file():
             raise HTTPException(404, "Готовый файл не найден")
-        return ranged_file(path, request)
+        as_download = bool(request.query_params.get("download"))
+        return ranged_file(path, request, as_attachment=as_download)
+
+    @application.post("/api/jobs/{identifier}/open-folder")
+    def open_job_folder(request: Request, identifier: str):
+        current = get_manager(request)
+        item = current.get(identifier)
+        if item.get("status") != "completed":
+            raise HTTPException(400, "Задание ещё не завершено")
+        output_dir = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
+        target = output_dir.resolve()
+        if not target.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        try:
+            if os.name == "nt":
+                subprocess.Popen(f'explorer "{target}"')
+            return {"opened": True, "path": str(target)}
+        except Exception:
+            return JSONResponse({"opened": False, "detail": "Не удалось открыть папку проводника"}, 500)
 
     @application.post("/api/jobs/{identifier}/save-videos")
     def save_videos(request: Request, identifier: str, body: SaveVideos):

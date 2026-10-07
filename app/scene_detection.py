@@ -588,12 +588,14 @@ def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: lis
     if cancelled():
         raise InterruptedError('Обработка отменена')
     source, job_dir = Path(source), Path(job_dir)
+    from .semantic_identity import component_identity
     config = _settings(settings)
     stat = source.stat()
     source_identity = {'fingerprint': fingerprint, 'path': str(source.resolve()),
                        'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns, 'duration': duration}
     feature_identity = {'source': source_identity, 'shots': _hash(shots), 'version': VISUAL_FEATURE_VERSION,
-                        'sample_interval': config['feature_sample_interval']}
+                        'sample_interval': config['feature_sample_interval'],
+                        'semantic_component': component_identity('visual_features')}
     feature_path, feature_meta = job_dir / 'scene-features.json', job_dir / 'scene-features.meta.json'
     features = _cached(feature_path, feature_meta, feature_identity)
     feature_hit = features is not None
@@ -604,7 +606,8 @@ def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: lis
     identity = {'source': source_identity, 'features': _hash(features), 'shots': _hash(shots),
                 'transcript': _hash({'words': transcript.get('words', []), 'segments': transcript.get('segments', [])}),
                 'audio': _hash(audio_features), 'settings': config,
-                'detector_version': SCENE_DETECTOR_VERSION, 'grouping_version': SCENE_GROUPING_VERSION}
+                'detector_version': SCENE_DETECTOR_VERSION, 'grouping_version': SCENE_GROUPING_VERSION,
+                'semantic_component': component_identity('scene_detector')}
     path, meta = job_dir / 'scenes.json', job_dir / 'scenes.meta.json'
     scenes = _cached(path, meta, identity)
     scene_hit = scenes is not None
