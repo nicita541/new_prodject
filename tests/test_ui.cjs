@@ -13,10 +13,21 @@ const html = fs.readFileSync(path.join(staticDir, "index.html"), "utf8");
 const css = fs.readFileSync(path.join(staticDir, "style.css"), "utf8");
 const libraryScript = fs.readFileSync(path.join(staticDir, 'library.js'), 'utf8');
 
+function openingTag(id) {
+  return html.match(new RegExp(`<([a-z][a-z0-9-]*)\\b[^>]*\\bid="${id}"[^>]*>`, 'i'))?.[0] ?? '';
+}
+function checkpointStates(u) {
+  return u.stageElements.map(node => node.className.split(' ').find(name =>
+    ['done', 'current', 'pending', 'failed', 'cancelled', 'interrupted', 'unknown'].includes(name)));
+}
+
 class Element {
-  constructor() {
-    this.children = []; this.attrs = {}; this.value = ""; this.textContent = "";
-    this.hidden = false; this.disabled = false; this.className = ""; this.listeners = {};
+  constructor(markup = '') {
+    this.children = []; this.value = ""; this.textContent = "";
+    this.attrs = Object.fromEntries([...markup.matchAll(/\s([a-z][a-z0-9-]*)(?:="([^"]*)")?/gi)].map(match => [match[1], match[2] ?? '']));
+    this.hidden = Object.hasOwn(this.attrs, 'hidden'); this.disabled = Object.hasOwn(this.attrs, 'disabled');
+    this.className = this.attrs.class ?? ''; this.max = Number(this.attrs.max ?? 1); this.listeners = {};
+    this.tagName = markup.match(/^<([a-z][a-z0-9-]*)/i)?.[1].toUpperCase();
     this.style = {}; this.currentTime = 0;
     this.classList = {
       contains: (name) => this.className.split(" ").includes(name),
@@ -50,9 +61,9 @@ class Element {
 
 async function ui(options = {}) {
   const elements = new Map();
-  const element = (id) => { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); };
-  const stageElements = ["prepare", "transcribe", "analyze", "condense", "framing", "plan", "render"].map(stage => {
-    const node = new Element(); node.dataset.stage = stage; return node;
+  const element = (id) => { if (!elements.has(id)) elements.set(id, new Element(openingTag(id))); return elements.get(id); };
+  const stageElements = [...html.matchAll(/<li\b[^>]*\bdata-stage="([^"]+)"[^>]*>/g)].map(match => {
+    const node = new Element(match[0]); node.dataset.stage = match[1]; return node;
   });
   element("analysis-provider").value = "deepseek_plan";
   element("layout").value = "cinema";
@@ -131,7 +142,7 @@ async function ui(options = {}) {
 
 test("analysis picker exposes only local and DeepSeek story planning; launch makes no accounting calls", async () => {
   const u = await ui();
-  const picker = html.match(/<select id="analysis-provider">([\s\S]*?)<\/select>/)?.[1] ?? "";
+  const picker = html.match(/<select\b[^>]*\bid="analysis-provider"[^>]*>([\s\S]*?)<\/select>/)?.[1] ?? "";
   assert.deepEqual([...picker.matchAll(/<option value="([^"]+)"/g)].map(match => match[1]), ["deepseek_plan", "local"]);
   assert.match(picker, /value="deepseek_plan" selected/);
   assert.equal(u.run("analysisProvider()"), "deepseek_plan");
@@ -167,7 +178,9 @@ test('automatic cover context follows the selected part and copies its current p
 test("processing checkpoints identify the active stage and where work runs", async () => {
   const u = await ui();
   u.run('renderJob({id:"running",status:"running",stage:"condense",progress:0.62,message:"Проверяем темп",analysis_provider:"deepseek_plan",files:[]})');
-  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "done", "current", "pending", "pending", "pending"]);
+  assert.deepEqual(checkpointStates(u), ["done", "done", "done", "current", "pending", "pending", "pending"]);
+  assert.deepEqual(u.stageElements.map(node => node.dataset.stage), ['prepare', 'transcribe', 'analyze', 'condense', 'framing', 'plan', 'render']);
+  assert(u.stageElements.every(node => node.classList.contains('stage-item')));
   assert.equal(u.stageElements[3].getAttribute("aria-current"), "step");
   assert.equal(u.stageElements[2].querySelector("[data-stage-owner]").textContent, "DeepSeek API");
   assert.equal(u.stageElements[3].querySelector("[data-stage-owner]").textContent, "DeepSeek API");
@@ -175,12 +188,12 @@ test("processing checkpoints identify the active stage and where work runs", asy
   assert.equal(u.stageElements[5].querySelector("[data-stage-owner]").textContent, "На компьютере");
   assert.equal(u.stageElements[6].querySelector("[data-stage-owner]").textContent, "На компьютере");
   assert.equal(u.stageElements[3].querySelector("[data-stage-state]").textContent, "Выполняется");
-  assert.match(html, /<ol class="stages"[^>]*aria-label="Этапы обработки"/);
-  assert.match(html, /<li data-stage="condense"/);
-  assert.match(html, /<li data-stage="framing"/);
-  assert.match(css, /@media\(max-width:480px\)\{\.stages\{grid-template-columns:1fr/);
-  assert.match(html, /href="\/static\/style\.css\?v=[a-z0-9-]+"/);
-  assert.match(html, /src="\/static\/app\.js\?v=[a-z0-9-]+"/);
+  assert.match(html, /<(?:ol|ul)\b[^>]*class="stages-list"/);
+  const stagesRule = css.match(/\.stages-list\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(stagesRule, /display\s*:\s*flex\s*;/);
+  assert.match(stagesRule, /flex-direction\s*:\s*column\s*;/);
+  assert.match(html, /href="\/static\/style\.css\?v=[a-z0-9.-]+"/);
+  assert.match(html, /src="\/static\/app\.js\?v=[a-z0-9.-]+"/);
 });
 
 test("completed, failed, cancelled and queued jobs retain truthful checkpoint states", async () => {
@@ -188,24 +201,45 @@ test("completed, failed, cancelled and queued jobs retain truthful checkpoint st
   u.run('renderJob({status:"completed",stage:"completed",progress:1,analysis_provider:"local",files:[]})');
   assert(u.stageElements.every(node => node.classList.contains("done")));
   u.run('renderJob({status:"failed",stage:"rendering",progress:0.74,error:"encoder failed",analysis_provider:"local",files:[]})');
-  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "done", "done", "done", "done", "failed"]);
+  assert.deepEqual(checkpointStates(u), ["done", "done", "done", "done", "done", "done", "failed"]);
   assert.equal(u.element("job-error").hidden, false);
   assert.equal(u.stageElements[6].querySelector("[data-stage-state]").textContent, "Остановлено с ошибкой");
   u.run('renderJob({status:"cancelled",stage:"transcribe",progress:0.08,analysis_provider:"deepseek_plan",files:[]})');
-  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "cancelled", "pending", "pending", "pending", "pending", "pending"]);
+  assert.deepEqual(checkpointStates(u), ["done", "cancelled", "pending", "pending", "pending", "pending", "pending"]);
   u.run('renderJob({status:"queued",stage:"queued",progress:0,analysis_provider:"local",files:[]})');
   assert(u.stageElements.every(node => node.classList.contains("pending")));
   assert(u.stageElements.every(node => node.getAttribute("aria-current") === undefined));
   u.run('renderJob({status:"running",stage:"framing",progress:0.65,analysis_provider:"deepseek_plan",files:[]})');
-  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "done", "done", "current", "pending", "pending"]);
+  assert.deepEqual(checkpointStates(u), ["done", "done", "done", "done", "current", "pending", "pending"]);
   assert.equal(u.stageElements[4].querySelector("[data-stage-owner]").textContent, "На компьютере · для этого режима");
   u.run('renderJob({status:"running",stage:"scenes",progress:0.19,analysis_provider:"deepseek_plan",files:[]})');
-  assert.deepEqual(u.stageElements.map(node => node.className), ["current", "pending", "pending", "pending", "pending", "pending", "pending"]);
+  assert.deepEqual(checkpointStates(u), ["current", "pending", "pending", "pending", "pending", "pending", "pending"]);
   assert.match(u.stageElements[0].querySelector("[data-stage-owner]").textContent, /поиск смены планов/);
   u.run('renderJob({status:"running",stage:"unexpected",progress:0.4,analysis_provider:"local",files:[]})');
   assert(u.stageElements.every(node => node.classList.contains("unknown")));
   u.run('renderJob({status:"running",stage:"analyze",progress:0.51,analysis_provider:"deepseek_plan",files:[]})');
-  assert.deepEqual(u.stageElements.map(node => node.className), ["done", "done", "current", "pending", "pending", "pending", "pending"]);
+  assert.deepEqual(checkpointStates(u), ["done", "done", "current", "pending", "pending", "pending", "pending"]);
+});
+
+test('progress bar uses the displayed percentage and clamps out-of-range progress', async () => {
+  const u = await ui();
+  u.run('renderJob({id:"progress",status:"running",stage:"condense",progress:0.62,files:[]})');
+  assert.equal(u.element('job-progress').value / u.element('job-progress').max, 0.62);
+  assert.equal(u.element('progress-label').textContent, '62%');
+  u.run('renderJob({id:"progress",status:"running",stage:"render",progress:2,files:[]})');
+  assert.equal(u.element('job-progress').value / u.element('job-progress').max, 1);
+  u.run('renderJob({id:"progress",status:"queued",stage:"queued",progress:-0.1,files:[]})');
+  assert.equal(u.element('job-progress').value, 0);
+});
+
+test('processing messages become visible and an absent message is hidden again', async () => {
+  const u = await ui();
+  u.run('renderJob({id:"message",status:"running",stage:"condense",message:"Проверяем темп",files:[]})');
+  assert.equal(u.element('job-message').hidden, false);
+  assert.equal(u.element('job-message').textContent, 'Проверяем темп');
+  u.run('renderJob({id:"message",status:"running",stage:"render",files:[]})');
+  assert.equal(u.element('job-message').hidden, true);
+  assert.equal(u.element('job-message').textContent, '');
 });
 
 test("preset changes update the preview and explicit request without paid checks", async () => {
@@ -288,8 +322,9 @@ test("retry and checkpoint display make no balance or spending requests", async 
   assert.equal(u.checks().length, 0);
   u.run('renderJob({id:"complete",status:"completed",stage:"completed",progress:1,analysis_provider:"local",files:[]})');
   assert(u.stageElements.every(node=>node.classList.contains("done")));
-  assert(!/\.job-completed \.stages\s*,/.test(css));
-  assert.match(css,/\.job-completed #job-message,\.job-completed \.progress-heading\{display:none\}/);
+  assert.equal(u.element('job-panel').classList.contains('job-completed'), true);
+  assert.equal(u.element('job-message').hidden, true);
+  assert.doesNotMatch(css, /\.job-completed[^{}]*\.stages-list[^{}]*\{[^}]*display\s*:\s*none/);
 });
 
 test('timeline covers kept and omitted footage and reviews the exact original interval', async () => {
@@ -408,22 +443,47 @@ test('current quality summary separates review warnings from profile information
   assert.equal(u.checks().length,0);
 });
 
-test('MP4 save uses the selected registered file and disables both actions while choosing a folder',async()=>{
+test('selected MP4 download uses the registered file and blocks inactive jobs',async()=>{
   const u=await ui();
   const files=[1,2].map(n=>({name:`part_00${n}.mp4`,url:`/api/jobs/save-job/files/part_00${n}.mp4`,subtitle_url:`/api/jobs/save-job/files/part_00${n}.srt`}));
   u.data.jobs.push({id:'save-job',status:'completed',stage:'completed',files});
   await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));u.run('selectFile(1,false)');
-  assert.equal(u.element('download-video').disabled,false);
-  let finish;u.data.saveHandler=()=>new Promise(resolve=>{finish=resolve;});
-  const saving=u.element('download-video').listeners.click();
-  assert.equal(u.element('download-video').disabled,true);assert.equal(u.element('download-all').disabled,true);
-  assert.match(u.element('download-status').textContent,/Выберите папку/);
-  const calls=u.data.calls.filter(c=>c.url.endsWith('/save-videos'));
-  assert.equal(calls.length,1);assert.deepEqual(JSON.parse(calls[0].body),{filename:'part_002.mp4'});
-  finish({cancelled:false,count:1,files:['part_002.mp4']});await saving;
-  assert.match(u.element('download-status').textContent,/MP4 сохранён/);
-  assert.equal(u.element('download-video').disabled,false);assert.equal(u.element('download-all').disabled,false);
-  assert.equal(u.element('download-subtitle').href,'http://127.0.0.1:8765/api/jobs/save-job/files/part_002.srt');
+  const video=u.element('download-video'), subtitle=u.element('download-subtitle');
+  // Both the committed native folder workflow and browser download links are supported UI variants.
+  if(video.tagName==='BUTTON') {
+    assert.equal(video.disabled,false);
+    let finish;u.data.saveHandler=()=>new Promise(resolve=>{finish=resolve;});
+    const saving=video.listeners.click();
+    assert.equal(video.disabled,true);assert.equal(u.element('download-all').disabled,true);
+    assert.match(u.element('download-status').textContent,/Выберите папку/);
+    const calls=u.data.calls.filter(call=>call.url.endsWith('/save-videos'));
+    assert.equal(calls.length,1);assert.deepEqual(JSON.parse(calls[0].body),{filename:'part_002.mp4'});
+    finish({cancelled:false,count:1,files:['part_002.mp4']});await saving;
+    assert.match(u.element('download-status').textContent,/MP4 сохранён/);
+    assert.equal(video.disabled,false);assert.equal(u.element('download-all').disabled,false);
+    u.run('state.selected="another-job";renderDownloadButtons()');
+    assert.equal(video.disabled,true);
+    await video.listeners.click();
+    assert.equal(u.data.calls.filter(call=>call.url.endsWith('/save-videos')).length,1);
+    assert.equal(u.checks().length,0);
+    return;
+  }
+  assert.equal(video.tagName,'A');assert.equal(subtitle.tagName,'A');
+  assert.equal(video.href,'http://127.0.0.1:8765/api/jobs/save-job/files/part_002.mp4?download=1');
+  assert.equal(video.download,'part_002.mp4');assert.equal(video.classList.contains('disabled'),false);
+  assert.equal(subtitle.href,'http://127.0.0.1:8765/api/jobs/save-job/files/part_002.srt?download=1');
+  assert.equal(subtitle.download,'part_002.srt');assert.equal(subtitle.hidden,false);
+  let prevented=false;
+  const event={preventDefault(){prevented=true;}};
+  video.listeners.click(event);subtitle.listeners.click(event);
+  assert.equal(prevented,false);
+  assert(!u.data.calls.some(call=>call.url.endsWith('/save-videos')));
+  u.run('selectFile(0,false)');
+  assert.equal(video.download,'part_001.mp4');assert.equal(subtitle.download,'part_001.srt');
+  u.run('state.selected="another-job";renderDownloadButtons()');
+  assert.equal(video.getAttribute('aria-disabled'),'true');assert.equal(subtitle.getAttribute('aria-disabled'),'true');
+  video.listeners.click(event);assert.equal(prevented,true);
+  prevented=false;subtitle.listeners.click(event);assert.equal(prevented,true);
   assert.equal(u.checks().length,0);
 });
 
@@ -431,16 +491,24 @@ test('save all copies separate videos to a chosen folder and reports cancellatio
   const u=await ui();
   u.data.jobs.push({id:'save-all-job',status:'completed',stage:'completed',files:Array.from({length:14},(_,i)=>({name:`part_${i+1}.mp4`,url:`/api/jobs/save-all-job/files/part_${i+1}.mp4`}))});
   await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
-  u.data.saveResult={cancelled:false,count:14,files:Array.from({length:14},(_,i)=>`part_${i+1}.mp4`)};
+  let finish;u.data.saveHandler=()=>new Promise(resolve=>{finish=resolve;});
+  const saving=u.element('download-all').listeners.click();
+  assert.equal(u.element('download-all').disabled,true);
+  assert.match(u.element('download-status').textContent,/Выберите папку/);
   await u.element('download-all').listeners.click();
+  assert.equal(u.data.calls.filter(call=>call.url.endsWith('/save-videos')).length,1);
+  finish({cancelled:false,count:14,files:Array.from({length:14},(_,i)=>`part_${i+1}.mp4`)});await saving;
+  delete u.data.saveHandler;
   assert.deepEqual(JSON.parse(u.data.calls.find(c=>c.url.endsWith('/save-videos')).body),{all:true});
   assert.match(u.element('download-status').textContent,/сохранено видео: 14/);
   assert(!u.data.calls.some(c=>/zip|download-all|download-folder/.test(c.url)));
   u.data.saveResult={cancelled:true,count:0,files:[]};await u.element('download-all').listeners.click();
   assert.equal(u.element('download-status').textContent,'Сохранение отменено.');
-  u.data.saveError='Выбранная папка недоступна.';await u.element('download-video').listeners.click();
+  u.data.saveError='Выбранная папка недоступна.';await u.element('download-all').listeners.click();
   assert.match(u.element('download-status').textContent,/Не удалось сохранить видео: Выбранная папка недоступна/);
-  assert.equal(u.element('download-video').disabled,false);assert.equal(u.element('download-all').disabled,false);
+  const video=u.element('download-video');
+  assert.equal(video.tagName==='A' ? video.classList.contains('disabled') : video.disabled,false);
+  assert.equal(u.element('download-all').disabled,false);
 });
 
 test('partial save failure reports the retained receipt and an incomplete success is not claimed as all files',async()=>{

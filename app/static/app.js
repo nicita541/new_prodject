@@ -197,8 +197,9 @@ function renderJob(job) {
   setText("job-provider", job.analysis_provider === "deepseek_plan" ? "Анализ: DeepSeek — сюжет и план, платно · кадрирование, монтаж и экспорт локально" : job.analysis_provider === "hybrid" ? "Анализ: локально + DeepSeek при сомнениях · возможны платные запросы; без API продолжаем локально" : job.analysis_provider === "deepseek" ? "Анализ: DeepSeek · кадры и текст отправляются через интернет, платно" : "Анализ: на компьютере · без платных запросов");
   setText("job-status", statuses[job.status] ?? job.status);
   const progress = Math.max(0, Math.min(1, Number(job.progress) || 0));
-  $("job-progress").value = progress; setText("progress-label", `${Math.round(progress * 100)}%`);
+  $("job-progress").max = 1; $("job-progress").value = progress; setText("progress-label", `${Math.round(progress * 100)}%`);
   setText("stage-label", stages[job.stage] ?? job.stage ?? "Ожидание"); setText("job-message", job.message);
+  $("job-message").hidden = !job.message;
   renderCheckpoints(job);
   $("job-error").hidden = !job.error; setText("job-error", job.error);
   $("cancel-button").hidden = !["queued", "running"].includes(job.status);
