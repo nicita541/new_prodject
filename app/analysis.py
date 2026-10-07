@@ -195,6 +195,33 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
     return record
 
 
+def finalize_editorial_selection(source, events, transcript, shots, probe, job_dir,
+                                vision, report, cancelled, diagnostics, provider):
+    """Resolve source selection before endings invoke the strict planner.
+
+    Failed perception remains a persisted analysis result for review/recovery;
+    the production planner still refuses to render it.
+    """
+    from .endings import refine_endings
+    from .selection_gate import adjudicate_selections, selection_readiness
+    with diagnostics.stage('final_selection_adjudication', provider=provider):
+        events = adjudicate_selections(source, events, transcript, shots, job_dir,
+                                      vision, report, cancelled)
+    gate = selection_readiness(events)
+    if gate['status'] == 'passed':
+        events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
+        if selection_readiness(events)['status'] != 'passed':
+            with diagnostics.stage('ending_selection_adjudication', provider=provider):
+                events = adjudicate_selections(source, events, transcript, shots, job_dir,
+                                              vision, report, cancelled)
+        gate = selection_readiness(events)
+    else:
+        diagnostics.warning('endings', 'unresolved_selection',
+                            event_ids=[row['event'] for row in gate['unresolved']])
+    diagnostics.write('selection_gate.json', gate)
+    return events
+
+
 def framing_provider(provider: str) -> str:
     return 'local' if provider == 'deepseek_plan' else provider
 
@@ -424,12 +451,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             events = refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled)
         events = refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled)
         selection_snapshot(diagnostics, 'pacing', events)
-        from .endings import refine_endings
-        events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
-        from .selection_gate import adjudicate_selections, selection_readiness
-        with diagnostics.stage('final_selection_adjudication', provider=pacing_provider):
-            events = adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled)
-        diagnostics.write('selection_gate.json', selection_readiness(events))
+        events = finalize_editorial_selection(source, events, transcript, shots, probe,
+            job_dir, vision, report, cancelled, diagnostics, pacing_provider)
     if pacing_provider != provider:
         for event in events:
             if event.get('pacing_removed'):

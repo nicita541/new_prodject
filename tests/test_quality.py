@@ -83,6 +83,24 @@ class PlanQualityTests(unittest.TestCase):
         }
         self.assertNotIn("story", [row["kind"] for row in debug_timeline(plan)["reasons"]])
 
+    def test_specific_reaction_and_removed_neutral_scenery_have_source_proof(self):
+        plan = self.plan()
+        event = plan['events'][0]
+        event.pop('protected_atmosphere_ranges')
+        event.pop('protected_atmosphere_units')
+        event['units'] = [{'id':'reaction','start':4,'end':7}, {'id':'neutral','start':10,'end':15}]
+        event['unit_evidence'] = [
+            {'unit':'reaction','kind':'character_reaction','confidence':.95,'decision':'keep',
+             'frame_indices':[1,2], 'speech_quote':'', 'evidence':'После реплики глаза девушки расширяются, затем появляются слёзы.'},
+            {'unit':'neutral','kind':'neutral_scenery','confidence':.95,'decision':'drop',
+             'frame_indices':[3,4], 'speech_quote':'', 'evidence':'Пустая комната остаётся неподвижной, персонажей и нового события нет.'}]
+        rows = debug_timeline(plan)['reasons']
+        self.assertIn(('character_reaction',4,7),[(r['kind'],r['start'],r['end']) for r in rows])
+        neutral = next(r for r in rows if r['kind']=='neutral_scenery')
+        self.assertFalse(neutral['retained'])
+        self.assertEqual((neutral['start'],neutral['end']),(10,15))
+        self.assertNotIn('Причина модели: атмосфера', [r['title'] for r in rows])
+
     def test_unit_warnings_are_filtered_by_exact_range_and_unknown_ids_are_retained(self):
         plan = {
             "warnings": ["event_0001: u001: removed-unit warning",

@@ -81,8 +81,9 @@ class ProductionTests(unittest.TestCase):
         from app.deepseek import DeepSeekVision
         directory,event,_=edge_fixture()
         vision=DeepSeekVision(directory,lambda:False,cache_only=True)
-        with patch('app.production.clean_sequences',return_value=['reviewed']) as review:
-            self.assertEqual(clean_credit_continuations([event],{},[],directory,vision,lambda *a:None,lambda:False),['reviewed'])
+        reviewed=[{**event,'source_review_completed':True}]
+        with patch('app.production.clean_sequences',return_value=reviewed) as review:
+            self.assertEqual(clean_credit_continuations([event],{},[],directory,vision,lambda *a:None,lambda:False),reviewed)
         self.assertIs(review.call_args.args[4],vision)
         self.assertFalse(vision.thinking)
         self.assertTrue(vision.cache_only)

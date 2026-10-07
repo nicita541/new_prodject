@@ -25,6 +25,19 @@ class FakeVision:
         return self.answers.pop(0)
 
 
+def authored_units(boundaries, transcript):
+    """Explicit source geometry for selection/proof mechanisms, not perception E2E.
+
+    Production candidate generation is tested separately. These units purposely
+    include reply setup/reaction context to test retention inside supplied units.
+    """
+    return [{'id': f'u{i:03d}', 'start': a, 'end': b,
+             'boundary_reason': ['authored_test_interval'],
+             'text': ' '.join(w['text'] for w in transcript.get('words', [])
+                              if a <= w['start'] and w['end'] <= b)}
+            for i, (a, b) in enumerate(zip(boundaries, boundaries[1:]))]
+
+
 def fixture():
     directory = TEMP / ("story_" + uuid.uuid4().hex)
     directory.mkdir()
@@ -39,6 +52,7 @@ def fixture():
                   "words": [{"start": 3, "end": 6, "text": "Решение."},
                             {"start": 8, "end": 12, "text": "Повтор."},
                             {"start": 15, "end": 19, "text": "Согласие."}]}
+    events[0]['units'] = authored_units([0, 6, 12, 19, 20], transcript)
     return directory, events, transcript
 
 
@@ -160,7 +174,8 @@ class StoryRefinementTests(unittest.TestCase):
             'retained_witness':'none'}]}
         result=refine_story(events,transcript,[],directory,FakeVision([raw,proof]),
                             lambda *a:None,lambda:False)
-        self.assertTrue(any(r['start']<=6 and r['end']>=12 for r in result[0]['selected_ranges']))
+        self.assertFalse(any(r['start']<12 and r['end']>6 for r in result[0]['selected_ranges']))
+        self.assertTrue(result[0]['analysis_unresolved'])
         self.assertNotIn('verified_current_story_ranges',result[0])
         serialized=json.loads(json.dumps(result,ensure_ascii=False))
         self.assertNotIn('verified_current_story_ranges',serialized[0])
@@ -247,6 +262,7 @@ class StoryRefinementTests(unittest.TestCase):
         directory,events,_=fixture()
         transcript={'segments':[{'start':3,'end':7,'text':'Действуй!'}],
                     'words':[{'start':3,'end':7,'text':'Действуй!'}]}
+        events[0]['units'] = authored_units([0, 7, 20], transcript)
         raw={**decision(['u000'],['u001']), 'omit_units':[]}
         result=refine_story(events,transcript,[],directory,FakeVision([raw]),lambda *a:None,lambda:False)
         apply_review(result[0],[{'id':'s000','start':7.55,'end':9.55},
@@ -271,31 +287,33 @@ class StoryRefinementTests(unittest.TestCase):
         self.assertIn('Exact frame-to-unit mapping:', vision.calls[0][0])
         self.assertIn('NEVER convert Frame 17 into u017', vision.calls[0][0])
 
-    def test_incomplete_or_contradictory_omission_partition_preserves_event(self):
+    def test_incomplete_or_contradictory_omission_partition_requires_adjudication(self):
         for omissions in [[], [{'unit':'u000','reason':'waiting'}],
                           [{'unit':'u001','reason':'important_action'}]]:
             directory, events, transcript = fixture()
             raw={**decision(['u000','u002']), 'omit_units':omissions}
             result=refine_story(events,transcript,[],directory,FakeVision([raw]),lambda *a:None,lambda:False)
-            self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':20}])
-            self.assertNotIn('unit_selection_version',result[0])
+            self.assertEqual(result[0]['selected_ranges'],[])
+            self.assertEqual(result[0]['unit_selection_version'], 1)
+            self.assertTrue(result[0]['analysis_unresolved'])
             self.assertTrue(result[0]['story_warnings'])
 
     def test_silent_reaction_after_last_word_is_not_trimmed(self):
         directory,events,_=fixture()
         transcript={'segments':[{'start':3,'end':10,'text':'Действуй!'}],
                     'words':[{'start':3,'end':7,'text':'Действуй!'}]}
+        events[0]['units'] = authored_units([0, 10, 20], transcript)
         raw = {**decision(['u000']), 'omit_units':[{'unit':'u001','reason':'waiting'}]}
         result=refine_story(events,transcript,[],directory,FakeVision([raw]),
                             lambda *a:None,lambda:False)
         self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':10}])
 
-    def test_no_current_images_preserves_whole_scene_without_text_only_cutting(self):
+    def test_no_current_images_is_unresolved_without_text_only_keep_all(self):
         directory,events,transcript=fixture()
         (directory/'visual/event_0000.jpg').unlink()
         vision=FakeVision([])
         result=refine_story(events,transcript,[],directory,vision,lambda *a:None,lambda:False)
-        self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':20}])
+        self.assertEqual(result[0]['selected_ranges'],[])
         self.assertTrue(result[0]['story_warnings'])
         self.assertFalse(vision.calls)
         self.assertTrue(result[0]['selection_uncertain'])
@@ -342,25 +360,123 @@ class StoryRefinementTests(unittest.TestCase):
         result = refine_story(events, transcript, [], directory, vision, lambda *a: None, lambda: False)
         self.assertEqual(result[0]["selected_ranges"], [{"start": 0, "end": 6}, {"start": 12, "end": 19}])
 
-    def test_unknown_nonlist_and_empty_selection_preserve_with_warnings(self):
+    def test_unknown_nonlist_and_empty_selection_are_unresolved_without_keep_all(self):
         for raw in [decision(["invented"]), {**decision(["u000"]), "keep_units": "u000"}, decision([])]:
             directory, events, transcript = fixture()
             result = refine_story(events, transcript, [], directory, FakeVision([raw]), lambda *a: None, lambda: False)
             self.assertTrue(result[0]["story_warnings"])
-            self.assertEqual(result[0]["selected_ranges"], [{"start": 0, "end": 20}])
+            self.assertEqual(result[0]["selected_ranges"], [])
+            self.assertTrue(result[0]['analysis_unresolved'])
 
-    def test_silent_narrative_is_not_dropped_when_model_returns_empty_selection(self):
+    def test_empty_silent_selection_requires_adjudication_without_keep_all(self):
         directory, events, _ = fixture()
         transcript = {"words": [], "segments": []}
         result = refine_story(events, transcript, [], directory, FakeVision([credit(False, False), decision([])]), lambda *a: None, lambda: False)
-        self.assertEqual(result[0]["selected_ranges"], [{"start": 0, "end": 20}])
+        self.assertEqual(result[0]["selected_ranges"], [])
+        self.assertTrue(result[0]['analysis_unresolved'])
 
-    def test_uncertain_keeps_all_original_units_and_warning(self):
+    def test_uncertain_selection_does_not_keep_all_original_units(self):
         directory, events, transcript = fixture()
         result = refine_story(events, transcript, [], directory, FakeVision([decision(["u000"], uncertain=True)]), lambda *a: None, lambda: False)
-        self.assertEqual(result[0]["selected_ranges"], [{"start": 0, "end": 20}])
+        self.assertEqual(result[0]["selected_ranges"], [])
         self.assertTrue(result[0]["story_warnings"])
         self.assertTrue(result[0]['selection_uncertain'])
+
+    def test_uncertainty_keeps_only_existing_specific_positive_unit(self):
+        directory, events, transcript = fixture()
+        events[0].update(selected_ranges=[{'start': 0, 'end': 20}], unit_evidence=[{
+            'unit': 'u000', 'kind': 'causal_dialogue', 'confidence': .95, 'decision': 'keep',
+            'evidence': 'Конкретная исходная реплика сообщает принятое решение вернуться.',
+            'frame_indices': [], 'speech_quote': 'Решение.'}])
+        result = refine_story(events, transcript, [], directory,
+            FakeVision([decision(['u000'], uncertain=True)]), lambda *a: None, lambda: False)
+        self.assertEqual(result[0]['selected_ranges'], [{'start': 0, 'end': 6}])
+        self.assertTrue(result[0]['analysis_unresolved'])
+        self.assertTrue(result[0]['minimal_context_ranges'])
+
+    def test_generic_atmosphere_is_review_hint_without_keep_protection(self):
+        directory, events, transcript = fixture()
+        raw = decision(['u000', 'u002'])
+        raw['atmosphere_units'] = ['u001']
+        result = refine_story(events, transcript, [], directory, FakeVision([raw]), lambda *a: None, lambda: False)
+        self.assertEqual(result[0]['atmosphere_review_units'], ['u001'])
+        self.assertNotIn('protected_atmosphere_ranges', result[0])
+        self.assertFalse(any(r['start'] < 12 and r['end'] > 6 for r in result[0]['selected_ranges']))
+        self.assertTrue(result[0]['selection_needs_adjudication'])
+
+    def test_reaction_boolean_without_concrete_current_frame_proof_is_not_protected(self):
+        directory, events, transcript = fixture()
+        raw = decision(['u000', 'u002', 'u003'])
+        raw['omit_units'][0]['reaction_or_humor'] = True
+        proof = {'decisions': [{'unit': 'u001', 'keep': True, 'story_change': False,
+            'current_episode_story': True, 'confidence': .98, 'reaction_or_humor': True,
+            'evidence': 'The current scene has generic atmosphere.', 'retained_witness': 'none'}]}
+        result = refine_story(events, transcript, [], directory, FakeVision([raw, proof]), lambda *a: None, lambda: False)
+        self.assertTrue(result[0]['analysis_unresolved'])
+        self.assertNotIn('protected_atmosphere_ranges', result[0])
+        self.assertNotIn('verified_current_story_ranges', result[0])
+        self.assertFalse(any(r['start'] < 12 and r['end'] > 6 for r in result[0]['selected_ranges']))
+
+    def test_specific_current_reaction_frame_proof_survives_and_cache_validates(self):
+        from app.vision import storyboard_times
+        directory, events, transcript = fixture()
+        frame = next(i+1 for i, t in enumerate(storyboard_times(0, 20, [], transcript)) if 6 <= t < 12)
+        raw = decision(['u000', 'u002', 'u003'])
+        raw['omit_units'][0]['reaction_or_humor'] = True
+        proof = {'decisions': [{'unit': 'u001', 'keep': True, 'story_change': False,
+            'current_episode_story': True, 'confidence': .98, 'reaction_or_humor': True,
+            'reaction_kind': 'character_reaction', 'frame_indices': [frame],
+            'evidence': 'Her mouth opens in surprise and her gaze turns toward the speaker.', 'retained_witness': 'none'}]}
+        result = refine_story(events, transcript, [], directory, FakeVision([raw, proof]), lambda *a: None, lambda: False)
+        self.assertEqual(result[0]['verified_current_story_ranges'], [{'start': 6, 'end': 12}])
+        saved = json.loads(next((directory/'story_refinement').glob('*.json')).read_text('utf-8'))
+        self.assertTrue(_valid_cache(saved, saved['signature'], events[0]))
+
+    def test_verified_empty_selection_is_not_expanded_by_credit_dialogue_or_cleanup(self):
+        directory, events, transcript = fixture()
+        events[0].update(kind='ending', importance=1, credit_montage=True,
+                         selected_ranges=[], selection_empty_verified=True, selection_status='accepted')
+        self.assertEqual(preserve_dialogue_in_credits(events, transcript)[0]['selected_ranges'], [])
+        def old_cleanup(values, *args):
+            result = copy.deepcopy(values)
+            result[0]['selected_ranges'] = [{'start': 0, 'end': 20}]
+            return result
+        with patch('app.production.clean_sequences', side_effect=old_cleanup):
+            result = clean_credit_continuations(events, transcript, [], directory, object(), lambda *a: None, lambda: False)
+        self.assertEqual(result[0]['selected_ranges'], [])
+        self.assertTrue(result[0]['selection_empty_verified'])
+
+    def test_failed_omission_review_does_not_restore_full_event(self):
+        directory, events, transcript = fixture()
+        class FailureVision:
+            def __init__(self): self.calls = 0
+            def query(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls == 1: return decision(['u000', 'u002'])
+                raise RuntimeError('invalid review')
+        result = refine_story(events, transcript, [], directory, FailureVision(), lambda *a: None, lambda: False)
+        self.assertEqual(result[0]['selected_ranges'], [])
+        self.assertTrue(result[0]['analysis_unresolved'])
+
+    def test_control_failure_in_credits_and_omission_review_propagates(self):
+        from app.deepseek import RemoteError
+        for transcript in [fixture()[2], {'words': [], 'segments': []}]:
+            directory, events, _ = fixture()
+            class FailureVision:
+                def query(self, *args, **kwargs): raise RemoteError('controlled failure')
+            with self.assertRaises(RemoteError):
+                refine_story(events, transcript, [], directory, FailureVision(), lambda *a: None, lambda: False)
+
+    def test_empty_unresolved_cache_is_valid_but_unexplained_empty_is_not(self):
+        from app.story import STORY_VERSION
+        directory, events, transcript = fixture()
+        result = refine_story(events, transcript, [], directory,
+            FakeVision([decision(['u000'], uncertain=True)]), lambda *a: None, lambda: False)
+        saved = json.loads(next((directory/'story_refinement').glob('*.json')).read_text('utf-8'))
+        self.assertTrue(_valid_cache(saved, saved['signature'], events[0]))
+        invalid = copy.deepcopy(saved)
+        invalid['event'].pop('analysis_unresolved')
+        self.assertFalse(_valid_cache(invalid, saved['signature'], events[0]))
 
     def test_high_confidence_visual_credits_skip_narrative_query(self):
         directory, events, _ = fixture()

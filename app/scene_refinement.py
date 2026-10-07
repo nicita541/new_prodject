@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .source_roles import merge_ranges, verified_story_ranges
 
-SCENE_REFINEMENT_VERSION = 1
+SCENE_REFINEMENT_VERSION = 2
 
 _LARGE_FIELDS = ('analysis_chunks', 'chunk_analyses', 'chunk_refinements', 'scene_evidence', 'units')
 _PROOF_FIELDS = ('story_omission_review', 'verified_current_story_ranges', 'omitted_story_units',
@@ -54,7 +54,25 @@ def _child(parent, chunk, number):
                 child[key] = copy.deepcopy(initial[number][key])
     child.update(id=f'{parent["id"]}_chunk_{number:03d}', parent_event_id=parent['id'],
                  start=start, end=end, technical_chunk=True)
-    child['selected_ranges'] = _bounded(parent.get('selected_ranges', [parent]), start, end) or [{'start': start, 'end': end}]
+    child['selected_ranges'] = _bounded(parent.get('selected_ranges', []), start, end)
+    prefix = f'c{number:03d}_'
+    units = [copy.deepcopy(u) for u in parent.get('units', []) if start <= u['start'] < u['end'] <= end]
+    if units:
+        for unit in units:
+            if unit['id'].startswith(prefix):
+                unit['id'] = unit['id'][len(prefix):]
+        child['units'] = units
+        ids = {u['id'] for u in units}
+        child['unit_evidence'] = []
+        for record in parent.get('unit_evidence', []):
+            value = copy.deepcopy(record)
+            if value.get('unit', '').startswith(prefix):
+                value['unit'] = value['unit'][len(prefix):]
+            if value.get('unit') in ids:
+                child['unit_evidence'].append(value)
+        for field in ('action_units', 'keep_units'):
+            child[field] = [i[len(prefix):] if i.startswith(prefix) else i for i in parent.get(field, [])
+                            if (i[len(prefix):] if i.startswith(prefix) else i) in ids]
     child['focus'] = [f for f in parent.get('focus', []) if start <= f['time'] < end]
     child['boundary_times'] = [t for t in parent.get('boundary_times', []) if start < t < end]
     return child
@@ -72,26 +90,27 @@ def _prefix_review(review, prefix):
     return result
 
 
-def _merge_parent(parent, children, profile):
+def _merge_parent(parent, children, profile, transcript):
     from .story import _valid_cache, STORY_VERSION
+    from .selection_adjudication import minimal_semantic_context
+    from .source_roles import confirmed_exclusions
+    from .titles import _subtract
     result = copy.deepcopy(parent)
     # New selections supersede tentative earlier omission decisions. Existing
     # independently verified protections remain separately authoritative.
     for key in _PROOF_FIELDS:
         result.pop(key, None)
-    selected, verified, atmosphere, omitted, reviews, history = [], [], [], [], [], []
+    selected, verified, omitted, reviews, history = [], [], [], [], []
     warnings = list(parent.get('story_warnings', []))
     speech = list(parent.get('speech_context_protections', []))
     questions = list(parent.get('question_pair_protections', []))
     speech_warnings = list(parent.get('speech_context_warnings', []))
-    atmosphere.extend(parent.get('protected_atmosphere_ranges', []))
-    verified.extend(verified_story_ranges(parent))
     if parent.get('story_omission_review'):
         saved = {'version': STORY_VERSION, 'signature': 'parent-proof', 'event': parent}
         if _valid_cache(saved, 'parent-proof', parent, profile):
             reviews.append(_prefix_review(parent['story_omission_review'], 'parent_'))
+            verified.extend(verified_story_ranges(parent))
     validated = True
-    atmosphere_ids = []
     summaries = []
     for number, supplied in enumerate(children):
         child = copy.deepcopy(supplied)
@@ -105,15 +124,20 @@ def _merge_parent(parent, children, profile):
                 for key in ('story_omission_review', 'verified_current_story_ranges',
                             'omitted_story_units', 'unit_selection_version'):
                     child.pop(key, None)
-                child.update(selection_uncertain=True, selected_ranges=[{'start': start, 'end': end}])
-                warnings.append(f'Доказательства сокращения {child["id"]} не подтверждены; фрагмент сохранён')
-        intervals = child.get('selected_ranges', [child])
+                child.update(minimal_semantic_context(child, child.get('units', []), transcript))
+                child.update(selection_uncertain=True, analysis_unresolved=True, selection_needs_adjudication=True)
+                warnings.append(f'Доказательства сокращения {child["id"]} не подтверждены; требуется targeted review')
+        if child.get('analysis_unresolved') or child.get('selection_uncertain'):
+            child.update(minimal_semantic_context(child, child.get('units', []), transcript))
+            child.update(analysis_unresolved=True, selection_needs_adjudication=True)
+        intervals = child.get('selected_ranges', [])
         if any(float(r['start']) < start or float(r['end']) > end for r in intervals):
             raise ValueError('Сокращение технического фрагмента вышло за его исходные границы')
         selected.extend(_bounded(intervals, start, end))
         verified.extend(verified_story_ranges(child))
-        atmosphere.extend(_bounded(child.get('protected_atmosphere_ranges', []), start, end))
-        atmosphere_ids.extend(prefix + unit for unit in child.get('protected_atmosphere_units', []))
+        if child.get('protected_atmosphere_ranges') or child.get('protected_atmosphere_units'):
+            child['selection_needs_adjudication'] = True
+            child['atmosphere_review_units'] = child.get('protected_atmosphere_units', [])
         for unit in child.get('omitted_story_units', []):
             omitted.append({**copy.deepcopy(unit), 'id': prefix + unit['id']})
         if child.get('story_omission_review'):
@@ -123,21 +147,19 @@ def _merge_parent(parent, children, profile):
         speech_warnings.extend(child.get('speech_context_warnings', []))
         warnings.extend(child.get('story_warnings', []))
         validated &= ((type(child.get('unit_selection_version')) is int and child['unit_selection_version'] == 1)
-                      or child.get('credit_montage') is True) and not proof_rejected
+                      or child.get('credit_montage') is True) and not proof_rejected and not child.get('analysis_unresolved')
         summaries.append(str(child.get('summary', '')))
         history.append({'child_event_id': child['id'], 'start': start, 'end': end,
                         'unit_prefix': prefix, 'proof_rejected': proof_rejected,
                         **{key: copy.deepcopy(child[key]) for key in
                            ('summary', 'kind', 'importance', 'uncertain', 'selection_uncertain', 'selected_ranges',
                             'unit_selection_version', 'contains_credits', 'credit_montage',
-                            'story_omission_review', 'omitted_story_units', 'story_warnings') if key in child}})
+                            'story_omission_review', 'omitted_story_units', 'story_warnings', 'analysis_unresolved',
+                            'selection_needs_adjudication', 'atmosphere_review_units') if key in child}})
     verified = _bounded(verified, parent['start'], parent['end'])
-    atmosphere = _bounded(atmosphere, parent['start'], parent['end'])
-    # Speech protections are evidence about actual source words; preserve their
-    # core intervals even when a child proposed a different unit partition.
-    speech_ranges = _bounded([p for p in [*speech, *questions] if 'start' in p and 'end' in p],
-                             parent['start'], parent['end'])
-    result['selected_ranges'] = merge_ranges([*selected, *verified, *atmosphere, *speech_ranges])
+    # Speech clocks and generic atmosphere annotations are review evidence,
+    # never an independent reason to add ranges to a deliberate unit selection.
+    result['selected_ranges'] = _subtract(merge_ranges([*selected, *verified]), confirmed_exclusions(parent))
     kinds = {c.get('kind', 'story') for c in children}
     all_credits = all(c.get('credit_montage') is True for c in children) and not verified
     result['kind'] = next(iter(kinds)) if len(kinds) == 1 else 'story'
@@ -152,6 +174,8 @@ def _merge_parent(parent, children, profile):
         result.update(importance=1, requires=[])
     result['uncertain'] = bool(parent.get('uncertain')) or any(c.get('uncertain') for c in children)
     result['selection_uncertain'] = any(c.get('selection_uncertain') for c in children) or any(h['proof_rejected'] for h in history)
+    result['analysis_unresolved'] = any(h.get('analysis_unresolved') or h['proof_rejected'] for h in history)
+    result['selection_needs_adjudication'] = any(h.get('selection_needs_adjudication') for h in history)
     # Share the bounded summary budget across children so a late payoff is not
     # erased by taking the first 1500 characters of a long concatenation.
     allowance = max(1, (1500 - len(summaries) + 1) // max(1, len(summaries)))
@@ -167,9 +191,9 @@ def _merge_parent(parent, children, profile):
             'verified_units': [unit for review in reviews for unit in review['verified_units']]}
     if verified:
         result['verified_current_story_ranges'] = verified
-    if atmosphere:
-        result['protected_atmosphere_ranges'] = atmosphere
-        result['protected_atmosphere_units'] = _unique([*parent.get('protected_atmosphere_units', []), *atmosphere_ids])
+    review_ids = [h['unit_prefix']+i for h in history for i in h.get('atmosphere_review_units', [])]
+    if review_ids:
+        result['atmosphere_review_units'] = _unique(review_ids)
     if omitted:
         result['omitted_story_units'] = omitted
     for key, values in (('speech_context_protections', speech), ('question_pair_protections', questions),
@@ -196,6 +220,9 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
         if parent.get('understanding_status') == 'unresolved':
             # Recovery already selected bounded safety context. A second
             # generic keep-all uncertainty fallback must not expand it again.
+            from .selection_adjudication import minimal_semantic_context
+            parent.update(minimal_semantic_context(parent, parent.get('units', []), transcript))
+            parent.update(analysis_unresolved=True, selection_uncertain=True, selection_needs_adjudication=True)
             owners.append((0, 0, None))
             continue
         chunks = parent.get('analysis_chunks')
@@ -227,7 +254,7 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
         if chunked is None:
             result.append(parent)
         else:
-            updated = _merge_parent(parent, refined[first:stop], profile) if chunked else refined[first]
+            updated = _merge_parent(parent, refined[first:stop], profile, transcript) if chunked else refined[first]
             updated['refinement_summary'] = updated['summary']
             updated['final_summary'] = updated['summary']
             result.append(updated)

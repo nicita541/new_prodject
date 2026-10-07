@@ -18,10 +18,10 @@ from .media_probe import atomic_json, load_json
 from .pipeline_diagnostics import _clean
 from .source_roles import confirmed_exclusions, merge_ranges
 from .story_review import candidate_units
-from .vision import storyboard, storyboard_times
+from .bounded_storyboard import build_bounded_storyboard as storyboard
 
-VERSION = 1
-POLICY = {'sampling_interval': .5, 'max_view_seconds': 10, 'max_current_pages': 6,
+VERSION = 3
+POLICY = {'sampling_interval': .5, 'max_view_seconds': 10, 'max_current_pages': 1, 'max_current_frames': 12,
           'max_image_bytes': 4*1024**2, 'context_seconds': 2, 'acceptance_confidence': .9}
 KINDS = ('character_reaction', 'emotional_pause', 'comedic_payoff', 'establishing_context',
          'neutral_scenery', 'waiting', 'causal_dialogue', 'response', 'physical_action', 'state_transition')
@@ -36,10 +36,19 @@ change, joke payoff, or necessary spoken cause/question/response. Generic atmosp
 Use character_reaction, emotional_pause, comedic_payoff, establishing_context, causal_dialogue,
 response, physical_action or state_transition only for a specifically evidenced story contribution.
 Neutral scenery and routine waiting without that contribution belong in drop_units.
+Do not place a unit with positive contribution evidence in drop_units, unless the WHOLE unit lies
+inside supplied confirmed nonstory exclusions. Preserve its actual evidence kind; never relabel an
+observed action/reaction as neutral to make a partition pass validation.
 Ground each record in supplied CURRENT frame_indices (one-based) inside that unit, or an exact
 speech_quote from its ASR. Never invent a source timestamp, speech, unit ID or unseen action.
 action_units must be kept units with physical_action/state_transition evidence.
-For causal_links identify the exact kept cause/question and response/result units, not entire dialogue.
+causal_dialogue and response describe spoken contributions; they are not action_units.
+Spoken information and a static pose alone do not establish a visible physical action.
+Evidence records are required for dropped neutral/waiting units as well as kept units.
+causal_links can reference only TWO DIFFERENT kept CURRENT IDs: one cause/question and its response/result.
+Never reference a dropped unit, the same unit twice, a context-only unit or a generated ID.
+If cause and response occur inside one unit, return causal_links=[] and describe that contribution
+in its unit_evidence. Do not split/fabricate units to manufacture a link.
 State before/after refers only to CURRENT. Confirmed nonstory exclusions remain authoritative;
 movement or dialogue in excluded footage does not make it current-episode story.
 Report understanding_confidence and selection_confidence separately. Set resolved=false when either
@@ -55,6 +64,16 @@ def _hash(value):
 
 def _normalized(value):
     return value.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def _storyboard_identity():
+    # Nested frame/page caches must change even if the caller's own code does
+    # not. Capture runtime policy as well as normalized helper implementation.
+    from . import bounded_storyboard
+    return {'version': bounded_storyboard.BOUNDED_STORYBOARD_VERSION,
+            'policy': copy.deepcopy(bounded_storyboard.POLICY),
+            'implementation_sha256': hashlib.sha256(_normalized(
+                Path(bounded_storyboard.__file__).read_text('utf-8')).encode()).hexdigest()}
 
 
 def _model_identity(vision):
@@ -233,7 +252,8 @@ def adjudication_schema(units):
         **{k: {'type': 'number', 'minimum': 0, 'maximum': 1}
            for k in ('understanding_confidence', 'selection_confidence')},
         **{k: copy.deepcopy(ids) for k in ('keep_units', 'drop_units', 'action_units')},
-        'unit_evidence': {'type': 'array', 'items': {'type': 'object', 'properties': evidence,
+        'unit_evidence': {'type': 'array', 'minItems':len(units), 'maxItems':len(units),
+                         'items': {'type': 'object', 'properties': evidence,
                           'required': list(evidence), 'additionalProperties': False}},
         'causal_links': {'type': 'array', 'items': {'type': 'object', 'properties': link,
                          'required': list(link), 'additionalProperties': False}},
@@ -290,6 +310,9 @@ def validate_adjudication(raw, units, frames, exclusions=()):
             raise ValueError('Визуальное действие/реакция требует CURRENT кадр, а не одну ASR цитату')
         if record['unit'] in keep and record['kind'] not in POSITIVE_KINDS:
             raise ValueError('Нейтральный пейзаж/ожидание не дают положительного доказательства отбора')
+        if (record['unit'] in drop and record['kind'] in POSITIVE_KINDS
+                and _ranges([unit], unit, {'words': []}, exclusions)):
+            raise ValueError('Положительное сюжетное доказательство противоречит drop_units вне подтверждённого nonstory')
         if record['unit'] in keep:
             remaining = _ranges([unit], unit, {'words': []}, exclusions)
             if not remaining or (indices and not any(
@@ -342,8 +365,23 @@ def _units(event, transcript, shots):
             for u in ordered]
 
 
-def _views(units, transcript, shots, cancelled, max_frames=216):
+def _sample_times(start, end, units, shots):
+    samples = {start+(i+.5)*POLICY['sampling_interval']
+               for i in range(math.ceil((end-start)/POLICY['sampling_interval']))
+               if start+(i+.5)*POLICY['sampling_interval'] < end}
+    samples.update((max(start,u['start'])+min(end,u['end']))/2 for u in units
+                   if u['start'] < end and u['end'] > start)
+    samples.update((start+min(.05,(end-start)*.1),end-min(.05,(end-start)*.1)))
+    for shot in shots:
+        if start < shot['start'] < end:
+            samples.update(shot['start']+delta for delta in (-.05,.05)
+                           if start <= shot['start']+delta < end)
+    return sorted(samples)
+
+
+def _views(units, transcript, shots, cancelled, max_frames=None):
     """Separate bounded technical views without fabricating new source-unit IDs."""
+    max_frames = POLICY['max_current_frames'] if max_frames is None else min(max_frames,POLICY['max_current_frames'])
     result = []
     for unit in units:
         start = unit['start']
@@ -358,7 +396,7 @@ def _views(units, transcript, shots, cancelled, max_frames=216):
                 target = max(edges)
             if target <= start:
                 raise ValueError('Нет безопасной границы ограниченного просмотра')
-            while len(set(storyboard_times(start, target, shots, transcript)))+math.ceil((target-start)/POLICY['sampling_interval']) > max_frames:
+            while len(_sample_times(start,target,[unit],shots)) > max_frames:
                 half = (start+target)/2
                 if not _safe(half, transcript):
                     edges = [w[k] for w in _words(transcript) for k in ('start', 'end')
@@ -376,10 +414,11 @@ def _views(units, transcript, shots, cancelled, max_frames=216):
     for view in result:
         if (grouped and grouped[-1]['end'] == view['start']
                 and view['end']-grouped[-1]['start'] <= POLICY['max_view_seconds']
-                and len(set(storyboard_times(grouped[-1]['start'], view['end'], shots, transcript)))
-                    +math.ceil((view['end']-grouped[-1]['start'])/POLICY['sampling_interval']) <= max_frames):
+                and len(_sample_times(grouped[-1]['start'],view['end'],
+                    [*grouped[-1]['units'],view['unit']],shots)) <= max_frames):
             grouped[-1]['end'] = view['end']
-            grouped[-1]['units'].append(view['unit'])
+            if view['unit']['id'] not in {u['id'] for u in grouped[-1]['units']}:
+                grouped[-1]['units'].append(view['unit'])
         else:
             grouped.append({'start': view['start'], 'end': view['end'], 'units': [view['unit']]})
     return grouped
@@ -408,7 +447,7 @@ def _source_identity(source, directory, cancelled):
     return {**stamp, 'sha256': digest.hexdigest()}
 
 
-def _board(source, view, shots, transcript, directory, key, cancelled):
+def _board(source, view, shots, transcript, directory, key, cancelled, *, context=False):
     image = directory/(key+'.jpg')
     metadata = image.with_suffix('.storyboard.json')
     manifest = image.with_suffix('.evidence.json')
@@ -423,8 +462,8 @@ def _board(source, view, shots, transcript, directory, key, cancelled):
         except (KeyError, TypeError, OSError, ValueError):
             pass
     if not reusable:
-        storyboard(source, view['start'], view['end'], shots, transcript, image, cancelled,
-                   sampling_interval=POLICY['sampling_interval'])
+        times = None if context else _sample_times(view['start'],view['end'],view.get('units',[]),shots)
+        storyboard(source, view['start'], view['end'], image, cancelled, times=times, context=context)
     board = load_json(metadata)
     paths = [Path(p).resolve() for p in board.get('pages', [])]
     frames = board.get('frames', [])
@@ -458,6 +497,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         if any(type(event.get(k)) not in (int, float) or not math.isfinite(event[k]) for k in ('start', 'end')) or not 0 <= event['start'] < event['end']:
             raise ValueError('Некорректные исходные границы события')
         units = _units(event, transcript, shots)
+        result['units'] = copy.deepcopy(units)
         source_key = _source_identity(source, directory, cancelled)
         media = inspect_media(source, directory, cancelled)
         video = next((s for s in media.get('streams', []) if s.get('codec_type') == 'video'), None)
@@ -468,9 +508,9 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         exclusions = confirmed_exclusions(event)
         implementation = hashlib.sha256(_normalized(Path(__file__).read_text('utf-8')).encode()).hexdigest()
         base = {'version': VERSION, 'source': source_key, 'units': units, 'transcript': transcript,
-                'shots': shots, 'policy': POLICY, 'implementation': implementation}
-        for number, view in enumerate(_views(units, transcript, shots, cancelled,
-                 216 if getattr(vision, 'supports_image_pages', False) else 36)):
+                'shots': shots, 'policy': POLICY, 'implementation': implementation,
+                'storyboard': _storyboard_identity()}
+        for number, view in enumerate(_views(units, transcript, shots, cancelled)):
             _check(cancelled)
             view_units = [{**u, 'start': max(u['start'], view['start']), 'end': min(u['end'], view['end'])}
                           for u in view['units']]
@@ -486,7 +526,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                         continue
                     context_view = {'start': a, 'end': b}
                     paths, context_frames, hashes = _board(source, context_view, [], {'words': [], 'segments': []}, directory,
-                        _hash({**base, 'context': context_view}), cancelled)
+                        _hash({**base, 'context': context_view}), cancelled, context=True)
                     if len(paths) != 1:
                         raise ValueError('Context storyboard exceeds one bounded page')
                     images.extend(paths)
@@ -502,9 +542,12 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                        'ASR': _transcript(transcript, view['start'], view['end']),
                        'confirmed_exclusions': exclusions}, 'CONTEXT_ONLY': context,
                        'image_roles': image_roles, 'questions': questions,
-                       'HYPOTHESES': {'summary': event.get('summary'), 'local_decision': event.get('local_decision'),
-                          'recovery_decision': event.get('recovery_decision'), 'global_decision': event.get('global_decision'),
-                          'previous_selected_ranges': event.get('selected_ranges', [])}}
+                       'HYPOTHESES': {'summary': str(event.get('summary',''))[:1500],
+                          'prior_decisions': [{k: d.get(k) for k in ('summary','uncertain','understanding_confidence','selection_confidence')}
+                                             for d in (event.get('local_decision'),event.get('recovery_decision'),event.get('global_decision'))
+                                             if isinstance(d,dict)],
+                          'previous_selected_ranges': [r for r in event.get('selected_ranges', [])
+                              if r['start'] < view['end'] and r['end'] > view['start']]}}
             prompt = _normalized(ADJUDICATION_PROMPT)+'\n'+json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
             identity = _hash({**base, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
                              'model': _model_identity(vision), 'images': image_hashes,
@@ -525,12 +568,31 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 except (ValueError, TypeError, KeyError):
                     raw = None
             if raw is None:
-                raw = vision.query(prompt, images if len(images)>1 else images[0], max_tokens=2400,
-                                   schema=adjudication_schema(view_units))
-                _check(cancelled)
-                decision = validate_adjudication(raw, view_units, frames, exclusions)
+                retry_prompt=prompt
+                for attempt in range(2):
+                    try:
+                        raw = vision.query(retry_prompt, images if len(images)>1 else images[0], max_tokens=2400,
+                                           schema=adjudication_schema(view_units))
+                        _check(cancelled)
+                        decision = validate_adjudication(raw, view_units, frames, exclusions)
+                        break
+                    except (ValueError,TypeError,KeyError) as error:
+                        if _control_failure(error) or attempt:
+                            raise
+                        # Only a rejected contract question is supplied. No keep,
+                        # action, state or other semantic answer is repaired here.
+                        retry_prompt=prompt+'\nThe previous response failed source validation: '+_clean(str(error))[:400]+\
+                            '\nReinspect ORIGINAL CURRENT and return every keep/drop unit proof. '+\
+                            'action_units must be kept IDs with physical_action/state_transition proof, not causal_dialogue/response. '+\
+                            'causal_links must connect TWO DIFFERENT kept CURRENT IDs, never dropped/context IDs. '+\
+                            'If a relationship is inside one unit, causal_links=[] and its own evidence explains the contribution. '+\
+                            'Positive contribution evidence cannot be dropped outside wholly confirmed nonstory. '+\
+                            'Quotes and frame_indices must belong to their own unit.'
                 atomic_json(checkpoint, {'identity': identity, 'decision': raw,
-                    'source_evidence': {'source': source_key, 'CURRENT': payload['CURRENT'], 'images': image_hashes}})
+                    'source_evidence': {'source': source_key, 'CURRENT': payload['CURRENT'], 'images': image_hashes,
+                                        'storyboard_identity': base['storyboard']},
+                    'actual_prompt_sha256':hashlib.sha256(retry_prompt.encode()).hexdigest(),
+                    'validation_attempts':attempt+1})
             stat = source.stat()
             if stat.st_size != source_key['size'] or stat.st_mtime_ns != source_key['mtime_ns']:
                 raise ValueError('Исходный файл изменился во время проверки решения')
@@ -571,10 +633,17 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                          for k in ('semantic_confidence', 'visual_confidence', 'context_confidence')})
         result['unit_evidence'] = [{**r, 'decision': 'keep' if r['unit'] in kept else 'drop',
             'view_start': h['start'], 'view_end': h['end'], 'checkpoint': h['checkpoint'],
+            'frame_count': len(h['frame_times']),
             'frame_times': [h['frame_times'][i-1] for i in r['frame_indices']]}
             for h in history if 'decision' in h for r in h['decision']['unit_evidence']]
         result['state_before'], result['state_after'] = decisions[0]['state_before'], decisions[-1]['state_after']
-        result['adjudicated_summary'] = '\n'.join(dict.fromkeys(d['summary'] for d in decisions))[:1500]
+        # Removed neutral views must not consume the summary budget ahead of a
+        # later verified reaction or payoff. Complete proof remains in history.
+        summaries = list(dict.fromkeys(d['summary'] for d in decisions if d['keep_units']))
+        if not summaries:
+            summaries = list(dict.fromkeys(d['summary'] for d in decisions))
+        allowance = max(1,(1500-len(summaries)+1)//len(summaries))
+        result['adjudicated_summary'] = '\n'.join(s[:allowance] for s in summaries)
         result.update(summary=result['adjudicated_summary'], final_summary=result['adjudicated_summary'],
                       summary_source='targeted_adjudication', selection_empty_verified=not bool(kept),
                       causal_links=[copy.deepcopy(link) for d in decisions for link in d['causal_links']])
@@ -583,7 +652,8 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         for key in ('fallback', 'fallback_reasons', 'whole_scene_last_resort', 'protected_atmosphere_units', 'protected_atmosphere_ranges'):
             result.pop(key, None)
         for key in ('recovery_required', 'recovery_needed', 'needs_recovery', 'local_conflict',
-                    'conflicting_decisions', 'local_conflicting_decisions'):
+                    'conflicting_decisions', 'local_conflicting_decisions', 'selection_needs_adjudication',
+                    'atmosphere_review_units', 'unresolved_omission_units'):
             result.pop(key, None)
     else:
         result.update(minimal_semantic_context(event, units, transcript))

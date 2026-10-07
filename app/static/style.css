@@ -1083,6 +1083,10 @@ progress::-webkit-progress-value {
 
 .reason-atmosphere { background: #1e3a29; color: #a7f3d0; }
 .reason-reaction { background: #3b1f47; color: #e9d5ff; }
+.reason-character_reaction, .reason-emotional_pause, .reason-comedic_payoff { background: #3b1f47; color: #e9d5ff; }
+.reason-state_transition, .reason-physical_action { background: #17374a; color: #bae6fd; }
+.reason-neutral_scenery, .reason-waiting { background: #292d34; color: #cbd5e1; }
+.reason-establishing_context, .reason-causal_dialogue, .reason-response { background: #1e3a29; color: #a7f3d0; }
 .reason-uncertainty { background: #4a3419; color: #fde68a; }
 .reason-manual { background: #1e293b; color: #cbd5e1; }
 

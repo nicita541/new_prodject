@@ -140,8 +140,53 @@ class SceneRefinementTests(unittest.TestCase):
         self.assertTrue(result['selection_uncertain'])
         self.assertTrue(result['chunk_refinements'][0]['proof_rejected'])
         self.assertNotIn('unit_selection_version', result)
+        self.assertFalse(any(r['start'] < 40 and r['end'] > 0 for r in result['selected_ranges']))
+        self.assertTrue(result['analysis_unresolved'])
 
-    def test_atmosphere_and_speech_context_protections_remain_selected(self):
+    def test_empty_parent_selection_is_not_expanded_to_whole_children(self):
+        original = parent()
+        original['selected_ranges'] = []
+        def fake(children, *args):
+            self.assertTrue(all(c['selected_ranges'] == [] for c in children))
+            return [refined(c, selected_ranges=[], analysis_unresolved=True, selection_uncertain=True) for c in children]
+        result, _ = self.run_refinement(original, fake)
+        self.assertEqual(result['selected_ranges'], [])
+        self.assertTrue(result['analysis_unresolved'])
+
+    def test_unresolved_parent_drops_generic_endpoint_and_speech_fallback(self):
+        original = parent()
+        original.update(understanding_status='unresolved', selected_ranges=[{'start': 0, 'end': 90}],
+                        action_units=['u000'])
+        with patch('app.story.refine_story') as refine:
+            result = refine_scene_story([original], EMPTY, [], self.job, object(), lambda *a: None, lambda: False)[0]
+        refine.assert_not_called()
+        self.assertEqual(result['selected_ranges'], [])
+        self.assertTrue(result['analysis_unresolved'])
+
+    def test_parent_source_ownership_does_not_expand_empty_child_selection(self):
+        original = parent()
+        original['verified_current_story_ranges'] = [{'start': 0, 'end': 90}]
+        result, _ = self.run_refinement(original, lambda children, *a: [
+            refined(c, selected_ranges=[], analysis_unresolved=True, selection_uncertain=True) for c in children])
+        self.assertEqual(result['selected_ranges'], [])
+        self.assertNotIn('verified_current_story_ranges', result)
+
+    def test_child_positive_context_preserves_actual_prefix_ids(self):
+        original = parent()
+        original['units'] = [{'id': 'c000_u000', 'start': 0, 'end': 40, 'text': ''},
+                             {'id': 'c001_u000', 'start': 40, 'end': 80, 'text': ''},
+                             {'id': 'c002_u000', 'start': 80, 'end': 90, 'text': ''}]
+        original['unit_evidence'] = [{'unit': 'c001_u000', 'kind': 'physical_action', 'confidence': .95,
+            'decision': 'keep', 'evidence': 'В CURRENT кадре персонаж передаёт видимый предмет другому.',
+            'frame_indices': [1], 'speech_quote': ''}]
+        def fake(children, *args):
+            self.assertEqual(children[1]['unit_evidence'][0]['unit'], 'u000')
+            return [refined(c, analysis_unresolved=True, selection_uncertain=True) for c in children]
+        result, _ = self.run_refinement(original, fake)
+        self.assertEqual(result['selected_ranges'], [{'start': 40, 'end': 80}])
+        self.assertTrue(result['analysis_unresolved'])
+
+    def test_generic_atmosphere_and_speech_clocks_do_not_add_selected_ranges(self):
         original = parent()
         original['speech_context_protections'] = [{'prefix': 'не', 'start': 1, 'end': 2,
                                                    'continuation_start': 4, 'continuation_end': 8}]
@@ -153,10 +198,13 @@ class SceneRefinementTests(unittest.TestCase):
                             speech_context_protections=[{'prefix': 'как', 'start': c['start'] + 3, 'end': c['start'] + 4}])
                     for c in children]
         result, _ = self.run_refinement(original, fake)
-        self.assertEqual(result['protected_atmosphere_units'], ['c000_u000', 'c001_u000', 'c002_u000'])
+        self.assertNotIn('protected_atmosphere_units', result)
+        self.assertTrue(result['selection_needs_adjudication'])
+        self.assertEqual(result['selected_ranges'], [{'start': 10, 'end': 40},
+            {'start': 50, 'end': 80}, {'start': 85, 'end': 90}])
         self.assertEqual(len(result['speech_context_protections']), 4)
         for a, b in ((1, 2), (2, 4), (42, 44), (82, 84)):
-            self.assertTrue(any(r['start'] <= a and r['end'] >= b for r in result['selected_ranges']))
+            self.assertFalse(any(r['start'] < b and r['end'] > a for r in result['selected_ranges']))
 
     def test_no_child_generated_exclusion_ranges_gain_authority(self):
         result, _ = self.run_refinement(parent(), lambda children, *a: [refined(c, excluded_credit_ranges=[{'start': c['start'], 'end': c['end']}]) for c in children])

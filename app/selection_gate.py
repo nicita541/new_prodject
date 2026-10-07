@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import math
+import re
 
 from .selection_adjudication import POSITIVE_KINDS, _concrete
 from .source_roles import confirmed_exclusions, merge_ranges
 
-VERSION = 1
+VERSION = 2
 
 
 def _covers(intervals, targets):
@@ -15,21 +16,49 @@ def _covers(intervals, targets):
                    for r in merged) for t in targets)
 
 
+def _anchored(record, unit, start, end):
+    """Check persisted CURRENT geometry, rather than trusting an index label."""
+    indices, times, quote = (record.get('frame_indices', []), record.get('frame_times', []),
+                             record.get('speech_quote', ''))
+    frame_count = record.get('frame_count')
+    if (not isinstance(indices, list) or any(type(i) is not int or i < 1 for i in indices)
+            or indices and (type(frame_count) is not int or frame_count < max(indices))
+            or len(indices) != len(set(indices)) or not isinstance(times, list)
+            or len(times) != len(indices) or any(type(t) not in (int, float)
+                or not math.isfinite(t) or not start <= t < end for t in times)
+            or not isinstance(quote, str)):
+        return False
+    tokens = lambda text: re.findall(r'\w+', text.casefold().replace('ё', 'е'))
+    q, text = tokens(quote), tokens(str(unit.get('text', '')))
+    if q and not any(text[i:i+len(q)] == q for i in range(len(text)-len(q)+1)):
+        return False
+    if record.get('kind') in {'character_reaction', 'emotional_pause', 'establishing_context',
+                              'physical_action', 'state_transition'} and not indices:
+        return False
+    return bool(indices or q)
+
+
 def positive_ranges(event):
     """A source ownership claim or a naked action ID is not a selection reason."""
     known = {u['id']: u for u in event.get('units', [])}
     result = []
     for record in event.get('unit_evidence', []):
+        if not isinstance(record, dict):
+            continue
         unit = known.get(record.get('unit'))
         confidence = record.get('confidence')
         if (not unit or record.get('decision') == 'drop' or record.get('kind') not in POSITIVE_KINDS
                 or not _concrete(record) or type(confidence) not in (int, float)
-                or not math.isfinite(confidence) or confidence < .9
+                or not math.isfinite(confidence) or not .9 <= confidence <= 1
                 or not (record.get('frame_indices') or record.get('speech_quote'))):
             continue
-        a = max(unit['start'], record.get('view_start', unit['start']))
-        b = min(unit['end'], record.get('view_end', unit['end']))
-        if a < b:
+        bounds = (unit.get('start'), unit.get('end'), record.get('view_start', unit.get('start')),
+                  record.get('view_end', unit.get('end')))
+        if any(type(t) not in (int, float) or not math.isfinite(t) for t in bounds):
+            continue
+        a = max(bounds[0], bounds[2])
+        b = min(bounds[1], bounds[3])
+        if a < b and _anchored(record, unit, a, b):
             result.append({'start': a, 'end': b})
     return merge_ranges(result)
 
@@ -38,12 +67,15 @@ def selection_problems(event):
     if _covers(confirmed_exclusions(event), [event]):
         return []
     reasons = [key for key in ('uncertain', 'selection_uncertain', 'analysis_unresolved',
-        'global_verification_unresolved', 'source_role_unresolved', 'whole_scene_last_resort')
+        'global_verification_unresolved', 'source_role_unresolved', 'whole_scene_last_resort',
+        'selection_needs_adjudication')
         if event.get(key)]
     if event.get('understanding_status') == 'unresolved':
         reasons.append('understanding_unresolved')
     if event.get('protected_atmosphere_units') or event.get('protected_atmosphere_ranges'):
         reasons.append('generic_atmosphere')
+    if event.get('atmosphere_review_units'):
+        reasons.append('atmosphere_requires_specific_evidence')
     if event.get('fallback'):
         reasons.append('fallback_requires_adjudication')
     known = {u['id'] for u in event.get('units', [])}

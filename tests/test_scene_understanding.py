@@ -118,6 +118,21 @@ class UnderstandingValidationTests(unittest.TestCase):
         self.assertEqual(event['understanding_status'], 'needs_review')
         self.assertEqual(recovery_trigger(event), ['uncertain', 'missing_context'])
 
+    def test_understanding_and_selection_confidence_are_independent(self):
+        event = validate_understanding(response(selection_confidence=.5), source_event(), units())
+        self.assertEqual(event['understanding_confidence'], .94)
+        self.assertEqual(event['selection_confidence'], .5)
+        self.assertTrue(event['selection_uncertain'])
+        self.assertIn('selection_uncertain', recovery_trigger(event))
+        legacy = validate_understanding(response(selection_confidence=None), source_event(), units())
+        self.assertTrue(legacy['selection_uncertain'])
+        self.assertIsNone(legacy['selection_confidence'])
+
+    def test_invalid_selection_confidence_never_inherits_understanding(self):
+        for value in (True,float('nan'),float('inf'),-.01,1.01,'0.9'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_understanding(response(selection_confidence=value), source_event(), units())
+
 
 class MinimalSafeRangeTests(unittest.TestCase):
     def test_uncertain_long_scene_does_not_retain_bare_asr_action_ids_or_endpoints(self):

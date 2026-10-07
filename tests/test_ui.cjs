@@ -428,6 +428,23 @@ test('debug combines adjacent identical proof but preserves source gaps and part
     [10,20,'atmosphere'],[20,25,'reaction'],[25,30,'atmosphere'],[35,40,'atmosphere'],[40,45,'atmosphere']]);
 });
 
+test('debug shows concrete reaction evidence and a proved removed neutral view',async()=>{
+  const u=await ui();
+  u.data.plan={source:{duration:40},parts:[{cuts:[{start:10,end:20}]}],
+    debug_timeline:{available:true,reasons:[
+      {event_id:'one',kind:'character_reaction',title:'Реакция персонажа',detail:'После реплики глаза расширяются.',start:12,end:16},
+      {event_id:'one',kind:'neutral_scenery',title:'Нейтральный вид — удалён',detail:'Пустая комната неподвижна.',start:0,end:10,retained:false},
+      {event_id:'one',kind:'waiting',title:'Неверная пометка удаления',detail:'Пересекает оставленное.',start:15,end:25,retained:false}]}};
+  u.data.jobs.push({id:'concrete-debug',status:'completed',stage:'completed',files:[]});
+  await u.run('refresh()');await new Promise(resolve=>setImmediate(resolve));
+  const pieces=JSON.parse(JSON.stringify(u.run('debugPieces(state.timeline.plan)')));
+  assert.deepEqual(pieces.map(p=>[p.start,p.end,p.kind]),[[0,10,'neutral_scenery'],[12,16,'character_reaction']]);
+  assert.equal(pieces[0].removed,true);
+  u.element('analysis-debug').checked=true;u.element('analysis-debug').listeners.change();
+  u.element('analysis-debug-lane').children[1].listeners.focus();
+  assert.equal(u.element('analysis-debug-detail').textContent,'После реплики глаза расширяются.');
+});
+
 test('current quality summary separates review warnings from profile information',async()=>{
   const u=await ui();
   u.data.plan={warnings:['STALE_REMOVED_ED'],quality_summary:{available:true,

@@ -54,6 +54,8 @@ class RecordedVision:
         self.calls += 1
         images = image if isinstance(image,(list,tuple)) else [image] if image is not None else []
         record = {'request':self.calls,'prompt':prompt,'schema':schema,'max_tokens':max_tokens,
+                  'model':str(self.vision.model),'projector':str(self.vision.projector),
+                  'thinking':bool(getattr(self.vision,'thinking',False)),
                   'images':[{'path':str(path),'sha256':sha256(path)} for path in images]}
         atomic_json(self.directory/f'request-{self.calls:03d}.json',record)
         started = time.monotonic()

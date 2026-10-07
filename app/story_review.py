@@ -49,7 +49,8 @@ def validated_event(raw: dict, event_id: str, start: float, end: float, timestam
 
 
 def candidate_units(start: float, end: float, transcript: dict, shots: list[dict] | None = None,
-                    *, visual_during_speech=True, annotated=False) -> list[dict]:
+                    *, visual_during_speech=True, annotated=False, max_unit_seconds=None,
+                    include_speech_onsets=False) -> list[dict]:
     """Separate visible beats even during speech; never cut an ASR word."""
     words = transcript.get('words', [])
     segments = transcript.get('segments', [])
@@ -64,6 +65,8 @@ def candidate_units(start: float, end: float, transcript: dict, shots: list[dict
                 boundaries.setdefault(value, []).append(reason)
 
     for segment in segments:
+        if include_speech_onsets or max_unit_seconds is not None:
+            add(float(segment['start']), 'speech_start')
         add(float(segment['end']), 'speech_boundary')
     for shot in shots or []:
         value = float(shot['start'])
@@ -81,6 +84,26 @@ def candidate_units(start: float, end: float, transcript: dict, shots: list[dict
                 continue
             value = min(edges, key=lambda t: (abs(t-value), t))
         add(value, 'shot_transition')
+    if max_unit_seconds is not None:
+        if type(max_unit_seconds) not in (int, float) or not math.isfinite(max_unit_seconds) or max_unit_seconds <= 0:
+            raise ValueError('Некорректная длительность исходного unit')
+        # Technical source intervals enable selection within a long uncut shot.
+        # Their times carry no claim about an action, emotion or story boundary.
+        for a, b in zip(sorted(boundaries), sorted(boundaries)[1:]):
+            cursor = a
+            while b-cursor > max_unit_seconds:
+                target = cursor+max_unit_seconds
+                if any(w['start'] < target < w['end'] for w in words):
+                    safe = [float(w[k]) for w in words for k in ('start', 'end')
+                            if cursor < float(w[k]) < b and not any(
+                                other['start'] < float(w[k]) < other['end'] for other in words)]
+                    if not safe:
+                        break
+                    target = min(safe, key=lambda t: (abs(t-target), t))
+                add(target, 'technical_selection_interval')
+                if target <= cursor:
+                    break
+                cursor = target
     ordered = sorted(boundaries)
     return [{'id': f'u{i:03d}', 'start': a, 'end': b,
              **({'boundary_reason': sorted(set(boundaries[a]))} if annotated else {}),
@@ -136,9 +159,14 @@ def apply_global_selection(events, decisions, editorial_profile=None):
         event.pop('global_excluded', None)
         event.pop('global_omission', None)
         omission = omissions.get(event['id'])
+        protected = any(r.get('decision') == 'keep' and r.get('kind') in (
+            'character_reaction','emotional_pause','comedic_payoff','physical_action','state_transition')
+            and type(r.get('confidence')) in (int,float) and math.isfinite(r['confidence'])
+            and r['confidence'] >= .9 and r.get('frame_indices') for r in event.get('unit_evidence', []))
         if (omission and omission['confidence'] >= .85 and not event.get('uncertain')
                 and not event.get('selection_uncertain')
                 and not event.get('narrative_bridge')
+                and not protected
                 and not (omission.get('reaction_or_humor') and not profile.get('dramatic_condensation'))
                 and not (verified_story_ranges(event) and event.get('selection_status') != 'accepted')
                 and not (omission['reason'] in ('redundant_exchange','repeated_information')

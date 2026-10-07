@@ -319,17 +319,19 @@ class SourceRolePipelineTests(unittest.TestCase):
         self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':20}])
         self.assertFalse(result[0].get('source_role_excluded',False))
 
-    def test_closing_rechecks_and_keeps_story_protected_atmosphere(self):
+    def test_closing_rechecks_and_keeps_concretely_proven_current_reaction(self):
         from tests.test_closing import decision as closing_decision
         from tests.test_story import decision as story_decision, fixture as story_fixture
 
         directory,event,_=edge_fixture(start=0,end=20,kind='ending')
-        _,_,transcript=story_fixture()
+        _,authored,transcript=story_fixture()
+        event['units']=copy.deepcopy(authored[0]['units'])
         raw={**story_decision(['u001','u003']),
              'omit_units':[{'unit':'u000','reason':'waiting','reaction_or_humor':False},
                            {'unit':'u002','reason':'repeated_information','reaction_or_humor':False}]}
         proof={'decisions':[
             {'unit':'u000','keep':True,'story_change':False,'reaction_or_humor':True,
+             'reaction_kind':'character_reaction','frame_indices':[1],
              'current_episode_story':True,'confidence':.98,'retained_witness':'none',
              'evidence':'The current character notices the reply, turns and responds in the same scene.'},
             {'unit':'u002','keep':False,'story_change':False,'reaction_or_humor':False,

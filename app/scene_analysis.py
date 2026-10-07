@@ -189,7 +189,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 start, end = chunk['start'], chunk['end']
                 image = visual_dir / f'{event_id}_chunk_{number:03d}.jpg'
                 timestamps = storyboard(source, start, end, shots, transcript, image, cancelled)
-                units = candidate_units(start, end, transcript, shots, annotated=True)
+                units = candidate_units(start, end, transcript, shots, annotated=True, max_unit_seconds=4)
                 for unit in units:
                     unit['id'] = f'c{number:03d}_{unit["id"]}'
                     unit['parent_scene_id'] = scene['id']

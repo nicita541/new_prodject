@@ -1,0 +1,123 @@
+"""Genuine production video+ASR run with a transparent local-model observer.
+
+No evaluator answers enter production. Analysis-only runs are diagnostics,
+never proof of rendering or final quality. Models remain owned by production.
+"""
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import sys
+import time
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.config import setup_environment
+from app.media_probe import atomic_json, load_json
+from app.semantic_identity import semantic_identity
+from scripts.run_raw_video_quality import RecordedVision, sha256, workspace
+
+
+def run(fixture, job, *, render=False):
+    import app.analysis as analysis_module
+    from app.vision import LocalVision
+    from app.editorial import DEFAULT_PROFILE
+    fixture, job = workspace(fixture), workspace(job)
+    manifest = load_json(fixture/'input.json')
+    if set(manifest) not in ({'source'}, {'source', 'transcript'}):
+        raise ValueError('Quality input permits only raw video and ordinary ASR')
+    source = workspace(manifest['source'])
+    transcript_path = workspace(manifest['transcript']) if 'transcript' in manifest else None
+    if not source.is_file() or transcript_path is not None and not transcript_path.is_file():
+        raise ValueError('Missing actual raw quality inputs')
+    job.mkdir(parents=True, exist_ok=True)
+    original_inputs = {'source':str(source), 'source_sha256':sha256(source),
+                       'transcript_sha256':sha256(transcript_path) if transcript_path else None,
+                       'input_manifest_sha256':sha256(fixture/'input.json')}
+    input_path=job/'original-inputs.json'
+    if input_path.is_file():
+        if load_json(input_path) != original_inputs:
+            raise ValueError('Resume source/ASR does not match original inputs')
+    else:
+        atomic_json(input_path, original_inputs)
+        atomic_json(job/'source.json', {'path':str(source), 'name':source.name})
+        settings={'provider':'local'}
+        if transcript_path:
+            atomic_json(job/'transcript.json', load_json(transcript_path))
+            settings.update(transcript_mode='provided', transcript_source_sha256=original_inputs['source_sha256'])
+        atomic_json(job/'analysis-settings.json', settings)
+        atomic_json(job/'render-settings.json', {'layout':'cinema','caption_style':'classic'})
+        atomic_json(job/'editorial-settings.json', DEFAULT_PROFILE)
+    atomic_json(job/'observer-code-identity.json', semantic_identity())
+    real_factory=analysis_module.vision_session
+    sessions=[]
+
+    @contextmanager
+    def observed_factory(*args, **kwargs):
+        with real_factory(*args, **kwargs) as vision:
+            if not isinstance(vision, LocalVision):
+                raise TypeError('Raw quality requires the genuine local provider')
+            recorder=RecordedVision(vision, job/'actual-model')
+            public={'model':str(vision.model),'projector':str(vision.projector),
+                    'thinking':bool(getattr(vision,'thinking',False)),
+                    'initial_requests':recorder.initial_calls}
+            sessions.append(public)
+            atomic_json(job/'observed-sessions.json', sessions)
+            try:
+                yield recorder
+            finally:
+                public['new_requests']=recorder.calls-recorder.initial_calls
+                public['total_requests']=recorder.calls
+                atomic_json(job/'observed-sessions.json', sessions)
+
+    report_path=job/'observed-progress.jsonl'
+    def report(stage, progress, message):
+        with report_path.open('a',encoding='utf-8') as stream:
+            stream.write(json.dumps({'stage':stage,'progress':progress,'message':message},ensure_ascii=False)+'\n')
+        print(json.dumps({'stage':stage,'progress':round(progress,3)},ensure_ascii=True),flush=True)
+    started=time.monotonic()
+    analysis_module.vision_session=observed_factory
+    outcome={'mode':'production_render' if render else 'production_analysis_only', 'complete':False}
+    try:
+        if render:
+            from app.pipeline import run_job
+            outcome['outputs']=run_job(job,report,lambda:False)
+            outcome['complete']=True
+        else:
+            analysis=analysis_module.analyze(job,source,report,lambda:False)
+            atomic_json(job/'actual-analysis.json',analysis)
+            outcome['selection_gate']=analysis.get('selection_gate')
+            outcome['analysis_returned']=True
+            outcome['complete']=analysis.get('selection_gate',{}).get('status')=='passed'
+    except BaseException as error:
+        outcome.update(error_type=type(error).__name__,error=str(error))
+        raise
+    finally:
+        analysis_module.vision_session=real_factory
+        outcome['elapsed_seconds']=time.monotonic()-started
+        outcome['actual_model_requests']=len(list((job/'actual-model').glob('request-*.json')))
+        atomic_json(job/'observed-outcome.json',outcome)
+        print(json.dumps({'complete':outcome['complete'],'actual_model_requests':outcome['actual_model_requests'],
+                          'error_type':outcome.get('error_type')},ensure_ascii=True),flush=True)
+    return outcome
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fixture-dir',type=Path,required=True)
+    parser.add_argument('--job-dir',type=Path)
+    parser.add_argument('--render',action='store_true')
+    args=parser.parse_args()
+    setup_environment()
+    job=args.job_dir or ROOT/'scratch/raw_video_quality/production_runs'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')/'raw-000'
+    result=run(args.fixture_dir,job,render=args.render)
+    return 0 if result['complete'] else 1
+
+
+if __name__=='__main__':
+    raise SystemExit(main())

@@ -167,6 +167,15 @@ class AnalysisValidationTests(unittest.TestCase):
         units = candidate_units(0, 10, transcript)
         self.assertEqual([u['end'] for u in units], [4, 9, 10])
 
+    def test_source_speech_onset_separates_long_neutral_prefix_from_causal_reply(self):
+        transcript={'segments':[{'start':10,'end':12,'text':'Я нашёл письмо.'}],
+                    'words':[{'start':10,'end':10.5,'text':'Я'},
+                             {'start':10.5,'end':11,'text':'нашёл'}, {'start':11,'end':12,'text':'письмо.'}]}
+        units=candidate_units(0,20,transcript,annotated=True,include_speech_onsets=True)
+        self.assertEqual([(u['start'],u['end'],u['text']) for u in units],
+                         [(0,10,''),(10,12,'Я нашёл письмо.'),(12,20,'')])
+        self.assertIn('speech_start',units[1]['boundary_reason'])
+
     def test_silent_action_can_be_selected_without_entire_waiting_window(self):
         transcript = {'segments': [{'start': 20, 'end': 25, 'text': 'Привет.'}],
                       'words': [{'start': 20, 'end': 25, 'text': 'Привет.'}]}
@@ -176,6 +185,21 @@ class AnalysisValidationTests(unittest.TestCase):
         self.assertTrue({5, 10, 15, 30}.issubset(set(boundaries)))
         self.assertNotIn(22, boundaries)
         self.assertTrue(any(unit['text'] == 'Привет.' for unit in units))
+
+    def test_technical_source_units_bound_uncut_silence_without_semantic_claims(self):
+        units = candidate_units(0, 19, {'segments': [], 'words': []},
+                                annotated=True, max_unit_seconds=4)
+        self.assertEqual([(u['start'], u['end']) for u in units],
+                         [(0, 4), (4, 8), (8, 12), (12, 16), (16, 19)])
+        self.assertTrue(all(u['text'] == '' for u in units))
+        self.assertTrue(all('technical_selection_interval' in u['boundary_reason'] for u in units[1:]))
+
+    def test_technical_unit_edge_snaps_to_real_asr_word_edge(self):
+        transcript = {'segments': [], 'words': [{'start': 3, 'end': 5, 'text': 'слово'}]}
+        units = candidate_units(0, 12, transcript, annotated=True, max_unit_seconds=4)
+        self.assertEqual(units[0]['end'], 3)
+        self.assertTrue(all(not 3 < u['end'] < 5 for u in units))
+        self.assertEqual(units[-1]['end'], 12)
 
     def test_global_pass_bounds_context_without_losing_episode_tail(self):
         class FakeVision:
