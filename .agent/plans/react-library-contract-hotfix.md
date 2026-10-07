@@ -33,4 +33,4 @@ Archived parents hide their child episodes without individually archiving them. 
 - [x] Correct raw types/selectors/screens and all API discrepancies.
 - [x] Realistic/backend-generated fixtures and regression protection.
 - [x] Full requested checks and real five-screen verification: 762 Python, 4 routing pytest, 78 React, 24 legacy UI; build/lint/diff passed. See docs/react-library-contract.md for actual library screen evidence and lint warnings.
-- [ ] Separate hotfix commit/report and resume montage Stage 2.
+- [x] Separate hotfix commit/report and resume montage Stage 2: 72034c638ec2ac4733f5715632e6fbf515c9f733. Returned to the source-index-domain bug in multi-page global selection, with the earlier Stage 2 work preserved.

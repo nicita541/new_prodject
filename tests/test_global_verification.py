@@ -481,6 +481,35 @@ class GlobalVerificationTests(unittest.TestCase):
         self.assertEqual(result['global_pending_selection_ranges'],[{'start':8,'end':12}])
         self.assertEqual(result['selection_status'],'pending')
 
+    def test_later_page_retains_original_frame_domain_and_passes_selection_gate(self):
+        from app.selection_gate import selection_problems
+        event={**self.event,'selected_ranges':[{'start':0,'end':12}]}; self.multi_page(event)
+        first=selection_answer(event['units'][:2],keep=['c000_u001'],
+            indices={'c000_u000':[1],'c000_u001':[109]})
+        later=selection_answer(event['units'][2:],keep=['c000_u002'],indices={'c000_u002':[217]})
+        vision=FakeVision([first,later]); result=self.verify([event],vision)[0]
+        self.assertEqual(len(vision.requests),2)
+        self.assertEqual(result['selected_ranges'],[{'start':4,'end':12}])
+        records={record['unit']:record for record in result['unit_evidence']}
+        self.assertEqual(records['c000_u001']['frame_count'],216)
+        self.assertEqual(records['c000_u002']['frame_indices'],[217])
+        self.assertEqual(records['c000_u002']['frame_count'],324)
+        self.assertEqual(records['c000_u002']['frame_times'],[(216+.5)*12/324])
+        self.assertEqual(selection_problems(result),[])
+
+    def test_page_frame_domain_never_expands_from_invented_model_index(self):
+        from app.selection_gate import selection_problems
+        event={**self.event,'selected_ranges':[{'start':0,'end':12}]}; self.multi_page(event)
+        first=selection_answer(event['units'][:2],keep=['c000_u001'],
+            indices={'c000_u000':[1],'c000_u001':[109]})
+        later=selection_answer(event['units'][2:],keep=['c000_u002'],indices={'c000_u002':[999]})
+        result=self.verify([event],FakeVision([first,later]))[0]
+        self.assertEqual(result['selection_status'],'pending')
+        self.assertTrue(result['analysis_unresolved'])
+        self.assertEqual(result['global_pending_selection_ranges'],[{'start':8,'end':12}])
+        self.assertFalse(any(record['unit']=='c000_u002' for record in result['unit_evidence']))
+        self.assertIn('selection_not_adjudicated',selection_problems(result))
+
     def test_conflicting_partial_views_of_one_unit_cannot_replace_full_unit(self):
         event={**self.event,'units':[{'id':'c000_u000','start':0,'end':12,'text':''}]}; self.multi_page(event)
         first=selection_answer(event['units'],keep=['c000_u000'],actions=['c000_u000'],indices={'c000_u000':[1]})

@@ -16,7 +16,7 @@ from .source_roles import confirmed_exclusions, merge_ranges, verified_story_ran
 from .scene_understanding import _control_failure
 from .story_review import candidate_units
 
-GLOBAL_VERIFICATION_VERSION = 2
+GLOBAL_VERIFICATION_VERSION = 3
 SELECTION_CONFIDENCE = .9
 SELECTION_REASONS = ('character_reaction', 'emotional_pause', 'comedic_payoff', 'establishing_context',
     'causal_dialogue', 'response', 'physical_action', 'state_transition', 'neutral_scenery',
@@ -609,7 +609,8 @@ def verify_global_visual(source, events, transcript, shots, job_dir, vision, rep
                     'reason':reason,'evidence':row['evidence'],'confidence':vote['confidence'],
                     'frame_indices':row['frame_indices'],'speech_quote':row['speech_quote'],
                     'frame_times':[vote['frame_times'][i] for i in row['frame_indices']],
-                    'frame_count':len(vote['frame_times']),
+                    # Labels retain the original storyboard indices across page groups.
+                    'frame_count':max(vote['frame_times'], default=0),
                     'view_start':vote['unit']['start'],'view_end':vote['unit']['end'],
                     'decision':'keep' if ident in kept else 'drop','checkpoint':vote['checkpoint']})
         if evidence_records:
