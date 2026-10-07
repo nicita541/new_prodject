@@ -749,6 +749,10 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     def index(full_path: str):
         if full_path.startswith("api/") or full_path.startswith("assets/") or full_path.startswith("static/"):
             raise HTTPException(404)
+        if full_path.startswith("legacy"):
+            if (static_legacy / "index.html").is_file():
+                return FileResponse(static_legacy / "index.html")
+            raise HTTPException(404, "Legacy UI not found")
         if (dist_dir / "index.html").is_file():
             return FileResponse(dist_dir / "index.html")
         elif (static_legacy / "index.html").is_file():

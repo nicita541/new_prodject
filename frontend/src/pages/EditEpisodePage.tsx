@@ -4,6 +4,8 @@ import { useLibrary } from '../hooks/useLibrary';
 import { api } from '../api/client';
 import { JobProgressPanel } from '../components/JobProgressPanel';
 import { SourceSelect } from '../components/SourceSelect';
+import { DeepSeekPanel } from '../components/DeepSeekPanel';
+import { MusicPanel } from '../components/MusicPanel';
 
 export function EditEpisodePage() {
   const { episodeId } = useParams<{ episodeId: string }>();
@@ -21,6 +23,7 @@ export function EditEpisodePage() {
 
   // Job state
   const [isStarting, setIsStarting] = useState(false);
+  const [saveMessage, setSaveMessage] = useState('');
   
   useEffect(() => {
     if (episode && episode.settings) {
@@ -30,6 +33,23 @@ export function EditEpisodePage() {
       setProvider(episode.settings.analysis_provider || 'deepseek_plan');
     }
   }, [episode]);
+
+  const handleSaveSettingsOnly = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    if (!episodeId || !sourceId) return;
+    try {
+      await api.saveEpisodeSettings(episodeId, {
+        source_id: sourceId,
+        layout,
+        caption_style: captionStyle,
+        analysis_provider: provider
+      });
+      setSaveMessage('Настройки этой серии сохранены. Монтаж не запускался.');
+      setTimeout(() => setSaveMessage(''), 3000);
+    } catch (err) {
+      setSaveMessage(err instanceof Error ? err.message : 'Ошибка сохранения');
+    }
+  };
 
   const handleSaveAndLaunch = async () => {
     if (!episodeId) return;
@@ -136,14 +156,27 @@ export function EditEpisodePage() {
                 <p className="muted small" style={{ marginTop: '8px' }}>
                   {provider === 'deepseek_plan' ? 'Анализ видео выполняется с помощью DeepSeek.' : 'Анализ выполняется на компьютере.'}
                 </p>
+                <DeepSeekPanel />
               </div>
 
+              <MusicPanel />
+
               <div className="settings-group">
+                <p id="form-message" className="message" role="status" hidden={!saveMessage}>{saveMessage}</p>
                 <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                    <input 
+                      type="checkbox" 
+                      id="save-settings" 
+                      onChange={handleSaveSettingsOnly} 
+                      disabled={isStarting || !sourceId} 
+                      checked={false} // Always uncontrolled/stateless, acts as a button
+                    /> 
+                    Сохранить по умолчанию
+                  </label>
                   <button id="create-button" type="submit" className="btn-primary" disabled={isStarting || !sourceId}>
                     {isStarting ? 'Запускаем...' : 'Смонтировать'}
                   </button>
-                  <span className="muted small">Монтаж может занять от 5 до 15 минут</span>
                 </div>
               </div>
 

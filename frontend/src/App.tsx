@@ -19,7 +19,7 @@ export default function App() {
             <Route path="/trash" element={<TrashPage />} />
             <Route path="/project/:projectId" element={<EpisodesPage />} />
             <Route path="/episode/:episodeId/edit" element={<EditEpisodePage />} />
-            <Route path="/episode/:episodeId/review" element={<ReviewEpisodePage />} />
+            <Route path="/episode/:episodeId/review/:jobId?" element={<ReviewEpisodePage />} />
           </Routes>
           
           <footer className="app-footer">
