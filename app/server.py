@@ -736,12 +736,24 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
                                  "error": "Не удалось сохранить все видео в выбранную папку"}, 507)
         return {"cancelled": False, "count": len(copied), "files": copied}
 
-    static = config.ROOT / "app" / "static"
-    @application.get("/")
-    def index():
-        return FileResponse(static / "index.html")
-    if static.is_dir():
-        application.mount("/static", StaticFiles(directory=static), name="static")
+    static_legacy = config.ROOT / "app" / "static"
+    dist_dir = config.ROOT / "frontend" / "dist"
+    assets_dir = dist_dir / "assets"
+    
+    if assets_dir.is_dir():
+        application.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+    if static_legacy.is_dir():
+        application.mount("/static", StaticFiles(directory=static_legacy), name="static_legacy")
+        
+    @application.get("/{full_path:path}")
+    def index(full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("assets/") or full_path.startswith("static/"):
+            raise HTTPException(404)
+        if (dist_dir / "index.html").is_file():
+            return FileResponse(dist_dir / "index.html")
+        elif (static_legacy / "index.html").is_file():
+            return FileResponse(static_legacy / "index.html")
+        raise HTTPException(404, "Frontend is not built yet")
     return application
 
 
