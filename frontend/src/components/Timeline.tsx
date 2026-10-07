@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import type { Plan, Job } from '../api/types';
+import { buildTimelinePieces, buildDebugPieces, pieceLabel, sourceTime, DEBUG_KIND_LABELS } from '../utils/timeline';
 
 interface TimelineProps {
   job: Job | null;
@@ -13,28 +14,28 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
   const [showDebug, setShowDebug] = useState(false);
   const [limitToPart, setLimitToPart] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [sourceSelection, setSourceSelection] = useState<{start: number, end: number, retained: boolean} | null>(null);
+  const [activeDebugInfo, setActiveDebugInfo] = useState<{title: string, detail?: string, kind: string, start: number, end: number} | null>(null);
+  const [playerError, setPlayerError] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const timelineMapRef = useRef<HTMLDivElement>(null);
 
-  if (!plan) return null;
+  const duration = plan?.source?.duration || 1;
+  const parts = plan?.parts || [];
 
-  const duration = plan.source?.duration || 1;
-  const parts = plan.parts || [];
-  
-  // Handlers for interacting with the player
+  const pieces = useMemo(() => plan ? buildTimelinePieces(plan, duration) : [], [plan, duration]);
+  const debugPieces = useMemo(() => plan && plan.debug_timeline?.reasons ? buildDebugPieces(plan.debug_timeline.reasons, pieces, duration) : [], [plan, pieces, duration]);
+
+  // Sync player limits and time
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const handleTimeUpdate = () => {
       setCurrentTime(video.currentTime);
-      if (limitToPart && parts[selectedIndex]) {
-        // Enforce boundary
-        const cuts = parts[selectedIndex].cuts;
-        const currentCut = cuts.find(c => video.currentTime >= c.start && video.currentTime <= c.end);
-        if (!currentCut) {
-          // If we leave the cut, pause or jump to the next cut within the part
+      if (limitToPart && sourceSelection) {
+        if (video.currentTime >= sourceSelection.end) {
           video.pause();
         }
       }
@@ -42,7 +43,7 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
 
     video.addEventListener('timeupdate', handleTimeUpdate);
     return () => video.removeEventListener('timeupdate', handleTimeUpdate);
-  }, [limitToPart, selectedIndex, parts]);
+  }, [limitToPart, sourceSelection]);
 
   const handleSeek = (time: number) => {
     if (videoRef.current) {
@@ -57,6 +58,8 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
     const pos = (e.clientX - rect.left) / rect.width;
     handleSeek(pos * duration);
   };
+
+  if (!plan) return null;
 
   return (
     <section id="timeline-panel" className="panel timeline-panel">
@@ -77,10 +80,9 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
       <div className="timeline-scroll">
         <div id="timeline-map" className="timeline-map" style={{ width: `${zoom * 100}%` }} ref={timelineMapRef} onClick={handleTimelineClick}>
           <div id="timeline-ruler" className="timeline-ruler">
-            {/* Simple ruler markers */}
             {Array.from({ length: 10 }).map((_, i) => (
               <span key={i} style={{ left: `${i * 10}%` }} className="timeline-mark">
-                {Math.floor((duration * i) / 10)}s
+                {sourceTime((duration * i) / 10).split('.')[0]}
               </span>
             ))}
           </div>
@@ -110,36 +112,45 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
           </div>
           <div className="timeline-line">
             <div id="timeline-overview" className="timeline-track">
-              {/* Show retained vs removed ranges based on cuts */}
-              {parts.map((part, i) => (
-                part.cuts.map((cut, j) => (
+              {pieces.map((piece, i) => {
+                const left = (piece.start / duration) * 100;
+                const width = ((piece.end - piece.start) / duration) * 100;
+                const isActive = piece.partIndex === selectedIndex;
+                return (
                   <div 
-                    key={`${i}-${j}`} 
-                    className={`timeline-fragment retained-fragment ${selectedIndex === i ? 'active' : ''}`} 
-                    style={{ left: `${(cut.start / duration) * 100}%`, width: `${((cut.end - cut.start) / duration) * 100}%` }}
+                    key={i} 
+                    className={`timeline-fragment ${piece.retained ? 'retained-fragment' : 'removed-fragment'} ${isActive ? 'active' : ''}`} 
+                    style={{ left: `${left}%`, width: `${width}%` }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSourceSelection(piece);
+                      handleSeek(piece.start);
+                      if (piece.partIndex !== null && piece.partIndex !== selectedIndex) {
+                        onSelectPart(piece.partIndex);
+                      }
+                    }}
+                    title={pieceLabel(piece)}
                   />
-                ))
-              ))}
+                );
+              })}
             </div>
-            {showDebug && plan.debug_timeline?.reasons && (
-              <div id="analysis-debug-lane" className="timeline-track debug-lane">
-                {plan.debug_timeline.reasons.map((reason, i) => {
-                  const left = (reason.start / duration) * 100;
-                  const width = ((reason.end - reason.start) / duration) * 100;
-                  return (
-                    <button 
-                      key={i} 
-                      className="timeline-reason" 
-                      style={{ left: `${left}%`, width: `${width}%` }}
-                      data-kind={reason.kind}
-                      title={reason.title}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleSeek(reason.start);
-                      }}
-                    />
-                  );
-                })}
+            {showDebug && debugPieces.length > 0 && (
+              <div id="analysis-debug-lane" className="timeline-track debug-lane" style={{ height: `${(Math.max(...debugPieces.map(p => p.lane)) + 1) * 8}px` }}>
+                {debugPieces.map(p => (
+                  <button 
+                    key={p.id} 
+                    className="timeline-reason" 
+                    style={{ left: `${(p.start / duration) * 100}%`, width: `${((p.end - p.start) / duration) * 100}%`, top: `${p.lane * 8}px` }}
+                    data-kind={p.kind}
+                    title={p.title}
+                    onMouseEnter={() => setActiveDebugInfo(p)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setActiveDebugInfo(p);
+                      handleSeek(p.start);
+                    }}
+                  />
+                ))}
               </div>
             )}
             <div id="timeline-playhead" className="timeline-playhead" style={{ left: `${(currentTime / duration) * 100}%` }}></div>
@@ -154,20 +165,33 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
             controls 
             playsInline
             ref={videoRef}
-            src={`/api/jobs/${job.id}/source`} // Using standard backend route
+            src={`/api/jobs/${job.id}/source`}
+            onError={() => setPlayerError(true)}
           ></video>
+        )}
+        {playerError && (
+          <div className="message" style={{ color: 'var(--danger)', marginTop: '8px' }}>
+            Браузер не смог открыть исходник. Для MKV может потребоваться локальный видеоплеер.
+          </div>
         )}
         <div className="source-review-info">
           <div id="source-selection" className="source-selection">
-            {/* Show info about current time mapped to cut */}
+            {sourceSelection && (
+              <span className="muted" style={{ fontWeight: 600 }}>
+                {sourceSelection.retained ? 'Оставлено' : 'Убрано'} · исходник {sourceTime(sourceSelection.start)}–{sourceTime(sourceSelection.end)}
+              </span>
+            )}
           </div>
-          <button id="source-full-button" type="button" className="btn-text" hidden={!limitToPart} onClick={() => setLimitToPart(false)}>
+          <button id="source-full-button" type="button" className="btn-text" hidden={!limitToPart} onClick={() => { setLimitToPart(false); setSourceSelection(null); }}>
             Смотреть всё
           </button>
           <div style={{ flex: 1 }}></div>
-          {showDebug && (
+          {showDebug && activeDebugInfo && (
             <div id="analysis-debug-info" className="analysis-debug-info">
-              {/* Currently hovered/clicked debug reason */}
+              <span className="badge" style={{ marginRight: '8px' }}>{DEBUG_KIND_LABELS[activeDebugInfo.kind] || activeDebugInfo.kind}</span>
+              <span className="muted" style={{ marginRight: '8px' }}>{sourceTime(activeDebugInfo.start)}–{sourceTime(activeDebugInfo.end)}</span>
+              <strong style={{ marginRight: '8px' }}>{activeDebugInfo.title}</strong>
+              <span className="muted">{activeDebugInfo.detail}</span>
             </div>
           )}
         </div>

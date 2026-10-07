@@ -41,8 +41,19 @@ export function MusicPanel() {
       const res = await api.openMusicFolder();
       setMsg(`Папка открыта: ${res.path}`);
     } catch (e) {
-      setMsg(`Папка: F:\\new_prodject\\music`);
+      setMsg(e instanceof Error ? e.message : 'Не удалось открыть папку');
     }
+  };
+
+  const handlePartTrackChange = (partIndex: number, track: string) => {
+    if (!settings) return;
+    const newPartTracks = { ...(settings.part_tracks || {}) };
+    if (track) {
+      newPartTracks[partIndex] = track;
+    } else {
+      delete newPartTracks[partIndex];
+    }
+    handleChange({ part_tracks: newPartTracks });
   };
 
   if (!settings) return null;
@@ -51,7 +62,9 @@ export function MusicPanel() {
     <div className="settings-group">
       <details id="music-section" className="form-group" open>
         <summary className="settings-summary">
-          Фоновая музыка <span id="music-summary" className="muted small">{settings.enabled ? (settings.mode === 'single' ? 'Один трек' : 'Разные треки') : 'Выключена'}</span>
+          Фоновая музыка <span id="music-summary" className="muted small">
+            {settings.enabled ? (settings.mode === 'random_per_part' ? 'случайный для каждого' : settings.mode === 'per_part' ? 'по фрагментам' : (settings.track || 'один трек')) : 'выключена'}
+          </span>
         </summary>
         <div className="settings-content">
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13.5px' }}>
@@ -70,7 +83,7 @@ export function MusicPanel() {
 
           <div className="form-group">
             <label className="form-label" htmlFor="music-mode">Режим подстановки</label>
-            <select id="music-mode" className="form-select" value={settings.mode} onChange={e => handleChange({ mode: e.target.value as any })} disabled={!settings.enabled}>
+            <select id="music-mode" className="form-select" value={settings.mode} onChange={e => handleChange({ mode: e.target.value as MusicSettings['mode'] })} disabled={!settings.enabled}>
               <option value="single">Один трек на всё видео</option>
               <option value="random_per_part">Случайный трек для каждой части</option>
               <option value="per_part">Выбрать вручную для каждой части</option>
@@ -86,6 +99,29 @@ export function MusicPanel() {
                   <option key={t} value={t}>🎵 {t}</option>
                 ))}
               </select>
+            </div>
+          )}
+
+          {settings.mode === 'per_part' && (
+            <div id="music-parts-panel" className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label className="form-label">Музыка для частей</label>
+              {Array.from({ length: 15 }).map((_, i) => (
+                <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '13px', width: '60px' }}>Часть {String(i + 1).padStart(2, '0')}</span>
+                  <select 
+                    className="form-select" 
+                    style={{ flex: 1 }}
+                    value={settings.part_tracks?.[i] || ''}
+                    onChange={e => handlePartTrackChange(i, e.target.value)}
+                    disabled={!settings.enabled}
+                  >
+                    <option value="">🎲 Случайный трек</option>
+                    {settings.tracks?.map(t => (
+                      <option key={t} value={t}>🎵 {t}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
             </div>
           )}
 

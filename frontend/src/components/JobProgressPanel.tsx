@@ -88,6 +88,20 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
             {job.cancel_requested ? 'Отмена запрошена...' : 'Отменить'}
           </button>
         )}
+        {['failed', 'cancelled', 'interrupted'].includes(job.status) && (
+          <button id="retry-button" type="button" className="btn-primary" onClick={async () => {
+            try { await api.retryJob(job.id); } catch (e) { alert('Ошибка повтора'); }
+          }}>
+            Повторить
+          </button>
+        )}
+        {['failed', 'cancelled', 'interrupted'].includes(job.status) && job.error?.includes('budget') && (
+          <button id="reset-budget-button" type="button" className="btn-secondary" onClick={async () => {
+            try { await api.resetJobBudget(job.id); alert('Лимит сброшен, можно повторить запуск.'); } catch (e) { alert('Ошибка'); }
+          }}>
+            Сбросить лимит
+          </button>
+        )}
         {job.status === 'completed' && (
           <Link to={`/episode/${episodeId}/review/${job.id}`} className="btn-primary">
             Проверить результат

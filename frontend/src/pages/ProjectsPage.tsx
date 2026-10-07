@@ -80,7 +80,7 @@ export function ProjectsPage() {
               const episodesCount = project.episodes?.length || 0;
               const readyCount = project.episodes?.filter(e => 
                 // @ts-ignore - jobs might not be populated cleanly here, or we need to check if there are completed jobs
-                e.jobs && e.jobs.some((job: any) => job.status === 'completed')
+                e.jobs && e.jobs.some((job: import('../api/types').Job) => job.status === 'completed')
               ).length || 0;
               const isDeleting = false;
               

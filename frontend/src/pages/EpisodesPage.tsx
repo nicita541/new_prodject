@@ -111,13 +111,11 @@ export function EpisodesPage() {
         {episodes.length > 0 ? (
           <div id="episode-cards" className="grid-cards">
             {episodes.map(episode => {
-              // Basic check, might need job polling later
-              const jobs = (episode as any).jobs || [];
-              const ready = jobs.find((j: any) => j.status === 'completed');
-              const current = jobs[0];
+              const jobs = episode.jobs || [];
+              const lastJobId = jobs[jobs.length - 1];
               
-              const metaText = current 
-                ? `${current.status} · монтажей: ${jobs.length}`
+              const metaText = jobs.length > 0
+                ? `монтажей: ${jobs.length}`
                 : episode.source_id ? 'Видео добавлено · монтаж не запускался' : 'Добавьте видео этой серии';
 
               return (
@@ -127,9 +125,9 @@ export function EpisodesPage() {
                   <p className="card-meta">{metaText}</p>
                   <div className="card-actions">
                     <Link className="btn-secondary" to={`/episode/${episode.id}/edit`}>Настроить монтаж</Link>
-                    {ready && (
-                      <Link className="btn-text" to={`/episode/${episode.id}/review/${ready.id}`}>
-                        Проверить шортсы ({ready.files?.length ?? 0})
+                    {jobs.length > 0 && (
+                      <Link className="btn-text" to={`/episode/${episode.id}/review/${lastJobId}`}>
+                        Посмотреть результаты
                       </Link>
                     )}
                     <button 

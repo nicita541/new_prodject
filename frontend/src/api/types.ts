@@ -98,6 +98,29 @@ export interface DeepSeekStatus {
   model?: string;
 }
 
+export interface HealthStatus {
+  status: string;
+  ready?: boolean;
+  busy?: boolean;
+  [key: string]: unknown;
+}
+
+export interface EpisodeSettings {
+  source_id?: string;
+  layout?: 'portrait' | 'cinema';
+  caption_style?: 'classic' | 'accent';
+  analysis_provider?: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan';
+}
+
+export interface ResetBudgetResponse {
+  success: boolean;
+  [key: string]: unknown;
+}
+
+export interface QualityWarningItem {
+  text: string;
+}
+
 export interface DeepSeekCheck {
   available: boolean;
   model: string;

@@ -6,7 +6,28 @@ import { EpisodesPage } from './pages/EpisodesPage';
 import { EditEpisodePage } from './pages/EditEpisodePage';
 import { ReviewEpisodePage } from './pages/ReviewEpisodePage';
 
+import { useEffect } from 'react';
+
 export default function App() {
+  useEffect(() => {
+    // Handle legacy hash routing
+    if (window.location.hash) {
+      const hash = window.location.hash.substring(1);
+      if (hash === 'projects') {
+        window.location.replace('/projects');
+      } else if (hash === 'trash') {
+        window.location.replace('/trash');
+      } else if (hash.startsWith('project/')) {
+        window.location.replace(`/${hash}`);
+      } else if (hash.startsWith('episode/')) {
+        const parts = hash.split('/');
+        if (parts[2] === 'edit' || parts[2] === 'review') {
+          window.location.replace(`/${hash}`);
+        }
+      }
+    }
+  }, []);
+
   return (
     <Router>
       <div className="app-layout">

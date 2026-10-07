@@ -21,38 +21,72 @@ export function ReviewEpisodePage() {
   const [job, setJob] = useState<Job | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [fetchError, setFetchError] = useState<string>('');
+  const [allEpisodeJobs, setAllEpisodeJobs] = useState<Job[]>([]);
 
+  // Load all jobs for the dropdown
   useEffect(() => {
     if (episode && episode.jobs) {
-      const fetchJob = async () => {
-        try {
-          let targetJobId = jobId;
-          if (!targetJobId) {
-            // Find latest completed job
-            const allJobs = await Promise.all(episode.jobs!.map(id => api.getJob(id)));
-            const completed = allJobs.filter(j => j.status === 'completed');
-            if (completed.length > 0) {
-              targetJobId = completed[0].id;
-            }
-          }
-          if (targetJobId) {
-            const j = await api.getJob(targetJobId);
-            setJob(j);
-            if (j.status === 'completed') {
-              const p = await api.getJobPlan(targetJobId);
-              setPlan(p);
-            }
-          }
-        } catch (e) {
-          console.error(e);
-        }
-      };
-      fetchJob();
+      Promise.all(episode.jobs.map(id => api.getJob(id).catch(() => null)))
+        .then(jobs => {
+          const validJobs = jobs.filter((j): j is Job => j !== null);
+          // Sort or preserve order (usually newest is last in episode.jobs, but let's check completion)
+          setAllEpisodeJobs(validJobs);
+        });
     }
+  }, [episode]);
+
+  useEffect(() => {
+    if (!episode || !episode.jobs) return;
+    
+    const fetchJob = async () => {
+      setFetchError('');
+      setJob(null);
+      setPlan(null);
+      setSelectedIndex(0);
+
+      try {
+        let targetJobId = jobId;
+        
+        if (targetJobId && !episode.jobs!.includes(targetJobId)) {
+          setFetchError('Монтаж не принадлежит данной серии');
+          return;
+        }
+
+        if (!targetJobId) {
+          // Find latest completed job dynamically
+          const allJobs = await Promise.all(episode.jobs!.map(id => api.getJob(id).catch(() => null)));
+          const completed = allJobs.filter((j): j is Job => j !== null && j.status === 'completed');
+          if (completed.length > 0) {
+            // Assume the last one in the array is the latest
+            targetJobId = completed[completed.length - 1].id;
+          }
+        }
+
+        if (targetJobId) {
+          const j = await api.getJob(targetJobId);
+          setJob(j);
+          if (j.status === 'completed') {
+            const p = await api.getJobPlan(targetJobId);
+            setPlan(p);
+          }
+        } else {
+          setFetchError('Нет завершённых монтажей для проверки');
+        }
+      } catch (e) {
+        setFetchError(e instanceof Error ? e.message : 'Ошибка загрузки данных');
+      }
+    };
+    fetchJob();
   }, [episode, jobId]);
 
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
   if (error || !episode) return <p className="message">Серия не найдена</p>;
+
+  const filesCount = job?.files?.length || 0;
+  const partsCount = plan?.parts?.length || 0;
+  const maxIndex = Math.max(0, Math.min(filesCount - 1, partsCount - 1));
+  const activeIndex = Math.min(selectedIndex, maxIndex);
 
   return (
     <main className="screen-shell">
@@ -61,7 +95,7 @@ export function ReviewEpisodePage() {
           <h1 className="page-title">Проверка монтажа {episode.number}</h1>
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          {episode.jobs && episode.jobs.length > 0 && (
+          {allEpisodeJobs.length > 0 && (
             <select 
               id="episode-attempt" 
               className="form-select"
@@ -74,10 +108,10 @@ export function ReviewEpisodePage() {
               }}
             >
               <option value="" disabled>Загрузка...</option>
-              {/* Note: In legacy UI, it only showed completed jobs. Let's just map all jobs or completed ones. For parity, let's fetch all jobs' statuses.
-                  To do this properly, we need a separate state or just list the IDs. We'll list IDs for now, ideally we should show 'Последний монтаж' etc. */}
-              {episode.jobs.map((jid, i) => (
-                <option key={jid} value={jid}>Монтаж {i + 1} ({jid.substring(0, 8)})</option>
+              {allEpisodeJobs.map((j, i) => (
+                <option key={j.id} value={j.id}>
+                  Монтаж {i + 1} ({j.id.substring(0, 8)}) {j.status === 'completed' ? '· Готово' : '· Ошибка'}
+                </option>
               ))}
             </select>
           )}
@@ -86,28 +120,29 @@ export function ReviewEpisodePage() {
       </div>
       
       <div className="review-workspace" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        {fetchError && <p className="message" style={{ color: 'var(--danger)' }}>{fetchError}</p>}
         {job && plan ? (
           <>
             {/* Timeline Panel */}
-            <Timeline job={job} plan={plan} selectedIndex={selectedIndex} onSelectPart={setSelectedIndex} />
+            <Timeline job={job} plan={plan} selectedIndex={activeIndex} onSelectPart={setSelectedIndex} />
             <QualityWarnings plan={plan} />
 
             {/* Results Panel */}
             <section id="results-panel" className="panel playlist-panel">
               <div className="panel-heading">
-                <h2 id="results-heading" className="panel-title">Готовые шортсы ({job.files?.length || 0})</h2>
+                <h2 id="results-heading" className="panel-title">Готовые шортсы ({filesCount})</h2>
               </div>
               
               <div className="shorts-viewer-layout">
                 <div className="shorts-player-col">
-                  <VideoPlayer file={job.files?.[selectedIndex]} />
+                  <VideoPlayer file={job.files?.[activeIndex]} />
                   {/* Music Badge could go here */}
-                  {plan.parts[selectedIndex]?.music_track && (
+                  {plan.parts[activeIndex]?.music_track && (
                     <div id="music-badge" className="notice" style={{ marginTop: '12px', padding: '8px 12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
                       <span>🎵</span>
                       <div>
                         <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)' }}>Фоновая музыка</div>
-                        <strong id="music-track-name" style={{ fontSize: '13px' }}>{plan.parts[selectedIndex].music_track}</strong>
+                        <strong id="music-track-name" style={{ fontSize: '13px' }}>{plan.parts[activeIndex].music_track}</strong>
                       </div>
                     </div>
                   )}
@@ -115,13 +150,13 @@ export function ReviewEpisodePage() {
 
                 <div className="shorts-playlist-col">
                   <p className="small muted" style={{ marginBottom: '10px', fontWeight: 600 }}>Выберите часть для просмотра:</p>
-                  <Playlist files={job.files || []} selectedIndex={selectedIndex} onSelect={setSelectedIndex} />
+                  <Playlist files={job.files || []} selectedIndex={activeIndex} onSelect={setSelectedIndex} />
                   
                   <div style={{ marginTop: '24px' }}>
-                    <DownloadControls jobId={job.id} files={job.files || []} selectedIndex={selectedIndex} />
+                    <DownloadControls jobId={job.id} files={job.files || []} selectedIndex={activeIndex} />
                   </div>
 
-                  <PartContext part={plan.parts[selectedIndex]} />
+                  <PartContext part={plan.parts[activeIndex]} />
                 </div>
               </div>
             </section>

@@ -11,7 +11,7 @@ export function QualityWarnings({ plan }: QualityWarningsProps) {
   const oldWarnings = plan.warnings || [];
   
   // Aggregate warnings
-  const warnings = [...oldWarnings.map(w => ({ text: typeof w === 'string' ? w : (w as any).text }))];
+  const warnings = [...oldWarnings.map(w => ({ text: typeof w === 'string' ? w : (w as import('../api/types').QualityWarningItem).text }))];
   if (summary?.warnings) {
     summary.warnings.forEach(w => warnings.push({ text: typeof w === 'string' ? w : w.text }));
   }
@@ -41,7 +41,7 @@ export function QualityWarnings({ plan }: QualityWarningsProps) {
           <h3 className="muted small" style={{ marginBottom: '8px', fontWeight: 600 }}>ПРИМЕЧАНИЯ АНАЛИЗА</h3>
           <ul id="quality-note-list" className="quality-list notes">
             {notes.map((n, i) => (
-              <li key={i}>{typeof n === 'string' ? n : (n as any).text}</li>
+              <li key={i}>{typeof n === 'string' ? n : (n as import('../api/types').QualityWarningItem).text}</li>
             ))}
           </ul>
         </div>

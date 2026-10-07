@@ -12,7 +12,7 @@ export function Sidebar() {
       try {
         const data = await api.getHealth();
         if (!mounted) return;
-        setHealthReady(data.ready);
+        setHealthReady(!!data.ready);
         if (data.busy) {
           setLabel('Монтаж выполняется');
         } else if (data.ready) {

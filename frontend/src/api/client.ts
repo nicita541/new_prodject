@@ -8,6 +8,9 @@ import type {
   LibrarySnapshot,
   LibraryProject,
   LibraryEpisode,
+  HealthStatus,
+  EpisodeSettings,
+  ResetBudgetResponse
 } from './types';
 
 export class ApiError extends Error {
@@ -21,7 +24,7 @@ export class ApiError extends Error {
 
 async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, { cache: 'no-store', ...options });
-  let body: any;
+  let body: unknown;
   try {
     body = await response.json();
   } catch {
@@ -29,7 +32,8 @@ async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> 
   }
   
   if (!response.ok) {
-    const message = body.detail ?? body.message;
+    const errorBody = body as { detail?: string | unknown, message?: string };
+    const message = errorBody.detail ?? errorBody.message;
     throw new ApiError(
       typeof message === 'string' ? message : `Ошибка сервера (${response.status}).`,
       response.status
@@ -39,7 +43,7 @@ async function fetchApi<T>(path: string, options: RequestInit = {}): Promise<T> 
 }
 
 export const api = {
-  getHealth: () => fetchApi<any>('/api/health'),
+  getHealth: () => fetchApi<HealthStatus>('/api/health'),
   
   // Library
   getLibrary: () => fetchApi<LibrarySnapshot>('/api/library'),
@@ -57,7 +61,7 @@ export const api = {
   deleteEpisode: (id: string) => fetchApi<{ archived: boolean }>(`/api/episodes/${id}`, { method: 'DELETE' }),
   restoreProject: (id: string) => fetchApi<{ restored: boolean }>(`/api/projects/${id}/restore`, { method: 'POST' }),
   restoreEpisode: (id: string) => fetchApi<{ restored: boolean }>(`/api/episodes/${id}/restore`, { method: 'POST' }),
-  saveEpisodeSettings: (id: string, settings: any) => fetchApi<LibraryEpisode>(`/api/episodes/${id}/settings`, {
+  saveEpisodeSettings: (id: string, settings: EpisodeSettings) => fetchApi<LibraryEpisode>(`/api/episodes/${id}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(settings),
@@ -73,7 +77,7 @@ export const api = {
   cancelJob: (id: string) => fetchApi<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   retryJob: (id: string) => fetchApi<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
   getJobPlan: (id: string) => fetchApi<Plan>(`/api/jobs/${id}/plan`),
-  resetJobBudget: (id: string) => fetchApi<any>(`/api/jobs/${id}/reset-budget`, { method: 'POST' }),
+  resetJobBudget: (id: string) => fetchApi<ResetBudgetResponse>(`/api/jobs/${id}/reset-budget`, { method: 'POST' }),
   openJobFolder: (id: string) => fetchApi<{opened: boolean, path: string}>(`/api/jobs/${id}/open-folder`, { method: 'POST' }),
   saveVideos: (id: string, all: boolean, filename?: string) => fetchApi<{cancelled: boolean, count: number, files: string[]}>(`/api/jobs/${id}/save-videos`, {
     method: 'POST',

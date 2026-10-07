@@ -34,7 +34,7 @@ export function EditEpisodePage() {
     }
   }, [episode]);
 
-  const handleSaveSettingsOnly = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleSaveSettingsOnly = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     if (!episodeId || !sourceId) return;
     try {
@@ -84,8 +84,10 @@ export function EditEpisodePage() {
   if (isLoading && !data) return <p className="message">Загрузка...</p>;
   if (error || !episode) return <p className="message">Серия не найдена</p>;
 
-  // Get current active job
-  const activeJobId = episode.jobs?.[0]; // Or fetch full job lists if populated properly
+  // Get current active job (the latest appended job)
+  const activeJobId = episode.jobs && episode.jobs.length > 0 
+    ? episode.jobs[episode.jobs.length - 1] 
+    : null;
 
   return (
     <main className="screen-shell">
@@ -119,7 +121,7 @@ export function EditEpisodePage() {
               <div className="settings-group">
                 <div className="form-group">
                   <label className="form-label" htmlFor="layout">Оформление кадра (9:16 Shorts)</label>
-                  <select id="layout" className="form-select" value={layout} onChange={e => setLayout(e.target.value as any)} disabled={isStarting}>
+                  <select id="layout" className="form-select" value={layout} onChange={e => setLayout(e.target.value as 'cinema' | 'portrait')} disabled={isStarting}>
                     <option value="cinema">Весь кадр + мягкий фон (9:16)</option>
                     <option value="portrait">Крупный план · умное кадрирование (9:16)</option>
                   </select>
@@ -128,7 +130,7 @@ export function EditEpisodePage() {
                 <div className="style-preview-container">
                   <div style={{ flex: 1 }}>
                     <label className="form-label" htmlFor="caption-style">Субтитры</label>
-                    <select id="caption-style" className="form-select" style={{ width: '100%' }} value={captionStyle} onChange={e => setCaptionStyle(e.target.value as any)} disabled={isStarting}>
+                    <select id="caption-style" className="form-select" style={{ width: '100%' }} value={captionStyle} onChange={e => setCaptionStyle(e.target.value as 'classic' | 'accent')} disabled={isStarting}>
                       <option value="accent">Яркие · короткие фразы (Жёлтый)</option>
                       <option value="classic">Спокойные · белый текст (Классика)</option>
                     </select>
@@ -147,7 +149,7 @@ export function EditEpisodePage() {
               <div className="settings-group">
                 <div className="form-group">
                   <label className="form-label" htmlFor="analysis-provider">Сценарист (Нейросеть)</label>
-                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as any)} disabled={isStarting}>
+                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan')} disabled={isStarting}>
                     <option value="deepseek_plan">DeepSeek · сюжет и план (Облако)</option>
                     <option value="hybrid">Локально + DeepSeek API (Старый)</option>
                     <option value="local">На компьютере · без сети (Быстрая)</option>
@@ -164,16 +166,15 @@ export function EditEpisodePage() {
               <div className="settings-group">
                 <p id="form-message" className="message" role="status" hidden={!saveMessage}>{saveMessage}</p>
                 <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
-                    <input 
-                      type="checkbox" 
-                      id="save-settings" 
-                      onChange={handleSaveSettingsOnly} 
-                      disabled={isStarting || !sourceId} 
-                      checked={false} // Always uncontrolled/stateless, acts as a button
-                    /> 
+                  <button 
+                    type="button" 
+                    id="save-settings" 
+                    className="btn-secondary" 
+                    onClick={handleSaveSettingsOnly} 
+                    disabled={isStarting || !sourceId}
+                  >
                     Сохранить по умолчанию
-                  </label>
+                  </button>
                   <button id="create-button" type="submit" className="btn-primary" disabled={isStarting || !sourceId}>
                     {isStarting ? 'Запускаем...' : 'Смонтировать'}
                   </button>
@@ -184,7 +185,7 @@ export function EditEpisodePage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <JobProgressPanel jobId={typeof activeJobId === 'string' ? activeJobId : ((activeJobId as any)?.id || null)} episodeId={episode.id} />
+            <JobProgressPanel jobId={typeof activeJobId === 'string' ? activeJobId : (activeJobId as any)?.id || null} episodeId={episode.id} />
           </div>
         </div>
       </section>
