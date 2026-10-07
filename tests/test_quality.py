@@ -44,7 +44,7 @@ class PlanQualityTests(unittest.TestCase):
         result = debug_timeline(plan)
         self.assertTrue(result["available"])
         self.assertEqual([(row["kind"], row["start"], row["end"]) for row in result["reasons"]], [
-            ("atmosphere", 2, 4), ("manual", 3, 8), ("uncertainty", 20, 30),
+            ("uncertainty", 2, 4), ("manual", 3, 8), ("uncertainty", 20, 30),
         ])
         manual = next(row for row in result["reasons"] if row["kind"] == "manual")
         self.assertIn("<script>", manual["detail"])

@@ -18,7 +18,7 @@ from app.scene_understanding import (CONFIDENCE_FIELDS, RECOVERY_PROMPT, UNCERTA
 
 def response(**changes):
     return {'summary': 'Герой передаёт ключ.', 'kind': 'story', 'importance': 4, 'uncertain': False,
-            'semantic_confidence': .94, 'visual_confidence': .96, 'context_confidence': .95,
+            'semantic_confidence': .94, 'visual_confidence': .96, 'context_confidence': .95, 'selection_confidence': .95,
             'uncertainty_reasons': [], 'keep_units': ['action'], 'action_units': ['action'],
             'narrative_bridge': True,
             'state_before': {'locations': ['комната'], 'character_state': 'герой держит ключ', 'objects': ['ключ']},
@@ -120,17 +120,16 @@ class UnderstandingValidationTests(unittest.TestCase):
 
 
 class MinimalSafeRangeTests(unittest.TestCase):
-    def test_d_uncertain_long_scene_retains_only_speech_action_and_endpoint_context(self):
+    def test_uncertain_long_scene_does_not_retain_bare_asr_action_ids_or_endpoints(self):
         event = source_event(180)
         event.update(action_units=['action'], narrative_bridge=True)
         transcript = {'words': [{'start': 60, 'end': 61, 'text': 'Да.'}],
                       'segments': [{'start': 0, 'end': 180, 'text': 'oversized ASR container'}]}
         selected = minimal_safe_ranges(event, units(180), transcript)
-        self.assertEqual(selected['selected_ranges'], [{'start': 0, 'end': 1.5}, {'start': 22, 'end': 26},
-            {'start': 59.85, 'end': 61.15}, {'start': 178.5, 'end': 180}])
+        self.assertEqual(selected['selected_ranges'], [])
         self.assertEqual(selected['unit_selection_version'], 1)
         self.assertFalse(selected['whole_scene_last_resort'])
-        self.assertIn('potential_transition', selected['fallback_reasons'])
+        self.assertIn('no_positive_source_evidence', selected['fallback_reasons'])
 
     def test_long_unit_with_one_second_of_speech_is_not_kept_whole(self):
         for end in (60, 180):
@@ -140,36 +139,36 @@ class MinimalSafeRangeTests(unittest.TestCase):
                 self.assertLess(sum(item['end']-item['start'] for item in selected['selected_ranges']), 5)
                 self.assertFalse(selected['whole_scene_last_resort'])
 
-    def test_speech_handles_and_state_glimpses_never_cut_known_words(self):
+    def test_evidenced_context_trims_inward_without_cutting_words(self):
         transcript = {'words': [{'start': 1.4, 'end': 2.8, 'text': 'длинное'},
                                 {'start': 20, 'end': 21.1, 'text': 'два'}, {'start': 21.2, 'end': 22, 'text': 'слова'}],
                       'segments': []}
-        selected = minimal_safe_ranges(source_event(), [], transcript)
-        self.assertEqual(selected['selected_ranges'][0], {'start': 0, 'end': 2.9499999999999997})
+        event = {**source_event(), 'selected_ranges':[{'start':1.5,'end':21.5}], 'unit_evidence':[{'unit':'cause','kind':'causal_dialogue','evidence':'Точная причинная реплика объясняет ответ.', 'confidence':.95,'speech_quote':'два','frame_indices':[]}]}
+        selected = minimal_safe_ranges(event, [{'id':'cause','start':1.5,'end':21.5}], transcript)
+        self.assertEqual(selected['selected_ranges'], [{'start':2.8,'end':21.2}])
         for item in selected['selected_ranges']:
             for word in transcript['words']:
                 self.assertFalse(word['start'] < item['start'] < word['end'])
                 self.assertFalse(word['start'] < item['end'] < word['end'])
 
     def test_confirmed_long_action_preserves_its_cause_middle_and_result(self):
-        event = {**source_event(180), 'action_units': ['action']}
+        event = {**source_event(180), 'action_units': ['action'], 'selected_ranges':[{'start':60,'end':90}], 'unit_evidence':[{'unit':'action','kind':'physical_action','evidence':'Персонаж начинает, выполняет и заканчивает передачу ключа.', 'confidence':.95,'frame_indices':[1,2],'speech_quote':''}]}
         selected = minimal_safe_ranges(event, [{'id': 'action', 'start': 60, 'end': 90}], {'words': [], 'segments': []})
-        self.assertEqual(selected['selected_ranges'], [{'start': 0, 'end': 1.5}, {'start': 60, 'end': 90},
-                                                      {'start': 178.5, 'end': 180}])
-        self.assertIn('obvious_action', selected['fallback_reasons'])
+        self.assertEqual(selected['selected_ranges'], [{'start':60,'end':90}])
         self.assertFalse(selected['whole_scene_last_resort'])
 
-    def test_indivisible_word_covering_scene_is_explicit_last_resort(self):
+    def test_indivisible_asr_word_does_not_authorize_whole_scene(self):
         selected = minimal_safe_ranges(source_event(180), [],
             {'words': [{'start': 0, 'end': 180, 'text': 'single indivisible ASR word'}], 'segments': []})
-        self.assertEqual(selected['selected_ranges'], [{'start': 0, 'end': 180}])
-        self.assertTrue(selected['whole_scene_last_resort'])
-        self.assertIn('indivisible_word', selected['fallback_reasons'])
+        self.assertEqual(selected['selected_ranges'], [])
+        self.assertFalse(selected['whole_scene_last_resort'])
+        self.assertIn('no_positive_source_evidence', selected['fallback_reasons'])
 
-    def test_without_words_factual_short_asr_segment_remains_intact(self):
-        selected = minimal_safe_ranges(source_event(), [],
+    def test_specifically_evidenced_causal_segment_without_words_remains_intact(self):
+        event = {**source_event(), 'selected_ranges':[{'start':10,'end':13}], 'unit_evidence':[{'unit':'cause','kind':'causal_dialogue','evidence':'Реплика сообщает необходимую причину ответа.', 'confidence':.95,'frame_indices':[], 'speech_quote':'Важная реплика.'}]}
+        selected = minimal_safe_ranges(event, [{'id':'cause','start':10,'end':13}],
             {'words': [], 'segments': [{'start': 10, 'end': 13, 'text': 'Важная реплика.'}]})
-        self.assertIn({'start': 9.85, 'end': 13.15}, selected['selected_ranges'])
+        self.assertEqual(selected['selected_ranges'], [{'start':10,'end':13}])
 
 
 class RecoveryTests(unittest.TestCase):
@@ -230,7 +229,7 @@ class RecoveryTests(unittest.TestCase):
             self.initial, units(), self.transcript, self.payload, self.images, self.diagnostics)
         self.assertTrue(event['uncertain'])
         self.assertEqual(event['understanding_status'], 'unresolved')
-        self.assertEqual(event['fallback'], 'minimal_safe_context')
+        self.assertEqual(event['fallback'], 'positively_evidenced_context_only')
         self.assertLess(sum(item['end']-item['start'] for item in event['selected_ranges']), 10)
         self.assertNotIn('transition_unclear', event['uncertainty_reasons'])
         self.assertEqual(event['summary_source'], 'recovery')
@@ -246,7 +245,8 @@ class RecoveryTests(unittest.TestCase):
         event = recover_chunk(Vision(response(keep_units=[], action_units=[])), self.initial, units(), self.transcript,
                               self.payload, self.images, self.diagnostics)
         self.assertEqual(event['understanding_status'], 'unresolved')
-        self.assertTrue(event['selected_ranges'])
+        self.assertEqual(event['selected_ranges'], [])
+        self.assertTrue(event['analysis_unresolved'])
         self.assertEqual(event['selection_reason'], 'important_story_without_source_selection')
         self.assertLess(sum(item['end']-item['start'] for item in event['selected_ranges']), 7)
 

@@ -6,7 +6,7 @@ from .subtitles import make_cues, remap_words
 
 MAX_DURATION = 120.0
 TARGET_DURATION = 90.0
-PLANNER_VERSION = 14
+PLANNER_VERSION = 15
 SCHEMA_VERSION = 1
 SPEECH_TAIL = 0.55
 SPEECH_LEAD = 0.18
@@ -20,6 +20,10 @@ def _number(value) -> float:
 
 
 def validate_analysis(analysis: dict) -> None:
+    gate = analysis.get('selection_gate')
+    if (gate is not None and gate.get('status') != 'passed'
+            or any(e.get('analysis_unresolved') for e in analysis.get('events', []))):
+        raise ValueError('analysis_unresolved: требуется дополнительная проверка понимания и выбора исходных фрагментов')
     duration = _number(analysis["probe"]["duration"])
     if duration <= 0:
         raise ValueError("Пустое видео")
@@ -249,7 +253,7 @@ def build_plan(analysis: dict) -> dict:
     for event in events:
         if event["id"] not in selected:
             continue
-        selections = list(event.get("selected_ranges") or [event])
+        selections = list(event.get("selected_ranges", [event]))
         # Legacy/fallback ranges have no validated omission partition: restore
         # their replies. Explicit whole-unit selections may omit redundant
         # exchanges; expand only selected replies and their speech handles.

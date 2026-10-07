@@ -127,7 +127,7 @@ def _compress_dialogue_turns(
         )
         if not ev_words:
             # Silent event / narrative bridge: return selected ranges or condensed beats
-            selections = list(event.get('selected_ranges') or [event])
+            selections = list(event.get('selected_ranges', [event]))
             ranges = []
             for sel in selections:
                 s_st, s_en = _number(sel['start']), _number(sel['end'])

@@ -93,17 +93,12 @@ def apply_unit_selection(event: dict, raw: dict, units: list[dict]) -> None:
     selection = raw.get('keep_units')
     known = {u['id'] for u in units}
     if selection is None:
-        event['selected_ranges'] = [{'start': event['start'], 'end': event['end']}]
-        event['uncertain'] = True
+        event.update(selected_ranges=[], uncertain=True, selection_uncertain=True, analysis_unresolved=True)
         return
     if not isinstance(selection, list) or any(not isinstance(u, str) or u not in known for u in selection):
         raise ValueError('Модель выбрала неизвестный исходный фрагмент')
     if not selection:
-        if event['importance'] >= 3 or event['uncertain']:
-            selection = list(known)
-        else:
-            # Empty non-story events need no special render treatment; excluded by importance.
-            selection = list(known)
+        event.update(selection_uncertain=True, analysis_unresolved=True)
     event['selected_ranges'] = [{'start': u['start'], 'end': u['end']} for u in units if u['id'] in selection]
 
 
@@ -145,14 +140,16 @@ def apply_global_selection(events, decisions, editorial_profile=None):
                 and not event.get('selection_uncertain')
                 and not event.get('narrative_bridge')
                 and not (omission.get('reaction_or_humor') and not profile.get('dramatic_condensation'))
-                and not event.get('protected_atmosphere_units')
-                and not verified_story_ranges(event)
+                and not (verified_story_ranges(event) and event.get('selection_status') != 'accepted')
                 and not (omission['reason'] in ('redundant_exchange','repeated_information')
                          and not profile['remove_exact_repetition'])
                 and not (omission['reason'] in ('nonstory','low_stakes_filler','exposition_without_action') and not profile['remove_empty_holds'])
                 and event['id'] not in decisions.get('incomplete_event_ids',[])):
             event['global_excluded'] = True
             event['global_omission'] = omission
+        elif omission and (event.get('uncertain') or event.get('selection_uncertain')
+                          or omission['confidence'] < .85):
+            event['selection_uncertain'] = True
 
 
 def global_story_review(vision: LocalVision, events: list[dict], editorial_profile=None) -> dict:
@@ -192,7 +189,8 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
         )
     instruction = (policy_instruction(profile)+' '+mode_instruction+
         'For each removed event supply a concrete explanation of redundancy/nonstory evidence and confidence; '
-        'uncertainty preserves it. An event with summary_complete=false has missing facts and MUST remain. '
+        'Uncertainty and summary_complete=false require targeted verification, never keep-all. '
+        'Use only resolved source-grounded choices; do not turn missing facts into a retention reason. '
         'Return JSON {"keep":[event ids],"omit":[{"event":id,"reason":"redundant_exchange|repeated_information|nonstory|low_stakes_filler|exposition_without_action",'
         '"evidence":"concrete explanation","confidence":0..1,"reaction_or_humor":boolean}],'
         '"narrative_bridges":[event ids connecting state changes or transitions],'

@@ -98,6 +98,8 @@ def _event_unit_ranges(event):
 
     for row in event.get("diagnostic_unit_ranges", []) if isinstance(event.get("diagnostic_unit_ranges"), list) else []:
         take(row)
+    for row in event.get('units', []) if isinstance(event.get('units'), list) else []:
+        take(row)
     review = event.get("story_omission_review")
     if isinstance(review, dict) and isinstance(review.get("verified_units"), list):
         for row in review["verified_units"]:
@@ -186,8 +188,34 @@ def debug_timeline(plan: dict) -> dict:
             return {"available": False, "reasons": []}
         atmo = [r for x in event.get("protected_atmosphere_ranges", []) if (r := _range(x))]
         if atmo:
-            add(event, atmo, "atmosphere", "Причина модели: атмосфера",
-                "Это пометка сохранённого анализа, а не независимая проверка эмоционального смысла.")
+            add(event, atmo, "uncertainty", "Непроверенная пометка требует уточнения",
+                "Для этого старого выбора отсутствует конкретное доказательство реакции или действия.")
+        titles = {'character_reaction': 'Реакция персонажа', 'emotional_pause': 'Эмоциональная пауза',
+                  'comedic_payoff': 'Развязка шутки', 'establishing_context': 'Контекст новой ситуации',
+                  'causal_dialogue': 'Причинная реплика', 'response': 'Непосредственный ответ',
+                  'physical_action': 'Физическое действие', 'state_transition': 'Изменение состояния',
+                  'neutral_scenery': 'Нейтральный вид — удалён', 'waiting': 'Ожидание — удалено'}
+        unit_ranges = _event_unit_ranges(event)
+        for record in event.get('unit_evidence', []):
+            from .selection_adjudication import _concrete
+            interval = unit_ranges.get(record.get('unit'))
+            confidence = record.get('confidence')
+            if (not interval or record.get('kind') not in titles or not _concrete(record)
+                    or type(confidence) not in (int,float) or not math.isfinite(confidence) or confidence < .9
+                    or not (record.get('frame_indices') or record.get('speech_quote'))):
+                continue
+            start, end = max(interval[0], record.get('view_start', interval[0])), min(interval[1], record.get('view_end', interval[1]))
+            if start >= end:
+                continue
+            if record.get('decision') == 'drop':
+                from .titles import _subtract
+                removed = _subtract([{'start':start, 'end':end}], [{'start':a,'end':b} for a,b in final])
+                evidence_seen = True
+                for row in removed:
+                    reasons.append({**row, 'kind':record['kind'], 'title':titles[record['kind']],
+                                    'detail':record['evidence'][:500], 'event_id':event['id'], 'retained':False})
+            else:
+                add(event, [(start, end)], record['kind'], titles[record['kind']], record['evidence'])
         review = event.get("story_omission_review")
         if isinstance(review, dict):
             verified = review.get("verified_units", [])
@@ -215,8 +243,8 @@ def debug_timeline(plan: dict) -> dict:
                 add(event, [interval], kind, title, evidence)
         if event.get("selection_uncertain") or event.get("uncertain"):
             selected = [r for x in event.get("selected_ranges", []) if (r := _range(x))]
-            add(event, selected, "uncertainty", "Оставлено из-за неопределённости",
-                "Анализ пометил событие как неопределённое; проверьте этот фрагмент.")
+            add(event, selected, "uncertainty", "Анализ требует дополнительной проверки",
+                "Неопределённость блокирует готовность анализа и не подтверждает выбор этого фрагмента.")
 
         manual = event.get("manual_editorial_review")
         manual_ranges = []

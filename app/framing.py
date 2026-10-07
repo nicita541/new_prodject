@@ -52,7 +52,7 @@ def _shot_at(time: float, shots: list[dict]) -> dict | None:
 def focus_samples(event: dict, transcript: dict, shots: list[dict]) -> list[dict]:
     """Anchor at a real boundary, inspect mouth evidence just inside the shot/reply."""
     samples = []
-    for selection in event.get("selected_ranges") or [event]:
+    for selection in event.get("selected_ranges", [event]):
         left, right = max(event["start"], selection["start"]), min(event["end"], selection["end"])
         if right <= left:
             continue
@@ -95,7 +95,7 @@ def focus_samples(event: dict, transcript: dict, shots: list[dict]) -> list[dict
     # character movement. Refresh geometry within retained material, without
     # pretending these observations are actual cuts or replacing real replies.
     periodic = []
-    for selection in event.get("selected_ranges") or [event]:
+    for selection in event.get("selected_ranges", [event]):
         for shot in shots:
             left = max(event["start"], selection["start"], shot["start"])
             right = min(event["end"], selection["end"], shot["end"])
@@ -136,7 +136,7 @@ def _focus_prompt(sample: dict) -> str:
 def temporal_times(sample: dict, event: dict, shots: list[dict]) -> list[float]:
     """Three consecutive observations confined to one actual shot and cut."""
     timestamp = sample["sample_time"]
-    selection = next((interval for interval in event.get("selected_ranges") or [event]
+    selection = next((interval for interval in event.get("selected_ranges", [event])
                       if interval["start"] <= timestamp < interval["end"]), event)
     left, right = max(event["start"], selection["start"]), min(event["end"], selection["end"])
     shot = _shot_at(timestamp, shots)
@@ -321,7 +321,7 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
             samples = focus_samples(event, transcript, shots)
             for sample in samples:
                 sample["temporal_times"] = temporal_times(sample, event, shots)
-                interval = next((selection for selection in event.get("selected_ranges") or [event]
+                interval = next((selection for selection in event.get("selected_ranges", [event])
                                  if selection["start"] <= sample["sample_time"] < selection["end"]), event)
                 sample["selection_id"] = [max(event["start"], interval["start"]), min(event["end"], interval["end"])]
                 if not sample["phrase"]:

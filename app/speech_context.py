@@ -37,7 +37,7 @@ def _retained(events: list[dict]) -> set[str]:
 
 
 def _ranges(event: dict) -> list[dict]:
-    return event.get("selected_ranges") or [{"start": event["start"], "end": event["end"]}]
+    return event.get("selected_ranges", [{"start": event["start"], "end": event["end"]}])
 
 
 def _selected(words: list[dict], segment: dict, events: list[dict], retained: set[str]) -> bool:

@@ -22,13 +22,13 @@ _COMPONENTS = {
     'scene_grouping': ('scene_detection', 'semantic_boundary'),
     'visual_features': ('scene_detection', 'media_evidence', 'media_probe'),
     'storyboard': ('vision', 'story_review', 'media_probe'),
-    'local_prompt': ('scene_analysis', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek'),
-    'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek'),
-    'global_story': ('global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek'),
+    'local_prompt': ('scene_analysis', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'selection_gate'),
+    'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek', 'selection_adjudication', 'selection_gate'),
+    'global_story': ('global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'selection_gate'),
     'episode_profile': ('episode_profile',),
-    'story': ('story', 'scene_refinement', 'story_review', 'editorial', 'source_roles', 'production', 'vision', 'deepseek'),
+    'story': ('story', 'scene_refinement', 'story_review', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'selection_gate'),
     'pacing': ('pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'deepseek'),
-    'planner': ('planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe'),
+    'planner': ('planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'selection_gate'),
     'ending': ('endings', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek')}
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
@@ -37,6 +37,8 @@ _CONSTANTS = {
     'scene_analysis': ('SCENE_PROMPT',),
     'semantic_boundary': ('SEMANTIC_BOUNDARY_VERSION', 'BOUNDARY_PROMPT', 'BOUNDARY_RECOVERY_PROMPT', 'FLAGS', 'TRANSITIONS'),
     'media_evidence': ('VERSION', 'POLICY'),
+    'selection_adjudication': ('VERSION', 'POLICY', 'ADJUDICATION_PROMPT', 'KINDS'),
+    'selection_gate': ('VERSION',),
     'scene_understanding': ('SCENE_UNDERSTANDING_VERSION', 'RECOVERY_PROMPT', 'CONFIDENCE_FIELDS', 'UNCERTAINTY_REASONS', 'KINDS'),
     'global_verification': ('GLOBAL_VERIFICATION_VERSION', 'GLOBAL_VISUAL_PROMPT'),
     'episode_profile': ('EPISODE_PROFILE_VERSION', 'EPISODE_PROFILE_POLICY'),

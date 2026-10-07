@@ -50,10 +50,10 @@ from app.story_review import (
     global_story_review,
 )
 
-ANALYSIS_VERSION = 13
-GLOBAL_STORY_VERSION = 8
+ANALYSIS_VERSION = 14
+GLOBAL_STORY_VERSION = 9
 STORYBOARD_VERSION = 3
-EDITORIAL_POLICY = 'balanced-atmosphere-v1'
+EDITORIAL_POLICY = 'evidenced-semantic-selection-v2'
 
 
 def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_POLICY):
@@ -114,11 +114,13 @@ def selection_snapshot(diagnostics, stage, events):
 
 
 def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict, shots: list[dict], events: list[dict]) -> dict:
+    from .selection_gate import selection_readiness
     record = {
         'probe': probe,
         'transcript': transcript,
         'shots': shots,
         'events': events,
+        'selection_gate': selection_readiness(events),
         'provider': provider,
         'duration': probe['duration'],
         'width': probe['width'],
@@ -142,6 +144,7 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
     atomic_json(job_dir/'episode_profile.json', profile)
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)
+    diagnostics.write('selection_gate.json', record['selection_gate'])
     events_digest = hashlib.sha256(json.dumps(events, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     summary_cache = diagnostics.path/'analysis-summary.json'
     if summary_cache.is_file():
@@ -250,8 +253,13 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     transcript = load_json(transcript_path)
     if not isinstance(transcript.get('words'), list) or not isinstance(transcript.get('segments'), list):
         raise ValueError('Некорректный сохранённый текст серии')
+    settings = load_json(job_dir/'analysis-settings.json') if (job_dir/'analysis-settings.json').is_file() else {}
+    from .provided_asr import validate_provided_transcript
+    provided = settings.get('transcript_mode') == 'provided'
+    if provided:
+        transcript = validate_provided_transcript(transcript, settings, fingerprint, probe['duration'])
     from app.inference import REPAIR_VERSION
-    if transcript.get('repair_version') != REPAIR_VERSION:
+    if not provided and transcript.get('repair_version') != REPAIR_VERSION:
         report('transcribe', 0.16, 'Проверка подозрительных пауз и временных отметок речи')
         run_process([sys.executable, '-m', 'app.inference', audio, transcript_path, '--repair-only'],
                     job_dir / 'asr-repair.log', cancelled, timeout=7200)
@@ -358,6 +366,10 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             with diagnostics.stage('global_visual_verification', provider=provider):
                 events = verify_global_visual(source,events,transcript,shots,job_dir,vision,report,cancelled)
             selection_snapshot(diagnostics, 'global_visual_verification', events)
+            from .selection_gate import adjudicate_selections
+            with diagnostics.stage('selection_adjudication', provider=provider):
+                events = adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled)
+            selection_snapshot(diagnostics, 'selection_adjudication', events)
             # Global pass references only existing event IDs, never generated time ranges.
             with diagnostics.stage('global_story', provider=provider, model=str(STORY_MODEL)):
                 decisions = global_story_review(vision, events, editorial_profile)
@@ -389,7 +401,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
                     event['importance'] = 1
                     event['requires'] = []
                     continue
-                if event['id'] in keep:
+                if event['id'] in keep and not event.get('selection_empty_verified'):
                     event['importance'] = max(4, event['importance'])
                 # Explicit global omissions have evidence; the planner uses
                 # these dependency signals to find bounded earlier context.
@@ -402,7 +414,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             from app.speech_context import protect_speech_context
             events = protect_speech_context(events, transcript)
         atomic_json(story_checkpoint, {'signature': derived_key, 'events': events,
-            'quality_state': 'degraded' if any(e.get('source_role_unresolved') for e in events) else 'complete'})
+            'quality_state': 'degraded' if any(e.get('analysis_unresolved') or e.get('source_role_unresolved') for e in events) else 'complete'})
     from .pacing import refine_pacing, refine_silent_sequences, BudgetPacingVision
     with vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
         if pacing_provider in ('deepseek', 'deepseek_plan'):
@@ -414,6 +426,10 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         selection_snapshot(diagnostics, 'pacing', events)
         from .endings import refine_endings
         events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
+        from .selection_gate import adjudicate_selections, selection_readiness
+        with diagnostics.stage('final_selection_adjudication', provider=pacing_provider):
+            events = adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled)
+        diagnostics.write('selection_gate.json', selection_readiness(events))
     if pacing_provider != provider:
         for event in events:
             if event.get('pacing_removed'):
@@ -427,6 +443,6 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         report('framing', 0.65, 'Сохраняем исходный кадр целиком на мягком вертикальном фоне')
     atomic_json(events_path, events)
     atomic_json(derived_meta, {'signature': focus_key,
-        'quality_state': 'degraded' if any(e.get('source_role_unresolved') or e.get('pacing_degraded') or e.get('endings_degraded') for e in events) else 'complete',
+        'quality_state': 'degraded' if any(e.get('analysis_unresolved') or e.get('source_role_unresolved') or e.get('pacing_degraded') or e.get('endings_degraded') for e in events) else 'complete',
         'requested_provider': provider, 'pacing_providers': sorted({p for e in events for p in e.get('pacing_providers', [])})})
     return analysis_result(job_dir, provider, probe, transcript, shots, events)

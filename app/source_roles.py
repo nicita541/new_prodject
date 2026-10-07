@@ -110,14 +110,15 @@ def apply_exclusions(events):
     result=copy.deepcopy(events)
     for event in result:
         verified=verified_story_ranges(event)
-        if verified:
+        selection_accepted = event.get('selection_status') == 'accepted'
+        if verified and not selection_accepted:
             event['selected_ranges']=merge_ranges([*event.get('selected_ranges',[event]),*verified])
             event.update(credit_montage=False,kind='story',importance=max(4,event['importance']))
             for key in ('global_excluded','pacing_excluded','source_role_excluded'):
                 event.pop(key,None)
         excluded=confirmed_exclusions(event)
         if excluded:
-            event['selected_ranges']=_subtract(event.get('selected_ranges') or [event],excluded)
+            event['selected_ranges']=_subtract(event.get('selected_ranges', [event]),excluded)
             if not event['selected_ranges'] and event.get('nonstory_role_ranges'):
                 event.update(source_role_excluded=True,importance=1,kind='filler',requires=[])
     return result
@@ -206,7 +207,8 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
         if cancelled():raise InterruptedError('Обработка отменена')
         if not (event.get('contains_credits') or event.get('credit_montage') or event['end']>=duration*.8):
             continue
-        selections=_subtract(event.get('selected_ranges') or [event],confirmed_exclusions(event))
+        event.pop('source_role_unresolved', None)
+        selections=_subtract(event.get('selected_ranges', [event]),confirmed_exclusions(event))
         units=candidate_units(event['start'],event['end'],transcript,shots)
         units=[{**u,'protected_atmosphere':any(u['start']<r['end'] and u['end']>r['start']
             for r in event.get('protected_atmosphere_ranges',[])),
@@ -304,5 +306,9 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled)
             except (ValueError,KeyError,TypeError,RuntimeError,OSError) as error:
                 event['source_role_unresolved'] = {'category':getattr(error,'category',None) or 'unresolved',
                     'endpoint':getattr(error,'endpoint',None),'requested_provider':str(vision.model)}
-                event.setdefault('story_warnings',[]).append('Роль спорного материала не подтверждена; сохранён: '+str(error)[:150])
+                from .scene_understanding import _control_failure
+                if _control_failure(error):
+                    raise
+                event['selection_uncertain'] = True
+                event.setdefault('story_warnings',[]).append('Роль спорного материала требует дополнительной проверки: '+str(error)[:150])
     return apply_exclusions(result)

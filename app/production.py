@@ -240,7 +240,7 @@ def clean_sequences(events, transcript, shots, job_dir, vision, report, cancelle
                 unconfirmed = True
                 event.setdefault('story_warnings', []).append('Последовательность заставки не подтверждена; материал сохранён: '+str(error)[:180])
         was_pure = bool(event.get('credit_montage') or event.get('credit_dialogue_rescued'))
-        ranges = _subtract([event] if was_pure else event.get('selected_ranges') or [event], excluded)
+        ranges = _subtract([event] if was_pure else event.get('selected_ranges', [event]), excluded)
         if excluded:
             event['excluded_credit_units'] = [u['id'] for u in excluded]
             event['excluded_credit_ranges'] = [{'start':u['start'],'end':u['end']} for u in excluded]

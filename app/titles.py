@@ -41,7 +41,7 @@ def title_units(start, end, transcript, shots):
 def _candidates(event, units, transcript):
     selected = []
     for unit in units:
-        for selection in event.get('selected_ranges') or [event]:
+        for selection in event.get('selected_ranges', [event]):
             left, right = max(unit['start'], selection['start']), min(unit['end'], selection['end'])
             if left < right:
                 selected.append({**unit, 'start':left, 'end':right})
@@ -318,7 +318,7 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
             _extend_bumpers(event,screened,excluded,checked,transcript,shots,source,
                             directory,identity,models,vision,report,cancelled)
             excluded.sort(key=lambda unit:(unit['start'],unit['end']))
-            ranges = _subtract(event.get('selected_ranges') or [event],excluded)
+            ranges = _subtract(event.get('selected_ranges', [event]),excluded)
             event['excluded_title_units'] = [{'id':u['id'],'start':u['start'],'end':u['end']} for u in excluded]
             event['titles_refinement_version'] = TITLES_VERSION
             if ranges:

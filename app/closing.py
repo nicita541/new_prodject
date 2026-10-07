@@ -98,7 +98,7 @@ def _prompt(units, prior, vision, anchored, editorial_profile=None):
 
 def _keep_ranges(event, units, omitted):
     ranges = []
-    selections = event.get('selected_ranges') or [{'start': event['start'], 'end': event['end']}]
+    selections = event.get('selected_ranges', [{'start': event['start'], 'end': event['end']}])
     # Reopen a falsely classified pure-title window if the current comparison
     # identifies actual new action. All boundaries still come from source units.
     if event.get('credit_montage'):
@@ -136,7 +136,7 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                 # A coarse credit hint cannot overrule positive current-story
                 # evidence when a later query fails. Proven cuts still win.
                 event.update(credit_montage=False,kind='story',importance=max(4,event['importance']))
-                event['selected_ranges']=_subtract(event.get('selected_ranges') or [event],confirmed_exclusions(event))
+                event['selected_ranges']=_subtract(event.get('selected_ranges', [event]),confirmed_exclusions(event))
     candidates = {index for index, event in enumerate(events) if event['end'] > duration * .8
                   and _long_silence(all_units[index], transcript)}
     if anchor is None and not candidates:

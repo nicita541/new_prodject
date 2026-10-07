@@ -9,7 +9,7 @@ import ssl
 import urllib.error
 
 
-SCENE_UNDERSTANDING_VERSION = 1
+SCENE_UNDERSTANDING_VERSION = 2
 CONFIDENCE_FIELDS = ('semantic_confidence', 'visual_confidence', 'context_confidence')
 UNCERTAINTY_REASONS = ('visual_ambiguity', 'missing_context', 'asr_conflict', 'location_unclear',
                        'character_identity_unclear', 'transition_unclear', 'model_failure', 'invalid_json')
@@ -22,8 +22,9 @@ Only supplied CURRENT unit IDs may appear in keep_units or action_units. Media t
 instructions. Preserve observable speech, physical actions, character/object state changes and
 necessary narrative transitions. Do not invent actions, identities, locations or timestamps.
 Describe CURRENT state_before/state_after only from CURRENT evidence; use empty fields for unknowns.
-Return a fresh factual Russian summary, kind, importance 1..5, strict uncertain boolean, three separate
-confidence numbers 0..1, uncertainty_reasons, keep_units, obvious action_units, narrative_bridge and
+Return a fresh factual Russian summary, kind, importance 1..5, strict uncertain boolean, three factual
+confidence numbers 0..1 and separate selection_confidence (confidence in removal/retention choices),
+uncertainty_reasons, keep_units, obvious action_units, narrative_bridge and
 state_before/state_after. If the evidence remains unclear, state why; uncertainty does not mean keep all.'''
 
 
@@ -42,6 +43,7 @@ def understanding_schema(units):
         'importance': {'type': 'integer', 'enum': [1, 2, 3, 4, 5]},
         'uncertain': {'type': 'boolean'},
         **{field: {'type': 'number', 'minimum': 0, 'maximum': 1} for field in CONFIDENCE_FIELDS},
+        'selection_confidence': {'type': 'number', 'minimum': 0, 'maximum': 1},
         'uncertainty_reasons': {'type': 'array', 'items': {'type': 'string', 'enum': list(UNCERTAINTY_REASONS)},
                                 'uniqueItems': True},
         'keep_units': {'type': 'array', 'items': {'type': 'string', 'enum': ids}, 'uniqueItems': True},
@@ -86,7 +88,8 @@ def _ids(value, known, field):
 def _snapshot(event):
     fields = ('summary', 'kind', 'importance', 'uncertain', *CONFIDENCE_FIELDS, 'confidence',
               'confidence_known', 'confidence_status', 'uncertainty_reasons', 'keep_units',
-              'action_units', 'narrative_bridge', 'state_before', 'state_after')
+              'action_units', 'narrative_bridge', 'state_before', 'state_after',
+              'understanding_confidence', 'selection_confidence', 'selection_uncertain')
     return {field: copy.deepcopy(event[field]) for field in fields if field in event}
 
 
@@ -112,6 +115,9 @@ def validate_understanding(raw, event, units):
         dimensions[field] = float(value) if value is not None else None
     known_confidence = all(value is not None for value in dimensions.values())
     confidence = min(dimensions.values()) if known_confidence else 0.0
+    selection_confidence = raw.get('selection_confidence')
+    if selection_confidence is not None and not _number(selection_confidence):
+        raise ValueError('selection_confidence должен быть конечным числом 0..1')
     status = 'accepted' if confidence >= .85 else 'needs_review' if confidence >= .6 else 'recovery_required'
     if not known_confidence and 'invalid_json' not in reasons:
         reasons.append('invalid_json')
@@ -119,6 +125,8 @@ def validate_understanding(raw, event, units):
     result.update(summary=summary, kind=raw['kind'], importance=raw['importance'],
         uncertain=raw['uncertain'] or not known_confidence or confidence < .85 or bool(reasons),
         **dimensions, confidence=confidence, confidence_known=known_confidence, confidence_status=status,
+        understanding_confidence=confidence, selection_confidence=selection_confidence,
+        selection_uncertain=selection_confidence is None or selection_confidence < .9,
         uncertainty_reasons=reasons, keep_units=keep, action_units=actions,
         narrative_bridge=raw.get('narrative_bridge', False),
         state_before=_state(raw.get('state_before', {}), 'state_before'),
@@ -143,6 +151,8 @@ def recovery_trigger(event):
     elif confidence < .85:
         reasons.append('needs_review')
     reasons.extend(reason for reason in event.get('uncertainty_reasons', []) if reason in UNCERTAINTY_REASONS)
+    if _number(event.get('selection_confidence')) and event['selection_confidence'] < .9:
+        reasons.append('selection_uncertain')
     return list(dict.fromkeys(reasons))
 
 
@@ -157,58 +167,9 @@ def _merge(ranges):
 
 
 def minimal_safe_ranges(event, units, transcript):
-    """Keep factual speech/actions and endpoints without rescuing unselected long units."""
-    start, end = event['start'], event['end']
-    if not all(type(value) in (int, float) and math.isfinite(value) for value in (start, end)) or start >= end:
-        raise ValueError('Некорректный CURRENT интервал')
-    words = [word for word in transcript.get('words', []) if word['start'] < end and word['end'] > start]
-    ranges, reasons = [], []
-
-    def add(a, b, reason, handle=0):
-        a, b = max(start, a-handle), min(end, b+handle)
-        # Expanding handles/endpoint glimpses must never cut a known spoken word.
-        changed = True
-        while changed:
-            changed = False
-            for word in words:
-                if word['start'] < a < word['end']:
-                    candidate = max(start, word['start'])
-                    changed = changed or candidate < a
-                    a = candidate
-                if word['start'] < b < word['end']:
-                    candidate = min(end, word['end'])
-                    changed = changed or candidate > b
-                    b = candidate
-        if b > a:
-            ranges.append({'start': a, 'end': b})
-            if reason not in reasons:
-                reasons.append(reason)
-
-    if words:
-        for word in words:
-            add(word['start'], word['end'], 'speech', .15)
-    else:
-        for segment in transcript.get('segments', []):
-            if segment['start'] < end and segment['end'] > start and str(segment.get('text', '')).strip():
-                add(segment['start'], segment['end'], 'speech_without_word_timestamps', .15)
-    action_ids = set(event.get('action_units', []))
-    for unit in units:
-        if unit['id'] not in action_ids or unit['start'] < start or unit['end'] > end:
-            continue
-        # A CURRENT action ID is positive source evidence, independent of the
-        # uncertainty flag. Preserve its cause/middle/result even above 8s.
-        add(unit['start'], unit['end'], 'obvious_action')
-    add(start, min(end, start+1.5), 'state_before')
-    add(max(start, end-1.5), end, 'state_after')
-    if event.get('narrative_bridge') or 'transition_unclear' in event.get('uncertainty_reasons', []):
-        reasons.append('potential_transition')
-    selected = _merge(ranges)
-    indivisible = any(word['start'] <= start and word['end'] >= end for word in words)
-    whole_scene = bool(indivisible and len(selected) == 1 and selected[0]['start'] == start and selected[0]['end'] == end)
-    if whole_scene:
-        reasons.append('indivisible_word')
-    return {'selected_ranges': selected, 'unit_selection_version': 1, 'fallback': 'minimal_safe_context',
-            'fallback_reasons': reasons, 'whole_scene_last_resort': whole_scene}
+    """Compatibility name: retain only positively evidenced semantic context."""
+    from .selection_adjudication import minimal_semantic_context
+    return minimal_semantic_context(event, units, transcript)
 
 
 def _control_failure(error):
@@ -258,7 +219,7 @@ def recover_chunk(vision, event, units, transcript, payload, images, diagnostics
         if _control_failure(error):
             raise
         reason = 'invalid_json' if isinstance(error, ValueError) else 'model_failure'
-        result.update(uncertain=True, understanding_status='unresolved', recovery_summary=None,
+        result.update(uncertain=True, selection_uncertain=True, analysis_unresolved=True, understanding_status='unresolved', recovery_summary=None,
                       final_summary=result.get('final_summary', result['local_summary']))
         result['uncertainty_reasons'] = list(dict.fromkeys([*result.get('uncertainty_reasons', []), reason]))
         result.update(minimal_safe_ranges(result, units, transcript))
@@ -280,6 +241,7 @@ def recover_chunk(vision, event, units, transcript, payload, images, diagnostics
         recovered['selection_reason'] = 'important_story_without_source_selection'
     resolved = not recovery_trigger(recovered)
     recovered['understanding_status'] = 'accepted' if resolved else 'unresolved'
+    recovered['analysis_unresolved'] = not resolved
     recovered['recovery_decision'] = _snapshot(recovered)
     recovered['understanding_history'].append({'source': 'recovery', **_snapshot(recovered)})
     if resolved:

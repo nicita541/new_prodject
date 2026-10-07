@@ -422,12 +422,17 @@ function timelineButton(piece, duration) {
   const label = pieceLabel(piece); button.title = label; button.setAttribute('aria-label', label);
   button.addEventListener('click', () => reviewSource(piece)); return button;
 }
-const debugKinds={atmosphere:'Атмосфера',story:'Развитие сюжета',reaction:'Реакция',uncertainty:'Неуверенность',manual:'Ручная проверка'};
+const debugKinds={atmosphere:'Непроверенная пометка',story:'Развитие сюжета',reaction:'Реакция',uncertainty:'Нужна проверка',manual:'Ручная проверка',character_reaction:'Реакция персонажа',emotional_pause:'Эмоциональная пауза',comedic_payoff:'Развязка шутки',establishing_context:'Контекст',causal_dialogue:'Причинная реплика',response:'Ответ',physical_action:'Действие',state_transition:'Изменение состояния',neutral_scenery:'Нейтральный вид удалён',waiting:'Ожидание удалено'};
 function debugPieces(plan) {
   if (plan.debug_timeline?.available!==true || !Array.isArray(plan.debug_timeline.reasons)) return [];
   const pieces=[];
   for(const reason of plan.debug_timeline.reasons.slice(0,500)) {
     if(!reason || !Object.hasOwn(debugKinds,reason.kind) || !Number.isFinite(reason.start) || !Number.isFinite(reason.end) || reason.start<0 || reason.end<=reason.start || reason.end>plan.source.duration || typeof reason.title!=='string' || typeof reason.detail!=='string') continue;
+    if(reason.retained===false) {
+      if(!plan.parts.some(part=>part.cuts.some(cut=>cut.start<reason.end && cut.end>reason.start)))
+        pieces.push({...reason,removed:true,partIndex:null,cutIndex:null,title:reason.title.slice(0,160),detail:reason.detail.slice(0,500)});
+      continue;
+    }
     plan.parts.forEach((part,partIndex)=>part.cuts.forEach((cut,cutIndex)=>{
       const start=Math.max(cut.start,reason.start),end=Math.min(cut.end,reason.end);
       if(start<end) pieces.push({...reason,start,end,partIndex,cutIndex,title:reason.title.slice(0,160),detail:reason.detail.slice(0,500)});

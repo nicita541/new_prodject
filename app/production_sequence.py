@@ -410,7 +410,7 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
                 pieces[-1]['end']=max(pieces[-1]['end'],piece['end'])
             else:
                 pieces.append({'start':piece['start'],'end':piece['end']})
-        ranges=_subtract([original] if was_pure else original.get('selected_ranges') or [original],pieces)
+        ranges=_subtract([original] if was_pure else original.get('selected_ranges', [original]),pieces)
         if pieces:
             event['excluded_credit_ranges']=pieces
             event['credit_sequence_proofs']=[*original.get('credit_sequence_proofs',[]),*review['proofs']]

@@ -154,11 +154,12 @@ class AnalysisValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             apply_unit_selection(event, {'keep_units': ['invented']}, units)
 
-    def test_missing_selection_preserves_ambiguous_story(self):
+    def test_missing_selection_records_unresolved_without_keep_all(self):
         event = {'start': 0, 'end': 10, 'importance': 4, 'uncertain': False}
         apply_unit_selection(event, {}, [{'id': 'u000', 'start': 0, 'end': 10}])
         self.assertTrue(event['uncertain'])
-        self.assertEqual(event['selected_ranges'], [{'start': 0, 'end': 10}])
+        self.assertEqual(event['selected_ranges'], [])
+        self.assertTrue(event['analysis_unresolved'])
 
     def test_units_split_at_actual_reply_boundaries(self):
         transcript = {'segments': [{'start': 0, 'end': 4, 'text': 'Один.'}, {'start': 5, 'end': 9, 'text': 'Два.'}],
