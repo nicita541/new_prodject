@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { JobProgressPanel } from './JobProgressPanel';
 import type { Job } from '../api/types';
 import { BrowserRouter } from 'react-router-dom';
@@ -35,6 +35,29 @@ describe('JobProgressPanel', () => {
     
     expect(screen.getByText('Ошибка')).toBeInTheDocument();
     expect(screen.getByText('Network timeout')).toBeInTheDocument();
+  });
+
+  it.each([
+    [0.19, 'Определение смены планов'],
+    [0.21, 'Объединение планов в смысловые сцены']
+  ])('shows scene detection after completed preparation and transcription at %s', (progress, message) => {
+    vi.mocked(useJobPolling).mockReturnValue({
+      job: { ...mockJob, stage: 'scenes', progress, message }, isPolling: true, error: null
+    });
+    render(<BrowserRouter><JobProgressPanel jobId="test-job" episodeId="test-episode" /></BrowserRouter>);
+
+    expect(screen.getByRole('progressbar')).toHaveAttribute('value', String(progress));
+    expect(screen.getByText(message)).toBeInTheDocument();
+    for (const label of ['Подготовка видео', 'Распознавание русской речи']) {
+      const checkpoint = screen.getByText(label).closest('li')!;
+      expect(within(checkpoint).getByText('Готово')).toBeInTheDocument();
+      expect(checkpoint).not.toHaveAttribute('aria-current');
+    }
+    const analysis = screen.getByText('Анализ сюжета и изображения').closest('li')!;
+    expect(analysis).toHaveAttribute('aria-current', 'step');
+    expect(within(analysis).getByText('Выполняется')).toBeInTheDocument();
+    const rendering = screen.getByText('Экспорт частей').closest('li')!;
+    expect(within(rendering).getByText('Ожидает')).toBeInTheDocument();
   });
 
   it.each([

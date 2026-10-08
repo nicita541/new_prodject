@@ -14,8 +14,10 @@ const stages: Record<string, string> = {
 const checkpointStages = ["prepare", "transcribe", "analyze", "condense", "framing", "plan", "render"];
 
 const stageGroup: Record<string, number> = {
+  // Backend scene detection runs after transcription as part of visual/story analysis.
+  scenes: 2,
   global_verify: 2, quality_gate: 5,
-  prepare: 0, preparing: 0, probe: 0, audio: 0, transcribe: 1, transcribing: 1, transcript: 1, speech: 1, scenes: 0, shots: 0, analyze: 2, analyzing: 2, analysis: 2, events: 2, condense: 3, framing: 4, focus: 4, planning: 5, plan: 5, rendering: 6, render: 6, completed: 7, done: 7
+  prepare: 0, preparing: 0, probe: 0, audio: 0, transcribe: 1, transcribing: 1, transcript: 1, speech: 1, shots: 0, analyze: 2, analyzing: 2, analysis: 2, events: 2, condense: 3, framing: 4, focus: 4, planning: 5, plan: 5, rendering: 6, render: 6, completed: 7, done: 7
 };
 
 export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, episodeId: string }) {
