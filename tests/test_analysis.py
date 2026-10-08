@@ -36,7 +36,11 @@ class AnalysisValidationTests(unittest.TestCase):
         data={'probe':{'duration':30,'width':1920,'height':1080,'has_audio':True},
               'events':events,'transcript':{'segments':[],'words':[]},'shots':[]}
         self.assertEqual(build_plan(data)['selected_event_ids'],['action'])
+        # An event ID alone is no retention proof. A direct dependency may
+        # restore its concrete source unit, never an arbitrary endpoint.
         events[1]['requires']=['context']
+        self.assertEqual(build_plan(data)['selected_event_ids'],['action'])
+        events[0].update(units=[{'id':'cause','start':6,'end':10}],keep_units=['cause'])
         self.assertEqual(build_plan(data)['selected_event_ids'],['context','action'])
 
     def test_editorial_profile_preserves_repetition_and_low_plot_atmosphere_globally(self):

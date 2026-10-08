@@ -115,6 +115,7 @@ class PlannerTests(unittest.TestCase):
         data["events"] = [{**original, "id": "context", "end": 20, "importance": 1, "kind": "recap"},
                           {**original, "id": "skip", "start": 20, "end": 60, "importance": 1, "kind": "opening"},
                           {**original, "id": "payoff", "start": 60, "end": 120, "importance": 5, "requires": ["context"]}]
+        data['events'][0].update(units=[{'id':'cause','start':17,'end':20}],keep_units=['cause'])
         plan = build_plan(data)
         self.assertEqual(plan["selected_event_ids"], ["context", "payoff"])
         self.assertEqual(plan["parts"][0]["duration"], 63)

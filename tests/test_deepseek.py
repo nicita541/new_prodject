@@ -13,6 +13,44 @@ def response(text='{"keep":["A"]}'):
     return {'choices':[{'message':{'content':text}}]}
 
 class DeepSeekTests(unittest.TestCase):
+    def test_canonical_identifier_pattern_rejects_mention_paths(self):
+        schema = {'type': 'string', 'pattern': '^[A-Za-z][A-Za-z0-9_-]{0,63}$'}
+        api._validate('entity_1', schema)
+        for value in ('state_before.character_state.0', 'Хинако', '', 'entity 1'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                api._validate(value, schema)
+
+    def test_nullable_variants_and_exact_source_coverage_are_validated(self):
+        left = {'type': 'object', 'enum': [{'event': 'e0', 'unit': 'q'}]}
+        right = {'type': 'object', 'enum': [{'event': 'e1', 'unit': 'a'}]}
+        schema = {'type': 'object', 'properties': {
+            'state': {'type': ['null', 'string']},
+            'coverage': {'type': 'array', 'prefixItems': [left, right], 'minItems': 2, 'maxItems': 2},
+            'support': {'oneOf': [{'type': 'string', 'enum': ['p0']}, {'type': 'null'}]},
+            'confidence': {'type': 'number', 'minimum': 0, 'maximum': 1}},
+            'required': ['state', 'coverage', 'support', 'confidence'], 'additionalProperties': False}
+        valid = {'state': None, 'coverage': [{'event': 'e0', 'unit': 'q'}, {'event': 'e1', 'unit': 'a'}],
+                 'support': 'p0', 'confidence': .95}
+        api._validate(valid, schema)
+        for change in ({'coverage': valid['coverage'][:1]},
+                       {'coverage': [valid['coverage'][0], valid['coverage'][0]]},
+                       {'coverage': [{'event': 'e1', 'unit': 'q'}, valid['coverage'][1]]},
+                       {'state': {}}, {'support': 'other'}, {'confidence': 1.01}, {'confidence': True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                api._validate({**valid, **change}, schema)
+
+    def test_variants_bounds_and_false_items_cannot_be_bypassed(self):
+        api._validate(None, {'anyOf': [{'type': 'string'}, {'type': 'null'}]})
+        api._validate([1], {'type': 'array', 'prefixItems': [{'type': 'integer'}], 'items': False})
+        cases = [([1, 2], {'type': 'array', 'prefixItems': [{'type': 'integer'}], 'items': False}),
+                 ('both', {'oneOf': [{'type': 'string'}, {'type': 'string', 'minLength': 1}]}),
+                 ('too long', {'type': 'string', 'maxLength': 3}),
+                 ([{'id': 'a'}, {'id': 'a'}], {'type': 'array', 'uniqueItems': True}),
+                 (False, {'type': 'integer'})]
+        for value, schema in cases:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                api._validate(value, schema)
+
     def setUp(self):
         TEMP.mkdir(exist_ok=True,parents=True)
         self.root=TEMP/('deepseek_test_'+uuid.uuid4().hex)
@@ -101,6 +139,56 @@ class DeepSeekTests(unittest.TestCase):
         with patch.object(self.vision,'_fetch',side_effect=api.RemoteError('Bearer secret-token',category='transport')):
             with self.assertRaises(api.RemoteError) as error:self.vision.query('current',schema=SCHEMA)
         self.assertNotIn('secret-token',str(error.exception))
+
+    def test_rejected_contract_is_quality_error_with_bounded_diagnostics(self):
+        from app.scene_understanding import _control_failure
+        with patch.object(self.vision, '_fetch', return_value=response('{"keep":["B"]}')) as fetch:
+            with self.assertRaises(api.ResponseContractError) as caught:
+                self.vision.query('current', schema=SCHEMA)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertFalse(_control_failure(caught.exception))
+        records = [api._strict_json(p.read_text('utf-8')) for p in
+                   (self.root / 'diagnostics' / 'deepseek-responses').glob('*.json')]
+        self.assertEqual(len(records), 3)
+        self.assertTrue(all(row['accepted'] is False for row in records))
+        self.assertTrue(all('$.keep[0]' in row['contract_issue'] for row in records))
+        self.assertNotIn('test-key', str(records))
+        self.assertFalse((self.root / 'responses').exists())
+
+    def test_contract_retry_identifies_field_without_supplying_rejected_answer(self):
+        with patch.object(self.vision, '_fetch', side_effect=[response('{"keep":["foreign"]}'), response()]) as fetch:
+            self.assertEqual(self.vision.query('current', schema=SCHEMA), {'keep': ['A']})
+        retried = fetch.call_args_list[1].args[0]['messages'][1]['content'][0]['text']
+        self.assertIn('$.keep[0]', retried)
+        self.assertNotIn('foreign', retried)
+        self.assertIn('same original images/evidence', retried)
+
+    def test_truncated_response_diagnostic_preserves_finish_reason_without_raw_body(self):
+        truncated = {'choices': [{'finish_reason': 'length', 'message': {'content': '{Bearer secret-token'}}],
+                     'usage': {'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150,
+                               'authorization': 'secret-token'}}
+        with patch.object(self.vision, '_fetch', side_effect=[truncated, response()]):
+            self.vision.query('current', schema=SCHEMA)
+        records = [api._strict_json(p.read_text('utf-8')) for p in
+                   (self.root / 'diagnostics' / 'deepseek-responses').glob('*.json')]
+        rejected = next(row for row in records if not row['accepted'])
+        self.assertEqual(rejected['finish_reason'], 'length')
+        self.assertEqual(rejected['usage']['total_tokens'], 150)
+        self.assertNotIn('response', rejected)
+        self.assertNotIn('secret-token', str(records))
+
+    def test_contract_feedback_keeps_boundary_branch_constraints_strict(self):
+        from app.semantic_boundary import boundary_schema
+        invalid = {'evidence': 'The same background and pose are visible.', 'change_scope': 'minor_motion',
+                   'same_location': True, 'location_changed': True, 'same_characters': True,
+                   'character_state_changed': False, 'object_state_changed': False,
+                   'physical_transition': False, 'transition_type': 'none', 'confidence': .95,
+                   'uncertain': False}
+        with self.assertRaises(ValueError):
+            api._validate(invalid, boundary_schema())
+        self.assertIn('$.location_changed', api._contract_feedback(invalid, boundary_schema()))
+        valid = {**invalid, 'location_changed': False}
+        self.assertEqual(api._contract_feedback(valid, boundary_schema()), '')
     def test_http_server_error_retries(self):
         with patch.object(self.vision,'_fetch',side_effect=[api.RemoteError('server',category='http',http_status=503),response()]) as fetch:self.vision.query('current',schema=SCHEMA)
         self.assertEqual(fetch.call_count,2)

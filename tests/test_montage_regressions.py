@@ -104,7 +104,8 @@ class LongMontageRegressionTests(unittest.TestCase):
         shots = [{'id': 'scene_shot', 'start': 0, 'end': 90, 'location': 'street'}]
         scenes = detect_semantic_scenes(shots, {'words': [], 'segments': []}, 90)
         vision = Vision()
-        with patch('app.vision.storyboard', side_effect=semantic_test_support.SemanticPipelineTests.fake_board):
+        with patch('app.vision.storyboard', side_effect=semantic_test_support.SemanticPipelineTests.fake_board), \
+             patch('app.vision.inference_storyboard',side_effect=semantic_test_support.SemanticPipelineTests.fake_inference_board):
             result = analyze_scenes(job/'episode.mp4', scenes, {'words': [], 'segments': []}, shots, job,
                                     vision, 'fresh', lambda *args: None, lambda: False)
         data = source_episode(result)

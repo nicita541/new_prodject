@@ -16,7 +16,7 @@ from .source_roles import confirmed_exclusions, merge_ranges, verified_story_ran
 from .scene_understanding import _control_failure
 from .story_review import candidate_units
 
-GLOBAL_VERIFICATION_VERSION = 3
+GLOBAL_VERIFICATION_VERSION = 4
 SELECTION_CONFIDENCE = .9
 SELECTION_REASONS = ('character_reaction', 'emotional_pause', 'comedic_payoff', 'establishing_context',
     'causal_dialogue', 'response', 'physical_action', 'state_transition', 'neutral_scenery',
@@ -39,6 +39,8 @@ To drop an earlier specifically proven consequential action/reaction, explicitly
 visual contradiction evidence using reassessed_action/reassessed_reaction; do not silently discard its proof.
 Look for physical state transitions, capture/binding, entering a vehicle, objects changing hands, arrivals,
 reactions and narrative bridges. Correct a mistaken conversation-only hypothesis when images support it.
+Physical action/state_transition require actual visible movement or state change. A static pose,
+holding an unchanged object, its mere presence, or spoken information alone is not an action.
 Visible characters/movement in a verified opening, preview or production-credit interval do not establish
 CURRENT-episode ownership. Existing confirmed nonstory exclusions remain authoritative.
 Give independent understanding_confidence and selection_confidence, as well as semantic, visual and context
@@ -463,10 +465,13 @@ def verify_global_visual(source, events, transcript, shots, job_dir, vision, rep
                     attempt_units = visible_units
                     if not visible_units:
                         raise ValueError('Страницы storyboard не подтверждают исходные единицы')
-                    payload = {'HYPOTHESES': {'local_summary': event['local_summary'],
-                               'recovery_summary': event.get('recovery_summary'), 'current_chunk': hypothesis,
-                               'prior_selected_ranges':original[index].get('selected_ranges',[]),
-                               'prior_unit_evidence':original[index].get('unit_evidence',[]),
+                    chunk_analysis = local_chunks[number] if number < len(local_chunks) else event
+                    payload = {'HYPOTHESES': {'local_summary': chunk_analysis.get('local_summary',hypothesis),
+                               'recovery_summary': chunk_analysis.get('recovery_summary'), 'current_chunk': hypothesis,
+                               'prior_selected_ranges':[r for r in original[index].get('selected_ranges',[])
+                                   if r['start'] < chunk['end'] and r['end'] > chunk['start']],
+                               'prior_unit_evidence':[r for r in original[index].get('unit_evidence',[])
+                                   if r.get('unit') in {u['id'] for u in visible_units}],
                                'reassessment_required_units':proven},
                                'BEFORE': contexts.get('BEFORE'), 'CURRENT': {'role': 'verify',
                                'event_id': event['id'], 'scene_id': event.get('scene_id'), 'chunk': chunk,

@@ -7,11 +7,45 @@ from app.selection_gate import positive_ranges, selection_problems
 from app.source_roles import confirmed_exclusions, merge_ranges
 from app.titles import _subtract
 
-VERSION = 1
+VERSION = 3
 
 
 def _cost(ranges):
     return sum(r['end']-r['start'] for r in merge_ranges(ranges))
+
+
+def _intersect(left, right):
+    return merge_ranges([{'start':max(a['start'], b['start']), 'end':min(a['end'], b['end'])}
+        for a in left for b in right if a['start'] < b['end'] and a['end'] > b['start']])
+
+
+def _source_candidates(events, candidate_ranges, ranked_ids, arcs, budget):
+    """Rank real arc ranges rather than duplicating their shared parent scene."""
+    rank = {identifier:index for index,identifier in enumerate(ranked_ids)}
+    candidates, assigned = [], {}
+    for arc in arcs:
+        if not arc.get('source_unit_refs') or arc.get('uncertain', True):
+            continue
+        ranges = {identifier:_intersect(candidate_ranges.get(identifier, []), arc['source_ranges'])
+                  for identifier in arc['event_ids'] if identifier in rank}
+        ranges = {i:r for i,r in ranges.items() if r}
+        if not ranges:
+            continue
+        candidates.append({'id':arc['id'], 'ranges':ranges, 'reason':'complete_inferred_source_arc',
+                           'rank':min(rank[i] for i in ranges), 'start':arc['start']})
+        for identifier, pieces in ranges.items():
+            assigned[identifier] = merge_ranges([*assigned.get(identifier, []), *pieces])
+    known = {event['id']:event for event in events}
+    for identifier in ranked_ids:
+        remainder = _subtract(candidate_ranges.get(identifier, []), assigned.get(identifier, []))
+        # A remaining production unit is individually costed; the scene's full
+        # envelope would combine unrelated source arcs again.
+        for unit in known[identifier].get('units', []):
+            pieces = _intersect(remainder, [unit])
+            if pieces:
+                candidates.append({'id':identifier+':'+unit['id'], 'ranges':{identifier:pieces},
+                    'reason':'ranked_verified_source_unit', 'rank':rank[identifier], 'start':unit['start']})
+    return sorted(candidates, key=lambda row:(row['rank'], row['start'], row['id']))
 
 
 def mandatory_ranges(events):
@@ -39,7 +73,22 @@ def mandatory_ranges(events):
                 result.setdefault(event['id'], []).extend(pieces)
                 proofs.append({'event':event['id'], 'unit':unit['id'],
                     'kind':record['kind'], 'checkpoint':record.get('checkpoint'), 'ranges':pieces})
+        for bridge in event.get('mandatory_continuity_units', []):
+            unit = known.get(bridge.get('unit'))
+            if unit is None:
+                continue
+            pieces = _intersect(_intersect(bridge.get('ranges', []),[unit]),event.get('selected_ranges', []))
+            if not pieces or not _covers_positive(event,pieces):
+                continue
+            result.setdefault(event['id'], []).extend(pieces)
+            proofs.append({'event':event['id'],'unit':unit['id'],'kind':'verified_required_continuity',
+                           'checkpoint':bridge.get('checkpoint'),'ranges':pieces})
     return {i:merge_ranges(r) for i,r in result.items()}, proofs
+
+
+def _covers_positive(event, pieces):
+    from .selection_gate import _covers
+    return _covers(positive_ranges(event),pieces)
 
 
 def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, duration,
@@ -75,29 +124,44 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
     required_bridges = copy.deepcopy(continuity['bridges'])
     history = []
     seed_overflow = False
-    for identifier in ranked_ids:
+    oversized_seed = None
+    source_scoped = any(arc.get('source_unit_refs') for arc in arcs)
+    candidates = _source_candidates(source, candidate_ranges, ranked_ids, arcs, budget) if source_scoped else [
+        {'id':identifier} for identifier in ranked_ids]
+    for candidate in candidates:
+        identifier = candidate['id']
         if chosen and _cost([r for v in chosen.values() for r in v]) >= budget['optimal']:
             break
-        if identifier not in candidate_ranges:
+        if not source_scoped and identifier not in candidate_ranges:
             continue
-        group = {identifier}
-        arc = by_arc.get(identifier)
+        additions = candidate.get('ranges', {identifier:candidate_ranges.get(identifier, [])})
+        group = set(additions)
+        arc = None if source_scoped else by_arc.get(identifier)
         if arc and not arc.get('uncertain', True):
             group = set(arc['event_ids']) & set(candidate_ranges)
             # A large optional arc cannot force an avoidable seed overflow.
             if _cost([r for member in group for r in candidate_ranges[member]]) > budget['max']+.002:
                 group = {identifier}
                 reasons.setdefault(identifier, []).append('complete_story_arc_exceeds_adaptive_max')
+            additions = {member:candidate_ranges[member] for member in group}
         trial = copy.deepcopy(chosen)
         for member in group:
-            trial[member] = merge_ranges([*trial.get(member, []),*candidate_ranges[member]])
+            trial[member] = merge_ranges([*trial.get(member, []),*additions[member]])
         next_events, next_ranges, next_continuity = evaluate(trial)
         cost = _cost([r for v in next_ranges.values() for r in v])
         history.append({'candidate':identifier, 'group':sorted(group), 'duration_including_context':cost,
             'accepted':not chosen or cost <= budget['max']+.002,
             'required_bridges':copy.deepcopy(next_continuity['bridges'])})
+        if source_scoped and not chosen and cost > budget['max']+.002:
+            # Prefer another complete source arc that fits, including its real
+            # continuity cost. Keep the indivisible first arc as a last seed.
+            history[-1]['accepted']=False
+            if oversized_seed is None:
+                oversized_seed=(next_events,next_ranges,next_continuity,copy.deepcopy(candidate),len(history)-1)
+            continue
         if chosen and cost > budget['max']+.002:
-            reasons.setdefault(identifier, []).append('adaptive_max_including_mandatory_context')
+            for member in group:
+                reasons.setdefault(member, []).append('adaptive_max_including_mandatory_context')
             continue
         if not chosen and cost > budget['max']+.002:
             seed_overflow = True
@@ -106,7 +170,16 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
             if bridge not in required_bridges:
                 required_bridges.append(copy.deepcopy(bridge))
         for member in group:
-            reasons.setdefault(member, []).append('complete_story_arc' if len(group)>1 else 'ranked_source_story')
+            reasons.setdefault(member, []).append(candidate.get('reason') or (
+                'complete_story_arc' if len(group)>1 else 'ranked_source_story'))
+
+    if not chosen and oversized_seed is not None:
+        current_events,chosen,continuity,candidate,history_index=oversized_seed
+        seed_overflow=True
+        history[history_index]['accepted']=True
+        required_bridges=copy.deepcopy(continuity['bridges'])
+        for member in candidate['ranges']:
+            reasons.setdefault(member,[]).append(candidate['reason'])
 
     # A bridge already present in chosen no longer appears as a new restoration
     # on the next trial. Keep its proof and mandatory cost while fully retained.

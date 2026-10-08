@@ -21,6 +21,8 @@ Return a brief factual Russian CURRENT summary, kind, importance 1..5, uncertain
 Report semantic_confidence, visual_confidence and context_confidence separately. Report separate
 selection_confidence for the source-unit keep/remove choices, uncertainty_reasons,
 CURRENT action_units, narrative_bridge and factual state_before/state_after (unknown fields stay blank).
+action_units require shown physical movement or a changed physical state. Speech, static poses
+and the mere presence or holding of an object do not establish an action.
 When evidence is insufficient mark uncertain explicitly. Do not invent actions or speaker identities.'''
 
 
@@ -47,23 +49,24 @@ def context_record(scene, transcript, interval=None):
             'transcript': records}
 
 
-def bounded_chunks(scene, transcript, shots, max_frames=96):
+def bounded_chunks(scene, transcript, shots, max_frames=12):
     """Bound inference by actual frame demand, preserving semantic ownership."""
     from .scene_detection import analysis_chunks
-    from .vision import storyboard_times
+    from .vision import inference_samples
     pending = analysis_chunks(scene, transcript)
     result = []
     while pending:
         chunk = pending.pop(0)
         start, end = chunk['start'], chunk['end']
-        units = candidate_units(start, end, transcript, shots)
-        if len(storyboard_times(start, end, shots, transcript)) > max_frames:
+        units = candidate_units(start, end, transcript, shots,annotated=True,max_unit_seconds=4)
+        if max(len(inference_samples(start,end,units,recovery=value)) for value in (False,True)) > max_frames:
             midpoint = (start+end)/2
             edges = [u['end'] for u in units if start+.08 < u['end'] < end-.08]
             if edges:
                 boundary = min(edges, key=lambda t: abs(t-midpoint))
                 pending[0:0] = [{**chunk, 'start': start, 'end': boundary}, {**chunk, 'start': boundary, 'end': end}]
                 continue
+            raise ValueError('Indivisible source unit exceeds the bounded visual view')
         result.append(chunk)
     for index, chunk in enumerate(result):
         chunk['id'] = f'{scene["id"]}_chunk_{index:03d}'
@@ -130,7 +133,7 @@ def _scene_image_hashes(boards, visual_dir):
 
 
 def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature, report, cancelled):
-    from .vision import storyboard
+    from .vision import storyboard, inference_storyboard
     from .semantic_identity import component_identity
     diagnostics = Diagnostics(job_dir)
     visual_dir = Path(job_dir) / 'visual'
@@ -188,19 +191,16 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                     raise InterruptedError('Обработка отменена')
                 start, end = chunk['start'], chunk['end']
                 image = visual_dir / f'{event_id}_chunk_{number:03d}.jpg'
-                timestamps = storyboard(source, start, end, shots, transcript, image, cancelled)
                 units = candidate_units(start, end, transcript, shots, annotated=True, max_unit_seconds=4)
                 for unit in units:
                     unit['id'] = f'c{number:03d}_{unit["id"]}'
                     unit['parent_scene_id'] = scene['id']
+                timestamps = inference_storyboard(source,start,end,units,image,cancelled)
                 all_units.extend(units)
                 board = load_json(image.with_suffix('.storyboard.json'))
                 images = [Path(p) for p in board.get('pages', [str(image)])] if getattr(vision, 'supports_image_pages', False) else [image]
                 image_order = ['CURRENT'] * len(images)
                 board.update(scene_id=scene['id'], chunk_id=chunk['id'], role='current', image=str(image))
-                # Match audit unit IDs to the IDs actually submitted to the model.
-                for frame in board['frames']:
-                    frame['unit_ids'] = [f'c{number:03d}_{u}' for u in frame['unit_ids']]
                 scene_boards.append(board)
                 for neighbor, label in ((previous, 'PREVIOUS'), (following, 'NEXT')):
                     if neighbor is None or not getattr(vision, 'supports_image_pages', False):
@@ -212,7 +212,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                     # samples; all CURRENT shot transitions remain explicit.
                     # Do not consume the provider's page allowance reanalysing
                     # every camera cut of a context-only neighbor.
-                    storyboard(source, a, b, [], transcript, context_image, cancelled)
+                    inference_storyboard(source,a,b,[],context_image,cancelled,context=True)
                     context_board = load_json(context_image.with_suffix('.storyboard.json'))
                     context_board.update(scene_id=neighbor['id'], current_scene_id=scene['id'],
                                          role='context_only', label=label, image=str(context_image))
@@ -252,7 +252,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 current.update(scene_id=scene['id'],chunk_id=chunk['id'])
                 if recovery_trigger(current):
                     recovery_image = visual_dir/f'{event_id}_chunk_{number:03d}_recovery.jpg'
-                    recovery_times = storyboard(source,start,end,shots,transcript,recovery_image,cancelled,sampling_interval=.5)
+                    recovery_times = inference_storyboard(source,start,end,units,recovery_image,cancelled,recovery=True)
                     recovery_board = load_json(recovery_image.with_suffix('.storyboard.json'))
                     recovery_board.update(scene_id=scene['id'],chunk_id=chunk['id'],role='recovery_current',image=str(recovery_image))
                     scene_boards.append(recovery_board)

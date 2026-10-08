@@ -12,8 +12,8 @@ import math
 from .source_roles import confirmed_exclusions, merge_ranges, verified_story_ranges
 from .titles import _subtract
 
-STORY_STRUCTURE_VERSION = 1
-CONTINUITY_VERSION = 1
+STORY_STRUCTURE_VERSION = 2
+CONTINUITY_VERSION = 2
 ROLES = ('setup', 'development', 'turning_point', 'payoff', 'transition')
 STATE_FIELDS = ('locations', 'character_state', 'objects', 'relationship', 'topic')
 CONFIDENCE_FIELDS = ('semantic_confidence', 'visual_confidence', 'context_confidence')
@@ -133,6 +133,26 @@ def build_story_arcs(events, transcript=None):
     A confidence-only legacy ending remains a candidate, not a verified ending.
     """
     words = _words(transcript)
+    # Production assignments retain unit scope: several inferred arcs may share
+    # one semantic scene. Never reduce those arcs to a parent event label.
+    if any('story_structure' in event for event in events):
+        known = {event['id']: event for event in events}
+        inferred = {}
+        for event in events:
+            for arc in event.get('inferred_story_arcs', []):
+                refs = arc.get('source_unit_refs', [])
+                if (not refs or arc.get('uncertain') or not arc.get('verification', {}).get('supported')
+                        or any(ref.get('event') not in known or not any(
+                            unit.get('id') == ref.get('unit') for unit in known[ref['event']].get('units', []))
+                            for ref in refs)):
+                    continue
+                value = copy.deepcopy(arc)
+                value['endings'] = [{'kind': 'closure', 'time': value['end'],
+                    'confidence': value['confidence'], 'evidence': '; '.join(value['verification']['evidence']),
+                    'arc_id': value['id'], 'verified': True, 'verification': value['verification']}]
+                value.update(fallback_scene_arc=False, structure_version=STORY_STRUCTURE_VERSION)
+                inferred[value['id']] = value
+        return sorted(inferred.values(), key=lambda arc: (arc['start'], arc['end'], arc['id']))
     source = []
     for event in _events(events):
         if _pure_credit(event) or not _subtract([event], confirmed_exclusions(event)):
@@ -303,9 +323,7 @@ def _material(event, words, exclusions, cap, unit=None, dependency=False):
         elif not dependency and event.get('narrative_bridge') is True and event['end'] - event['start'] <= cap:
             sources, kind = [event], 'short_state_transition'
         else:
-            sources, kind = [allowed[-1]], 'endpoint_context'
-            limitations.extend(['unverified_dependency_context' if dependency else 'state_endpoint_context',
-                                'endpoint_context_does_not_prove_action'])
+            return [], ['source_unit_verification_required'], []
     ranges, evidence = [], []
     for source in sorted(sources, key=lambda row: row['start']):
         if (not _number(source.get('start')) or not _number(source.get('end'))
@@ -364,6 +382,9 @@ def resolve_continuity(events, selected_ids, transcript, duration, *, max_bridge
     Long dependencies use selected action units or an uncertain three-second
     end context. ASR segments never expand this to a full reply or scene.
     """
+    if any('story_structure' in event for event in events):
+        from .source_continuity import resolve_source_continuity
+        return resolve_source_continuity(events, selected_ids, transcript, duration)
     if not _number(duration) or duration <= 0 or not _number(max_bridge_seconds) or max_bridge_seconds <= 0:
         raise ValueError('Некорректное ограничение сюжетной связки')
     source, words = _events(events, duration), _words(transcript)

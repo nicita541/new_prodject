@@ -23,10 +23,10 @@ from app.semantic_identity import semantic_identity
 from scripts.run_raw_video_quality import RecordedVision, sha256, workspace
 
 
-def run(fixture, job, *, render=False):
+def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None):
     import app.analysis as analysis_module
     from app.vision import LocalVision
-    from app.editorial import DEFAULT_PROFILE
+    from app.editorial import DEFAULT_PROFILE, DRAMATIC_PROFILE
     fixture, job = workspace(fixture), workspace(job)
     manifest = load_json(fixture/'input.json')
     if set(manifest) not in ({'source'}, {'source', 'transcript'}):
@@ -36,6 +36,13 @@ def run(fixture, job, *, render=False):
     if not source.is_file() or transcript_path is not None and not transcript_path.is_file():
         raise ValueError('Missing actual raw quality inputs')
     job.mkdir(parents=True, exist_ok=True)
+    if preferred_part_count is not None and (type(preferred_part_count) is not int or not 1 <= preferred_part_count <= 64):
+        raise ValueError('Editorial preferred part count must be 1..64')
+    requested_settings = {'dramatic':bool(dramatic),'preferred_part_count':preferred_part_count}
+    run_settings = job/'observed-run-settings.json'
+    if run_settings.is_file() and load_json(run_settings) != requested_settings:
+        raise ValueError('Resume editorial settings do not match original run')
+    atomic_json(run_settings,requested_settings)
     original_inputs = {'source':str(source), 'source_sha256':sha256(source),
                        'transcript_sha256':sha256(transcript_path) if transcript_path else None,
                        'input_manifest_sha256':sha256(fixture/'input.json')}
@@ -52,8 +59,13 @@ def run(fixture, job, *, render=False):
             settings.update(transcript_mode='provided', transcript_source_sha256=original_inputs['source_sha256'])
         atomic_json(job/'analysis-settings.json', settings)
         atomic_json(job/'render-settings.json', {'layout':'cinema','caption_style':'classic'})
-        atomic_json(job/'editorial-settings.json', DEFAULT_PROFILE)
-    atomic_json(job/'observer-code-identity.json', semantic_identity())
+        atomic_json(job/'editorial-settings.json', DRAMATIC_PROFILE if dramatic else DEFAULT_PROFILE)
+        if preferred_part_count is not None:
+            atomic_json(job/'planning-preferences.json',{'preferred_part_count':preferred_part_count})
+    atomic_json(job/'observer-input-locations.json', {'input':str(fixture/'input.json'),
+        'transcript':str(transcript_path) if transcript_path else None})
+    starting_code_identity = semantic_identity()
+    atomic_json(job/'observer-code-identity.json', starting_code_identity)
     real_factory=analysis_module.vision_session
     sessions=[]
 
@@ -87,7 +99,11 @@ def run(fixture, job, *, render=False):
         if render:
             from app.pipeline import run_job
             outcome['outputs']=run_job(job,report,lambda:False)
-            outcome['complete']=True
+            outcome['quality_gate']=load_json(job/'final_quality_gate.json')
+            outcome['complete']=outcome['quality_gate']['status'] == 'passed'
+            if (job/'analysis-final.json').is_file():
+                atomic_json(job/'actual-analysis.json',load_json(job/'analysis-final.json'))
+            outcome['export_sha256']={name:sha256(job/'output'/name) for name in outcome['outputs']}
         else:
             analysis=analysis_module.analyze(job,source,report,lambda:False)
             atomic_json(job/'actual-analysis.json',analysis)
@@ -99,6 +115,12 @@ def run(fixture, job, *, render=False):
         raise
     finally:
         analysis_module.vision_session=real_factory
+        final_code_identity=semantic_identity()
+        atomic_json(job/'observer-code-identity-final.json', final_code_identity)
+        outcome['pipeline_code_stable']=final_code_identity == starting_code_identity
+        if not outcome['pipeline_code_stable']:
+            outcome['complete']=False
+            outcome['proof_limitation']='Pipeline source changed during this diagnostic run'
         outcome['elapsed_seconds']=time.monotonic()-started
         outcome['actual_model_requests']=len(list((job/'actual-model').glob('request-*.json')))
         atomic_json(job/'observed-outcome.json',outcome)
@@ -112,10 +134,12 @@ def main():
     parser.add_argument('--fixture-dir',type=Path,required=True)
     parser.add_argument('--job-dir',type=Path)
     parser.add_argument('--render',action='store_true')
+    parser.add_argument('--dramatic',action='store_true')
+    parser.add_argument('--preferred-parts',type=int)
     args=parser.parse_args()
     setup_environment()
     job=args.job_dir or ROOT/'scratch/raw_video_quality/production_runs'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')/'raw-000'
-    result=run(args.fixture_dir,job,render=args.render)
+    result=run(args.fixture_dir,job,render=args.render,dramatic=args.dramatic,preferred_part_count=args.preferred_parts)
     return 0 if result['complete'] else 1
 
 

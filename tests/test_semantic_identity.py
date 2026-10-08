@@ -70,7 +70,7 @@ class SemanticIdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(first, allow_nan=False)), first)
         required = {'shot_detector', 'scene_detector', 'scene_grouping', 'visual_features',
                     'storyboard', 'local_prompt', 'recovery', 'global_story', 'episode_profile',
-                    'story', 'pacing', 'planner', 'ending'}
+                    'story', 'pacing', 'planner', 'ending','story_structure','continuity','final_quality'}
         self.assertEqual(set(first['components']), required)
         planner = first['components']['planner']
         self.assertIn('app/story_structure.py', planner['sources'])
@@ -95,6 +95,17 @@ class SemanticIdentityTests(unittest.TestCase):
         self.assertEqual(values['POLICY'], {'version': 2, 'nested': [2, 3]})
         self.assertEqual(values['BASE']['version'], 1)
         self.assertNotIn('UNSAFE', values)
+
+    def test_numeric_literal_policy_does_not_change_identity_after_lazy_import(self):
+        from app import selection_adjudication
+        tree=ast.parse("POLICY={'max_image_bytes':4*1024**2}\nUNSAFE='private'*1024\nHUGE=2**1000000000")
+        values=_static_constants(tree)
+        self.assertEqual(values['POLICY'],{'max_image_bytes':4194304})
+        self.assertNotIn('UNSAFE',values);self.assertNotIn('HUGE',values)
+        for name in ('local_prompt','recovery','global_story','continuity','story','planner'):
+            expected=component_identity(name)
+            with patch.dict(sys.modules,{'app.selection_adjudication':None}):
+                self.assertEqual(expected,component_identity(name),name)
 
     def test_runtime_prompt_and_policy_changes_invalidate_without_version_change(self):
         original = component_identity('recovery')
@@ -141,58 +152,65 @@ class SemanticIdentityTests(unittest.TestCase):
     def analyze(self, vision, transcript=EMPTY):
         shots = [{'id': 'shot_0', 'start': 0, 'end': 10, 'location': 'room'}]
         scenes = scene_detection.detect_semantic_scenes(shots, transcript, 10)
-        with patch('app.vision.storyboard', side_effect=self.fake_board):
+        from tests.test_semantic_pipeline import SemanticPipelineTests
+        with patch('app.vision.storyboard', side_effect=self.fake_board), \
+             patch('app.vision.inference_storyboard',side_effect=SemanticPipelineTests.fake_inference_board):
             return scene_analysis.analyze_scenes(self.directory/'source.mp4', scenes, transcript, shots,
                 self.directory, vision, 'unchanged-parent-signature', lambda *a: None, lambda: False)
 
     def test_scene_cache_reuses_then_invalidates_runtime_prompt_without_version_bump(self):
         vision = SceneVision()
         first = self.analyze(vision)
+        requests = len(vision.requests)
         self.assertEqual(first, self.analyze(vision))
-        self.assertEqual(len(vision.requests), 1)
+        self.assertEqual(len(vision.requests), requests)
         with patch.object(scene_analysis, 'SCENE_PROMPT', scene_analysis.SCENE_PROMPT + '\nRevised current evidence policy.'):
             self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2)
+        self.assertEqual(len(vision.requests), 2*requests)
         self.assertIn('Revised current evidence policy.', vision.requests[-1][0])
 
     def test_scene_cache_validates_actual_images_transcript_and_provider(self):
         vision = SceneVision()
         self.analyze(vision)
+        requests = len(vision.requests)
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 1)
+        self.assertEqual(len(vision.requests), requests)
         (self.directory/'visual/event_0000.jpg').write_bytes(b'changed-submitted-image')
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2)
+        self.assertEqual(len(vision.requests), 2*requests)
         transcript = {'words': [{'start': 1, 'end': 2, 'text': 'New word.'}],
                       'segments': [{'start': 1, 'end': 2, 'text': 'New word.'}]}
         self.analyze(vision, transcript)
-        self.assertEqual(len(vision.requests), 3)
+        transcript_requests = len(vision.requests)-2*requests
+        self.assertGreater(transcript_requests,0)
         vision.cache_profile = 'different-provider-policy'
         self.analyze(vision, transcript)
-        self.assertEqual(len(vision.requests), 4)
+        self.assertEqual(len(vision.requests),2*requests+2*transcript_requests)
         self.analyze(vision, transcript)
-        self.assertEqual(len(vision.requests), 4)
+        self.assertEqual(len(vision.requests),2*requests+2*transcript_requests)
 
     def test_legacy_scene_cache_without_component_identity_is_rebuilt(self):
         vision = SceneVision()
         self.analyze(vision)
+        requests = len(vision.requests)
         checkpoint = self.directory/'visual/event_0000.json'
         saved = load_json(checkpoint)
         saved.pop('semantic_identity')
         atomic_json(checkpoint, saved)
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2)
+        self.assertEqual(len(vision.requests), 2*requests)
 
     def test_incomplete_scene_image_cache_is_rebuilt(self):
         vision = SceneVision()
         self.analyze(vision)
+        requests = len(vision.requests)
         checkpoint = self.directory/'visual/event_0000.json'
         saved = load_json(checkpoint)
         saved['storyboards'] = []
         saved['image_hashes'] = {}
         atomic_json(checkpoint, saved)
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2)
+        self.assertEqual(len(vision.requests), 2*requests)
 
     def test_story_cache_invalidates_changed_embedded_prompt_with_same_version(self):
         (self.directory/'visual').mkdir()

@@ -1,5 +1,6 @@
 import type {
   Job,
+  LiveStageProgress,
   Plan,
   Source,
   MusicSettings,
@@ -77,6 +78,7 @@ export const api = {
   // Jobs
   getJobs: () => fetchApi<Job[]>('/api/jobs'),
   getJob: (id: string) => fetchApi<Job>(`/api/jobs/${id}`),
+  getLiveStageProgress: (id: string) => fetchApi<LiveStageProgress>(`/assets/job-progress/${id}.json`),
   cancelJob: (id: string) => fetchApi<Job>(`/api/jobs/${id}/cancel`, { method: 'POST' }),
   retryJob: (id: string) => fetchApi<Job>(`/api/jobs/${id}/retry`, { method: 'POST' }),
   getJobPlan: (id: string) => fetchApi<Plan>(`/api/jobs/${id}/plan`),

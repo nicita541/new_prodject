@@ -7,6 +7,25 @@ export interface JobFile {
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 
+export interface StageProgress {
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+  fraction: number | null;
+  completed?: number;
+  total?: number;
+  phase?: string;
+  detail?: string;
+}
+
+export interface LiveStageProgress {
+  version: 1;
+  job_id: string;
+  status: JobStatus;
+  stage: string;
+  updated_at: string;
+  job_updated_at: string;
+  stage_progress: Record<string, StageProgress>;
+}
+
 export interface Job {
   id: string;
   source_id: string;
@@ -17,9 +36,11 @@ export interface Job {
   caption_style: 'classic' | 'accent';
   progress: number;
   stage: string;
+  stage_progress?: Record<string, StageProgress>;
   message?: string;
   error?: string | null;
   created_at: string;
+  updated_at?: string;
   outputs?: string[];
   files?: JobFile[];
   cancel_requested?: boolean;

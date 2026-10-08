@@ -20,9 +20,9 @@ from .source_roles import confirmed_exclusions, merge_ranges
 from .story_review import candidate_units
 from .bounded_storyboard import build_bounded_storyboard as storyboard
 
-VERSION = 3
+VERSION = 6
 POLICY = {'sampling_interval': .5, 'max_view_seconds': 10, 'max_current_pages': 1, 'max_current_frames': 12,
-          'max_image_bytes': 4*1024**2, 'context_seconds': 2, 'acceptance_confidence': .9}
+          'max_image_bytes': 4*1024**2, 'context_seconds': 2, 'context_asr_seconds': 8, 'acceptance_confidence': .9}
 KINDS = ('character_reaction', 'emotional_pause', 'comedic_payoff', 'establishing_context',
          'neutral_scenery', 'waiting', 'causal_dialogue', 'response', 'physical_action', 'state_transition')
 POSITIVE_KINDS = set(KINDS) - {'neutral_scenery', 'waiting'}
@@ -30,19 +30,29 @@ ACTION_KINDS = {'physical_action', 'state_transition'}
 ADJUDICATION_PROMPT = '''Adjudicate the concrete disputed selection using ORIGINAL source images and ASR.
 Inspect CURRENT independently. Earlier summaries and selections are hypotheses, not facts.
 BEFORE and AFTER are context only: do not transfer their actions, reactions, or ownership into CURRENT.
+CONTEXT_ASR_ONLY supplies ordinary adjacent speech over a longer window than the visual context.
+Use it to understand CURRENT spoken causes, questions and answers, including unpunctuated ASR.
+A static image does not make an informative spoken response neutral scenery. Evaluate its exact
+CURRENT words in the adjacent dialogue. Context speech cannot serve as CURRENT evidence or create
+an unseen physical action; quote only the supplied CURRENT unit's own ASR.
 Partition every supplied CURRENT source-unit ID exactly once into keep_units or drop_units.
 Return an individual evidence record for every unit. Describe a concrete visible act, expression,
 change, joke payoff, or necessary spoken cause/question/response. Generic atmosphere is not evidence.
 Use character_reaction, emotional_pause, comedic_payoff, establishing_context, causal_dialogue,
 response, physical_action or state_transition only for a specifically evidenced story contribution.
 Neutral scenery and routine waiting without that contribution belong in drop_units.
+Technical view boundaries do not create new locations. Do not call a repeated static pose
+establishing_context when the same place/state is already visible in BEFORE context.
+resolved refers to whether the CURRENT partition is established. A clearly static neutral
+view can be resolved=true with every unit dropped; an empty keep_units list is not uncertainty.
 Do not place a unit with positive contribution evidence in drop_units, unless the WHOLE unit lies
 inside supplied confirmed nonstory exclusions. Preserve its actual evidence kind; never relabel an
 observed action/reaction as neutral to make a partition pass validation.
 Ground each record in supplied CURRENT frame_indices (one-based) inside that unit, or an exact
 speech_quote from its ASR. Never invent a source timestamp, speech, unit ID or unseen action.
 action_units must be kept units with physical_action/state_transition evidence.
-causal_dialogue and response describe spoken contributions; they are not action_units.
+causal_dialogue and response require a nonempty exact CURRENT ASR speech_quote;
+they cannot describe a silent lead-in and are not action_units.
 Spoken information and a static pose alone do not establish a visible physical action.
 Evidence records are required for dropped neutral/waiting units as well as kept units.
 causal_links can reference only TWO DIFFERENT kept CURRENT IDs: one cause/question and its response/result.
@@ -50,6 +60,7 @@ Never reference a dropped unit, the same unit twice, a context-only unit or a ge
 If cause and response occur inside one unit, return causal_links=[] and describe that contribution
 in its unit_evidence. Do not split/fabricate units to manufacture a link.
 State before/after refers only to CURRENT. Confirmed nonstory exclusions remain authoritative;
+State locations are observed place descriptions, never timestamps, frame numbers or unit IDs.
 movement or dialogue in excluded footage does not make it current-episode story.
 Report understanding_confidence and selection_confidence separately. Set resolved=false when either
 ownership or selection cannot be established. Uncertainty never authorizes keeping the whole scene.
@@ -212,6 +223,8 @@ def minimal_semantic_context(event, units, transcript):
         q, text = tokens(quote), tokens(_source_text(transcript, unit['start'], unit['end']))
         if q and not any(text[i:i+len(q)] == q for i in range(len(text)-len(q)+1)):
             continue
+        if record['kind'] in ('causal_dialogue', 'response') and not q:
+            continue
         a, b = record.get('view_start', unit['start']), record.get('view_end', unit['end'])
         if any(type(v) not in (int, float) or not math.isfinite(v) for v in (a, b)):
             continue
@@ -238,7 +251,7 @@ def minimal_semantic_context(event, units, transcript):
             'fallback_reasons': ['selection_unresolved', *([] if ranges else ['no_positive_source_evidence'])]}
 
 
-def adjudication_schema(units):
+def adjudication_schema(units,frames=None):
     ids = {'type': 'array', 'items': {'type': 'string', 'enum': [u['id'] for u in units]}}
     evidence = {'unit': {'type': 'string', 'enum': [u['id'] for u in units]},
         'kind': {'type': 'string', 'enum': list(KINDS)}, 'evidence': {'type': 'string'},
@@ -248,13 +261,25 @@ def adjudication_schema(units):
     link = {'from_unit': evidence['unit'], 'to_unit': evidence['unit'],
             'relation': {'type': 'string', 'enum': ['cause', 'question', 'response', 'payoff']},
             'evidence': {'type': 'string'}}
+    evidence_item = {'type': 'object','properties':evidence,'required':list(evidence),'additionalProperties':False}
+    if frames is not None:
+        branches = []
+        for unit in units:
+            properties = copy.deepcopy(evidence)
+            properties['unit'] = {'type':'string','enum':[unit['id']]}
+            if not re.search(r'\w', str(unit.get('text', ''))):
+                properties['kind']['enum'] = [k for k in KINDS if k not in ('causal_dialogue', 'response')]
+            allowed = [i+1 for i,frame in enumerate(frames) if unit['start'] <= frame['time'] < unit['end']]
+            properties['frame_indices'] = {'type':'array','uniqueItems':True,
+                'items':{'type':'integer','enum':allowed}} if allowed else {'type':'array','maxItems':0,'items':{'type':'integer'}}
+            branches.append({'type':'object','properties':properties,'required':list(properties),'additionalProperties':False})
+        evidence_item = {'oneOf':branches}
     fields = {'summary': {'type': 'string'}, 'resolved': {'type': 'boolean'},
         **{k: {'type': 'number', 'minimum': 0, 'maximum': 1}
            for k in ('understanding_confidence', 'selection_confidence')},
         **{k: copy.deepcopy(ids) for k in ('keep_units', 'drop_units', 'action_units')},
         'unit_evidence': {'type': 'array', 'minItems':len(units), 'maxItems':len(units),
-                         'items': {'type': 'object', 'properties': evidence,
-                          'required': list(evidence), 'additionalProperties': False}},
+                         'items':evidence_item},
         'causal_links': {'type': 'array', 'items': {'type': 'object', 'properties': link,
                          'required': list(link), 'additionalProperties': False}},
         'state_before': _state_schema(), 'state_after': _state_schema()}
@@ -304,6 +329,8 @@ def validate_adjudication(raw, units, frames, exclusions=()):
         q, text = tokens(quote), tokens(unit.get('text', ''))
         if q and not any(text[i:i+len(q)] == q for i in range(len(text)-len(q)+1)):
             raise ValueError('Цитата отсутствует в ASR CURRENT unit')
+        if record['kind'] in ('causal_dialogue', 'response') and not q:
+            raise ValueError('Речевое доказательство требует собственную ASR цитату CURRENT unit')
         if not indices and not q:
             raise ValueError('Доказательство не привязано к кадру или реальной реплике')
         if not indices and record['kind'] in {'character_reaction', 'emotional_pause', 'establishing_context', *ACTION_KINDS}:
@@ -518,6 +545,8 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 unit['text'] = _source_text(transcript, unit['start'], unit['end'])
             board_key = _hash({**base, 'view': view})
             pages, frames, image_hashes = _board(source, view, shots, transcript, directory, board_key, cancelled)
+            for unit in view_units:
+                unit['frame_indices'] = [i+1 for i,frame in enumerate(frames) if unit['start'] <= frame['time'] < unit['end']]
             context, images, image_roles = [], list(pages), ['CURRENT']*len(pages)
             if getattr(vision, 'supports_image_pages', False):
                 for role, a, b in [('BEFORE_CONTEXT_ONLY', max(first, view['start']-2), view['start']),
@@ -537,10 +566,14 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 raise ValueError('Single-image adapter cannot adjudicate multiple CURRENT pages')
             if len(images) > 8:
                 raise ValueError('Adjudication exceeds provider image bound')
+            context_asr=[{'role':role,'start':a,'end':b,'ASR':_transcript(transcript,a,b)}
+                for role,a,b in [('BEFORE_CONTEXT_ONLY',max(first,view['start']-POLICY['context_asr_seconds']),view['start']),
+                                 ('AFTER_CONTEXT_ONLY',view['end'],min(last,view['end']+POLICY['context_asr_seconds']))]
+                if a < b]
             payload = {'CURRENT': {'start': view['start'], 'end': view['end'], 'units': view_units,
                        'frames': [{'index': i+1, 'time': f['time']} for i, f in enumerate(frames)],
                        'ASR': _transcript(transcript, view['start'], view['end']),
-                       'confirmed_exclusions': exclusions}, 'CONTEXT_ONLY': context,
+                       'confirmed_exclusions': exclusions}, 'CONTEXT_ONLY': context,'CONTEXT_ASR_ONLY':context_asr,
                        'image_roles': image_roles, 'questions': questions,
                        'HYPOTHESES': {'summary': str(event.get('summary',''))[:1500],
                           'prior_decisions': [{k: d.get(k) for k in ('summary','uncertain','understanding_confidence','selection_confidence')}
@@ -551,7 +584,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
             prompt = _normalized(ADJUDICATION_PROMPT)+'\n'+json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
             identity = _hash({**base, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
                              'model': _model_identity(vision), 'images': image_hashes,
-                             'schema': adjudication_schema(view_units)})
+                             'schema': adjudication_schema(view_units,frames)})
             checkpoint = directory/(identity+'.json')
             try:
                 cached = load_json(checkpoint) if checkpoint.is_file() else None
@@ -572,7 +605,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 for attempt in range(2):
                     try:
                         raw = vision.query(retry_prompt, images if len(images)>1 else images[0], max_tokens=2400,
-                                           schema=adjudication_schema(view_units))
+                                           schema=adjudication_schema(view_units,frames))
                         _check(cancelled)
                         decision = validate_adjudication(raw, view_units, frames, exclusions)
                         break

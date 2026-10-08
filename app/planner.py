@@ -6,7 +6,7 @@ from .subtitles import make_cues, remap_words
 
 MAX_DURATION = 120.0
 TARGET_DURATION = 90.0
-PLANNER_VERSION = 15
+PLANNER_VERSION = 16
 SCHEMA_VERSION = 1
 SPEECH_TAIL = 0.55
 SPEECH_LEAD = 0.18
@@ -230,14 +230,15 @@ def build_plan(analysis: dict) -> dict:
     by_id = {event["id"]: event for event in events}
     selected = {e["id"] for e in events if not e.get('pacing_excluded') and not e.get('global_excluded')
                 and ((e["kind"] == "story" and e["importance"] >= 3) or e["importance"] >= 4)}
-    # Uncertain analysis should preserve the episode rather than delete its story.
     warnings = [f"{event['id']}: {warning}" for event in events for key in ("focus_warnings", "story_warnings")
                 for warning in event.get(key, []) if isinstance(warning, str)]
     warnings.extend(warning for warning in analysis.get('warnings', []) if isinstance(warning, str))
     if not selected:
+        if analysis.get('quality_policy') == 'source_proved_v1':
+            raise ValueError('analysis_unresolved: нет подтверждённых сюжетных units для отбора')
         selected = {e["id"] for e in events if e["kind"] == "story"
                     and not e.get('global_excluded') and not e.get('pacing_excluded')}
-        warnings.append("Важность событий не определена уверенно: сохранены все сюжетные сцены")
+        warnings.append("Прежний анализ: требуется повторная проверка важности сюжетных сцен")
     if not selected:
         raise ValueError("В серии не найдены сюжетные сцены; проверьте анализ")
     from .story_structure import build_story_arcs, resolve_continuity
@@ -262,7 +263,7 @@ def build_plan(analysis: dict) -> dict:
             selections.extend(s for s in [*segments, *words]
                               if s['start'] < event['end'] and s['end'] > event['start'])
         for selection in sorted(selections, key=lambda s: s['start']):
-            if event.get('minimal_context_ranges'):
+            if event.get('minimal_context_ranges') or 'story_structure' in event:
                 start, end = selection['start'], selection['end']
             else:
                 start, end = _expand(selection["start"], selection["end"],

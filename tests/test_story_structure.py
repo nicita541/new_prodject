@@ -176,19 +176,17 @@ class ContinuityTests(unittest.TestCase):
         self.assertEqual(restored['continuity_state_after'], car)
         self.assertTrue(all(row['status'] == 'consistent' for row in result['transitions']))
 
-    def test_erroneous_three_minute_dependency_uses_word_safe_end_context_without_closure(self):
+    def test_erroneous_three_minute_dependency_requires_source_verification_without_endpoint_fallback(self):
         events = [event('junk', 0, 10), event('a', 10, 30),
                   event('long', 30, 210, requires=['junk']), event('b', 210, 240, requires=['long'])]
         transcript = {'segments': [{'start': 30, 'end': 210, 'text': 'one huge ASR reply'}],
                       'words': [{'start': 206.8, 'end': 207.3, 'text': 'crossing'}]}
         result = resolve_continuity(events, ['a', 'b'], transcript, 240)
-        self.assertEqual(result['selected_ids'], ['a', 'long', 'b'])
-        self.assertEqual(result['events'][2]['selected_ranges'], [{'start': 206.8, 'end': 210}])
-        bridge = result['bridges'][0]
-        self.assertEqual(bridge['reason'], 'direct_dependency_context')
-        self.assertTrue(bridge['uncertain'])
-        self.assertIn('endpoint_context_does_not_prove_action', bridge['limitations'])
-        self.assertLessEqual(bridge['ranges'][0]['end'] - bridge['ranges'][0]['start'], 7)
+        self.assertEqual(result['selected_ids'], ['a', 'b'])
+        self.assertFalse(result['bridges'])
+        task = next(w for w in result['warnings'] if w['reason'] == 'dependency_has_no_permitted_context')
+        self.assertEqual(task['source_event'],'long')
+        self.assertIn('source_unit_verification_required',task['limitations'])
         self.assertNotIn('junk', result['selected_ids'])
 
     def test_existing_state_avoids_redundant_direct_dependency(self):
@@ -247,6 +245,7 @@ class ContinuityTests(unittest.TestCase):
 
     def test_overlapping_words_use_complete_safe_span_and_never_full_asr_segment(self):
         events = [event('a', 0, 10), event('context', 10, 30), event('b', 30, 40, requires=['context'])]
+        events[1].update(units=[{'id':'cause','start':27,'end':30}],keep_units=['cause'])
         transcript = {'words': [{'start': 26, 'end': 27.5, 'text': 'first'},
                                 {'start': 27.3, 'end': 28.2, 'text': 'second'}],
                       'segments': [{'start': 10, 'end': 30, 'text': 'full reply'}]}
@@ -277,6 +276,7 @@ class ContinuityTests(unittest.TestCase):
 
     def test_indivisible_word_over_cap_is_explicit_and_not_truncated(self):
         events = [event('a', 0, 10), event('context', 10, 30), event('b', 30, 40, requires=['context'])]
+        events[1].update(units=[{'id':'cause','start':20,'end':30}],keep_units=['cause'])
         transcript = {'words': [{'start': 20, 'end': 30, 'text': 'indivisible'}], 'segments': []}
         result = resolve_continuity(events, ['a', 'b'], transcript, 40)
         self.assertEqual(result['events'][1]['selected_ranges'], [{'start': 20, 'end': 30}])

@@ -22,7 +22,7 @@ from .jobs import atomic_json
 
 MODEL = 'deepseek-flash'
 ENDPOINT = 'https://api.deepseek.com'
-PROFILE = 'deepseek-flash-images-json-nonthinking-v1'
+PROFILE = 'deepseek-flash-images-json-nonthinking-v3'
 SETTINGS = DATA / 'settings'
 PRIVATE = SETTINGS / 'deepseek.private.json'
 RESPONSES = CACHE / 'deepseek'
@@ -40,6 +40,61 @@ class RemoteError(RuntimeError):
         self.endpoint = endpoint
         self.http_status = http_status
         self.cause_type = cause_type
+
+class ResponseContractError(ValueError):
+    """A model output failed its contract; source quality recovery may inspect it.
+
+    Authentication, transport and invalid HTTP envelopes remain RemoteError.
+    This never supplies a substitute answer or weakens the output validator.
+    """
+
+
+def _contract_feedback(value, schema, path='$'):
+    """Identify the rejected field without returning model/secret values."""
+    try:
+        _validate(value, schema)
+        return ''
+    except ValueError:
+        pass
+    if not isinstance(schema, dict):
+        return path + ': value is forbidden by the schema'
+    if isinstance(value, dict):
+        for key in schema.get('required', []):
+            if key not in value:
+                return path + '.' + key + ': required field is missing'
+        properties = schema.get('properties', {})
+        if schema.get('additionalProperties') is False and set(value) - set(properties):
+            return path + ': additional fields are forbidden'
+        for key, field in properties.items():
+            if key in value:
+                issue = _contract_feedback(value[key], field, path + '.' + key)
+                if issue:
+                    return issue
+        branches = schema.get('oneOf', schema.get('anyOf', []))
+        # A mutually exclusive discriminator identifies the branch already
+        # chosen by this response. Report its constraint, never choose a story
+        # answer for the model or treat its rejected hypothesis as evidence.
+        for key, observed in value.items():
+            matches = [branch for branch in branches if isinstance(branch, dict)
+                       and observed in branch.get('properties', {}).get(key, {}).get('enum', [])]
+            if len(matches) == 1:
+                issue = _contract_feedback(value, matches[0], path)
+                if issue:
+                    return issue
+    if isinstance(value, list):
+        prefix = schema.get('prefixItems', [])
+        for index, item in enumerate(value):
+            issue = _contract_feedback(item, prefix[index] if index < len(prefix) else schema.get('items', {}),
+                                       path + f'[{index}]')
+            if issue:
+                return issue
+    if isinstance(value, str) and ('minLength' in schema or 'maxLength' in schema):
+        return path + f": string length must be {schema.get('minLength', 0)}..{schema.get('maxLength', 'unbounded')} characters"
+    if 'enum' in schema:
+        return path + ': use a value allowed by the supplied enum'
+    if schema.get('oneOf') or schema.get('anyOf'):
+        return path + ': fields must consistently match one complete schema branch'
+    return path + ': value must match the supplied type, bounds and constraints'
 
 class EpisodeBudgetExceeded(BudgetExceeded):
     pass
@@ -112,6 +167,23 @@ def _http(path: str, body=None, timeout=45):
                           cause_type=type(cause).__name__) from None
 
 def _validate(data, schema):
+    if schema is True:
+        return
+    if schema is False:
+        raise ValueError('DeepSeek вернул запрещённое значение JSON')
+    for name in ('oneOf', 'anyOf'):
+        if name in schema:
+            accepted = 0
+            for branch in schema[name]:
+                try:
+                    _validate(data, branch)
+                    accepted += 1
+                except ValueError:
+                    pass
+            if (name == 'oneOf' and accepted != 1) or (name == 'anyOf' and accepted == 0):
+                raise ValueError('DeepSeek вернул значение вне допустимых вариантов JSON')
+    for branch in schema.get('allOf', []):
+        _validate(data, branch)
     kind = schema.get('type')
     finite_number = False
     if type(data) in (int, float):
@@ -121,12 +193,13 @@ def _validate(data, schema):
             pass
     matches = {'object': isinstance(data, dict), 'array': isinstance(data, list),
                'string': isinstance(data, str), 'boolean': isinstance(data, bool),
-               'integer': type(data) is int, 'number': finite_number}
-    if kind and not matches.get(kind, False):
+               'integer': type(data) is int, 'number': finite_number, 'null': data is None}
+    kinds = kind if isinstance(kind, list) else [kind] if kind else []
+    if kinds and not any(matches.get(k, False) for k in kinds):
         raise ValueError('DeepSeek вернул неподходящий тип JSON')
     if 'enum' in schema and data not in schema['enum']:
         raise ValueError('DeepSeek вернул значение вне допустимых исходных данных')
-    if kind == 'object':
+    if isinstance(data, dict):
         properties = schema.get('properties', {})
         if any(key not in data for key in schema.get('required', [])):
             raise ValueError('DeepSeek не вернул обязательные поля JSON')
@@ -135,9 +208,22 @@ def _validate(data, schema):
         for key, value in data.items():
             if key in properties:
                 _validate(value, properties[key])
-    if kind == 'array':
-        for value in data:
-            _validate(value, schema.get('items', {}))
+    if isinstance(data, list):
+        if len(data) < schema.get('minItems', 0) or len(data) > schema.get('maxItems', len(data)):
+            raise ValueError('DeepSeek вернул неверное число элементов JSON')
+        if schema.get('uniqueItems') and any(data[i] in data[:i] for i in range(len(data))):
+            raise ValueError('DeepSeek вернул повторные элементы JSON')
+        prefix = schema.get('prefixItems', [])
+        for index, value in enumerate(data):
+            _validate(value, prefix[index] if index < len(prefix) else schema.get('items', {}))
+    if isinstance(data, str):
+        if len(data) < schema.get('minLength', 0) or len(data) > schema.get('maxLength', len(data)):
+            raise ValueError('DeepSeek вернул неверную длину строки JSON')
+        if 'pattern' in schema and re.search(schema['pattern'], data) is None:
+            raise ValueError('DeepSeek вернул строку вне допустимого шаблона JSON')
+    if finite_number:
+        if data < schema.get('minimum', data) or data > schema.get('maximum', data):
+            raise ValueError('DeepSeek вернул число вне допустимого диапазона JSON')
 
 def _response_discipline(schema):
     """Clarify existing enum/coverage rules without broadening the schema."""
@@ -464,6 +550,33 @@ class DeepSeekVision:
         with self._lock:
             return self._query(prompt, image, max_tokens, schema)
 
+    def _record_response(self, raw, digest, attempt, issue, value):
+        """Keep bounded response diagnostics, never request headers/key/images."""
+        from .pipeline_diagnostics import _clean
+        import uuid
+        try:
+            directory = self.job_dir.resolve() / 'diagnostics' / 'deepseek-responses'
+            directory.relative_to(ROOT.resolve())
+            choice = raw.get('choices', [{}])[0] if isinstance(raw, dict) else {}
+            if not isinstance(choice, dict):
+                choice = {}
+            content = choice.get('message', {})
+            content = content.get('content', '') if isinstance(content, dict) else ''
+            usage = raw.get('usage', {}) if isinstance(raw, dict) else {}
+            record = {'request_sha256': digest, 'attempt': attempt + 1,
+                      'finish_reason': choice.get('finish_reason'),
+                      'accepted': not bool(issue), 'contract_issue': issue,
+                      'response_characters': len(content) if isinstance(content, str) else None,
+                      'usage': {key: usage[key] for key in ('prompt_tokens', 'completion_tokens', 'total_tokens')
+                                if isinstance(usage, dict) and type(usage.get(key)) is int}}
+            if isinstance(value, dict):
+                record['response'] = _clean(value)
+            # A malformed string can echo an HTTP request. Keep only its size,
+            # never an unparsed body, prompt, credentials or image data.
+            atomic_json(directory / (digest + '-' + uuid.uuid4().hex + '.json'), record)
+        except (OSError, ValueError, TypeError, IndexError):
+            logging.getLogger(__name__).warning('Не удалось сохранить диагностику ответа DeepSeek')
+
     def _query(self, prompt, image, max_tokens, schema):
         self._check_cancelled()
         requested_tokens = max_tokens
@@ -526,11 +639,13 @@ class DeepSeekVision:
             raise BudgetExceeded('Сохранённого ответа нет; режим проверки запрещает сетевой запрос')
         _key()
         last_category='response'
+        last_issue = ''
         for attempt in range(MAX_ATTEMPTS):
             self._check_cancelled()
             try:
                 raw=self._fetch(body)
                 self._check_cancelled()
+                value = None
                 try:
                     value=_strict_json(raw['choices'][0]['message']['content'])
                     if not isinstance(value,dict):
@@ -538,7 +653,11 @@ class DeepSeekVision:
                     if schema is not None:
                         _validate(value,schema)
                 except (KeyError,IndexError,TypeError,ValueError):
+                    last_issue = (_contract_feedback(value, schema) if isinstance(value, dict) and schema is not None
+                                  else 'Return a complete JSON object, with no markdown or schema definitions')
+                    self._record_response(raw, fingerprint(body), attempt, last_issue, value)
                     raise RemoteError('DeepSeek вернул неверный формат ответа',category='response') from None
+                self._record_response(raw, fingerprint(body), attempt, '', value)
                 try:
                     dest = target_cache_path(digest)
                     atomic_json(dest, {'result': value, 'request': digest})
@@ -562,11 +681,20 @@ class DeepSeekVision:
                     break
                 # Correct an invalid response without changing images, schema or allowed IDs.
                 if last_category in ('response','response_json_parse'):
+                    correction = '\nRetry: return exactly the requested JSON object and allowed IDs.'
+                    feedback = ('\nThe previous response was rejected: ' + last_issue[:500] +
+                                '. Reinspect the same original images/evidence and satisfy the supplied schema; '
+                                'do not invent evidence or change the requested output targets.') if last_issue else ''
+                    if len((SYSTEM + prompt + correction + feedback).encode('utf-8')) > self.text_budget:
+                        feedback = ''
                     body={**body,'messages':[body['messages'][0],{'role':'user','content':[
-                        {'type':'text','text':prompt+'\nRetry: return exactly the requested JSON object and allowed IDs.'},*content[1:]]}]}
+                        {'type':'text','text':prompt+correction+feedback},*content[1:]]}]}
                 until=time.monotonic()+min(attempt+1,2)
                 while time.monotonic()<until:
                     self._check_cancelled()
                     time.sleep(.1)
+        if last_category == 'response':
+            raise ResponseContractError('DeepSeek: ответ не прошёл строгую проверку JSON после 3 попыток. '
+                                        'Исходные кадры требуют повторной проверки качества.') from None
         raise RemoteError(f'DeepSeek: запрос не удался после 3 попыток ({last_category}). Можно повторить монтаж.',
                           category=last_category,endpoint='/chat/completions') from None

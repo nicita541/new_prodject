@@ -693,7 +693,8 @@ def _cached(path: Path, metadata: Path, identity):
 
 def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: list[dict], transcript: dict,
                      job_dir: Path, cancelled, *, settings: dict | None = None, audio_features=None,
-                     cache_status: dict | None = None, vision=None, perception=None, audio_stream=0) -> list[dict]:
+                     cache_status: dict | None = None, vision=None, perception=None, audio_stream=0,
+                     force_boundary_review=False) -> list[dict]:
     """Production boundary: real source frames are mandatory, separately cached."""
     if cancelled():
         raise InterruptedError('Обработка отменена')
@@ -733,7 +734,7 @@ def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: lis
         from .semantic_boundary import _identity
         identity['boundary_model'] = _identity(vision)
     path, meta = job_dir / 'scenes.json', job_dir / 'scenes.meta.json'
-    scenes = _cached(path, meta, identity)
+    scenes = None if force_boundary_review else _cached(path, meta, identity)
     scene_hit = scenes is not None
     if not scene_hit:
         proofs = (production_boundaries(source, shots, features, transcript, job_dir, vision, cancelled, config,

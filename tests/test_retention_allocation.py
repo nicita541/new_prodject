@@ -19,6 +19,30 @@ def unchanged(events,selected,transcript,duration):
 
 
 class RetentionAllocationTests(unittest.TestCase):
+    @staticmethod
+    def source_arc(value):
+        return {'id':'arc_'+value['id'],'start':value['start'],'end':value['end'],
+                'event_ids':[value['id']],'source_unit_refs':[{'event':value['id'],'unit':'u0'}],
+                'source_ranges':value['selected_ranges'],'uncertain':False,'complete_ending':True}
+
+    def test_optional_source_arc_defers_oversized_seed_when_another_complete_arc_fits(self):
+        events=[event('large',0,12),event('small',20,28)]
+        result=allocate_retention(events,{e['id']:e['selected_ranges'] for e in events},
+            ['large','small'],[self.source_arc(e) for e in events],{},30,{'optimal':8,'max':10},unchanged)
+        self.assertEqual(result['selected_ids'],['small'])
+        self.assertEqual(result['retained_duration'],8)
+        self.assertEqual(result['overflow_reasons'],[])
+        self.assertFalse(result['allocation_history'][0]['accepted'])
+
+    def test_only_oversized_complete_source_arc_remains_indivisible_with_explained_overflow(self):
+        value=event('large',0,12)
+        result=allocate_retention([value],{'large':value['selected_ranges']},['large'],
+            [self.source_arc(value)],{},12,{'optimal':8,'max':10},unchanged)
+        self.assertEqual(result['retained_duration'],12)
+        self.assertEqual(result['overflow_reasons'][0]['reason'],'minimum_complete_story_seed_exceeds_max')
+        self.assertEqual(result['overflow_reasons'][0]['excess'],2)
+        self.assertTrue(result['allocation_history'][0]['accepted'])
+
     def test_optional_large_arc_does_not_force_avoidable_seed_overflow(self):
         events=[event(str(i),i*10,i*10+4) for i in range(3)]
         result=allocate_retention(events,{e['id']:e['selected_ranges'] for e in events},

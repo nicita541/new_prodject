@@ -50,7 +50,7 @@ from app.story_review import (
     global_story_review,
 )
 
-ANALYSIS_VERSION = 14
+ANALYSIS_VERSION = 16
 GLOBAL_STORY_VERSION = 9
 STORYBOARD_VERSION = 3
 EDITORIAL_POLICY = 'evidenced-semantic-selection-v2'
@@ -116,6 +116,7 @@ def selection_snapshot(diagnostics, stage, events):
 def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict, shots: list[dict], events: list[dict]) -> dict:
     from .selection_gate import selection_readiness
     record = {
+        'quality_policy': 'source_proved_v1',
         'probe': probe,
         'transcript': transcript,
         'shots': shots,
@@ -132,6 +133,17 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
     scenes_path = job_dir / 'scenes.json'
     if scenes_path.is_file():
         record['scenes'] = load_json(scenes_path)
+    for name in ('story_structure', 'dialogue_relations'):
+        path = job_dir/(name+'-result.json')
+        if path.is_file():
+            record[name] = load_json(path)
+    preferences_path = job_dir/'planning-preferences.json'
+    if preferences_path.is_file():
+        preferences = load_json(preferences_path)
+        if (not isinstance(preferences,dict) or set(preferences) != {'preferred_part_count'}
+                or type(preferences['preferred_part_count']) is not int or not 1 <= preferences['preferred_part_count'] <= 64):
+            raise ValueError('Некорректное предпочтительное количество частей')
+        record['preferred_part_count'] = preferences['preferred_part_count']
     from .episode_profile import build_episode_profile, adaptive_retention_budget, scene_settings
     from .media_probe import raw_shot_evidence
     perception_path = job_dir/'media-evidence.json'
@@ -206,22 +218,38 @@ def finalize_editorial_selection(source, events, transcript, shots, probe, job_d
     Failed perception remains a persisted analysis result for review/recovery;
     the production planner still refuses to render it.
     """
+    job_dir = Path(job_dir)
     from .endings import refine_endings
-    from .selection_gate import adjudicate_selections, selection_readiness
+    from .selection_gate import adjudicate_selections, selection_readiness, source_selection_readiness
     with diagnostics.stage('final_selection_adjudication', provider=provider):
         events = adjudicate_selections(source, events, transcript, shots, job_dir,
-                                      vision, report, cancelled)
-    gate = selection_readiness(events)
-    if gate['status'] == 'passed':
+                                      vision, report, cancelled, source_only=True)
+    gate = source_selection_readiness(events)
+    if gate['status'] == 'passed' and selection_readiness(events)['status'] == 'passed':
         events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
         if selection_readiness(events)['status'] != 'passed':
             with diagnostics.stage('ending_selection_adjudication', provider=provider):
                 events = adjudicate_selections(source, events, transcript, shots, job_dir,
                                               vision, report, cancelled)
-        gate = selection_readiness(events)
-    else:
+        gate = source_selection_readiness(events)
+    elif gate['status'] != 'passed':
         diagnostics.warning('endings', 'unresolved_selection',
                             event_ids=[row['event'] for row in gate['unresolved']])
+    if gate['status'] == 'passed':
+        from .story_structure_pass import infer_story_structure
+        from .dialogue_relations import infer_dialogue_relations, attach_dialogue_result
+        report('analyze', .62, 'Определяем сюжетные связи и состояния исходных units')
+        with diagnostics.stage('story_structure_analysis', provider=provider):
+            structure = infer_story_structure(events, transcript, job_dir, vision, cancelled)
+        events = structure['events']
+        atomic_json(job_dir/'story_structure-result.json', {k:v for k,v in structure.items() if k != 'events'})
+        with diagnostics.stage('dialogue_relations', provider=provider):
+            dialogue = infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, relations=structure)
+        events = attach_dialogue_result(events,dialogue)
+        atomic_json(job_dir/'dialogue_relations-result.json', dialogue)
+        diagnostics.write('story_structure.json', {k:v for k,v in structure.items() if k != 'events'})
+        diagnostics.write('dialogue_relations.json', dialogue)
+        gate = selection_readiness(events)
     diagnostics.write('selection_gate.json', gate)
     return events
 

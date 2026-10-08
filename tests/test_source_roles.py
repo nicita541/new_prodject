@@ -30,6 +30,49 @@ def word_rows(start, end, text):
 
 
 class SourceRolePipelineTests(unittest.TestCase):
+    def test_failed_role_review_retries_original_material_even_after_empty_selection(self):
+        directory,event,_=edge_fixture(start=0,end=5)
+        failure={'category':'unresolved','source_ranges':[{'start':0,'end':5}]}
+        event.update(selected_ranges=[],selection_status='accepted',source_role_unresolved=failure)
+        tail={**copy.deepcopy(event),'id':'tail','start':5,'end':30}
+        class RoleVision:
+            model=Path('test-model');projector=Path('test-profile');cache_profile='test'
+            supports_image_pages=False
+            def __init__(self,error=False):self.calls=[];self.error=error
+            def query(self,prompt,image=None,**kwargs):
+                self.calls.append(prompt)
+                if self.error:raise ValueError('Invalid provider JSON')
+                return role_answer('current_story',meaningful=True)
+        transcript={'segments':[],'words':[]}
+        vision=RoleVision()
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']) as sheet:
+            result=refine_source_roles([event,tail],transcript,[],directory,vision,lambda *a:None,lambda:False,
+                                      retry_unresolved=True,event_ids={event['id']})
+        self.assertEqual(len(vision.calls),1)
+        self.assertEqual([(u['start'],u['end']) for u in sheet.call_args.args[1]],[(0,5)])
+        self.assertNotIn('source_role_unresolved',result[0])
+        self.assertEqual(result[0]['selected_ranges'],[])
+        self.assertEqual(result[1],tail)
+        self.assertEqual(event['source_role_unresolved'],failure)
+        # A new failed review cannot be mistaken for successful empty selection.
+        failed=RoleVision(error=True);failed.cache_profile='uncached-failure'
+        with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']):
+            retry=refine_source_roles([event,tail],transcript,[],directory,failed,lambda *a:None,lambda:False,
+                                     retry_unresolved=True,event_ids={event['id']})
+        self.assertEqual(len(failed.calls),1)
+        self.assertEqual(retry[0]['source_role_unresolved']['source_ranges'],failure['source_ranges'])
+        self.assertEqual(retry[0]['selected_ranges'],[])
+
+    def test_role_retry_without_eligible_source_does_not_silently_clear_failure(self):
+        directory,event,_=edge_fixture(start=0,end=5)
+        event.update(selected_ranges=[],source_role_unresolved={'category':'unresolved'},
+                     excluded_review_ranges=[{'start':0,'end':5}])
+        vision=FakeVision([]);vision.model=Path('test-model');vision.projector=Path('test-profile')
+        result=refine_source_roles([event],{'words':[],'segments':[]},[],directory,vision,lambda *a:None,
+                                  lambda:False,retry_unresolved=True)
+        self.assertEqual(result[0]['source_role_unresolved'],event['source_role_unresolved'])
+        self.assertFalse(vision.calls)
+
     def test_legacy_opening_proof_stays_valid_but_pure_ending_needs_new_verified_ownership(self):
         from app.source_roles import confirmed_exclusions
         from app.production_sequence import VERSION

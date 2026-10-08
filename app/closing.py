@@ -12,7 +12,7 @@ import urllib.error
 from .config import ROOT, VLM_MODEL, VLM_PROJECTOR
 from .story import _protected_speech, _spoken_words, _unit_ids
 
-CLOSING_VERSION = 5
+CLOSING_VERSION = 6
 CONTEXT_LIMIT = 5300
 
 
@@ -62,7 +62,7 @@ def _validate(raw, known):
     return omitted, new, dialogue, titles & visible
 
 
-def _prompt(units, prior, vision, anchored, editorial_profile=None):
+def _prompt(units, prior, vision, anchored, editorial_profile=None, input_limit=None):
     from .analysis import analysis_context_limit
     from .editorial import instruction as policy_instruction,DEFAULT_PROFILE
     instruction = (
@@ -89,7 +89,7 @@ def _prompt(units, prior, vision, anchored, editorial_profile=None):
         prompt = instruction + 'Earlier retained facts: ' + json.dumps(facts, ensure_ascii=False)
         prompt += '. CURRENT actual units: ' + json.dumps(units, ensure_ascii=False)
         count = vision.token_count(prompt) if hasattr(vision, 'token_count') else len(prompt.encode('utf-8'))
-        if count <= analysis_context_limit(vision):
+        if count <= min(analysis_context_limit(vision),input_limit or analysis_context_limit(vision)):
             return prompt
         if length <= 24:
             raise ValueError('Контекст сравнения финала превышает локальное окно; материал сохранён')
@@ -116,6 +116,17 @@ def _keep_ranges(event, units, omitted):
     return ranges
 
 
+def _novelty_schema(ids):
+    return {'type':'object', 'properties': {
+        'nonstory_units':ids, 'new_story_units':ids, 'reason':{'type':'string'},
+        'meaningful_dialogue_units':ids, 'narrated_title_units':ids, 'visible_title_units':ids,
+        'reaction_or_humor_units':ids,
+        'confidence':{'type':'number','enum':[round(i/20,2) for i in range(21)]},
+        'uncertain':{'type':'boolean'}}, 'additionalProperties':False,
+        'required':['nonstory_units','new_story_units','meaningful_dialogue_units',
+                    'narrated_title_units','visible_title_units','reaction_or_humor_units','reason','confidence','uncertain']}
+
+
 def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, report, cancelled):
     """Check late silent candidates; establish montage only from evidence."""
     from .analysis import candidate_units, storyboard
@@ -125,7 +136,9 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
     result = apply_exclusions(events)
     duration = max((event['end'] for event in events), default=0)
     anchor = next((index for index, event in enumerate(events) if _ending_anchor(event, duration)), None)
-    all_units = [candidate_units(event['start'], event['end'], transcript, shots) for event in events]
+    all_units = [(copy.deepcopy(event.get('units')) if event.get('analysis_chunks') else None)
+                 or candidate_units(event['start'], event['end'], transcript, shots)
+                 for event in events]
     from .source_roles import confirmed_exclusions
     from .titles import _subtract
     if editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor']:
@@ -171,6 +184,20 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
             event.setdefault('story_warnings', []).append(warning + 'текущие изображения отсутствуют; материал сохранён')
             continue
         units = all_units[index]
+        views = [(image,units)]
+        if event.get('analysis_chunks'):
+            views = []
+            for number,chunk in enumerate(event['analysis_chunks']):
+                chunk_image = job_dir/'visual'/f'{event["id"]}_chunk_{number:03d}.jpg'
+                current_units = [u for u in units if chunk['start'] <= u['start'] < u['end'] <= chunk['end']]
+                if not current_units or not chunk_image.is_file():
+                    views = []
+                    break
+                views.append((chunk_image,current_units))
+            if not views or {u['id'] for _,current in views for u in current} != {u['id'] for u in units}:
+                event.setdefault('story_warnings',[]).append(warning+'bounded CURRENT coverage отсутствует; нужен targeted review')
+                event['selection_needs_adjudication'] = True
+                continue
         context_end = anchor if anchor is not None else index
         prior = [value for value in events[:context_end] if not value.get('credit_montage')
                  and (value.get('selected_ranges') or value.get('importance', 0) >= 3)]
@@ -180,7 +207,9 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                     'thinking': bool(getattr(vision, 'thinking', False)), 'event': event,
                     'anchor': events[anchor] if anchor is not None else None, 'prior': prior,
                     'units': units, 'transcript': transcript,
-                    'image': hashlib.sha256(image.read_bytes()).hexdigest()}
+                    'image': hashlib.sha256(image.read_bytes()).hexdigest(),
+                    'views':[{'image':hashlib.sha256(page.read_bytes()).hexdigest(),'units':current}
+                             for page,current in views]}
         signature = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         checkpoint = directory / (hashlib.sha256(str(event['id']).encode()).hexdigest()[:24] + '.json')
         raw, title_checks = None, {}
@@ -197,19 +226,21 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
         report('condense', .4895, f'Проверка новых событий в финале: {index+1}/{len(result)}')
         try:
             if raw is None:
-                prompt = _prompt(units, prior, vision, anchor is not None,editorial_profile)
-                ids = {'type': 'array', 'items': {'type': 'string', 'enum': sorted(known)}}
-                schema = {'type':'object', 'properties': {
-                    'nonstory_units':ids, 'new_story_units':ids, 'reason':{'type':'string'},
-                    'meaningful_dialogue_units':ids, 'narrated_title_units':ids, 'visible_title_units':ids,
-                    'reaction_or_humor_units':ids,
-                    'confidence':{'type':'number', 'enum':[round(i/20, 2) for i in range(21)]},
-                    'uncertain':{'type':'boolean'}}, 'additionalProperties':False,
-                    'required':['nonstory_units','new_story_units','meaningful_dialogue_units',
-                                'narrated_title_units','visible_title_units','reaction_or_humor_units','reason','confidence','uncertain']}
-                from .hybrid import query_checked
-                raw = query_checked(vision, prompt, image, max_tokens=700, schema=schema,
-                    validator=lambda value: _validate(value, known), validation_profile='closing-partition-v3')
+                decisions = []
+                for current_image,current_units in views:
+                    prompt = _prompt(current_units, prior, vision, anchor is not None,editorial_profile,
+                                     input_limit=4000 if event.get('analysis_chunks') else None)
+                    current_known = {u['id'] for u in current_units}
+                    ids = {'type': 'array', 'items': {'type': 'string', 'enum': sorted(current_known)}}
+                    schema = _novelty_schema(ids)
+                    from .hybrid import query_checked
+                    decisions.append(query_checked(vision,prompt,current_image,max_tokens=700,schema=schema,
+                        validator=lambda value: _validate(value,current_known),validation_profile='closing-bounded-partition-v4'))
+                raw = {key:[value for decision in decisions for value in decision.get(key,[])] for key in
+                       ('nonstory_units','new_story_units','meaningful_dialogue_units','narrated_title_units',
+                        'visible_title_units','reaction_or_humor_units')}
+                raw.update(reason='; '.join(d['reason'] for d in decisions)[:1500],
+                           confidence=min(d['confidence'] for d in decisions),uncertain=any(d['uncertain'] for d in decisions))
             omitted, new, dialogue, confirmed_titles = _validate(raw, known)
             if raw['uncertain'] or raw['confidence'] < .85:
                 event.setdefault('story_warnings', []).append(warning + 'модель не уверена; материал сохранён')

@@ -291,13 +291,6 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     editorial_prof = load_profile(job_dir)
     stat = source.stat()
     from .semantic_identity import semantic_identity
-    identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
-                "semantic_components": semantic_identity(),
-                "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
-                "editorial_profile": editorial_prof,
-                "music": music_config,
-                "subtitle_style": style_identity(options['caption_style'])}
-    fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     plan_path = job_dir / "plan.json"
     plan = None
     previous_plan = None
@@ -309,37 +302,67 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             previous_plan = json.loads(previous_path.read_text(encoding="utf-8"))
         except (ValueError, TypeError):
             pass
-    if plan_path.is_file():
-        try:
-            cached = json.loads(plan_path.read_text(encoding="utf-8"))
-            unfinished_plan = cached
-            if previous_plan is None:
-                previous_plan = cached
-            if cached.get("fingerprint") == fingerprint:
-                validate_plan(cached, analysis)
-                plan = cached
-        except (ValueError, KeyError, TypeError):
-            pass
-    planning_cache_hit = plan is not None
     planning_started = time.perf_counter()
-    if plan is None:
-        report("planning", 0.67, "Собираем последовательность событий и целые реплики")
-        from .editorial import load_profile
-        editorial_prof = load_profile(job_dir)
-        if editorial_prof.get('dramatic_condensation', False):
-            from .dramatic_planner import build_dramatic_plan
-            plan = build_dramatic_plan(analysis)
-        else:
-            plan = build_plan(analysis)
-        plan['editing'] = options
-        for part in plan['parts']:
-            part.update(options)
-            if options['caption_style'] == 'accent':
-                part['subtitles'] = make_cues(remap_words(analysis['transcript']['words'], part['cuts']), 'accent')
-        validate_plan(plan, analysis)
-        plan["source"]["name"] = source_info.get("name", source.name)
-        plan["fingerprint"] = fingerprint
-        _atomic_json(plan_path, plan)
+    from .final_quality import inspect_final_quality, recover_final_quality, POLICY as QUALITY_POLICY
+    from .pipeline_diagnostics import Diagnostics
+    diagnostics = Diagnostics(job_dir)
+    quality_history = []
+    planning_cache_hit = False
+    for attempt in range(QUALITY_POLICY['max_recovery_passes']+1):
+        check()
+        plan = None
+        identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+                    "semantic_components": semantic_identity(),
+                    "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
+                    "editorial_profile": editorial_prof,"music": music_config,
+                    "subtitle_style": style_identity(options['caption_style'])}
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        gate = inspect_final_quality(analysis)
+        if gate['status'] == 'passed':
+            if not attempt and plan_path.is_file():
+                try:
+                    cached = json.loads(plan_path.read_text(encoding="utf-8"))
+                    unfinished_plan = cached
+                    if previous_plan is None:
+                        previous_plan = cached
+                    if cached.get("fingerprint") == fingerprint:
+                        validate_plan(cached, analysis)
+                        plan = cached
+                        planning_cache_hit = True
+                except (ValueError, KeyError, TypeError):
+                    pass
+            if plan is None:
+                report("planning", 0.67, "Собираем последовательность событий и целые реплики")
+                if editorial_prof.get('dramatic_condensation', False):
+                    from .dramatic_planner import build_dramatic_plan
+                    plan = build_dramatic_plan(analysis)
+                else:
+                    plan = build_plan(analysis)
+                plan['editing'] = options
+                for part in plan['parts']:
+                    part.update(options)
+                    if options['caption_style'] == 'accent':
+                        part['subtitles'] = make_cues(remap_words(analysis['transcript']['words'], part['cuts']), 'accent')
+                validate_plan(plan, analysis)
+                plan["source"]["name"] = source_info.get("name", source.name)
+            gate = inspect_final_quality(analysis,plan)
+        quality_history.append({'attempt':attempt,'fingerprint':fingerprint,'gate':gate})
+        diagnostics.write('final_quality_gate.json',{'status':gate['status'],'history':quality_history,**gate})
+        _atomic_json(job_dir/'final_quality_gate.json',{'status':gate['status'],'history':quality_history,**gate})
+        if gate['status'] == 'passed':
+            break
+        if attempt == QUALITY_POLICY['max_recovery_passes']:
+            raise ValueError('analysis_unresolved: final_quality_gate — '+', '.join(sorted({p['code'] for p in gate['problems']})))
+        report('quality_gate', .68, f'Финальная проверка: уточняем исходные доказательства, проход {attempt+1}')
+        from .analysis import vision_session, analysis_provider
+        from .config import STORY_MODEL, STORY_PROJECTOR
+        with vision_session(job_dir,cancelled,analysis_provider(job_dir),model=STORY_MODEL,projector=STORY_PROJECTOR,thinking=True) as vision:
+            analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)
+        planning_cache_hit = False
+    plan['quality_gate'] = gate
+    plan['fingerprint'] = fingerprint
+    _atomic_json(job_dir/'analysis-final.json',analysis)
+    _atomic_json(plan_path,plan)
     timings["stages_seconds"]["planning"] = round(time.perf_counter() - planning_started, 6)
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)

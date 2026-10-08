@@ -172,11 +172,15 @@ export function EditEpisodePage() {
                   <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan')} disabled={isStarting}>
                     <option value="deepseek_plan">DeepSeek · сюжет и план (Облако)</option>
                     <option value="hybrid">Локально + DeepSeek API (Старый)</option>
-                    <option value="local">На компьютере · без сети (Быстрая)</option>
+                    <option value="local">На компьютере · без сети</option>
                   </select>
                 </div>
                 <p className="muted small" style={{ marginTop: '8px' }}>
-                  {provider === 'deepseek_plan' ? 'Анализ видео выполняется с помощью DeepSeek.' : 'Анализ выполняется на компьютере.'}
+                  {provider === 'deepseek_plan' || provider === 'deepseek'
+                    ? 'Следующий запуск: анализ с помощью DeepSeek.'
+                    : provider === 'hybrid'
+                    ? 'Следующий запуск: локальный анализ с проверками DeepSeek.'
+                    : 'Следующий запуск: анализ на компьютере.'}
                 </p>
                 <DeepSeekPanel />
               </div>

@@ -20,6 +20,38 @@ from tests.test_jobs import FakeWorker, deepseek_stub
 
 
 class ApiTests(unittest.TestCase):
+    def test_stage_progress_is_readonly_and_tolerates_incomplete_diagnostics(self):
+        job = self.start_job()
+        self.client.post(f"/api/jobs/{job['id']}/cancel")
+        directory = self.manager.job_dir(job['id'])
+        job = self.manager.get(job['id'])
+        job.update(status='failed', stage='scenes', progress=.99)
+        atomic_json(directory/'job.json',job)
+        audit=directory/'diagnostics'/'pipeline'
+        audit.mkdir(parents=True)
+        atomic_json(audit/'run.json',{'run_id':'current'})
+        atomic_json(directory/'scene-features.json',{str(i):{} for i in range(4)})
+        rows=[{'run_id':'old','source_time':.5,'decision':{}},
+              {'run_id':'current','source_time':1,'decision':{}},
+              {'run_id':'current','source_time':1,'decision':{}}]
+        import json
+        (audit/'boundary_decisions.jsonl').write_text(
+            ''.join(json.dumps(row)+'\n' for row in rows)+'{"partial":',encoding='utf-8')
+        before=(directory/'job.json').read_bytes()
+        response=self.client.get(f"/api/jobs/{job['id']}")
+        self.assertEqual(response.status_code,200,response.text)
+        progress=response.json()['stage_progress']
+        self.assertEqual(set(progress),{'prepare','transcribe','scenes','analyze','condense','framing','plan','render'})
+        self.assertEqual(progress['scenes']['status'],'failed')
+        self.assertEqual((progress['scenes']['completed'],progress['scenes']['total']),(1,3))
+        self.assertEqual((directory/'job.json').read_bytes(),before)
+        atomic_json(audit/'run.json',[])
+        atomic_json(directory/'scene-features.json',[])
+        (audit/'timeline.jsonl').write_text('[]\n{"stage":[]}\n{"partial":',encoding='utf-8')
+        malformed=self.client.get(f"/api/jobs/{job['id']}")
+        self.assertEqual(malformed.status_code,200,malformed.text)
+        self.assertIsNone(malformed.json()['stage_progress']['scenes']['fraction'])
+
     def test_retired_balance_endpoints_do_not_read_or_refresh_money(self):
         state={'accounting_enabled':False}
         with patch('app.provider_balance.refresh') as refresh, patch('app.provider_balance.status') as status:

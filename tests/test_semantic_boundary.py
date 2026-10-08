@@ -16,7 +16,8 @@ from app.semantic_boundary import (boundary_schema, validate_boundary, classify_
 def decision(**changes):
     value = dict(same_location=True, location_changed=False, same_characters=True,
                  character_state_changed=False, object_state_changed=False, physical_transition=False,
-                 transition_type='none', confidence=.93, uncertain=False, evidence='Same visible window and people.')
+                 transition_type='none', change_scope='same_scene', confidence=.93,
+                 uncertain=False, evidence='Same visible window and people.')
     return {**value, **changes}
 
 
@@ -38,6 +39,29 @@ class SemanticBoundaryMechanismTests(unittest.TestCase):
                         {'transition_type': 'unknown'}, {'evidence': ''}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_boundary(decision(**changes))
+
+    def test_minor_motion_cannot_be_promoted_to_capture_or_location(self):
+        minor = decision(change_scope='minor_motion', evidence='The same face blinks within one ongoing shot.')
+        self.assertEqual(validate_boundary(minor), minor)
+        for changes in ({'physical_transition': True, 'character_state_changed': True, 'transition_type': 'capture'},
+                        {'same_location': False, 'location_changed': True, 'transition_type': 'location'},
+                        {'object_state_changed': True}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                validate_boundary({**minor, **changes})
+
+    def test_story_state_transition_stays_eligible_with_the_same_background(self):
+        binding = decision(change_scope='story_transition', physical_transition=True,
+                           character_state_changed=True, transition_type='binding',
+                           evidence='The same room remains visible while the wrists become restrained.')
+        self.assertEqual(validate_boundary(binding), binding)
+        with self.assertRaises(ValueError):
+            validate_boundary(decision(change_scope='story_transition', transition_type='binding'))
+        schema = boundary_schema()
+        self.assertEqual(next(iter(schema['properties'])), 'evidence')
+        self.assertEqual(len(schema['oneOf']), 5)
+        from app.deepseek import _validate
+        _validate(binding, schema)
+        _validate(decision(change_scope='minor_motion'), schema)
 
     def test_robust_same_scene_skips_vlm_but_state_or_audio_demand_is_ambiguous(self):
         feature = {'reliability': 1, 'perceptual_embedding': [1,0], 'background_embedding': [1,0]}
@@ -129,7 +153,8 @@ class SourceBoundaryEvidenceTests(unittest.TestCase):
             requests=[]
             def query(self,prompt,images,**kwargs):
                 self.requests.append((prompt,images))
-                return decision(uncertain=len(self.requests)==1,confidence=.8 if len(self.requests)==1 else .93)
+                return decision(uncertain=len(self.requests)==1,confidence=.8 if len(self.requests)==1 else .93,
+                                change_scope='uncertain' if len(self.requests)==1 else 'same_scene')
         adapter=Adapter()
         result=verify_boundary(self.source,2,0,4,{'segments':[]},{},self.job,adapter,lambda:False)
         self.assertFalse(result['uncertain'])

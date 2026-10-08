@@ -189,6 +189,43 @@ class ClosingTests(unittest.TestCase):
         self.assertTrue(result[1]['story_warnings'])
         self.assertFalse(vision.calls)
 
+    def test_production_closing_uses_each_current_chunk_and_original_unit_ids(self):
+        directory, events, _ = fixture()
+        events = events[:2]
+        events[1]['units'] = [{'id':'c000_u000','start':80,'end':85,'text':''},
+                              {'id':'c001_u000','start':85,'end':90,'text':''}]
+        events[1]['analysis_chunks'] = [{'start':80,'end':85}, {'start':85,'end':90}]
+        for number in range(2):
+            Image.new('RGB',(48,27),('red','blue')[number]).save(
+                directory/'visual'/f'mixed_chunk_{number:03d}.jpg')
+        result, vision = self.run_closing(directory, events,
+            [decision(['c000_u000'],[]), decision([],['c001_u000'])])
+        self.assertEqual(result[1]['selected_ranges'],[{'start':85,'end':90}])
+        self.assertEqual([call[1].name for call in vision.calls],
+                         ['mixed_chunk_000.jpg','mixed_chunk_001.jpg'])
+        for number,call in enumerate(vision.calls):
+            ids=call[3]['properties']['new_story_units']['items']['enum']
+            self.assertEqual(ids,[f'c{number:03d}_u000'])
+            self.assertLessEqual(vision.token_count(call[0]),4000)
+        _, cached = self.run_closing(directory, events, [])
+        self.assertFalse(cached.calls)
+        Image.new('RGB',(48,27),'green').save(directory/'visual/mixed_chunk_001.jpg')
+        _, changed = self.run_closing(directory, events,
+            [decision(['c000_u000'],[]), decision([],['c001_u000'])])
+        self.assertEqual(len(changed.calls),2)
+
+    def test_incomplete_current_closing_coverage_requires_adjudication(self):
+        directory, events, _ = fixture()
+        events = events[:2]
+        events[1]['units'] = [{'id':'c000_u000','start':80,'end':85,'text':''},
+                              {'id':'c001_u000','start':85,'end':90,'text':''}]
+        events[1]['analysis_chunks'] = [{'start':80,'end':85}, {'start':85,'end':90}]
+        Image.new('RGB',(48,27),'red').save(directory/'visual/mixed_chunk_000.jpg')
+        result, vision = self.run_closing(directory, events, [])
+        self.assertFalse(vision.calls)
+        self.assertEqual(result[1]['selected_ranges'],events[1]['selected_ranges'])
+        self.assertTrue(result[1]['selection_needs_adjudication'])
+
     def test_no_anchor_discovers_silent_montage_then_verifies_narrated_title(self):
         directory, events, source = fixture()
         events[1].pop('contains_credits')

@@ -22,6 +22,28 @@ export function useJobPolling(jobId: string | null) {
       try {
         const data = await api.getJob(jobId);
         if (!mounted) return;
+        // Compatibility with a server already processing a video while this
+        // UI is upgraded. Its read-only publisher never changes worker state.
+        if (!data.stage_progress && data.status !== 'queued') {
+          try {
+            const snapshot = await api.getLiveStageProgress(jobId);
+            const age = Date.now() - Date.parse(snapshot.updated_at);
+            if (snapshot.version === 1 && snapshot.job_id === data.id &&
+                snapshot.stage === data.stage && snapshot.status === data.status &&
+                typeof snapshot.job_updated_at === 'string' &&
+                snapshot.job_updated_at === data.updated_at &&
+                Number.isFinite(age) && age >= -5000 &&
+                (data.status !== 'running' || age < 20000) &&
+                snapshot.stage_progress && typeof snapshot.stage_progress === 'object' &&
+                !Array.isArray(snapshot.stage_progress)) {
+              data.stage_progress = snapshot.stage_progress;
+            }
+          } catch {
+            // An older server without a live publisher still has valid job
+            // state; its current stage is shown without a made-up percentage.
+          }
+        }
+        if (!mounted) return;
         
         setJob(data);
         setError(null);

@@ -1239,7 +1239,14 @@ progress::-webkit-progress-value {
 .quality-list li + li { margin-top: 8px; }
 .quality-details { max-height: 300px; overflow-y: auto; margin-top: 16px; }
 progress { display: block; width: 100%; height: 8px; accent-color: var(--accent-light); margin-bottom: 14px; }
-.stage-copy { min-width: 0; overflow-wrap: anywhere; }
+.stage-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.stage-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; }
+.stage-percent { flex-shrink: 0; font-variant-numeric: tabular-nums; font-weight: 700; }
+.stage-progress { margin: 7px 0 5px; height: 5px; }
+.stage-detail { margin-top: 3px; line-height: 1.4; }
+.stage-item.done .stage-progress { accent-color: var(--success); }
+.stage-item.done .stage-progress::-webkit-progress-value { background: var(--success); box-shadow: none; }
+.stage-item.done .stage-progress::-moz-progress-bar { background: var(--success); }
 .shorts-download-actions > div, .part-context-block > div { flex-wrap: wrap; gap: 8px; }
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;

@@ -108,7 +108,7 @@ def _compress_dialogue_turns(
                     left = word['start']
                 if word['start'] < right < word['end']:
                     right = word['end']
-            if not event.get('minimal_context_ranges'):
+            if not event.get('minimal_context_ranges') and 'story_structure' not in event:
                 if any(abs(w['start']-left)<.12 for w in words):
                     left = max(ev_start, _speech_lead(left, speech_all))
                 right = min(ev_end, _speech_tail(right, speech_all, duration))
@@ -212,6 +212,14 @@ def _compress_dialogue_turns(
 def _protected_boundary(time, events, segments, words, intervals):
     """An ending label cannot cut an evidenced action or immediate question/answer."""
     for event in events:
+        for pair in event.get('dialogue_relations', {}).get('pairs', []):
+            if pair.get('status') != 'confirmed' or not pair.get('protect_bidirectional'):
+                continue
+            ranges = [*pair['question_ranges'], *pair['answer_ranges']]
+            if (min(r['start'] for r in ranges)+.002 < time < max(r['end'] for r in ranges)-.002
+                    and all(any(i['start'] <= r['start']+.002 and i['end'] >= r['end']-.002
+                                for i in intervals) for r in ranges)):
+                return 'verified_question_response_relation'
         action_ids = set(event.get('action_units', []))
         protected = [*event.get('protected_story_ranges', []), *event.get('causal_ranges', []),
                      *[u for u in event.get('units', []) if u['id'] in action_ids]]
@@ -467,7 +475,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
         raise ValueError('Некорректный бюджет финального профиля серии')
     from .story_structure import build_story_arcs, resolve_continuity
     arcs = build_story_arcs(events, analysis['transcript'])
-    arc_by_event = {identifier: arc for arc in arcs for identifier in arc['event_ids']}
+    arc_by_event = {identifier: [arc for arc in arcs if identifier in arc['event_ids']] for identifier in by_id}
 
     # 1. Base eligibility: non-excluded story events and narrative bridges
     eligible = [
@@ -636,7 +644,8 @@ def build_dramatic_plan(analysis: dict) -> dict:
                        'global_omission' if event.get('global_excluded') else
                        'confirmed_nonstory' if event.get('credit_montage') or event['kind'] != 'story' else 'below_story_threshold']
         candidates.append({'event_id': event['id'], 'score': _event_dramatic_score(event, segments),
-            'selected': event['id'] in retained_ids, 'arc_id': arc_by_event.get(event['id'], {}).get('id'),
+            'selected': event['id'] in retained_ids, 'arc_ids': [a['id'] for a in arc_by_event.get(event['id'], [])],
+            'arc_id': next((a['id'] for a in arc_by_event.get(event['id'], [])), None),
             'reasons': reasons, 'candidate_duration': sum(r['end']-r['start'] for r in candidate_ranges.get(event['id'], []))})
     plan['planner_diagnostics'] = planner_audit({**analysis, 'events': events}, plan,
         candidates=candidates, arcs=arcs, continuity=continuity, part_policy=part_policy)

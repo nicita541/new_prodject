@@ -26,9 +26,12 @@ _COMPONENTS = {
     'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
     'global_story': ('global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
     'episode_profile': ('episode_profile', 'media_evidence', 'selection_gate'),
-    'story': ('story', 'scene_refinement', 'story_review', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
+    'story_structure': ('story_structure_pass','dialogue_relations','selection_gate','source_roles'),
+    'continuity': ('source_continuity','continuity_verification','selection_adjudication','bounded_storyboard','selection_gate','source_roles'),
+    'final_quality': ('final_quality','source_continuity','continuity_verification','selection_gate','pipeline'),
+    'story': ('story', 'scene_refinement', 'story_review', 'closing', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
     'pacing': ('pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'deepseek'),
-    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'episode_profile', 'story_structure', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
+    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
     'ending': ('endings', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek')}
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
@@ -44,7 +47,13 @@ _CONSTANTS = {
     'global_verification': ('GLOBAL_VERIFICATION_VERSION', 'GLOBAL_VISUAL_PROMPT'),
     'episode_profile': ('EPISODE_PROFILE_VERSION', 'EPISODE_PROFILE_POLICY'),
     'retention_allocation': ('VERSION',),
+    'story_structure_pass': ('VERSION','POLICY','STORY_STRUCTURE_PROMPT','ROLES','RELATIONS'),
+    'dialogue_relations': ('VERSION','POLICY','DIALOGUE_PROMPT'),
+    'source_continuity': ('VERSION','FACTS'),
+    'continuity_verification': ('VERSION','POLICY','CONTINUITY_PROMPT'),
+    'final_quality': ('VERSION','POLICY'),
     'story': ('STORY_VERSION', 'EDGE_VERSION', 'OMISSION_REASONS'),
+    'closing': ('CLOSING_VERSION', 'CONTEXT_LIMIT'),
     'scene_refinement': ('SCENE_REFINEMENT_VERSION',),
     'story_review': ('VALID_OMIT_REASONS',),
     'editorial': ('POLICY_ID', 'DRAMATIC_POLICY_ID', 'DEFAULT_PROFILE', 'DRAMATIC_PROFILE'),
@@ -107,6 +116,13 @@ def _literal(node, earlier):
         return values
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         return _literal(node.left, earlier) + _literal(node.right, earlier)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult,ast.Pow)):
+        left,right=_literal(node.left,earlier),_literal(node.right,earlier)
+        if type(left) not in (int,float) or type(right) not in (int,float):
+            raise ValueError('Числовая политика требует числовые литералы')
+        if abs(left)>10**9 or abs(right)>10**9 or isinstance(node.op,ast.Pow) and not 0<=right<=16:
+            raise ValueError('Слишком большое вычисление литеральной политики')
+        return left*right if isinstance(node.op,ast.Mult) else left**right
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         value = _literal(node.operand, earlier)
         return -value if isinstance(node.op, ast.USub) else value

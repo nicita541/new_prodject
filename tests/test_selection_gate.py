@@ -21,6 +21,62 @@ def accepted():
 
 
 class SelectionGateTests(unittest.TestCase):
+    def test_source_gate_preserves_downstream_failure_without_repeating_visual_inference(self):
+        from app.selection_gate import source_selection_readiness
+        event = accepted()
+        event.update(analysis_unresolved=True, analysis_unresolved_reasons=[
+            'story_structure_unresolved', 'dialogue_relations_unresolved'])
+        original = copy.deepcopy(event)
+        with patch('app.selection_adjudication.adjudicate_event') as inspect:
+            result = adjudicate_selections('source', [event], {}, [], 'job', None,
+                lambda *a: None, lambda: False, source_only=True)
+        inspect.assert_not_called()
+        self.assertEqual(source_selection_readiness(result)['status'], 'passed')
+        self.assertEqual(selection_readiness(result)['status'], 'unresolved')
+        self.assertTrue(result[0]['analysis_unresolved'])
+        self.assertEqual(result[0]['analysis_unresolved_reasons'], original['analysis_unresolved_reasons'])
+        self.assertEqual(result[0]['unit_evidence'], original['unit_evidence'])
+
+    def test_downstream_projection_cannot_hide_missing_proof_or_source_uncertainty(self):
+        from app.selection_gate import source_selection_readiness
+        for field in ('unit_evidence', 'selection_uncertain', 'source_role_unresolved'):
+            event = accepted()
+            event.update(analysis_unresolved=True, analysis_unresolved_reasons=['story_structure_unresolved'])
+            event[field] = [] if field == 'unit_evidence' else True
+            with self.subTest(field=field):
+                self.assertEqual(source_selection_readiness([event])['status'], 'unresolved')
+        for reasons in ([], ['other_failure'], ['story_structure_unresolved', 'other_failure'], [{}]):
+            event = accepted(); event.update(analysis_unresolved=True, analysis_unresolved_reasons=reasons)
+            self.assertEqual(source_selection_readiness([event])['status'], 'unresolved')
+
+    def test_failed_text_pass_retries_its_owner_and_cannot_clear_quality_without_success(self):
+        from app.analysis import finalize_editorial_selection
+        event = accepted()
+        event.update(analysis_unresolved=True, analysis_unresolved_reasons=['story_structure_unresolved'])
+        diagnostics = MagicMock()
+        with patch('app.selection_adjudication.adjudicate_event') as visual, \
+                patch('app.endings.refine_endings') as endings, \
+                patch('app.story_structure_pass.infer_story_structure', return_value={'events': [event]}) as structure, \
+                patch('app.dialogue_relations.infer_dialogue_relations', return_value={}) as dialogue, \
+                patch('app.dialogue_relations.attach_dialogue_result', return_value=[event]), \
+                patch('app.analysis.atomic_json'):
+            result = finalize_editorial_selection('source', [event], {}, [], {}, 'job', None,
+                lambda *a: None, lambda: False, diagnostics, 'local')
+        visual.assert_not_called(); endings.assert_not_called()
+        structure.assert_called_once(); dialogue.assert_called_once()
+        self.assertTrue(result[0]['analysis_unresolved'])
+        self.assertEqual(diagnostics.write.call_args.args[1]['status'], 'unresolved')
+
+    def test_frame_only_spoken_proof_is_rejected_but_silent_reaction_remains_eligible(self):
+        event = accepted()
+        event['units'][0]['text'] = ''
+        record = event['unit_evidence'][0]
+        record.update(speech_quote='', frame_indices=[1], frame_times=[1.], frame_count=1)
+        self.assertEqual(positive_ranges(event), [])
+        self.assertIn('unexplained_selected_ranges', selection_problems(event))
+        record['kind'] = 'character_reaction'
+        self.assertEqual(positive_ranges(event), [{'start': 0, 'end': 10}])
+
     def test_unresolved_analysis_persists_gate_without_invoking_ending_planner(self):
         from app.analysis import finalize_editorial_selection
         event=accepted();event.update(analysis_unresolved=True,selection_uncertain=True)
@@ -39,11 +95,17 @@ class SelectionGateTests(unittest.TestCase):
         ready=accepted();changed=accepted();changed['selected_ranges']=[{'start':0,'end':11}]
         diagnostics=MagicMock()
         with patch('app.selection_gate.adjudicate_selections',side_effect=[[ready],[ready]]) as adjudicate, \
-                patch('app.endings.refine_endings',return_value=[changed]) as endings:
+                patch('app.endings.refine_endings',return_value=[changed]) as endings, \
+                patch('app.story_structure_pass.infer_story_structure',return_value={'events':[ready]}) as structure, \
+                patch('app.dialogue_relations.infer_dialogue_relations',return_value={}) as dialogue, \
+                patch('app.dialogue_relations.attach_dialogue_result',return_value=[ready]), \
+                patch('app.analysis.atomic_json'):
             result=finalize_editorial_selection('source',[ready],{},[],{},'job',None,
                 lambda *a:None,lambda:False,diagnostics,'local')
         self.assertEqual(adjudicate.call_count,2)
         self.assertEqual(endings.call_count,1)
+        structure.assert_called_once()
+        dialogue.assert_called_once()
         self.assertEqual(result,[ready])
         self.assertEqual(diagnostics.write.call_args.args[1]['status'],'passed')
 

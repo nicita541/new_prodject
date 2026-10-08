@@ -50,7 +50,8 @@ class LocalVision:
         command = [str(LLAMA), '-m', str(self.model), '--mmproj', str(self.projector),
                    '--host', '127.0.0.1', '--port', str(self.port), '-c', '8192', '-np', '1',
                    '-ngl', '0' if cpu else str(self.gpu_layers), '-b', '256', '-ub', '128', '--no-webui', '--api-key', self.api_key,
-                   '--no-cache-prompt', '--cache-ram', '0', '--image-min-tokens', '1024', '--offline']
+                   '--no-cache-prompt', '--cache-ram', '0', '--image-min-tokens', '256',
+                   '--image-max-tokens', '2048', '--offline']
         if cpu or self.cpu_projector:
             command.append('--no-mmproj-offload')
         if self.thinking:
@@ -142,7 +143,9 @@ class LocalVision:
         try:
             data = json.loads(message)
         except json.JSONDecodeError as error:
-            raise ValueError('Модель вернула некорректный JSON') from error
+            reason=raw['choices'][0].get('finish_reason','unknown')
+            used=raw.get('usage',{}).get('completion_tokens')
+            raise ValueError(f'Модель вернула некорректный JSON (finish_reason={reason}, completion_tokens={used})') from error
         if not isinstance(data, dict):
             raise ValueError('Модель вернула неверный формат анализа')
         return data
@@ -207,6 +210,35 @@ def storyboard_samples(start: float, end: float, shots: list, transcript: dict) 
 
 def storyboard_times(start: float, end: float, shots: list, transcript: dict) -> list[float]:
     return [item['time'] for item in storyboard_samples(start, end, shots, transcript)]
+
+
+def inference_samples(start, end, units, *, recovery=False):
+    """Source sampling demand for one technical view; never choose story times."""
+    samples = set()
+    for unit in units:
+        a, b = max(start,unit['start']), min(end,unit['end'])
+        if a >= b:
+            continue
+        count = max(1,math.ceil((b-a)/.5))
+        phase = .25 if recovery else .5
+        samples.update(round(a+(i+phase)*(b-a)/count,9) for i in range(count))
+        samples.add(round((a+b)/2,9))
+        if b-a <= 3:
+            samples.update(round(a+(b-a)*fraction,9) for fraction in (.15,.85))
+    return sorted(samples)
+
+
+def inference_storyboard(source, start, end, units, destination, cancelled, *, recovery=False, context=False):
+    from .bounded_storyboard import build_bounded_storyboard
+    from .media_probe import atomic_json, load_json
+    times = None if context else inference_samples(start,end,units,recovery=recovery)
+    timestamps = build_bounded_storyboard(source,start,end,destination,cancelled,times=times,context=context)
+    board = load_json(destination.with_suffix('.storyboard.json'))
+    for frame in board['frames']:
+        frame['unit_ids'] = [u['id'] for u in units if u['start'] <= frame['time'] < u['end']]
+        frame['reasons'] = ['context_only' if context else 'recovery_source_sample' if recovery else 'source_unit_sample']
+    atomic_json(destination.with_suffix('.storyboard.json'),board)
+    return timestamps
 
 
 def storyboard(source: Path, start: float, end: float, shots: list, transcript: dict, destination: Path, cancelled,

@@ -17,7 +17,7 @@ from app.deepseek import BudgetExceeded, RemoteError
 from app.jobs import BusyError
 from app.media_probe import atomic_json, load_json
 from app.selection_adjudication import (adjudicate_event, issues, minimal_semantic_context,
-    validate_adjudication, _views)
+    validate_adjudication, adjudication_schema, _views)
 
 
 EMPTY = {'words': [], 'segments': []}
@@ -59,6 +59,20 @@ class FakeVision:
 
 
 class SelectionAdjudicationTests(unittest.TestCase):
+    def test_silent_current_cannot_borrow_a_spoken_contribution_from_context(self):
+        unit = {'id': 'silent', 'start': 0., 'end': 1., 'text': ''}
+        frames = [{'time': .5}]
+        payload = {'CURRENT': {'units': [unit], 'frames': frames}}
+        raw = answer(payload, keep=['silent'], action_units=[],
+            unit_evidence=[evidence(unit, frames, 'causal_dialogue')])
+        with self.assertRaisesRegex(ValueError, 'собственную ASR цитату'):
+            validate_adjudication(raw, [unit], frames)
+        branches = adjudication_schema([unit], frames)['properties']['unit_evidence']['items']['oneOf']
+        self.assertNotIn('causal_dialogue', branches[0]['properties']['kind']['enum'])
+        self.assertNotIn('response', branches[0]['properties']['kind']['enum'])
+        raw['unit_evidence'][0]['kind'] = 'character_reaction'
+        self.assertTrue(validate_adjudication(raw, [unit], frames)['accepted'])
+
     def setUp(self):
         self.job = TEMP/('selection-adjudication-'+uuid.uuid4().hex)
         self.job.mkdir(parents=True)
@@ -133,6 +147,24 @@ class SelectionAdjudicationTests(unittest.TestCase):
         self.assertTrue(result['analysis_unresolved'])
         self.assertEqual(result['selected_ranges'], [{'start': 0., 'end': 4.}])
         self.assertEqual(result['selection_adjudication']['understanding_confidence'], .95)
+
+    def test_adjacent_source_speech_outlives_short_visual_context_without_current_ownership(self):
+        event={**copy.deepcopy(self.event),'start':8.26,'end':12.,
+               'units':[{'id':'reply','start':8.26,'end':12.,'text':''}]}
+        transcript={'words':[{'start':.85,'end':3.17,'text':'Где ключ от двери'},
+                             {'start':8.26,'end':11.88,'text':'Он под синей чашкой на столе.'}],
+                    'segments':[]}
+        vision=FakeVision()
+        self.adjudicate(vision,event=event,transcript=transcript)
+        payload=vision.requests[0][3]
+        before=next(c for c in payload['CONTEXT_ASR_ONLY'] if c['role']=='BEFORE_CONTEXT_ONLY')
+        self.assertEqual(before['ASR']['words'],[transcript['words'][0]])
+        self.assertEqual(payload['CURRENT']['ASR']['words'],[transcript['words'][1]])
+        self.assertEqual(payload['CURRENT']['units'][0]['text'],transcript['words'][1]['text'])
+        visual=next(c for c in payload['CONTEXT_ONLY'] if c['role']=='BEFORE_CONTEXT_ONLY')
+        self.assertTrue(all(6.26<=f['time']<8.26 for f in visual['frames']))
+        self.assertEqual(visual['ASR']['words'],[])
+        self.assertEqual(len(vision.requests[0][1]),2)
 
     def test_unresolved_without_positive_evidence_has_no_asr_or_endpoint_keep_all(self):
         transcript = {'words': [{'start': 0., 'end': 12., 'text': 'Длинная реплика'}], 'segments': []}
@@ -225,11 +257,13 @@ class SelectionAdjudicationTests(unittest.TestCase):
 
     def test_positive_contribution_in_dropped_unit_is_a_rejected_contradiction(self):
         from app.selection_adjudication import POSITIVE_KINDS
-        units = [{'id': 'u0', 'start': 0., 'end': 4., 'text': ''}]
+        units = [{'id': 'u0', 'start': 0., 'end': 4., 'text': 'Дверь закрыта.'}]
         frames = [{'time': 2.}]
         for kind in POSITIVE_KINDS:
             raw = answer({'CURRENT': {'units': units, 'frames': frames}}, keep=[])
             raw['unit_evidence'][0]['kind'] = kind
+            if kind in ('causal_dialogue', 'response'):
+                raw['unit_evidence'][0]['speech_quote'] = units[0]['text']
             with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, 'drop_units'):
                 validate_adjudication(raw, units, frames)
 
@@ -522,7 +556,21 @@ class SelectionAdjudicationTests(unittest.TestCase):
         self.adjudicate(vision, event)
         for request in vision.requests:
             for unit in request[3]['CURRENT']['units']:
-                self.assertEqual(set(unit), {'id', 'start', 'end', 'text', 'boundary_reason'})
+                self.assertEqual(set(unit), {'id', 'start', 'end', 'text', 'boundary_reason','frame_indices'})
+                frames = request[3]['CURRENT']['frames']
+                expected = [f['index'] for f in frames if unit['start'] <= f['time'] < unit['end']]
+                self.assertEqual(unit['frame_indices'],expected)
+
+    def test_generation_schema_limits_each_unit_to_its_actual_current_frames(self):
+        frames = [{'time':.5},{'time':3.99},{'time':4},{'time':7.9},{'time':8},{'time':11.9}]
+        schema = adjudication_schema(self.event['units'],frames)
+        branches = schema['properties']['unit_evidence']['items']['oneOf']
+        for unit,branch,allowed in zip(self.event['units'],branches,([1,2],[3,4],[5,6])):
+            self.assertEqual(branch['properties']['unit']['enum'],[unit['id']])
+            self.assertEqual(branch['properties']['frame_indices']['items']['enum'],allowed)
+        # These domains are measured source geometry, not prescribed keep/drop,
+        # action, quote or semantic decisions.
+        self.assertEqual(schema['properties']['keep_units']['items']['enum'],[u['id'] for u in self.event['units']])
 
     def test_source_mutated_during_query_is_unresolved(self):
         def mutate(payload):
