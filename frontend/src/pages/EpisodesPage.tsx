@@ -83,8 +83,8 @@ export function EpisodesPage() {
 
       <section id="episodes-screen" className="app-screen" aria-label="Серии">
         <div className="action-bar" style={{ justifyContent: 'space-between' }}>
-          <form id="episode-form" style={{ display: 'flex', alignItems: 'center', gap: '12px' }} onSubmit={handleCreate}>
-            <span className="muted small" style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>Номер серии:</span>
+          <form id="episode-form" className="action-row" onSubmit={handleCreate}>
+            <label htmlFor="episode-number" className="muted small" style={{ whiteSpace: 'nowrap', fontWeight: 600 }}>Номер серии:</label>
             <input 
               type="number" 
               id="episode-number" 

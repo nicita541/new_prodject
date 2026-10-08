@@ -63,6 +63,7 @@ export function ProjectsPage() {
             <input 
               type="text" 
               id="project-title" 
+              aria-label="Название нового проекта"
               className="form-input" 
               placeholder="Название нового проекта (например: Магическая битва)" 
               required 

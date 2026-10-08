@@ -28,6 +28,9 @@ export function QualityWarnings({ plan }: QualityWarningsProps) {
         </h2>
       </div>
       
+      <details>
+        <summary className="settings-summary">Посмотреть замечания и примечания</summary>
+        <div className="quality-details">
       {warnings.length > 0 && (
         <ul id="quality-warning-list" className="quality-list warnings">
           {warnings.map((w, i) => (
@@ -38,7 +41,7 @@ export function QualityWarnings({ plan }: QualityWarningsProps) {
 
       {notes.length > 0 && (
         <div id="quality-notes" style={{ marginTop: '16px' }}>
-          <h3 className="muted small" style={{ marginBottom: '8px', fontWeight: 600 }}>ПРИМЕЧАНИЯ АНАЛИЗА</h3>
+          <h3 className="muted small" style={{ marginBottom: '8px', fontWeight: 600 }}>Примечания анализа</h3>
           <ul id="quality-note-list" className="quality-list notes">
             {notes.map((n, i) => (
               <li key={i}>{typeof n === 'string' ? n : (n as import('../api/types').QualityWarningItem).text}</li>
@@ -46,6 +49,8 @@ export function QualityWarnings({ plan }: QualityWarningsProps) {
           </ul>
         </div>
       )}
+        </div>
+      </details>
     </section>
   );
 }

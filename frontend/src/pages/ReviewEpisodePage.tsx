@@ -23,6 +23,7 @@ export function ReviewEpisodePage() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [fetchError, setFetchError] = useState<string>('');
+  const [isFetching, setIsFetching] = useState(true);
   const allEpisodeJobs = completedJobsForEpisode(episode);
 
   useEffect(() => {
@@ -30,6 +31,7 @@ export function ReviewEpisodePage() {
     
     const fetchJob = async () => {
       setFetchError('');
+      setIsFetching(true);
       setJob(null);
       setPlan(null);
       setSelectedIndex(0); // Reset selectedIndex on job switch
@@ -64,6 +66,8 @@ export function ReviewEpisodePage() {
         }
       } catch (e) {
         if (live) setFetchError(e instanceof Error ? e.message : 'Ошибка загрузки данных');
+      } finally {
+        if (live) setIsFetching(false);
       }
     };
     fetchJob();
@@ -84,10 +88,11 @@ export function ReviewEpisodePage() {
         <div>
           <h1 className="page-title">Проверка монтажа {episode.number}</h1>
         </div>
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+        <div className="toolbar-actions">
           {allEpisodeJobs.length > 0 && (
             <select 
               id="episode-attempt" 
+              aria-label="Версия монтажа"
               className="form-select"
               value={job?.id || ''}
               onChange={e => {
@@ -114,7 +119,7 @@ export function ReviewEpisodePage() {
         {job && plan ? (
           <>
             {/* Timeline Panel */}
-            <Timeline job={job} plan={plan} selectedIndex={activeIndex} onSelectPart={setSelectedIndex} />
+            <Timeline key={job.id} job={job} plan={plan} selectedIndex={activeIndex} onSelectPart={setSelectedIndex} />
             <QualityWarnings plan={plan} />
 
             {/* Results Panel */}
@@ -151,9 +156,11 @@ export function ReviewEpisodePage() {
               </div>
             </section>
           </>
-        ) : (
+        ) : isFetching ? (
+          <p className="notice" role="status">Загрузка монтажа...</p>
+        ) : !fetchError ? (
           <p id="review-empty" className="empty-state">Готового монтажа пока нет. Вернитесь в настройки серии.</p>
-        )}
+        ) : null}
       </div>
     </main>
   );

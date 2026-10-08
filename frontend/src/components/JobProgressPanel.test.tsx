@@ -37,6 +37,17 @@ describe('JobProgressPanel', () => {
     expect(screen.getByText('Network timeout')).toBeInTheDocument();
   });
 
+  it.each([
+    ['global_verify', 'Проверка изображения и сюжета', 'analyze'],
+    ['quality_gate', 'Проверка качества монтажа', 'plan']
+  ])('recognizes production checkpoint %s', (stage, label, group) => {
+    vi.mocked(useJobPolling).mockReturnValue({ job: { ...mockJob, stage }, isLoading: false, error: null } as any);
+    const { container } = render(<BrowserRouter><JobProgressPanel jobId="test-job" episodeId="test-episode" /></BrowserRouter>);
+    expect(container.querySelector('#stage-label')).toHaveTextContent(label);
+    expect(container.querySelector(`[data-stage="${group}"]`)).toHaveAttribute('aria-current', 'step');
+    expect(screen.queryByText('Стадия сервера не распознана')).not.toBeInTheDocument();
+  });
+
   it('renders completed state', () => {
     const completedJob: Job = { ...mockJob, status: 'completed' };
     vi.mocked(useJobPolling).mockReturnValue({ job: completedJob, isLoading: false, error: null } as any);

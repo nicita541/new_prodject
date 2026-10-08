@@ -60,12 +60,19 @@ export function DeepSeekPanel() {
           </div>
         )}
 
-        <div style={{ display: 'flex', gap: '12px', marginTop: '16px' }}>
-          <a href="/docs/ai/deepseek-setup.md" className="btn-text">Инструкция по ключам</a>
+        <div className="action-row" style={{ marginTop: '16px' }}>
           <button id="balance-refresh-button" type="button" className="btn-secondary" onClick={fetchStatus} disabled={isLoading}>
             {isLoading ? 'Обновление...' : 'Обновить баланс'}
           </button>
         </div>
+        <details>
+          <summary className="settings-summary">Как подключить DeepSeek</summary>
+          <p className="muted small" style={{ marginTop: '12px' }}>
+            Для облачного анализа нужен ключ DeepSeek и положительный баланс аккаунта.
+            Ключ хранится в локальных настройках приложения: data/settings/deepseek.private.json.
+            После настройки нажмите «Обновить баланс» для проверки подключения.
+          </p>
+        </details>
       </div>
     </details>
   );

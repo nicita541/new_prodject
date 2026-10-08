@@ -27,6 +27,7 @@ export function EditEpisodePage() {
   // Job state
   const [isStarting, setIsStarting] = useState(false);
   const [saveMessage, setSaveMessage] = useState('');
+  const [saveSucceeded, setSaveSucceeded] = useState(false);
   
   useEffect(() => {
     if (episode && episode.settings) {
@@ -40,6 +41,7 @@ export function EditEpisodePage() {
   const handleSaveSettingsOnly = async (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     if (!episodeId || !sourceId) return;
+    setSaveSucceeded(false);
     try {
       await api.saveEpisodeSettings(episodeId, {
         source_id: sourceId,
@@ -48,6 +50,7 @@ export function EditEpisodePage() {
         analysis_provider: provider
       });
       setSaveMessage('Настройки этой серии сохранены. Монтаж не запускался.');
+      setSaveSucceeded(true);
       setTimeout(() => setSaveMessage(''), 3000);
     } catch (err) {
       setSaveMessage(err instanceof Error ? err.message : 'Ошибка сохранения');
@@ -181,8 +184,8 @@ export function EditEpisodePage() {
               <MusicPanel partCount={partCount} />
 
               <div className="settings-group">
-                <p id="form-message" className="message" role="status" hidden={!saveMessage}>{saveMessage}</p>
-                <div style={{ display: 'flex', gap: '16px', alignItems: 'center', justifyContent: 'space-between' }}>
+                <p id="form-message" className={`message ${saveSucceeded ? 'success' : ''}`} role="status" hidden={!saveMessage}>{saveMessage}</p>
+                <div className="action-row" style={{ justifyContent: 'space-between' }}>
                   <button 
                     type="button" 
                     id="save-settings" 
@@ -190,7 +193,7 @@ export function EditEpisodePage() {
                     onClick={handleSaveSettingsOnly} 
                     disabled={isStarting || !sourceId}
                   >
-                    Сохранить по умолчанию
+                    Сохранить настройки серии
                   </button>
                   <button id="create-button" type="submit" className="btn-primary" disabled={isStarting || !sourceId}>
                     {isStarting ? 'Запускаем...' : 'Смонтировать'}
@@ -203,6 +206,9 @@ export function EditEpisodePage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
             <JobProgressPanel jobId={activeJobId} episodeId={episode.id} />
+            {completedJobsForEpisode(episode)[0] && (
+              <Link className="btn-secondary" to={`/episode/${episode.id}/review/${completedJobsForEpisode(episode)[0].id}`}>Посмотреть готовый монтаж</Link>
+            )}
           </div>
         </div>
       </section>

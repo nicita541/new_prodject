@@ -1,5 +1,6 @@
 import { describe,it,expect,vi,beforeEach } from 'vitest';
 import { render,screen,waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter,Routes,Route } from 'react-router-dom';
 import { EditEpisodePage } from './EditEpisodePage';
 import { api } from '../api/client';
@@ -24,5 +25,16 @@ describe('Edit flat episode ownership and job references',()=>{
     page(e2.id);await waitFor(()=>expect(screen.getByTestId('job')).toHaveTextContent(e2.jobs[0].id));
     expect(screen.getByRole('button',{name:'Удалить серию'})).toBeDisabled();
     expect(api.getJob).toHaveBeenCalledWith(e2.jobs[0].id);
+  });
+  it('saves series settings with success feedback without launching montage',async()=>{
+    const data=libraryCopy();data.episodes[0].source_id='fixture-source';
+    vi.mocked(useLibrary).mockReturnValue({data,isLoading:false,error:null,refetch});
+    page(e1.id);
+    const save=screen.getByRole('button',{name:'Сохранить настройки серии'});
+    await waitFor(()=>expect(save).toBeEnabled());
+    await userEvent.click(save);
+    expect(api.saveEpisodeSettings).toHaveBeenCalledWith(e1.id,expect.objectContaining({source_id:'fixture-source'}));
+    expect(api.launchEpisodeJob).not.toHaveBeenCalled();
+    expect(await screen.findByRole('status')).toHaveClass('success');
   });
 });

@@ -7,6 +7,11 @@ const page=(jobId?:string)=>render(<MemoryRouter initialEntries={[`/episode/${e1
 beforeEach(()=>{vi.clearAllMocks();vi.mocked(useLibrary).mockReturnValue({data:libraryCopy(),isLoading:false,error:null,refetch});
  vi.mocked(api.getJob).mockImplementation(async id=>jobDetails(id));vi.mocked(api.getJobPlan).mockResolvedValue({source:{duration:10},parts:[]});});
 describe('Review real job references',()=>{
+ it('shows loading rather than a false empty result while fetching',()=>{
+  vi.mocked(api.getJob).mockReturnValue(new Promise(()=>{}));page();
+  expect(screen.getByRole('status')).toHaveTextContent('Загрузка монтажа');
+  expect(screen.queryByText(/Готового монтажа пока нет/)).not.toBeInTheDocument();
+ });
  it('requests completed job by its string ID, ignoring newer failed attempts',async()=>{
   page();await waitFor(()=>expect(api.getJobPlan).toHaveBeenCalledWith(completedJob.id));
   expect(api.getJob).toHaveBeenCalledWith(completedJob.id);expect(api.getJob).toHaveBeenCalledTimes(1);

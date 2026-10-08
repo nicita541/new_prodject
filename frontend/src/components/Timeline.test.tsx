@@ -56,12 +56,28 @@ describe('Timeline Component', () => {
   });
 
   it('toggles limit to part', async () => {
-    render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
+    const { container } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
     const limitCheckbox = screen.getByLabelText(/В пределах части/);
     expect(limitCheckbox).not.toBeChecked();
     
     await userEvent.click(limitCheckbox);
     expect(limitCheckbox).toBeChecked();
+    const video = container.querySelector('video')!;
+    expect(video.currentTime).toBe(10);
+    video.currentTime = 20;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalled();
+  });
+
+  it('selecting a whole part establishes its playback limit', async () => {
+    const { container } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
+    await userEvent.click(screen.getByLabelText(/В пределах части/));
+    await userEvent.click(screen.getByRole('button', { name: 'Часть 02' }));
+    const video = container.querySelector('video')!;
+    expect(video.currentTime).toBe(30);
+    video.currentTime = 40;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalled();
   });
 
   it('reads debug reasons from plan, seeks and respects the enabled interval limit', async () => {

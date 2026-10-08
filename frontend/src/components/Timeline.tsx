@@ -55,7 +55,7 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
   const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!timelineMapRef.current) return;
     const rect = timelineMapRef.current.getBoundingClientRect();
-    const pos = (e.clientX - rect.left) / rect.width;
+    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     handleSeek(pos * duration);
   };
 
@@ -65,12 +65,21 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
     <section id="timeline-panel" className="panel timeline-panel">
       <div className="panel-heading">
         <h2 id="timeline-heading" className="panel-title">Таймлайн серии</h2>
-        <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+        <div className="toolbar-actions">
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
             <input type="checkbox" id="analysis-debug" checked={showDebug} onChange={e => setShowDebug(e.target.checked)} /> Анализ
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
-            <input type="checkbox" id="source-limit" checked={limitToPart} onChange={e => setLimitToPart(e.target.checked)} /> В пределах части
+            <input type="checkbox" id="source-limit" checked={limitToPart} onChange={e => {
+              const enabled = e.target.checked;
+              setLimitToPart(enabled);
+              const cuts = parts[selectedIndex]?.cuts;
+              if (enabled && cuts?.length) {
+                const start = cuts[0].start;
+                setSourceSelection({ start, end: cuts[cuts.length - 1].end, retained: true });
+                handleSeek(start);
+              }
+            }} /> В пределах части
           </label>
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
             <input type="range" id="timeline-zoom" min="1" max="10" step="1" style={{ width: '100px' }} value={zoom} onChange={e => setZoom(Number(e.target.value))} /> Зум
@@ -97,15 +106,18 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
                 <button 
                   key={i} 
                   className="timeline-group" 
+                  aria-label={`Часть ${String(i + 1).padStart(2, '0')}`}
+                  title={`Часть ${String(i + 1).padStart(2, '0')} · ${sourceTime(startCut)}–${sourceTime(endCut)}`}
                   style={{ left: `${left}%`, width: `${width}%` }} 
                   aria-pressed={selectedIndex === i}
                   onClick={(e) => {
                     e.stopPropagation();
+                    setSourceSelection({ start: startCut, end: endCut, retained: true });
                     onSelectPart(i);
                     handleSeek(startCut);
                   }}
                 >
-                  <span className="timeline-group-label">Часть {String(i + 1).padStart(2, '0')}</span>
+                  <span className="timeline-group-label">{String(i + 1).padStart(2, '0')}</span>
                 </button>
               );
             })}

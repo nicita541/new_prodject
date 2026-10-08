@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import type { Source } from '../api/types';
 
@@ -13,13 +13,17 @@ export function SourceSelect({ sourceId, onChange, disabled }: SourceSelectProps
   const [sources, setSources] = useState<Source[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [error, setError] = useState('');
+  const uploadingRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchSources = async () => {
     try {
       const data = await api.getSources();
       setSources(data);
+      setError('');
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Не удалось загрузить список видео. Обновите список.');
     }
   };
 
@@ -27,10 +31,14 @@ export function SourceSelect({ sourceId, onChange, disabled }: SourceSelectProps
     fetchSources();
   }, []);
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const uploadFile = (file: File | undefined) => {
+    if (!file || disabled || uploadingRef.current) return;
+    if (!/\.(mp4|mkv|webm)$/i.test(file.name)) {
+      setError('Выберите видео MP4, MKV или WebM.');
+      return;
+    }
+    uploadingRef.current = true;
+    setError('');
     setIsUploading(true);
     setProgress(0);
 
@@ -48,19 +56,23 @@ export function SourceSelect({ sourceId, onChange, disabled }: SourceSelectProps
 
     xhr.onload = () => {
       if (xhr.status === 201) {
-        const response = JSON.parse(xhr.responseText);
-        fetchSources().then(() => {
-          onChange(response.id);
-          setIsUploading(false);
-        });
+        try {
+          const response = JSON.parse(xhr.responseText);
+          if (typeof response.id !== 'string' || !response.id) throw new Error('Сервер не вернул загруженный видеофайл.');
+          fetchSources().then(() => onChange(response.id));
+        } catch {
+          setError('Не удалось прочитать ответ загрузки. Обновите список видео.');
+        }
       } else {
-        alert('Ошибка загрузки: ' + xhr.responseText);
-        setIsUploading(false);
+        setError('Ошибка загрузки: ' + xhr.responseText);
       }
+      uploadingRef.current = false;
+      setIsUploading(false);
     };
 
     xhr.onerror = () => {
-      alert('Network error');
+      setError('Не удалось загрузить видео. Проверьте подключение и повторите загрузку.');
+      uploadingRef.current = false;
       setIsUploading(false);
     };
 
@@ -90,13 +102,18 @@ export function SourceSelect({ sourceId, onChange, disabled }: SourceSelectProps
       </div>
 
       {!disabled && !sourceId && (
-        <div className="upload-zone" id="upload-button" tabIndex={0} role="button" aria-label="Загрузить файл" onClick={() => document.getElementById('file-input')?.click()}>
+        <div className="upload-zone" id="upload-button" tabIndex={isUploading ? -1 : 0} role="button" aria-label="Загрузить файл" aria-disabled={isUploading}
+          onClick={() => !isUploading && fileInputRef.current?.click()}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!isUploading) fileInputRef.current?.click(); } }}
+          onDragOver={e => e.preventDefault()}
+          onDrop={e => { e.preventDefault(); uploadFile(e.dataTransfer.files[0]); }}>
           <span className="upload-icon">⇪</span>
           <span className="upload-text" id="upload-label">Перетащите или нажмите для загрузки видео</span>
           <span className="upload-hint">MP4, MKV или WebM</span>
-          <input type="file" id="file-input" accept="video/mp4,video/x-matroska,video/webm" hidden onChange={handleUpload} disabled={isUploading} />
+          <input ref={fileInputRef} type="file" id="file-input" accept=".mp4,.mkv,.webm" hidden onClick={e => e.stopPropagation()} onChange={e => { uploadFile(e.target.files?.[0]); e.target.value = ''; }} disabled={isUploading} />
         </div>
       )}
+      {error && <p className="message" role="alert">{error}</p>}
 
       {isUploading && (
         <div id="upload-progress" className="form-group" style={{ marginTop: '14px' }}>

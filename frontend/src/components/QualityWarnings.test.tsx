@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QualityWarnings } from './QualityWarnings';
 import type { Plan } from '../api/types';
 
@@ -25,5 +26,13 @@ describe('QualityWarnings', () => {
     expect(screen.getByText(/Object warning/)).toBeInTheDocument();
     expect(screen.getByText(/String note/)).toBeInTheDocument();
     expect(screen.getByText(/Object note/)).toBeInTheDocument();
+  });
+  it('keeps the full warning list available through a disclosure', async () => {
+    const { container } = render(<QualityWarnings plan={{ source: { duration: 10 }, parts: [], warnings: ['A warning'] }} />);
+    const details = container.querySelector('details')!;
+    expect(details.open).toBe(false);
+    await userEvent.click(screen.getByText('Посмотреть замечания и примечания'));
+    expect(details.open).toBe(true);
+    expect(screen.getByText('A warning')).toBeVisible();
   });
 });

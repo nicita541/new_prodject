@@ -7,12 +7,14 @@ const statuses: Record<string, string> = {
 };
 
 const stages: Record<string, string> = {
-  queued: "Ожидание", prepare: "Подготовка видео", preparing: "Подготовка видео", probe: "Проверка видео", audio: "Подготовка звука", transcribe: "Распознавание русской речи", transcribing: "Распознавание русской речи", transcript: "Распознавание русской речи", speech: "Распознавание русской речи", shots: "Поиск смены планов", analyze: "Анализ сюжета и изображения", analyzing: "Анализ сюжета и изображения", analysis: "Анализ сюжета и изображения", events: "Анализ сюжета и изображения", condense: "Сокращение сюжета с сохранением контекста", framing: "Кадрирование говорящих и действия", focus: "Кадрирование говорящих и действия", plan: "Составление монтажного плана", planning: "Составление монтажного плана", render: "Экспорт частей", rendering: "Экспорт частей", completed: "Монтаж завершён", done: "Монтаж завершён"
+  global_verify: "Проверка изображения и сюжета", quality_gate: "Проверка качества монтажа",
+  queued: "Ожидание", prepare: "Подготовка видео", preparing: "Подготовка видео", probe: "Проверка видео", audio: "Подготовка звука", transcribe: "Распознавание русской речи", transcribing: "Распознавание русской речи", transcript: "Распознавание русской речи", speech: "Распознавание русской речи", scenes: "Поиск сцен", shots: "Поиск смены планов", analyze: "Анализ сюжета и изображения", analyzing: "Анализ сюжета и изображения", analysis: "Анализ сюжета и изображения", events: "Анализ сюжета и изображения", condense: "Сокращение сюжета с сохранением контекста", framing: "Кадрирование говорящих и действия", focus: "Кадрирование говорящих и действия", plan: "Составление монтажного плана", planning: "Составление монтажного плана", render: "Экспорт частей", rendering: "Экспорт частей", completed: "Монтаж завершён", done: "Монтаж завершён"
 };
 
 const checkpointStages = ["prepare", "transcribe", "analyze", "condense", "framing", "plan", "render"];
 
 const stageGroup: Record<string, number> = {
+  global_verify: 2, quality_gate: 5,
   prepare: 0, preparing: 0, probe: 0, audio: 0, transcribe: 1, transcribing: 1, transcript: 1, speech: 1, scenes: 0, shots: 0, analyze: 2, analyzing: 2, analysis: 2, events: 2, condense: 3, framing: 4, focus: 4, planning: 5, plan: 5, rendering: 6, render: 6, completed: 7, done: 7
 };
 
@@ -82,7 +84,7 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
         })}
       </ul>
 
-      <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+      <div className="action-row" style={{ marginTop: '24px' }}>
         {['queued', 'running'].includes(job.status) && (
           <button id="cancel-button" type="button" className="btn-danger" onClick={handleCancel} disabled={job.cancel_requested}>
             {job.cancel_requested ? 'Отмена запрошена...' : 'Отменить'}
