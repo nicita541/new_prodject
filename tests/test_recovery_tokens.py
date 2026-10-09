@@ -48,3 +48,19 @@ def test_38ms_and_80ms_subframe_scenes_join_adjacent_without_losing_any_source()
 def test_solo_subframe_scene_is_never_silently_dropped():
     scene={"id":"only","start":0,"end":.038}
     assert coalesce_subframe_scenes([scene])==[scene]
+
+
+def test_tiny_asr_pause_chunks_are_merged_not_sampled_independently():
+    from app.scene_analysis import merge_subframe_chunks
+    chunks=[
+      {"id":"a","start":0., "end":20.},
+      {"id":"pause","start":20., "end":20.038},
+      {"id":"b","start":20.038,"end":35.},
+      {"id":"pause2","start":35., "end":35.08},
+      {"id":"c","start":35.08,"end":48.}
+    ]
+    fixed=merge_subframe_chunks(chunks)
+    assert [(x["start"],x["end"]) for x in fixed]==[(0,20.038),(20.038,35.08),(35.08,48)]
+    assert len(fixed)==3
+    assert chunks[1]["end"]==20.038
+    assert sum(x["end"]-x["start"] for x in fixed)==48
