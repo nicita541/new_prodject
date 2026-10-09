@@ -1,0 +1,61 @@
+﻿{
+    "run_id":  "20261009_112753_56778f20",
+    "timestamp_utc":  "2026-10-09T11:28:05.7207304Z",
+    "branch":  "fix/montage-stability",
+    "commit":  "5aa94f7ccc4e8ef578550e4890055732a275085d",
+    "mode":  "quick",
+    "overall":  "INCOMPLETE",
+    "passed":  6,
+    "failed":  0,
+    "skipped":  2,
+    "checks":  [
+                   {
+                       "name":  "python_compile",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "python_dependencies",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "python_tests",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  "54 passed"
+                   },
+                   {
+                       "name":  "react_tests",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "react_lint",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  "8 warnings, 0 errors"
+                   },
+                   {
+                       "name":  "react_build",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "ffmpeg",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "portable FFmpeg missing"
+                   },
+                   {
+                       "name":  "ffprobe",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "portable FFprobe missing"
+                   }
+               ]
+}
