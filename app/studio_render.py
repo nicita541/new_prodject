@@ -181,6 +181,14 @@ def _registered_export(identifier: str, manager, job_id: str, part_indices: list
     try:
         run_export(manager, job_id, part_indices, profile, target, status_file, preview)
     finally:
+        # The job's source, plan and output must not be removed while a
+        # preview/export is still using them.
+        with manager.mutex:
+            remaining = manager.finishing_tasks.get(job_id, 0) - 1
+            if remaining > 0:
+                manager.finishing_tasks[job_id] = remaining
+            else:
+                manager.finishing_tasks.pop(job_id, None)
         with _TASKS_LOCK:
             _ACTIVE_TASKS.discard(identifier)
 
@@ -208,16 +216,23 @@ def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
                               args=(identifier, manager, job_id, part_indices, profile,
                                     base, status_file, preview),
                               daemon=True, name="finishing-" + identifier)
-    with _TASKS_LOCK:
-        _ACTIVE_TASKS.add(identifier)
-    try:
-        worker.start()
-    except BaseException:
+    with manager.mutex:
+        manager.finishing_tasks[job_id] = manager.finishing_tasks.get(job_id, 0) + 1
         with _TASKS_LOCK:
-            _ACTIVE_TASKS.discard(identifier)
-        atomic_json(status_file, {**status, "status": "failed",
-                                  "error": "Не удалось запустить поток экспорта"})
-        raise
+            _ACTIVE_TASKS.add(identifier)
+        try:
+            worker.start()
+        except BaseException:
+            remaining = manager.finishing_tasks[job_id] - 1
+            if remaining:
+                manager.finishing_tasks[job_id] = remaining
+            else:
+                manager.finishing_tasks.pop(job_id, None)
+            with _TASKS_LOCK:
+                _ACTIVE_TASKS.discard(identifier)
+            atomic_json(status_file, {**status, "status": "failed",
+                                      "error": "Не удалось запустить поток экспорта"})
+            raise
     return status
 
 

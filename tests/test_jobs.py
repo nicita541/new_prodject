@@ -342,6 +342,22 @@ class JobTests(unittest.TestCase):
         self.assertEqual(prune_res["pruned_count"], 1)
         self.assertEqual(prune_res["remaining_terminal"], 1)
 
+    def test_finishing_owner_blocks_job_deletion_and_prune(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        directory = self.manager.job_dir(job["id"])
+        marker = directory / "output" / "part_001.mp4"
+        marker.parent.mkdir(exist_ok=True)
+        marker.write_bytes(b"valuable export")
+        self.manager.finishing_tasks[job["id"]] = 1
+        with self.assertRaises(BusyError):
+            self.manager.delete_job(job["id"])
+        result = self.manager.prune_jobs(max_jobs=0, max_age_days=0)
+        self.assertEqual(result["pruned_count"], 0)
+        self.assertEqual(marker.read_bytes(), b"valuable export")
+        self.manager.finishing_tasks.pop(job["id"])
+        self.assertEqual(self.manager.prune_jobs(max_jobs=0)["pruned_count"], 1)
+
     def test_delete_job_does_not_claim_success_when_removal_fails(self):
         job = self.manager.create(self.source_id)
         self.manager.cancel(job["id"])

@@ -205,6 +205,34 @@ class StudioApiTests(unittest.TestCase):
             self.assertEqual(self.client.get("/api/music/tracks/missing.wav/stream").status_code, 404)
 
 
+    def test_active_finishing_thread_owns_source_job_until_finished(self):
+        import threading
+        from app.studio_render import submit_render
+        started = threading.Event()
+        release = threading.Event()
+
+        def block_render(*args, **kwargs):
+            started.set()
+            release.wait(timeout=5)
+
+        from app.finishing import FinishProfile
+        with patch("app.studio_render.run_export", side_effect=block_render):
+            try:
+                submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
+                              preview=(1, 0, 1))
+                self.assertTrue(started.wait(timeout=2), "Finishing worker never started")
+                self.assertEqual(self.manager.finishing_tasks.get(self.job_id), 1)
+                response = self.client.delete("/api/jobs/" + self.job_id)
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertTrue(self.directory.is_dir())
+            finally:
+                release.set()
+            for _ in range(100):
+                if not self.manager.finishing_tasks.get(self.job_id):
+                    break
+                time.sleep(0.01)
+            self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
+
     def test_restart_marks_orphaned_preview_interrupted_but_keeps_live_worker(self):
         from app.studio_render import task_status, _ACTIVE_TASKS, _TASKS_LOCK
         orphan = "pv_" + uuid.uuid4().hex

@@ -219,6 +219,8 @@ class JobManager:
         self.mutex = threading.RLock()
         self.worker_factory = worker_factory
         self.active = None
+        # Active finishing previews/exports also own files under a job directory.
+        self.finishing_tasks: dict[str, int] = {}
         self.pending_states = {}
         self.closed = False
         self.sources = read_json(self.data / "sources.json", {})
@@ -335,6 +337,8 @@ class JobManager:
             validate_id(identifier)
             if self.active and self.active[0] == identifier:
                 raise BusyError("Нельзя удалить выполняющееся задание")
+            if self.finishing_tasks.get(identifier, 0):
+                raise BusyError("Нельзя удалить задание во время предпросмотра или экспорта")
             directory = self.job_dir(identifier)
             if not directory.is_dir():
                 raise KeyError(identifier)
@@ -360,7 +364,7 @@ class JobManager:
 
             for path in self.jobs.glob("*/job.json"):
                 jid = path.parent.name
-                if jid == active_id:
+                if jid == active_id or self.finishing_tasks.get(jid, 0):
                     continue
                 data = read_json(path)
                 if not data or data.get("status") not in TERMINAL:
