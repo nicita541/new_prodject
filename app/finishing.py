@@ -232,14 +232,22 @@ def create_finishing_router() -> APIRouter:
             # The old episode profile may contain caption text that never
             # recorded which montage job it belonged to. Back up that legacy
             # data once, before removing ambiguous cues from shared styling.
-            old_overrides = previous.get("part_overrides", {})
-            if isinstance(old_overrides, dict) and any(
-                    isinstance(value, dict) and value.get("cues") is not None
-                    for value in old_overrides.values()):
-                backup = path.parent / "legacy-caption-backups" / (episode_id + ".json")
-                if not backup.exists():
-                    atomic_json(backup, previous)
             shared = profile.model_dump(exclude={"revision"})
+            old_overrides = previous.get("part_overrides", {})
+            old_had_cues = isinstance(old_overrides, dict) and any(
+                isinstance(value, dict) and value.get("cues") is not None
+                for value in old_overrides.values())
+            incoming_had_cues = any(value.get("cues") is not None
+                                    for value in shared["part_overrides"].values())
+            if old_had_cues or incoming_had_cues:
+                # Revision-scoped archive retains both old on-disk data and
+                # never-before-saved legacy submissions, without assigning
+                # ambiguous captions to an unrelated montage job.
+                backup = (path.parent / "legacy-caption-backups" /
+                          f"{episode_id}-r{previous_revision:06d}.json")
+                if not backup.exists():
+                    atomic_json(backup, previous if old_had_cues else {
+                        "episode_id": episode_id, **shared, "revision": previous_revision})
             for override in shared["part_overrides"].values():
                 override.pop("cues", None)
             stored = {"episode_id": episode_id, **shared,

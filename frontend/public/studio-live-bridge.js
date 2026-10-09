@@ -105,7 +105,9 @@
     }else{
       let data=body;
       if(method==='PUT'&&/^\/api\/episodes\/[^/]+\/finishing$/.test(path)){
-        const {episode_id,...profile}=body;data=profile;
+        const {episode_id,...profile}=body;data={...profile,
+          part_overrides:Object.fromEntries(Object.entries(profile.part_overrides||{}).map(
+            ([key,override])=>[key,{...override,cues:undefined}]))};
       }
       if(method==='POST'&&/\/api\/jobs\/[^/]+\/(?:previews|exports)$/.test(path)&&body.settings){
         const {episode_id,revision,...settings}=body.settings;

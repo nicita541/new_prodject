@@ -86,7 +86,7 @@ class StudioApiTests(unittest.TestCase):
         updated = self.client.put(path, json=legacy)
         self.assertEqual(updated.status_code, 200, updated.text)
         # Fresh clients never inherit unowned episode-wide caption text.
-        self.assertIsNone(updated.json()["part_overrides"]["1"]["cues"])
+        self.assertIsNone(updated.json()["part_overrides"]["1"].get("cues"))
         profile = self.client.get(path).json()
         self.assertIsNone(profile["part_overrides"]["1"]["cues"])
         # A pre-existing legacy profile must be copied before cleanup.
@@ -98,7 +98,12 @@ class StudioApiTests(unittest.TestCase):
         next_profile = {**profile, "revision": profile["revision"]}
         second = self.client.put(path, json=next_profile)
         self.assertEqual(second.status_code, 200, second.text)
-        backup = disk.parent / "legacy-caption-backups" / (self.episode_id + ".json")
+        backup_dir = disk.parent / "legacy-caption-backups"
+        first_backup = backup_dir / (self.episode_id + "-r000000.json")
+        backup = backup_dir / (self.episode_id + "-r000001.json")
+        self.assertTrue(first_backup.is_file())
+        self.assertEqual(json.loads(first_backup.read_text("utf-8"))[
+            "part_overrides"]["1"]["cues"][0]["text"], "СТАРАЯ ВЕРСИЯ")
         self.assertTrue(backup.is_file())
         preserved = json.loads(backup.read_text("utf-8"))
         self.assertEqual(preserved["part_overrides"]["1"]["cues"][0]["text"], "РУЧНЫЕ ПРАВКИ")
