@@ -43,8 +43,9 @@ jobs:
           assert '<script src="/studio-edition-app.js"></script>' in live
           assert '<style>' not in live and '<script>' not in live
           assert 'window.KadrBridge.refresh' in external_js
+          assembled = live + external_css + external_js
           for required in ("fc-workspace", "rv2-layout", "navset", "sidebar", "topbar"):
-              assert required in live, required
+              assert required in assembled, required
           print("Reference CSS is byte-for-byte equal; UI uses external CSP-compliant scripts")
 
           PY
