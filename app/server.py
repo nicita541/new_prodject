@@ -737,6 +737,10 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
                                  "error": "Не удалось сохранить все видео в выбранную папку"}, 507)
         return {"cancelled": False, "count": len(copied), "files": copied}
 
+    # Studio Edition: isolated finishing/caption APIs (never edits base plans).
+    from .finishing import create_finishing_router
+    application.include_router(create_finishing_router())
+
     static_legacy = config.ROOT / "app" / "static"
     dist_dir = config.ROOT / "frontend" / "dist"
     assets_dir = dist_dir / "assets"
