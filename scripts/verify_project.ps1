@@ -1,10 +1,16 @@
-param([switch]$Full, [switch]$NoUpload)
+param([switch]$Quick, [switch]$Full, [switch]$NoUpload, [string]$PythonExe)
+
+if ($Quick -and $Full) { throw 'Choose either -Quick or -Full, not both.' }
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $root
 $env:PYTHONUTF8 = "1"
+$env:TEMP = Join-Path $root "temp"
+$env:TMP = $env:TEMP
+$env:TMPDIR = $env:TEMP
 $env:PYTHONPYCACHEPREFIX = Join-Path $root "cache\test-pycache"
+$env:PIP_CACHE_DIR = Join-Path $root "cache\test-pip"
 New-Item -ItemType Directory -Force -Path (Join-Path $root "temp"), (Join-Path $root "cache") | Out-Null
 
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmss") + "_" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
@@ -46,6 +52,24 @@ if ($git) {
     $commit = (& git.exe -C $root rev-parse HEAD 2>$null | Select-Object -First 1)
 }
 $python = Join-Path $root "tools\python\python.exe"
+if ($PythonExe) {
+    if (-not (Test-Path -LiteralPath $PythonExe)) { throw "Python executable not found: $PythonExe" }
+    $python = (Resolve-Path -LiteralPath $PythonExe).Path
+} elseif (-not (Test-Path -LiteralPath $python) -and $Quick -and $git) {
+    # Git worktrees have separate tracked files, but a portable interpreter
+    # installed in the original worktree can safely run read-only tests here.
+    $worktrees = @(& git.exe -C $root worktree list --porcelain 2>$null)
+    foreach ($line in $worktrees) {
+        if (-not $line.StartsWith("worktree ")) { continue }
+        $otherRoot = $line.Substring(9).Trim()
+        if ($otherRoot -eq $root) { continue }
+        $candidate = Join-Path $otherRoot "tools\python\python.exe"
+        if (Test-Path -LiteralPath $candidate) {
+            $python = $candidate
+            break
+        }
+    }
+}
 if (-not (Test-Path -LiteralPath $python)) {
     $found = Get-Command python.exe -ErrorAction SilentlyContinue
     if ($found) { $python = $found.Source } else { $python = $null }
@@ -64,7 +88,11 @@ if ($branch -ne "fix/montage-stability") {
 
 if ($python) {
     Run-Check "python_compile" $python @("-m", "compileall", "-q", "app", "scripts", "tests") $root 180
-    if ($Full) {
+    if ($Quick) {
+        # No model loading and no real video renders. FFmpeg-only integration
+        # cases in test_music.py are skipped if this worktree has no FFmpeg.
+        Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests/test_music.py", "tests/test_jobs.py", "tests/test_server_routing.py") $root 600
+    } elseif ($Full) {
         Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests") $root 7200
     } else {
         Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests/test_music.py", "tests/test_media.py", "tests/test_api.py", "tests/test_jobs.py") $root 3600
@@ -99,7 +127,7 @@ $summary = [pscustomobject]@{
     timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
     branch = $branch
     commit = $commit
-    mode = if ($Full) { "full" } else { "standard" }
+    mode = if ($Quick) { "quick" } elseif ($Full) { "full" } else { "standard" }
     overall = $overall
     passed = $passed
     failed = $failed
@@ -128,7 +156,7 @@ foreach ($check in $script:checks) {
     }
 }
 $nl = [Environment]::NewLine
-$md = @("# Local verification report", "", "- Run: $runId", "- Branch: $branch", "- Commit: $commit", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
+$md = @("# Local verification report", "", "- Run: $runId", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Full) {'full'} else {'standard'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8
