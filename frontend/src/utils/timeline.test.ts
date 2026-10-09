@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTimelinePieces, buildDebugPieces, mergeDebugPieces, sourceTime } from './timeline';
+import { buildTimelinePieces, buildDebugPieces, mergeDebugPieces, sourceTime, limitedSourcePlaybackAction } from './timeline';
 import type { Plan, TimelineReason } from '../api/types';
 
 describe('timeline utilities', () => {
@@ -139,5 +139,21 @@ describe('timeline utilities', () => {
     expect(debugPieces).toHaveLength(2);
     expect(debugPieces[0].kind).toBe('atmosphere');
     expect(debugPieces[1].kind).toBe('weird_alien_kind');
+  });
+});
+
+describe('Source playback across edited cuts', () => {
+  const cuts = [{ start: 10, end: 20 }, { start: 30, end: 40 }];
+  const whole = { start: 10, end: 40, retained: true };
+  it('jumps over removed source frames and stops at the selected end', () => {
+    expect(limitedSourcePlaybackAction(cuts, 15, whole)).toEqual({ kind: 'continue' });
+    expect(limitedSourcePlaybackAction(cuts, 21, whole)).toEqual({ kind: 'seek', time: 30 });
+    expect(limitedSourcePlaybackAction(cuts, 35, whole)).toEqual({ kind: 'continue' });
+    expect(limitedSourcePlaybackAction(cuts, 40, whole)).toEqual({ kind: 'pause' });
+  });
+  it('allows inspecting an intentionally selected removed interval', () => {
+    const removed = { start: 20, end: 30, retained: false };
+    expect(limitedSourcePlaybackAction(cuts, 25, removed)).toEqual({ kind: 'continue' });
+    expect(limitedSourcePlaybackAction(cuts, 30, removed)).toEqual({ kind: 'pause' });
   });
 });

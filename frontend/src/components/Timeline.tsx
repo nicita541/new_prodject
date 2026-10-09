@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import type { Plan, Job } from '../api/types';
-import { buildTimelinePieces, buildDebugPieces, pieceLabel, sourceTime, DEBUG_KIND_LABELS } from '../utils/timeline';
+import { buildTimelinePieces, buildDebugPieces, pieceLabel, sourceTime, limitedSourcePlaybackAction, DEBUG_KIND_LABELS } from '../utils/timeline';
 
 interface TimelineProps {
   job: Job | null;
@@ -52,15 +52,15 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
     const handleTimeUpdate = () => {
       setCurrentTime(video.currentTime);
       if (limitToPart && sourceSelection) {
-        if (video.currentTime >= sourceSelection.end) {
-          video.pause();
-        }
+        const action = limitedSourcePlaybackAction(selectedCuts ?? [], video.currentTime, sourceSelection);
+        if (action.kind === 'seek') video.currentTime = action.time;
+        if (action.kind === 'pause') video.pause();
       }
     };
 
     video.addEventListener('timeupdate', handleTimeUpdate);
     return () => video.removeEventListener('timeupdate', handleTimeUpdate);
-  }, [limitToPart, sourceSelection]);
+  }, [limitToPart, sourceSelection, selectedCuts]);
 
   const handleSeek = (time: number) => {
     if (videoRef.current) {
