@@ -98,9 +98,15 @@ describe('Studio Edition actual backend contract', () => {
     await screen.findByText('Финальный штрих.');
     expect(document.querySelector('.st-caption-layer')).toHaveTextContent('ПРОВЕРКА СУБТИТРОВ');
     const video = screen.getByLabelText('Видео предпросмотра') as HTMLVideoElement;
+    // While paused, show the selected caption even if the playhead is outside
+    // the speech span. During playback, it must follow timecodes exactly.
     video.currentTime = 5;
     fireEvent.timeUpdate(video);
+    expect(document.querySelector('.st-caption-layer')).toHaveTextContent('ПРОВЕРКА СУБТИТРОВ');
+    fireEvent.play(video);
     await waitFor(() => expect(document.querySelector('.st-caption-layer')).not.toBeInTheDocument());
+    fireEvent.pause(video);
+    await waitFor(() => expect(document.querySelector('.st-caption-layer')).toHaveTextContent('ПРОВЕРКА СУБТИТРОВ'));
     expect(screen.getByLabelText('Текст реплики')).toHaveValue('ПРОВЕРКА СУБТИТРОВ');
   });
 

@@ -57,6 +57,7 @@ export function FinishingPage() {
   const [cueIndex, setCueIndex] = useState(0);
   const [tab, setTab] = useState<Tab>('subtitles');
   const [playTime, setPlayTime] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -121,7 +122,7 @@ export function FinishingPage() {
   const currentStyle = profile?.part_overrides[partKey]?.style || profile?.subtitles;
   const cues = profile?.part_overrides[partKey]?.cues ?? currentPart?.subtitles ?? [];
   const activeCue = cues[Math.min(cueIndex, Math.max(0, cues.length - 1))];
-  const showingCue = cues.find(c => c.start <= playTime && playTime < c.end);
+  const showingCue = cues.find(c => c.start <= playTime && playTime < c.end) ?? (!isPlaying ? activeCue : undefined);
 
   const patchVideo = (update: Partial<FinishVideo>) =>
     setProfile(old => old ? { ...old, video: { ...old.video, ...update } } : old);
@@ -149,7 +150,7 @@ export function FinishingPage() {
     updateCues(cues.map((cue, i) => i === cueIndex ? { ...cue, ...update } : cue));
   };
   const selectPart = (next: number) => {
-    setIndex(next); setCueIndex(0); setPlayTime(0);
+    setIndex(next); setCueIndex(0); setPlayTime(0); setIsPlaying(false);
     setUseRendered(false); setPreview(null);
     const video = videoRef.current;
     if (video) video.currentTime = 0;
@@ -410,6 +411,7 @@ export function FinishingPage() {
             {sourceUrl ? <video key={sourceUrl} aria-label="Видео предпросмотра" ref={videoRef}
               src={sourceUrl} playsInline preload="metadata"
               onTimeUpdate={e=>setPlayTime(e.currentTarget.currentTime)}
+              onPlay={()=>setIsPlaying(true)} onPause={()=>setIsPlaying(false)} onEnded={()=>setIsPlaying(false)}
               style={{filter:'brightness(' + frame.brightness + '%)',transform:'scale('+(frame.zoom/100)+')'}}/>:
               <div className="st-no-video">Видео ещё не готово</div>}
             {guides && <div className="st-safe-guides" aria-hidden="true"/>}

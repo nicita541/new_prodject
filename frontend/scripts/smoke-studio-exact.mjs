@@ -91,19 +91,28 @@ assert(window.document.querySelector('#fcCanvas'));
 assert(window.document.querySelector('#fcVideo')?.getAttribute('src')?.includes(job));
 assert(window.document.body.textContent.includes('РЕАЛЬНАЯ РЕПЛИКА'));
 assert(!window.document.querySelector('.empty')?.textContent.includes('нет готового монтажа'),'failed newer job should not hide completed Shorts');
-// The production Studio must display the subtitle only during its real time span.
+// Editing: the selected caption must stay visible while playback is paused,
+// even when the playhead is outside the caption interval (e.g. at 00:00).
 const videoForCaptions = window.document.querySelector('#fcVideo');
 const captionOverlay = window.document.querySelector('#fcCaption');
+let playbackPaused = true;
+Object.defineProperty(videoForCaptions, 'paused', { configurable: true, get: () => playbackPaused });
+assert.equal(captionOverlay.style.visibility, 'visible', 'paused editor must display selected caption at 00:00');
+assert.equal(captionOverlay.textContent, 'РЕАЛЬНАЯ РЕПЛИКА');
+playbackPaused = false;
+videoForCaptions.dispatchEvent(new window.Event('play'));
 videoForCaptions.currentTime = 1;
 videoForCaptions.dispatchEvent(new window.Event('timeupdate'));
 assert.equal(captionOverlay.style.visibility, 'visible', 'subtitle must show during spoken text');
-assert.equal(captionOverlay.textContent, 'РЕАЛЬНАЯ РЕПЛИКА');
 videoForCaptions.currentTime = 3.7;
 videoForCaptions.dispatchEvent(new window.Event('timeupdate'));
-assert.equal(captionOverlay.style.visibility, 'hidden', 'subtitle must disappear after its end');
+assert.equal(captionOverlay.style.visibility, 'hidden', 'subtitle must disappear after its end while playing');
 videoForCaptions.currentTime = 0;
 videoForCaptions.dispatchEvent(new window.Event('timeupdate'));
-assert.equal(captionOverlay.style.visibility, 'hidden', 'subtitle must not appear before its start');
+assert.equal(captionOverlay.style.visibility, 'hidden', 'subtitle must not appear before its start while playing');
+playbackPaused = true;
+videoForCaptions.dispatchEvent(new window.Event('pause'));
+assert.equal(captionOverlay.style.visibility, 'visible', 'pausing restores selected caption for editing');
 
 const editorNav = window.document.querySelector('button[data-action="nav"][data-screen="editor"]');
 assert(editorNav, 'settings navigation should exist');
