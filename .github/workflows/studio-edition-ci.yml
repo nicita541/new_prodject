@@ -3,8 +3,6 @@ name: Studio Edition checks
 on:
   push:
     branches: [fix/montage-stability]
-  pull_request:
-    branches: [codex/dramatic-montage]
   workflow_dispatch:
 
 permissions:
