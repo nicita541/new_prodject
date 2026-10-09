@@ -34,7 +34,7 @@ const stageGroup: Record<string, number> = {
 };
 
 export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, episodeId: string }) {
-  const { job } = useJobPolling(jobId);
+  const { job, refresh } = useJobPolling(jobId);
 
   if (!job) {
     return (
@@ -94,6 +94,10 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
           const fraction = typeof serverFraction === 'number' && Number.isFinite(serverFraction)
             ? Math.max(0, Math.min(1, serverFraction))
             : stateName === 'done' ? 1 : stateName === 'pending' ? 0 : undefined;
+          const percent = fraction === undefined ? undefined : fraction * 100;
+          const percentLabel = percent === undefined ? undefined : percent > 0 && percent < 1
+            ? percent.toLocaleString('ru-RU', { maximumFractionDigits: 2 })
+            : String(Math.round(percent));
           const hasCounts = serverStep?.completed !== undefined && serverStep?.total !== undefined;
 
           return (
@@ -102,7 +106,7 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
               <div className="stage-copy">
                 <div className="stage-heading">
                   <strong>{stages[step]}</strong>
-                  {fraction !== undefined && <span className="stage-percent">{Math.round(fraction * 100)}%</span>}
+                  {percentLabel !== undefined && <span className="stage-percent">{percentLabel}%</span>}
                 </div>
                 <progress className="stage-progress" aria-label={`${stages[step]}: ${label}`} aria-valuetext={fraction === undefined ? label : undefined} max="1" value={fraction}></progress>
                 <div className="small muted" data-stage-state>{label}</div>
@@ -123,7 +127,7 @@ export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, e
         )}
         {['failed', 'cancelled', 'interrupted'].includes(job.status) && (
           <button id="retry-button" type="button" className="btn-primary" onClick={async () => {
-            try { await api.retryJob(job.id); } catch { alert('Ошибка повтора'); }
+            try { await api.retryJob(job.id); refresh(); } catch { alert('Ошибка повтора'); }
           }}>
             Повторить
           </button>

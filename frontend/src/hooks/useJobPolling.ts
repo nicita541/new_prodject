@@ -6,6 +6,7 @@ export function useJobPolling(jobId: string | null) {
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<Error | null>(null);
   const [isPolling, setIsPolling] = useState(false);
+  const [pollVersion, setPollVersion] = useState(0);
   
   const timerRef = useRef<number | null>(null);
 
@@ -69,7 +70,7 @@ export function useJobPolling(jobId: string | null) {
         window.clearTimeout(timerRef.current);
       }
     };
-  }, [jobId]);
+  }, [jobId, pollVersion]);
 
-  return { job, error, isPolling };
+  return { job, error, isPolling, refresh: () => setPollVersion(version => version + 1) };
 }

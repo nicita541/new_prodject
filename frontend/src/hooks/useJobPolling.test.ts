@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { useJobPolling } from './useJobPolling';
 import { api } from '../api/client';
 import type { Job, LiveStageProgress } from '../api/types';
@@ -17,6 +17,27 @@ describe('useJobPolling', () => {
   it('does not poll if no jobId', () => {
     const { result } = renderHook(() => useJobPolling(null));
     expect(result.current.job).toBeNull();
+  });
+
+  it('resumes polling a failed job with the same ID after retry and observes completion', async () => {
+    vi.mocked(api.getJob).mockResolvedValue({ ...legacyJob, status: 'failed', error: 'Previous attempt',
+      stage_progress: snapshot().stage_progress });
+    const { result, unmount } = renderHook(() => useJobPolling('job-1'));
+    await waitFor(() => expect(result.current.job?.status).toBe('failed'));
+    expect(result.current.isPolling).toBe(false);
+
+    vi.mocked(api.getJob).mockResolvedValue({ ...legacyJob, error: null,
+      stage_progress: snapshot().stage_progress });
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.job?.status).toBe('running'));
+    expect(result.current.job?.error).toBeNull();
+    expect(result.current.isPolling).toBe(true);
+
+    vi.mocked(api.getJob).mockResolvedValue({ ...legacyJob, status: 'completed', stage: 'completed',
+      stage_progress: snapshot().stage_progress });
+    await waitFor(() => expect(result.current.job?.status).toBe('completed'), { timeout: 2500 });
+    expect(result.current.isPolling).toBe(false);
+    unmount();
   });
 
   it('merges real live stage counters for an already running server', async () => {
