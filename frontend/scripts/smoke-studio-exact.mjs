@@ -179,6 +179,20 @@ assert.equal(savedCaptionBodies[0].revision,0);
 assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
 assert(Array.isArray(savedCaptionBodies),'save must bundle captions in one validated request');
 assert(!('episode_id' in savedProfileBody), 'profile path data must not contain response-only fields');
+// Per-part "no music" is a real, usable control; it should never request
+// /api/music/tracks/none/stream or invent a sample track.
+window.document.querySelector('[data-ftab="audio"]').click();
+const musicMode=window.document.querySelector('#fcMusicMode');
+musicMode.value='per_part';
+musicMode.dispatchEvent(new window.Event('change',{bubbles:true}));
+const musicChoice=window.document.querySelector('#fcTrack');
+assert(musicChoice.querySelector('option[value="none"]'),'per-part no-music option must exist');
+musicChoice.value='none';
+musicChoice.dispatchEvent(new window.Event('change',{bubbles:true}));
+const selectedAudio=window.document.querySelector('#fcAudio');
+assert(!selectedAudio.hasAttribute('src'),'per-part no-music must not request a fake track URL');
+assert(window.document.querySelector('#fcSoundTag')?.textContent.includes('выключена'),
+  'no-music selection should be visible in the editor');
 const projectsNav = window.document.querySelector('button[data-action="nav"][data-screen="projects"]');
 assert(projectsNav, 'projects navigation missing');
 projectsNav.click();
