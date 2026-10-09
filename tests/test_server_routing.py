@@ -18,7 +18,8 @@ client = TestClient(app, base_url="http://127.0.0.1")
 
 def test_studio_routes_serve_exact_ui_or_explicit_build_error():
     dist = config.ROOT / "frontend" / "dist"
-    built = (dist / "studio-edition.html").is_file() and (dist / "studio-live-bridge.js").is_file()
+    built = all((dist / filename).is_file() for filename in (
+        "studio-edition.html", "studio-live-bridge.js", "studio-edition.css", "studio-edition-app.js"))
     for route in ("/", "/projects", "/studio-edition.html"):
         response = client.get(route)
         if built:
@@ -39,6 +40,30 @@ def test_studio_routes_serve_exact_ui_or_explicit_build_error():
     else:
         assert bridge.status_code == 503
 
+    if built:
+        page = client.get("/studio-edition.html")
+        assert '<link rel="stylesheet" href="/studio-edition.css">' in page.text
+        assert '<script src="/studio-edition-app.js"></script>' in page.text
+        assert "<style>" not in page.text
+        assert "<script>" not in page.text
+        # This CSP blocks inline script/style elements. Every executable
+        # stylesheet and application script must therefore be fetched separately.
+        policy = page.headers["content-security-policy"]
+        assert "script-src 'self'" in policy
+        assert "script-src 'self' 'unsafe-inline'" not in policy
+        for asset, mimetype, snippet in (
+            ("/studio-edition.css", "text/css", ".sidebar{"),
+            ("/studio-edition-app.js", "javascript", "window.KadrBridge.refresh"),
+        ):
+            response = client.get(asset)
+            assert response.status_code == 200, (asset, response.text[:100])
+            assert mimetype in response.headers["content-type"]
+            assert snippet in response.text
+            assert response.headers["cache-control"] == "no-store"
+    else:
+        assert client.get("/studio-edition.css").status_code == 503
+        assert client.get("/studio-edition-app.js").status_code == 503
+
 
 
 def test_active_server_identifies_loaded_backend_and_real_studio_assets():
@@ -54,7 +79,8 @@ def test_active_server_identifies_loaded_backend_and_real_studio_assets():
 
 def test_studio_deep_links_preserve_screen_and_identifiers():
     dist = config.ROOT / "frontend" / "dist"
-    built = (dist / "studio-edition.html").is_file() and (dist / "studio-live-bridge.js").is_file()
+    built = all((dist / filename).is_file() for filename in (
+        "studio-edition.html", "studio-live-bridge.js", "studio-edition.css", "studio-edition-app.js"))
     cases = (
         ("/studio", "screen=finishing"),
         ("/trash", "screen=trash"),
@@ -79,8 +105,14 @@ def test_canonical_studio_is_not_silent_react_fallback():
         dist.mkdir(parents=True)
         (dist / "index.html").write_text('<div id="root"></div>', encoding="utf-8")
         (dist / "studio-edition.html").write_text(
-            '<!doctype html><script src="/studio-live-bridge.js"></script>'
+            '<!doctype html><link rel="stylesheet" href="/studio-edition.css">'
+            '<script src="/studio-live-bridge.js"></script>'
+            '<script src="/studio-edition-app.js"></script>'
             '<main class="fc-workspace">Reference design</main>', encoding="utf-8")
+        (dist / "studio-edition.css").write_text(
+            '.sidebar{display:flex}', encoding="utf-8")
+        (dist / "studio-edition-app.js").write_text(
+            "document.body.dataset.studio='ready';", encoding="utf-8")
         (dist / "studio-live-bridge.js").write_text(
             "window.KadrBridge={};", encoding="utf-8")
         with patch.object(config, "ROOT", Path(root)):
@@ -95,6 +127,8 @@ def test_canonical_studio_is_not_silent_react_fallback():
                 assert result.status_code == 200
                 assert "KadrBridge" in result.text
                 assert result.headers["cache-control"] == "no-cache"
+                assert c.get("/studio-edition.css").status_code == 200
+                assert c.get("/studio-edition-app.js").status_code == 200
                 assert c.get("/nothing").status_code == 404
 
 

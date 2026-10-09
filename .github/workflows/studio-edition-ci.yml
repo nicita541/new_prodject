@@ -35,18 +35,21 @@ jobs:
           original = Path("frontend/public/studio-edition-reference.html").read_text("utf-8")
           live = Path("frontend/public/studio-edition.html").read_text("utf-8")
           original_css = original.split("<style>", 1)[1].split("</style>", 1)[0]
-          live_css = live.split("<style>", 1)[1].split("</style>", 1)[0]
-          assert original_css == live_css, "Studio Edition visual styles drifted"
-          assert 'src="/studio-live-bridge.js"' in live
+          external_css = Path("frontend/public/studio-edition.css").read_text("utf-8")
+          external_js = Path("frontend/public/studio-edition-app.js").read_text("utf-8")
+          assert original_css == external_css, "Studio Edition visual styles drifted"
+          assert '<link rel="stylesheet" href="/studio-edition.css">' in live
+          assert '<script src="/studio-live-bridge.js"></script>' in live
+          assert '<script src="/studio-edition-app.js"></script>' in live
+          assert '<style>' not in live and '<script>' not in live
+          assert 'window.KadrBridge.refresh' in external_js
           for required in ("fc-workspace", "rv2-layout", "navset", "sidebar", "topbar"):
               assert required in live, required
-          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", live, re.S)
-          assert len(scripts) == 2, len(scripts)
-          Path("/tmp/studio-exact.js").write_text(scripts[-1], encoding="utf-8")
-          print("Exact CSS retained; interactive screens present")
+          print("Reference CSS is byte-for-byte equal; UI uses external CSP-compliant scripts")
+
           PY
           node --check frontend/public/studio-live-bridge.js
-          node --check /tmp/studio-exact.js
+          node --check frontend/public/studio-edition-app.js
       - name: Execute exact Studio Edition screens with simulated FastAPI
         run: node frontend/scripts/smoke-studio-exact.mjs
       - name: TypeScript and Vite build
@@ -57,6 +60,8 @@ jobs:
           test -s frontend/dist/studio-edition.html
           test -s frontend/dist/studio-live-bridge.js
           test -s frontend/dist/studio-edition-reference.html
+          test -s frontend/dist/studio-edition.css
+          test -s frontend/dist/studio-edition-app.js
       - name: ESLint
         working-directory: frontend
         run: npm run lint

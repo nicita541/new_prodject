@@ -6,8 +6,11 @@ import { JSDOM } from 'jsdom';
 
 const src = readFileSync(new URL('../public/studio-edition.html', import.meta.url), 'utf8');
 const bridge = readFileSync(new URL('../public/studio-live-bridge.js', import.meta.url), 'utf8');
-const script = src.match(/<script>([\s\S]*?)<\/script>/)?.[1];
-assert(script?.includes('window.KadrBridge.refresh'), 'live bootstrap must be present');
+const script = readFileSync(new URL('../public/studio-edition-app.js', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../public/studio-edition.css', import.meta.url), 'utf8');
+assert(src.includes('<link rel="stylesheet" href="/studio-edition.css">'));
+assert(src.includes('<script src="/studio-edition-app.js"></script>'));
+assert(script.includes('window.KadrBridge.refresh'), 'live bootstrap must be present');
 
 const episode = '10000000-0000-4000-8000-000000000001';
 const project = '10000000-0000-4000-8000-000000000002';
@@ -17,6 +20,10 @@ const dom = new JSDOM(src, {
   url: 'http://127.0.0.1:8766/studio-edition.html?screen=finishing&episode='+episode+'&job='+job,
 });
 const { window } = dom;
+const style = window.document.createElement('style');
+style.textContent = css;
+window.document.head.appendChild(style);
+assert.equal(window.getComputedStyle(window.document.querySelector('.sidebar')).display, 'flex');
 window.scrollTo = () => {};
 window.structuredClone = structuredClone;
 window.HTMLMediaElement.prototype.load = () => {};
