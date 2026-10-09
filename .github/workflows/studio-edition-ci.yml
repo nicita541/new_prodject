@@ -26,9 +26,34 @@ jobs:
       - name: React regression tests
         working-directory: frontend
         run: npm test
+      - name: Verify exact Studio Edition HTML, JavaScript and CSS
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          original = Path("frontend/public/studio-edition-reference.html").read_text("utf-8")
+          live = Path("frontend/public/studio-edition.html").read_text("utf-8")
+          original_css = original.split("<style>", 1)[1].split("</style>", 1)[0]
+          live_css = live.split("<style>", 1)[1].split("</style>", 1)[0]
+          assert original_css == live_css, "Studio Edition visual styles drifted"
+          assert 'src="/studio-live-bridge.js"' in live
+          for required in ("fc-workspace", "rv2-layout", "navset", "sidebar", "topbar"):
+              assert required in live, required
+          scripts = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", live, re.S)
+          assert len(scripts) == 2, len(scripts)
+          Path("/tmp/studio-exact.js").write_text(scripts[-1], encoding="utf-8")
+          print("Exact CSS retained; interactive screens present")
+          PY
+          node --check frontend/public/studio-live-bridge.js
+          node --check /tmp/studio-exact.js
       - name: TypeScript and Vite build
         working-directory: frontend
         run: npm run build
+      - name: Verify exact HTML and bridge included in production dist
+        run: |
+          test -s frontend/dist/studio-edition.html
+          test -s frontend/dist/studio-live-bridge.js
+          test -s frontend/dist/studio-edition-reference.html
       - name: ESLint
         working-directory: frontend
         run: npm run lint
