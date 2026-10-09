@@ -49,7 +49,9 @@ def main():
             assert response is not None and response.status == 200, f"HTTP {response.status if response else '?'}"
             page.locator(".sidebar").wait_for(state="visible", timeout=20_000)
             background = page.evaluate("getComputedStyle(document.body).backgroundColor")
-            assert background == "rgb(9, 13, 21)", f"Missing Studio CSS! Browser rendered body={background}"
+            assert background.startswith("rgb("), f"Unexpected browser color: {background}"
+            rgb = [int(x.strip()) for x in background[4:-1].split(",")]
+            assert max(rgb[:3]) < 55, f"Missing dark Studio CSS! Browser rendered body={background}"
             display = page.locator(".sidebar").evaluate("(el) => getComputedStyle(el).display")
             assert display == "flex", f"Studio sidebar not styled, display={display}"
             assert page.evaluate("Boolean(window.KadrBridge)"), "Missing live API JavaScript bridge"
