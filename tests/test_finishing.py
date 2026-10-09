@@ -187,5 +187,32 @@ class StudioApiTests(unittest.TestCase):
             self.assertEqual(self.client.get("/api/music/tracks/missing.wav/stream").status_code, 404)
 
 
+    def test_restart_marks_orphaned_preview_interrupted_but_keeps_live_worker(self):
+        from app.studio_render import task_status, _ACTIVE_TASKS, _TASKS_LOCK
+        orphan = "pv_" + uuid.uuid4().hex
+        orphan_folder = self.directory / "finishing" / "previews" / orphan
+        atomic_json(orphan_folder / "status.json", {
+            "preview_id": orphan, "source_job_id": self.job_id,
+            "status": "queued", "progress": 0, "files": []})
+        result = task_status(self.manager, orphan, self.job_id)
+        self.assertEqual(result["status"], "interrupted")
+        self.assertIn("перезапущен", result["error"])
+        self.assertEqual(json.loads((orphan_folder / "status.json").read_text("utf-8"))["status"],
+                         "interrupted")
+
+        live = "pv_" + uuid.uuid4().hex
+        live_folder = self.directory / "finishing" / "previews" / live
+        atomic_json(live_folder / "status.json", {
+            "preview_id": live, "source_job_id": self.job_id,
+            "status": "running", "progress": .2, "files": []})
+        with _TASKS_LOCK:
+            _ACTIVE_TASKS.add(live)
+        try:
+            self.assertEqual(task_status(self.manager, live, self.job_id)["status"], "running")
+        finally:
+            with _TASKS_LOCK:
+                _ACTIVE_TASKS.discard(live)
+
+
 if __name__ == "__main__":
     unittest.main()
