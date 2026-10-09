@@ -365,6 +365,43 @@ class StudioApiTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
 
+    def test_finishing_queue_is_bounded_without_creating_rejected_files(self):
+        import threading
+        from app.finishing import FinishProfile
+        from app.studio_render import submit_render, MAX_PENDING_FINISHING_TASKS
+        started = threading.Event()
+        release = threading.Event()
+
+        def block_render(*args, **kwargs):
+            started.set()
+            release.wait(timeout=5)
+
+        before = set((self.directory / "finishing" / "previews").glob("pv_*"))
+        with patch("app.studio_render.run_export", side_effect=block_render):
+            try:
+                requests = [
+                    submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
+                                  preview=(1, 0, 1))
+                    for _ in range(MAX_PENDING_FINISHING_TASKS)
+                ]
+                self.assertTrue(started.wait(timeout=2))
+                files_at_capacity = set((self.directory / "finishing" / "previews").glob("pv_*"))
+                with self.assertRaisesRegex(RuntimeError, "Очередь экспорта заполнена"):
+                    submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
+                                  preview=(1, 0, 1))
+                self.assertEqual(files_at_capacity,
+                                 set((self.directory / "finishing" / "previews").glob("pv_*")))
+                self.assertEqual(len(files_at_capacity - before), MAX_PENDING_FINISHING_TASKS)
+                self.assertEqual(self.manager.finishing_tasks[self.job_id],
+                                 MAX_PENDING_FINISHING_TASKS)
+            finally:
+                release.set()
+            for _ in range(200):
+                if not self.manager.finishing_tasks.get(self.job_id):
+                    break
+                time.sleep(0.01)
+            self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
+
     def test_task_status_never_marks_just_completed_preview_interrupted(self):
         from app.studio_render import task_status
         identifier = "pv_" + uuid.uuid4().hex

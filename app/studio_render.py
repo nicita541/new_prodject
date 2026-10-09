@@ -22,6 +22,9 @@ _RENDER_SEMAPHORE = threading.Semaphore(1)
 # running exports must become interrupted, not remain spinning forever.
 _TASKS_LOCK = threading.Lock()
 _ACTIVE_TASKS: set[str] = set()
+# One FFmpeg worker is allowed to render at a time. Keep no more than two
+# additional waiting requests; unlimited daemon threads exhaust local memory.
+MAX_PENDING_FINISHING_TASKS = 3
 
 
 
@@ -194,45 +197,57 @@ def _registered_export(identifier: str, manager, job_id: str, part_indices: list
 
 def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
                   *, preview: tuple[int, float, float] | None = None) -> dict:
-    if manager.busy():
-        raise RuntimeError("Нельзя запускать повторный экспорт во время обработки серии")
-    if preview:
-        identifier = "pv_" + uuid.uuid4().hex
-        base = manager.job_dir(job_id) / "finishing" / "previews" / identifier
-    else:
-        identifier = "ex_" + uuid.uuid4().hex
-        base = manager.job_dir(job_id) / "finishing" / "exports" / identifier
-        registry = manager.root / "finishing" / "exports-index" / (identifier + ".json")
-        atomic_json(registry, {"source_job_id": job_id})
-    status_file = base / "status.json"
-    status = {
-        ("preview_id" if preview else "export_id"): identifier,
-        "source_job_id": job_id, "status": "queued", "progress": 0.0,
-        "error": None, "files": [],
-    }
-    atomic_json(status_file, status)
-    worker = threading.Thread(target=_registered_export,
-                              args=(identifier, manager, job_id, part_indices, profile,
-                                    base, status_file, preview),
-                              daemon=True, name="finishing-" + identifier)
+    # All submissions to the current manager are serialized. The global task
+    # lock ensures even two managers in one process respect the same queue cap.
+    # Keep lock ordering consistent with _registered_export: manager, then tasks.
     with manager.mutex:
-        manager.finishing_tasks[job_id] = manager.finishing_tasks.get(job_id, 0) + 1
+        if manager.closed:
+            raise RuntimeError("Приложение завершает работу")
+        if manager.busy():
+            raise RuntimeError("Нельзя запускать повторный экспорт во время обработки серии")
         with _TASKS_LOCK:
+            if len(_ACTIVE_TASKS) >= MAX_PENDING_FINISHING_TASKS:
+                raise RuntimeError("Очередь экспорта заполнена. Дождитесь завершения текущих задач")
+            identifier = ("pv_" if preview else "ex_") + uuid.uuid4().hex
+            base = (manager.job_dir(job_id) / "finishing" /
+                    ("previews" if preview else "exports") / identifier)
+            status_file = base / "status.json"
+            status = {
+                ("preview_id" if preview else "export_id"): identifier,
+                "source_job_id": job_id, "status": "queued", "progress": 0.0,
+                "error": None, "files": [],
+            }
+            registry = (None if preview else
+                        manager.root / "finishing" / "exports-index" / (identifier + ".json"))
+            # Do not register or create any files when the queue is full.
+            try:
+                atomic_json(status_file, status)
+                if registry is not None:
+                    atomic_json(registry, {"source_job_id": job_id})
+            except Exception:
+                if registry is not None:
+                    registry.unlink(missing_ok=True)
+                status_file.unlink(missing_ok=True)
+                raise
+            worker = threading.Thread(target=_registered_export,
+                                      args=(identifier, manager, job_id, part_indices, profile,
+                                            base, status_file, preview),
+                                      daemon=True, name="finishing-" + identifier)
+            manager.finishing_tasks[job_id] = manager.finishing_tasks.get(job_id, 0) + 1
             _ACTIVE_TASKS.add(identifier)
-        try:
-            worker.start()
-        except BaseException:
-            remaining = manager.finishing_tasks[job_id] - 1
-            if remaining:
-                manager.finishing_tasks[job_id] = remaining
-            else:
-                manager.finishing_tasks.pop(job_id, None)
-            with _TASKS_LOCK:
+            try:
+                worker.start()
+            except BaseException:
+                remaining = manager.finishing_tasks[job_id] - 1
+                if remaining:
+                    manager.finishing_tasks[job_id] = remaining
+                else:
+                    manager.finishing_tasks.pop(job_id, None)
                 _ACTIVE_TASKS.discard(identifier)
-            atomic_json(status_file, {**status, "status": "failed",
-                                      "error": "Не удалось запустить поток экспорта"})
-            raise
-    return status
+                atomic_json(status_file, {**status, "status": "failed",
+                                          "error": "Не удалось запустить поток экспорта"})
+                raise
+            return status
 
 
 def _locate_task(manager, identifier: str, job_id: str | None = None):
