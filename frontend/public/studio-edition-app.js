@@ -345,7 +345,7 @@ function showFinishingFiles(files){
  }
  dialog.querySelector('.buttons')?.before(box);
 }
-function bindClick(id,callback){const element=$(id);if(element)element.addEventListener('click',callback)}
+function optionalElement(id){return $(id)||{}}
 function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVideo'))return;const f=getFinishing(),s=selectedSubtitle(),a=f.audio,v=f.video;finishUpdateView();
  document.querySelectorAll('[data-ftab]').forEach(el=>el.onclick=()=>{ui.finishTab=el.dataset.ftab;stopDemoSound();render()});
  document.querySelectorAll('[data-fpart]').forEach(el=>el.onclick=()=>{ui.finishPart=Number(el.dataset.fpart);ui.part=ui.finishPart;ui.finishCue=0;stopDemoSound();render()});
@@ -364,14 +364,14 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
  const tr=$('fcTrack');if(tr)tr.onchange=e=>{if(a.mode==='per_part'){a.part_tracks ||= {};a.part_tracks[String(ui.finishPart+1)]=e.target.value;}else a.track=e.target.value;finishUpdateView();store()};const mode=$('fcMusicMode');if(mode)mode.onchange=e=>{a.mode=e.target.value;store();render()};
  const canvas=$('fcCanvas'),cap=$('fcCaption');if(cap&&canvas){let drag=false;cap.onpointerdown=e=>{if(e.button!==0)return;drag=true;cap.setPointerCapture(e.pointerId);e.preventDefault()};cap.onpointermove=e=>{if(!drag)return;const box=canvas.getBoundingClientRect();s.x=Math.max(6,Math.min(94,Math.round((e.clientX-box.left)/box.width*100)));s.y=Math.max(7,Math.min(92,Math.round((e.clientY-box.top)/box.height*100)));finishUpdateView();for(const k of ['fcX','fcY']){if($(k)){$(k).value=k==='fcX'?s.x:s.y;$(k+'Label').textContent=$(k).value+'%'}}};cap.onpointerup=()=>{drag=false;store()};cap.ondblclick=()=>{s.x=50;s.y=74;finishUpdateView();store()};cap.onkeydown=e=>{const step=e.shiftKey?5:1;if(e.key==='ArrowUp')s.y=Math.max(6,s.y-step);else if(e.key==='ArrowDown')s.y=Math.min(94,s.y+step);else if(e.key==='ArrowLeft')s.x=Math.max(5,s.x-step);else if(e.key==='ArrowRight')s.x=Math.min(95,s.x+step);else return;e.preventDefault();finishUpdateView();store()}}
  const video=$('fcVideo'),audio=$('fcAudio');if(audio){audio.src=ui.finishAudioURL||('/api/music/tracks/'+encodeURIComponent(audioName(f))+'/stream');audio.volume=a.volume}if(video){const back=$('fcBackdrop');const bar=$('fcSeek');video.ontimeupdate=()=>{if(back&&Number.isFinite(back.duration)&&Math.abs(back.currentTime-video.currentTime)>.22){try{back.currentTime=video.currentTime}catch{}}if(bar&&Number.isFinite(video.duration)&&video.duration>0){bar.value=video.currentTime/video.duration*100;const t=$('fcTime');if(t)t.textContent=reviewTime(video.currentTime);}};video.onloadedmetadata=()=>{const d=$('fcDuration');if(d)d.textContent=reviewTime(video.duration)};video.onplay=()=>{if($('fcPlay'))$('fcPlay').textContent='Ⅱ';back?.play().catch(()=>{});if(a.enabled&&audio?.src){audio.volume=a.volume;audio.play().catch(()=>{})}};video.onpause=()=>{if($('fcPlay'))$('fcPlay').textContent='▶';audio?.pause();back?.pause()};video.onended=()=>{audio?.pause();back?.pause()};if(bar)bar.oninput=()=>{if(Number.isFinite(video.duration))video.currentTime=video.duration*Number(bar.value)/100};}
- bindClick('fcPlay',()=>{if(video.paused)video.play().catch(()=>notify('Видео не удалось воспроизвести',true));else video.pause()};bindClick('fcMute',()=>{video.muted=!video.muted;$('fcMute').classList.toggle('active',!video.muted);notify(video.muted?'Исходник без звука':'Оригинальный звук включён')};
- bindClick('fcGuideToggle',()=>{s.safe_guides=!s.safe_guides;finishUpdateView();store();$('fcGuideToggle').classList.toggle('active',s.safe_guides)};
- bindClick('fcPreviewReset',()=>{video.pause();video.currentTime=0;finishUpdateView()};
- bindClick('fcReset',()=>{modal({title:'Сбросить оформление?',text:'Вернуть исходные настройки оформления этой серии на сервере.',confirm:'Сбросить',danger:true,onConfirm:async()=>{const fresh=finishingDefaults();await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,fresh);db.finishing[ui.episodeId]=fresh;store();render();notify('Оформление сброшено и сохранено')}})};
- bindClick('fcSave',async()=>{try{const res=await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,getFinishing());const j=currentJob();if(j&&j.status==='completed'){await request('PUT',`/api/jobs/${j.id}/parts/${ui.finishPart+1}/captions`,finishCueBody(ui.finishPart));}store();notify('Правки сохранены на локальном сервере');}catch(e){notify(e.message,true)}};
- bindClick('fcCopyStyle',()=>{const style=structuredClone(s);const prev=getFinishing().part_overrides;for(let i=1;i<=(db.plans[currentJob()?.id]?.parts?.length||5);i++){prev[String(i)] ||= {};prev[String(i)].style=structuredClone(style)}store();notify('Стиль выбранной части применён ко всем частям, тексты не изменены.');render()};
+ optionalElement('fcPlay').onclick=()=>{if(video.paused)video.play().catch(()=>notify('Видео не удалось воспроизвести',true));else video.pause()};optionalElement('fcMute').onclick=()=>{video.muted=!video.muted;$('fcMute').classList.toggle('active',!video.muted);notify(video.muted?'Исходник без звука':'Оригинальный звук включён')};
+ optionalElement('fcGuideToggle').onclick=()=>{s.safe_guides=!s.safe_guides;finishUpdateView();store();$('fcGuideToggle').classList.toggle('active',s.safe_guides)};
+ optionalElement('fcPreviewReset').onclick=()=>{video.pause();video.currentTime=0;finishUpdateView()};
+ optionalElement('fcReset').onclick=()=>{modal({title:'Сбросить оформление?',text:'Вернуть исходные настройки оформления этой серии на сервере.',confirm:'Сбросить',danger:true,onConfirm:async()=>{const fresh=finishingDefaults();await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,fresh);db.finishing[ui.episodeId]=fresh;store();render();notify('Оформление сброшено и сохранено')}})};
+ optionalElement('fcSave').onclick=async()=>{try{const res=await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,getFinishing());const j=currentJob();if(j&&j.status==='completed'){await request('PUT',`/api/jobs/${j.id}/parts/${ui.finishPart+1}/captions`,finishCueBody(ui.finishPart));}store();notify('Правки сохранены на локальном сервере');}catch(e){notify(e.message,true)}};
+ optionalElement('fcCopyStyle').onclick=()=>{const style=structuredClone(s);const prev=getFinishing().part_overrides;for(let i=1;i<=(db.plans[currentJob()?.id]?.parts?.length||5);i++){prev[String(i)] ||= {};prev[String(i)].style=structuredClone(style)}store();notify('Стиль выбранной части применён ко всем частям, тексты не изменены.');render()};
  $('fcDownloadPresets')?.addEventListener('click',()=>{const episode=currE();if(episode)downloadText(`KADR_episode_${episode.number}_finishing.json`,JSON.stringify({episode_id:episode.id,...f},null,2))});
- bindClick('fcPreviewRequest',async()=>{
+ optionalElement('fcPreviewRequest').onclick=async()=>{
   try{
    const job=currentJob(),part=ui.finishPart;
    if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
@@ -389,7 +389,7 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
    }else throw new Error(result.error||'Ошибка предпросмотра');
   }catch(error){notify(error.message,true)}
  };
- bindClick('fcExport',()=>{
+ optionalElement('fcExport').onclick=()=>{
   modal({title:'Повторный экспорт Shorts',
    text:'Будет создан новый MP4 с текущим оформлением. Существующие Shorts не перезаписываются.',
    confirm:'Запустить экспорт',
