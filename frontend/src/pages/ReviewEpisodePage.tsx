@@ -130,7 +130,8 @@ export function ReviewEpisodePage() {
               
               <div className="shorts-viewer-layout">
                 <div className="shorts-player-col">
-                  <VideoPlayer file={job.files?.[activeIndex]} />
+                  <VideoPlayer file={job.files?.[activeIndex]}
+                    onEnded={activeIndex < filesCount - 1 ? () => setSelectedIndex(activeIndex + 1) : undefined} />
                   {/* Music Badge could go here */}
                   {plan.parts[activeIndex]?.music_track && (
                     <div id="music-badge" className="notice" style={{ marginTop: '12px', padding: '8px 12px', display: 'flex', gap: '8px', alignItems: 'center' }}>

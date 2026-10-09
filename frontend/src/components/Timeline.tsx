@@ -27,6 +27,23 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
   const pieces = useMemo(() => plan ? buildTimelinePieces(plan, duration) : [], [plan, duration]);
   const debugPieces = useMemo(() => plan && plan.debug_timeline?.reasons ? buildDebugPieces(plan.debug_timeline.reasons, pieces, duration) : [], [plan, pieces, duration]);
 
+  // Selecting another Shorts from the playlist must update its source bounds.
+  useEffect(() => {
+    if (!limitToPart) return;
+    const cuts = parts[selectedIndex]?.cuts;
+    if (!cuts?.length) {
+      setSourceSelection(null);
+      return;
+    }
+    const start = cuts[0].start;
+    const end = cuts[cuts.length - 1].end;
+    setSourceSelection({ start, end, retained: true });
+    const player = videoRef.current;
+    if (player && (player.currentTime < start || player.currentTime >= end)) {
+      player.currentTime = start;
+    }
+  }, [limitToPart, selectedIndex, plan]);
+
   // Sync player limits and time
   useEffect(() => {
     const video = videoRef.current;

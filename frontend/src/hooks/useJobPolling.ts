@@ -18,6 +18,7 @@ export function useJobPolling(jobId: string | null) {
     }
 
     let mounted = true;
+    let consecutiveFailures = 0;
 
     const poll = async () => {
       try {
@@ -46,6 +47,7 @@ export function useJobPolling(jobId: string | null) {
         }
         if (!mounted) return;
         
+        consecutiveFailures = 0;
         setJob(data);
         setError(null);
 
@@ -58,7 +60,12 @@ export function useJobPolling(jobId: string | null) {
       } catch (err) {
         if (!mounted) return;
         setError(err instanceof Error ? err : new Error('Polling failed'));
-        setIsPolling(false);
+        // Network failures are not terminal job states. Keep retrying with
+        // bounded backoff so an interrupted connection can recover by itself.
+        consecutiveFailures += 1;
+        setIsPolling(true);
+        const delay = Math.min(1000 * 2 ** Math.min(consecutiveFailures - 1, 3), 8000);
+        timerRef.current = window.setTimeout(poll, delay);
       }
     };
 

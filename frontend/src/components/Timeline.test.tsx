@@ -80,6 +80,19 @@ describe('Timeline Component', () => {
     expect(video.pause).toHaveBeenCalled();
   });
 
+  it('updates the playback bounds after a playlist selection changes externally', async () => {
+    const { container, rerender } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
+    await userEvent.click(screen.getByLabelText(/В пределах части/));
+    const player = container.querySelector('video')!;
+    expect(player.currentTime).toBe(10);
+    rerender(<Timeline job={mockJob} plan={mockPlan} selectedIndex={1} onSelectPart={() => {}} />);
+    expect(player.currentTime).toBe(30);
+    expect(container.querySelector('#source-selection')).toHaveTextContent('00:30');
+    player.currentTime = 40;
+    fireEvent.timeUpdate(player);
+    expect(player.pause).toHaveBeenCalled();
+  });
+
   it('reads debug reasons from plan, seeks and respects the enabled interval limit', async () => {
     const { container } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
     const debugCheckbox = screen.getByLabelText(/Анализ/);

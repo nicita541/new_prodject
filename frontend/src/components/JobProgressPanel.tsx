@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useJobPolling } from '../hooks/useJobPolling';
 import { api } from '../api/client';
 import { Link } from 'react-router-dom';
@@ -33,8 +34,23 @@ const stageGroup: Record<string, number> = {
   prepare: 0, preparing: 0, probe: 0, audio: 0, transcribe: 1, transcribing: 1, transcript: 1, speech: 1, analyze: 3, analyzing: 3, analysis: 3, events: 3, condense: 4, framing: 5, focus: 5, planning: 6, plan: 6, rendering: 7, render: 7, completed: 8, done: 8
 };
 
-export function JobProgressPanel({ jobId, episodeId }: { jobId: string | null, episodeId: string }) {
+export function JobProgressPanel({ jobId, episodeId, onJobFinished }: {
+  jobId: string | null; episodeId: string; onJobFinished?: () => void;
+}) {
   const { job, refresh } = useJobPolling(jobId);
+  const notifiedJobRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!job || job.status === 'running' || job.status === 'queued') {
+      notifiedJobRef.current = null;
+      return;
+    }
+    if (['completed', 'failed', 'cancelled', 'interrupted'].includes(job.status) &&
+        notifiedJobRef.current !== job.id) {
+      notifiedJobRef.current = job.id;
+      onJobFinished?.();
+    }
+  }, [job?.id, job?.status, onJobFinished]);
 
   if (!job) {
     return (
