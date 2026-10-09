@@ -358,6 +358,22 @@ class JobTests(unittest.TestCase):
         self.manager.finishing_tasks.pop(job["id"])
         self.assertEqual(self.manager.prune_jobs(max_jobs=0)["pruned_count"], 1)
 
+    def test_job_deletion_and_prune_remove_only_matching_export_pointers(self):
+        first = self.manager.create(self.source_id)
+        self.manager.cancel(first["id"])
+        second = self.manager.create(self.source_id)
+        self.manager.cancel(second["id"])
+        indices = self.root / "finishing" / "exports-index"
+        a = indices / ("ex_" + "a" * 32 + ".json")
+        b = indices / ("ex_" + "b" * 32 + ".json")
+        atomic_json(a, {"source_job_id": first["id"]})
+        atomic_json(b, {"source_job_id": second["id"]})
+        self.manager.delete_job(first["id"])
+        self.assertFalse(a.exists(), "deleted job's export pointer remains")
+        self.assertTrue(b.exists(), "unrelated export pointer was removed")
+        self.assertEqual(self.manager.prune_jobs(max_jobs=0)["pruned_count"], 1)
+        self.assertFalse(b.exists(), "pruned job's export pointer remains")
+
     def test_delete_job_does_not_claim_success_when_removal_fails(self):
         job = self.manager.create(self.source_id)
         self.manager.cancel(job["id"])

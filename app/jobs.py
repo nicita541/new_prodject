@@ -332,6 +332,23 @@ class JobManager:
         return sorted((self.get(path.parent.name) for path in self.jobs.glob("*/job.json")),
                       key=lambda item: item["created_at"], reverse=True)
 
+    def _drop_finishing_export_index(self, job_id: str) -> None:
+        """Remove only orphaned registry entries after a job was removed.
+
+        The registry contains pointers to isolated exports in the deleted job
+        directory. Never delete other jobs' entries or active task folders.
+        """
+        directory = self.root / "finishing" / "exports-index"
+        if not directory.is_dir():
+            return
+        for path in directory.glob("ex_*.json"):
+            try:
+                record = read_json(path, {})
+                if isinstance(record, dict) and record.get("source_job_id") == job_id:
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                LOGGER.exception("Cannot inspect/remove old export registry entry %s", path.name)
+
     def delete_job(self, identifier: str) -> dict:
         with self.mutex:
             validate_id(identifier)
@@ -344,6 +361,7 @@ class JobManager:
                 raise KeyError(identifier)
             # Never report success if Windows locks or permissions prevent removal.
             shutil.rmtree(directory)
+            self._drop_finishing_export_index(identifier)
             self.pending_states.pop(identifier, None)
             return {"id": identifier, "deleted": True}
 
@@ -386,6 +404,7 @@ class JobManager:
                     except OSError:
                         LOGGER.exception("Cannot prune job %s", jid)
                     else:
+                        self._drop_finishing_export_index(jid)
                         pruned.append(jid)
                 else:
                     remaining_jobs.append((jid, created_at, mtime, directory))
@@ -399,6 +418,7 @@ class JobManager:
                     except OSError:
                         LOGGER.exception("Cannot prune job %s", jid)
                     else:
+                        self._drop_finishing_export_index(jid)
                         pruned.append(jid)
 
             return {"pruned_count": len(pruned), "pruned_ids": pruned,
