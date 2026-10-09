@@ -39,7 +39,7 @@ jobs:
           assert 'src="/studio-live-bridge.js"' in live
           for required in ("fc-workspace", "rv2-layout", "navset", "sidebar", "topbar"):
               assert required in live, required
-          scripts = re.findall(r"<script(?:\\s[^>]*)?>(.*?)</script>", live, re.S)
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", live, re.S)
           assert len(scripts) == 2, len(scripts)
           Path("/tmp/studio-exact.js").write_text(scripts[-1], encoding="utf-8")
           print("Exact CSS retained; interactive screens present")
