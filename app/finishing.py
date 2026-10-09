@@ -6,14 +6,17 @@ cannot mutate the user's primary app. Never edit original plan.json/exports.
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app import config
 from app.jobs import atomic_json, read_json, validate_id
 
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
@@ -216,5 +219,68 @@ def create_finishing_router() -> APIRouter:
                       "cues": [c.model_dump() for c in body.cues]}
             atomic_json(path, stored)
         return stored
+
+
+    @router.api_route("/api/music/tracks/{filename}/stream", methods=["GET", "HEAD"])
+    def stream_music(request: Request, filename: str):
+        from .server import ranged_file
+        # Restrict to the exact list presented by the existing /api/music API.
+        from .music import list_tracks
+        found = next((p for p in list_tracks(config.MUSIC) if p.name == filename), None)
+        if not found or not found.is_file():
+            raise HTTPException(404, "Музыкальный файл не найден")
+        return ranged_file(found, request)
+
+    @router.post("/api/music/import", status_code=201)
+    async def import_music(request: Request, file: UploadFile = File(...)):
+        from .music import SUPPORTED_SUFFIXES
+        from .media import run_command
+        name = file.filename or ""
+        if (not name or len(name) > 255 or any(ch in name for ch in ('/', '\\', '\x00', ':'))
+                or name in {'.', '..'} or Path(name).suffix.lower() not in SUPPORTED_SUFFIXES):
+            raise HTTPException(422, "Поддерживаются аудиофайлы MP3, WAV, M4A, AAC, FLAC и OGG")
+        if not config.FFPROBE.is_file():
+            raise HTTPException(503, "FFprobe не установлен")
+        config.MUSIC.mkdir(parents=True, exist_ok=True)
+        if (config.MUSIC / name).exists():
+            raise HTTPException(409, "Трек с таким названием уже существует")
+        partial = config.MUSIC / ("." + uuid.uuid4().hex + ".upload")
+        total = 0
+        try:
+            with partial.open("wb") as sink:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > 35 * 1024 * 1024:
+                        raise HTTPException(413, "Музыкальный файл больше 35 МБ")
+                    sink.write(chunk)
+            # Accept only a decodable audio stream; uploaded metadata is untrusted.
+            try:
+                probe = subprocess.run(
+                    [str(config.FFPROBE), "-v", "error", "-show_streams", "-show_format",
+                     "-of", "json", str(partial)], capture_output=True, timeout=30, check=True)
+                parsed = json.loads(probe.stdout)
+                if not any(t.get("codec_type") == "audio" for t in parsed.get("streams", [])):
+                    raise ValueError("No audio stream")
+                duration = float(parsed.get("format", {}).get("duration", 0))
+                if not 0 < duration < 24 * 3600:
+                    raise ValueError("Invalid duration")
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                raise HTTPException(422, "Аудиофайл не удалось декодировать") from error
+            destination = config.MUSIC / name
+            # Renaming is atomic on the same filesystem and cannot overwrite an
+            # existing Windows file; explicit duplicate validation above is UX.
+            if destination.exists():
+                raise HTTPException(409, "Трек с таким названием уже существует")
+            os.rename(partial, destination)
+            return {"track_id": "mt_" + uuid.uuid4().hex[:8], "name": name, "size": total,
+                    "content_type": file.content_type or "application/octet-stream",
+                    "duration_seconds": duration,
+                    "playback_url": f"/api/music/tracks/{name}/stream", "stored": True}
+        finally:
+            await file.close()
+            partial.unlink(missing_ok=True)
 
     return router
