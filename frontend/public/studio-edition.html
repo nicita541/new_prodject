@@ -497,6 +497,36 @@ async function toggleDemoSound(){if(ui.finishAudioURL){const au=$('fcAudio');if(
 function finishUpdateView(){const f=getFinishing(),s=selectedSubtitle(),v=f.video,cap=$('fcCaption'),canvas=$('fcCanvas'),vid=$('fcVideo');if(!cap||!canvas)return;const cue=chosenCue();cap.textContent=s.uppercase?cue.text.toLocaleUpperCase('ru-RU'):cue.text;cap.style.left=s.x+'%';cap.style.top=s.y+'%';cap.style.color=s.color;cap.style.fontSize=(s.font_size*.227).toFixed(3)+'cqw';cap.style.background=s.background?'#0b0e11bd':'transparent';cap.style.padding=s.background?'.22em .42em':'0';cap.style.textAlign=s.align;cap.style.textShadow=s.outline?`${Array.from({length:s.outline*2},(_,i)=>{const v1=(i%2?1:-1)*Math.ceil(i/2);return `${v1}px ${Math.floor(i/2)%2?2:-2}px 0 #050609`}).join(',')}, 0 3px 10px #000`:'0 2px 10px #000a';canvas.classList.toggle('zoom-mode',v.layout==='portrait');canvas.style.setProperty('--fc-blur',v.blur+'px');canvas.style.setProperty('--fc-vignette',v.vignette/100);if(vid){vid.style.transform=`scale(${v.zoom/100})`;vid.style.filter=`brightness(${v.brightness}%)`;}
  const safe=$('fcSafeZone');if(safe)safe.classList.toggle('shown',s.safe_guides);const status=$('fcSoundTag');if(status)status.textContent=f.audio.enabled?`♫ ${audioName(f)} · ${Math.round(f.audio.volume*100)}%`:'Музыка выключена';}
 function finishSaveCue(text){const list=selectedCues();list[ui.finishCue??0]={...chosenCue(),text};finishUpdateView();}
+
+async function waitForFinishingJob(path,onProgress){
+ for(let i=0;i<180;i++){
+  const state=await request('GET',path,null,{quiet:true});
+  if(onProgress)onProgress(state);
+  if(['completed','failed','cancelled'].includes(state.status))return state;
+  await new Promise(resolve=>setTimeout(resolve,1200));
+ }
+ throw new Error('Экспорт выполняется слишком долго. Запомните адрес: '+path);
+}
+function showFinishingFiles(files){
+ const valid=(files||[]).filter(f=>f.url&&f.name);
+ modal({title:'Готовые Shorts',text:'Созданы новые файлы. Исходные видео и монтажный план не изменены.',confirm:'Закрыть',onConfirm:async()=>{}});
+ const dialog=document.querySelector('#modalHost .dialog');
+ if(!dialog)return;
+ const box=document.createElement('div');box.className='buttons';
+ for(const file of valid){
+  for(const [label,url] of [['MP4',file.url],['SRT',file.subtitle_url]]){
+   if(!url)continue;
+   const anchor=document.createElement('a');
+   anchor.className='btn sm green';
+   anchor.href=url+'?download=1';
+   anchor.target='_blank';
+   anchor.rel='noopener';
+   anchor.textContent='↓ '+label+' · Часть '+file.part_index;
+   box.appendChild(anchor);
+  }
+ }
+ dialog.querySelector('.buttons')?.before(box);
+}
 function bindFinishing(){const f=getFinishing(),s=selectedSubtitle(),a=f.audio,v=f.video;finishUpdateView();
  document.querySelectorAll('[data-ftab]').forEach(el=>el.onclick=()=>{ui.finishTab=el.dataset.ftab;stopDemoSound();render()});
  document.querySelectorAll('[data-fpart]').forEach(el=>el.onclick=()=>{ui.finishPart=Number(el.dataset.fpart);ui.part=ui.finishPart;ui.finishCue=0;stopDemoSound();render()});
@@ -522,8 +552,44 @@ function bindFinishing(){const f=getFinishing(),s=selectedSubtitle(),a=f.audio,v
  $('fcSave').onclick=async()=>{try{const res=await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,getFinishing());const j=currentJob();if(j&&j.status==='completed'){await request('PUT',`/api/jobs/${j.id}/parts/${ui.finishPart+1}/captions`,finishCueBody(ui.finishPart));}store();notify('Правки сохранены на локальном сервере');}catch(e){notify(e.message,true)}};
  $('fcCopyStyle').onclick=()=>{const style=structuredClone(s);const prev=getFinishing().part_overrides;for(let i=1;i<=(db.plans[currentJob()?.id]?.parts?.length||5);i++){prev[String(i)] ||= {};prev[String(i)].style=structuredClone(style)}store();notify('Стиль выбранной части применён ко всем частям, тексты не изменены.');render()};
  $('fcDownloadPresets').onclick=()=>downloadText(`KADR_episode_${e.number}_finishing.json`,JSON.stringify({episode_id:e.id,...f},null,2));
- $('fcPreviewRequest').onclick=async()=>{try{const j=currentJob();if(!j||j.status!=='completed')throw new Error('Для серверного предпросмотра нужен готовый монтаж');const d=await request('POST',`/api/jobs/${j.id}/previews`,{part_index:ui.finishPart+1,from:0,duration:5,settings:f});const resp=await request('GET',`/api/jobs/${j.id}/previews/${d.preview_id}`);notify(resp.status==='completed'?'Серверный предпросмотр готов':'Предпросмотр создаётся на сервере')}catch(ex){notify(ex.message,true)}};
- $('fcExport').onclick=()=>{modal({title:'Повторный экспорт Shorts',text:'Создать новую версию MP4 из исходной серии. Прежние готовые файлы останутся без изменений.',confirm:'Запустить экспорт',onConfirm:async()=>{const j=currentJob();if(!j||j.status!=='completed')throw new Error('Нет готовой исходной попытки');const result=await request('POST',`/api/jobs/${j.id}/exports`,{part_indices:[ui.finishPart+1],settings:f});await request('GET',`/api/exports/${result.export_id}`);notify('Экспорт запущен: '+result.export_id+'. Статус можно проверить в разделе API.') }})};
+ $('fcPreviewRequest').onclick=async()=>{
+  try{
+   const job=currentJob(),part=ui.finishPart;
+   if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
+   const task=await request('POST',"/api/jobs/"+job.id+"/previews",{
+    part_index:part+1,from:0,duration:5,settings:f
+   });
+   notify('FFmpeg создаёт предпросмотр. Подождите несколько секунд.');
+   const result=await waitForFinishingJob('/api/jobs/'+job.id+'/previews/'+task.preview_id);
+   if(result.status==='completed'&&result.url){
+    if(ui.finishPart===part&&currentJob()?.id===job.id){
+      const video=$('fcVideo');
+      if(video){video.pause();video.src=result.url;video.load();}
+    }
+    notify('Серверный предпросмотр готов: кадр и звук пересобраны.');
+   }else throw new Error(result.error||'Ошибка предпросмотра');
+  }catch(error){notify(error.message,true)}
+ };
+ $('fcExport').onclick=()=>{
+  modal({title:'Повторный экспорт Shorts',
+   text:'Будет создан новый MP4 с текущим оформлением. Существующие Shorts не перезаписываются.',
+   confirm:'Запустить экспорт',
+   onConfirm:async()=>{
+    const job=currentJob();
+    if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
+    const task=await request('POST','/api/jobs/'+job.id+'/exports',{
+      part_indices:[ui.finishPart+1],settings:f
+    });
+    notify('Экспорт запущен. MP4 появится после обработки FFmpeg.');
+    (async()=>{
+      const result=await waitForFinishingJob('/api/exports/'+task.export_id);
+      if(result.status!=='completed')throw new Error(result.error||'Ошибка рендера');
+      showFinishingFiles(result.files);
+      notify('Новый MP4 готов к скачиванию');
+    })().catch(error=>notify(error.message,true));
+   }
+  });
+ };
  $('fcImportAudio')?.addEventListener('click',()=>$('fcMusicFile').click());$('fcMusicFile').onchange=async ev=>{const file=ev.target.files?.[0];if(!file)return;try{await request('POST','/api/music/import',{file})}catch(err){notify(err.message,true);return;}if(ui.finishAudioURL)URL.revokeObjectURL(ui.finishAudioURL);ui.finishAudioURL=URL.createObjectURL(file);a.track=file.name;$('fcAudio').src=ui.finishAudioURL;$('fcAudio').volume=a.volume;$('fcAudioSource').textContent='Локальный файл · '+file.name;finishUpdateView();store();notify('Аудиофайл загружен и доступен для одновременного прослушивания с видео.');};
  $('fcHearAudio')?.addEventListener('click',async()=>{const a=$('fcAudio');try{if(!a||!a.src)throw new Error('Нет аудиотрека для прослушивания');if(a.paused){await a.play();notify('Воспроизводится выбранный трек')}else{a.pause();notify('Прослушивание остановлено')}}catch(e){notify(e.message,true)}});
  canvas.addEventListener('keydown',ev=>{if(ev.target===canvas&&ev.code==='Space'){ev.preventDefault();$('fcPlay').click()}});
