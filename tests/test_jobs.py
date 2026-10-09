@@ -162,7 +162,10 @@ class JobTests(unittest.TestCase):
         self.root = config.TEMP / ("jobs_" + uuid.uuid4().hex)
         self.root.mkdir()
         self.manager = JobManager(self.root, FakeWorker)
-        self.source = self.root / ("Серия с длинным русским именем и пробелами " * 4 + ".mp4")
+        # Linux limits UTF-8 filename components to 255 bytes; Windows uses
+        # UTF-16 code units. Keep a long Cyrillic name on both platforms.
+        repeats = 4 if os.name == "nt" else 2
+        self.source = self.root / ("Серия с длинным русским именем и пробелами " * repeats + ".mp4")
         self.source.write_bytes(b"unchanged source")
         self.source_id = self.manager.list_sources()[0]["id"]
     def tearDown(self):
