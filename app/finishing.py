@@ -109,6 +109,12 @@ class FinishProfile(BaseModel):
         return value
 
 
+class FinishProfileUpdate(FinishProfile):
+    # Optimistic concurrency. Kept optional for older clients until their
+    # explicit revision-less saves are migrated.
+    revision: int | None = Field(None, ge=0)
+
+
 class CaptionsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     part_index: int = Field(ge=1, le=100)
@@ -215,13 +221,17 @@ def create_finishing_router() -> APIRouter:
         return {"episode_id": episode_id, **saved, "revision": record.get("revision", 0)}
 
     @router.put("/api/episodes/{episode_id}/finishing")
-    def put_finishing(request: Request, episode_id: str, profile: FinishProfile):
+    def put_finishing(request: Request, episode_id: str, profile: FinishProfileUpdate):
         _episode(request, episode_id)
         path = _profile_file(request, episode_id)
         with _manager(request).mutex:
             previous = read_json(path, {}) or {}
-            revision = int(previous.get("revision", 0)) + 1
-            stored = {"episode_id": episode_id, **profile.model_dump(), "revision": revision}
+            previous_revision = int(previous.get("revision", 0))
+            if profile.revision is not None and profile.revision != previous_revision:
+                raise HTTPException(409, "Оформление изменено в другом окне, обновите страницу")
+            stored = {"episode_id": episode_id,
+                      **profile.model_dump(exclude={"revision"}),
+                      "revision": previous_revision + 1}
             atomic_json(path, stored)
         return stored
 

@@ -62,6 +62,7 @@ const plan = {source:{duration:4},parts:[{index:1,duration:4,
   cuts:[{start:0,end:4}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'},
     {start:3.8,end:4,text:'ДРУГАЯ РЕПЛИКА'}]}]};
 let saveCalls = 0;
+let savedProfileBody;
 window.fetch = async (input,options={}) => {
   const p = String(input);
   let value;
@@ -73,7 +74,7 @@ window.fetch = async (input,options={}) => {
   else if(p==='/api/deepseek')value={configured:false,remaining_usd:null,model:'deepseek-chat',budget_usd:null};
   else if(p.endsWith('/plan'))value=plan;
   else if(p.endsWith('/finishing')){
-    if(options.method==='PUT'){saveCalls++;value={...JSON.parse(options.body),revision:saveCalls};}
+    if(options.method==='PUT'){saveCalls++;savedProfileBody=JSON.parse(options.body);value={...savedProfileBody,revision:saveCalls};}
     else value=profile;
   }
   else if(p.includes('/captions'))value={job_id:job,part_index:1,cues:plan.parts[0].subtitles,revision:0};
@@ -144,6 +145,7 @@ for(const [tab,contains] of [['audio','Звуковое сопровождени
 window.document.querySelector('#fcSave').click();
 await new Promise(resolve=>setTimeout(resolve,150));
 assert(saveCalls > 0,'save action must use real API bridge');
+assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
 const projectsNav = window.document.querySelector('button[data-action="nav"][data-screen="projects"]');
 assert(projectsNav, 'projects navigation missing');
 projectsNav.click();

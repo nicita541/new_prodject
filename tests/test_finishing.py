@@ -76,6 +76,26 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.put(path, json=bad).status_code, 422)
         self.assertEqual((self.directory / "plan.json").read_bytes(), before)
 
+    def test_finishing_profile_rejects_stale_revision_without_losing_changes(self):
+        path = "/api/episodes/" + self.episode_id + "/finishing"
+        original = self.client.get(path).json()
+        first = {key: value for key, value in original.items()
+                 if key in {"version", "video", "subtitles", "audio", "part_overrides", "revision"}}
+        first["video"] = {**first["video"], "zoom": 110}
+        saved = self.client.put(path, json=first)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["revision"], 1)
+        stale = {**first, "video": {**first["video"], "zoom": 130}}
+        rejected = self.client.put(path, json=stale)
+        self.assertEqual(rejected.status_code, 409, rejected.text)
+        current = self.client.get(path).json()
+        self.assertEqual(current["video"]["zoom"], 110)
+        self.assertEqual(current["revision"], 1)
+        next_profile = {**stale, "revision": 1}
+        succeeded = self.client.put(path, json=next_profile)
+        self.assertEqual(succeeded.status_code, 200, succeeded.text)
+        self.assertEqual(succeeded.json()["revision"], 2)
+
     def test_caption_overrides_validate_bounds_revision_and_leave_original(self):
         path = "/api/jobs/" + self.job_id + "/parts/1/captions"
         self.assertEqual(self.client.get(path).json()["cues"][0]["text"], "Оригинал")

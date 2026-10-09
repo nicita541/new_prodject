@@ -104,7 +104,7 @@ export const api = {
   getFinishing: (episodeId: string) => fetchApi<FinishProfile>('/api/episodes/' + episodeId + '/finishing'),
   saveFinishing: (episodeId: string, profile: FinishProfile) =>
     fetchApi<FinishProfile>('/api/episodes/' + episodeId + '/finishing', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify((({ episode_id: _episode_id, revision: _revision, ...values }) => values)(profile)),
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify((({ episode_id: _episode_id, ...values }) => values)(profile)),
     }),
   getFinishCaptions: (jobId: string, index: number) =>
     fetchApi<FinishCaptions>('/api/jobs/' + jobId + '/parts/' + index + '/captions'),
