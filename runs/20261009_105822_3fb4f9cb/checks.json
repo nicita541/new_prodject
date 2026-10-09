@@ -1,0 +1,55 @@
+﻿{
+    "run_id":  "20261009_105822_3fb4f9cb",
+    "timestamp_utc":  "2026-10-09T10:58:28.3579910Z",
+    "branch":  "fix/montage-stability",
+    "commit":  "838e7cd770b0e7bc99d1277dbb331df112010e4e",
+    "mode":  "standard",
+    "overall":  "INCOMPLETE",
+    "passed":  2,
+    "failed":  0,
+    "skipped":  5,
+    "checks":  [
+                   {
+                       "name":  "python_compile",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "python_tests",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "react_tests",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "npm/node_modules missing; run npm ci in frontend"
+                   },
+                   {
+                       "name":  "react_lint",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "npm/node_modules missing"
+                   },
+                   {
+                       "name":  "react_build",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "npm/node_modules missing"
+                   },
+                   {
+                       "name":  "ffmpeg",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "portable FFmpeg missing"
+                   },
+                   {
+                       "name":  "ffprobe",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "portable FFprobe missing"
+                   }
+               ]
+}
