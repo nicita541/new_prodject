@@ -50,7 +50,10 @@ jobs:
         run: python -m pytest -q tests/test_finishing.py
       - name: Smoke-check actual synthetic demo in isolated checkout
         run: |
-          command -v ffmpeg
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
           mkdir -p tools/ffmpeg/bin
           ln -s "$(command -v ffmpeg)" tools/ffmpeg/bin/ffmpeg.exe
           python scripts/create_studio_demo.py
