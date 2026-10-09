@@ -76,11 +76,23 @@ def _source(request_manager, job_id: str) -> Path:
 def _probe(source: Path, work: Path) -> dict:
     raw = inspect_media(source, work)
     video = next((v for v in raw.get("streams", []) if v.get("codec_type") == "video"), None)
-    audio = next((a for a in raw.get("streams", []) if a.get("codec_type") == "audio"), None)
-    if video is None or audio is None:
+    audios = [a for a in raw.get("streams", []) if a.get("codec_type") == "audio"]
+    if video is None or not audios:
         raise ValueError("У исходной серии нет видео или аудио")
+    # The initial ASR/montage selects the Russian-labelled audio stream.
+    # Re-export MUST use the same stream; otherwise subtitles and original
+    # dialogue can end up in different languages.
+    ordinal = 0
+    if len(audios) > 1:
+        russian = [i for i, audio in enumerate(audios)
+                   if str(audio.get("tags", {}).get("language", "")).lower() in ("ru", "rus")
+                   or any(marker in str(audio.get("tags", {}).get("title", "")).lower()
+                          for marker in ("рус", "russian"))]
+        if not russian:
+            raise ValueError("Несколько аудиодорожек без обозначения русской")
+        ordinal = russian[0]
     return {"width": int(video["width"]), "height": int(video["height"]),
-            "audio_stream": 0}
+            "audio_stream": ordinal}
 
 
 def _effective_part(manager, job_id: str, part: dict, profile: dict) -> dict:
