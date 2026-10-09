@@ -350,8 +350,11 @@ def create_finishing_router() -> APIRouter:
         from .music import SUPPORTED_SUFFIXES
         from .media import run_command
         name = file.filename or ""
-        if (not name or len(name) > 255 or any(ch in name for ch in ('/', '\\', '\x00', ':'))
-                or name in {'.', '..'} or Path(name).suffix.lower() not in SUPPORTED_SUFFIXES):
+        if (not name or len(name) > 255
+                or any(ord(ch) < 32 or ch in '/\\:<>"|?*' for ch in name)
+                or name.endswith(('.', ' '))
+                or re.fullmatch(r'(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?', name)
+                or Path(name).suffix.lower() not in SUPPORTED_SUFFIXES):
             raise HTTPException(422, "Поддерживаются аудиофайлы MP3, WAV, M4A, AAC, FLAC и OGG")
         if not config.FFPROBE.is_file():
             raise HTTPException(503, "FFprobe не установлен")
