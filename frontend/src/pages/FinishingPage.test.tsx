@@ -160,8 +160,8 @@ describe('Studio Edition actual backend contract', () => {
     fireEvent.change(screen.getByLabelText('Позиция Y'), {target:{value:'65'}});
     await user.click(screen.getAllByRole('button',{name:/Применить стиль ко всем частям/})[0]);
     await user.click(screen.getByRole('button',{name:/Сохранить правки/}));
-    await waitFor(()=>expect(api.saveFinishing).toHaveBeenCalled());
-    const stored = vi.mocked(api.saveFinishing).mock.lastCall?.[1];
+    await waitFor(()=>expect(api.saveFinishingState).toHaveBeenCalled());
+    const stored = vi.mocked(api.saveFinishingState).mock.lastCall?.[1];
     expect(stored?.part_overrides['1']?.style?.y).toBe(65);
     expect(stored?.part_overrides['2']?.style?.y).toBe(65);
     expect(stored?.part_overrides['2']?.cues?.[0].text).toBe('ВТОРАЯ ЧАСТЬ');
