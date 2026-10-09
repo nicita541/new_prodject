@@ -1,0 +1,55 @@
+﻿{
+    "run_id":  "20261009_110156_f6ef5996",
+    "timestamp_utc":  "2026-10-09T11:02:06.5278055Z",
+    "branch":  "fix/montage-stability",
+    "commit":  "838e7cd770b0e7bc99d1277dbb331df112010e4e",
+    "mode":  "standard",
+    "overall":  "INCOMPLETE",
+    "passed":  5,
+    "failed":  0,
+    "skipped":  2,
+    "checks":  [
+                   {
+                       "name":  "python_compile",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "python_tests",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "react_tests",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "react_lint",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "react_build",
+                       "status":  "PASS",
+                       "exit_code":  0,
+                       "note":  ""
+                   },
+                   {
+                       "name":  "ffmpeg",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "portable FFmpeg missing"
+                   },
+                   {
+                       "name":  "ffprobe",
+                       "status":  "SKIP",
+                       "exit_code":  0,
+                       "note":  "portable FFprobe missing"
+                   }
+               ]
+}

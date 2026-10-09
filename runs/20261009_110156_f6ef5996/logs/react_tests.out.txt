@@ -1,0 +1,47 @@
+﻿
+> frontend@0.0.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mF:/new_prodject-fixed/frontend[39m
+
+ [32mвњ“[39m src/library/selectors.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32mвњ“[39m src/utils/timeline.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32mвњ“[39m src/components/VideoPlayer.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[32m 100[2mms[22m[39m
+ [32mвњ“[39m src/components/DeepSeekPanel.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 378[2mms[22m[39m
+ [32mвњ“[39m src/components/DownloadControls.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 482[2mms[22m[39m
+ [32mвњ“[39m src/pages/ReviewEpisodePage.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 531[2mms[22m[39m
+ [32mвњ“[39m src/components/SourceSelect.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 604[2mms[22m[39m
+ [32mвњ“[39m src/pages/TrashPage.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 427[2mms[22m[39m
+ [32mвњ“[39m src/pages/EpisodesPage.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 627[2mms[22m[39m
+   [32mвњ“[39m Episodes flat backend contract [2m(4)[22m
+     [33m[2mвњ“[22m[39m creates an episode with a real number and follows its ID[33m 400[2mms[22m[39m
+ [32mвњ“[39m src/pages/EditEpisodePage.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 543[2mms[22m[39m
+ [32mвњ“[39m src/components/MusicPanel.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 633[2mms[22m[39m
+   [32mвњ“[39m MusicPanel [2m(4)[22m
+     [33m[2mвњ“[22m[39m coalesces rapid slider changes and serializes requests[33m 372[2mms[22m[39m
+ [32mвњ“[39m src/pages/ProjectsPage.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 627[2mms[22m[39m
+   [32mвњ“[39m Projects backend contract [2m(4)[22m
+     [33m[2mвњ“[22m[39m creates a project with the entered title and refetches[33m 454[2mms[22m[39m
+ [32mвњ“[39m src/components/JobProgressPanel.test.tsx [2m([22m[2m21 tests[22m[2m)[22m[33m 907[2mms[22m[39m
+ [32mвњ“[39m src/components/Timeline.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 825[2mms[22m[39m
+ [32mвњ“[39m src/components/QualityWarnings.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[32m 145[2mms[22m[39m
+ [32mвњ“[39m src/components/PartContext.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[32m 152[2mms[22m[39m
+ [32mвњ“[39m src/components/Playlist.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[32m 131[2mms[22m[39m
+ [32mвњ“[39m src/components/App.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32mвњ“[39m src/library/contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32mвњ“[39m src/hooks/useJobPolling.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 2628[2mms[22m[39m
+   [32mвњ“[39m useJobPolling [2m(12)[22m
+     [33m[2mвњ“[22m[39m recovers after a temporary server error without manual refresh[33m 1060[2mms[22m[39m
+     [33m[2mвњ“[22m[39m resumes polling a failed job with the same ID after retry and observes completion[33m 1073[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m20 passed[39m[22m[90m (20)[39m
+[2m      Tests [22m [1m[32m118 passed[39m[22m[90m (118)[39m
+[2m   Start at [22m 18:01:58
+[2m   Duration [22m 5.30s[2m (environment 60%, tests 17%, setup 14%, import 6%, transform 2%, worker 1%)[22m
+
+[2mEnvironment [22m [33mjsdom was created 20 times[39m[2m В· 35.00s total, 60% of tracked time[22m
+[2m            [22m [2mcreate it once per worker with [22m[33mpool: 'vmThreads'[39m[2m (keeps per-file isolation) or [22m[33misolate: false[39m[2m (shares it across files)[22m
+[2m            [22m [2mlearn more: https://vitest.dev/guide/improving-performance#test-environments[22m
+
+
