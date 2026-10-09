@@ -45,6 +45,6 @@ jobs:
       - name: Install lightweight API dependencies
         run: python -m pip install fastapi uvicorn python-multipart pillow pytest httpx
       - name: Check Python compilation
-        run: python -m compileall -q app tests
+        run: python -m compileall -q app scripts tests
       - name: Test Studio Edition API and isolated exports
         run: python -m pytest -q tests/test_finishing.py
