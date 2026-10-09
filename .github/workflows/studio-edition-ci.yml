@@ -110,7 +110,15 @@ jobs:
             tests/test_selection_gate.py \
             tests/test_source_continuity.py \
             tests/test_global_verification.py \
-            tests/test_continuity_verification.py
+            tests/test_continuity_verification.py \
+            tests/test_subtitles.py \
+            tests/test_montage_regressions.py \
+            tests/test_narrative_bridge.py \
+            tests/test_speech_context.py \
+            tests/test_question_context.py \
+            tests/test_retention_allocation.py \
+            tests/test_semantic_boundary.py \
+            tests/test_semantic_identity.py
 
   backend:
     name: Finishing API safety tests
