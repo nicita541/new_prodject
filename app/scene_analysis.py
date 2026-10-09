@@ -74,11 +74,16 @@ def merge_subframe_chunks(chunks, minimum_seconds=.125):
     return values
 
 
-def bounded_chunks(scene, transcript, shots, max_frames=12):
+def bounded_chunks(scene, transcript, shots, max_frames=12, *, frame_times=None):
     """Bound inference by actual frame demand, preserving semantic ownership."""
     from .scene_detection import analysis_chunks
     from .vision import inference_samples
     pending = merge_subframe_chunks(analysis_chunks(scene, transcript))
+    # Frame PTS are known in the production path. A word-safe ASR edge is
+    # still unusable when no *actual* source frame exists in either child.
+    def has_source_frame(a, b):
+        return (frame_times is None or
+                bisect_left(frame_times, a) < bisect_left(frame_times, b))
     result = []
     while pending:
         chunk = pending.pop(0)
@@ -99,6 +104,8 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
             edges = sorted({
                 float(u['end']) for u in units
                 if start + minimum_margin <= float(u['end']) <= end - minimum_margin
+                and has_source_frame(start, float(u['end']))
+                and has_source_frame(float(u['end']), end)
             }, key=lambda t: abs(t-midpoint))
             if edges:
                 boundary = edges[0]
@@ -106,6 +113,15 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
                     {**chunk, 'start': start, 'end': boundary},
                     {**chunk, 'start': boundary, 'end': end},
                 ]
+                continue
+            # If a 13-frame view has ONLY a frame-empty 80 ms word boundary,
+            # keep one source-owned scene and deterministically sample 12 real
+            # positions instead of extracting nonexistent frames or replaying
+            # 60 seconds of provider analysis.
+            required = max(len(inference_samples(start,end,units,recovery=value))
+                           for value in (False, True))
+            if frame_times is not None and required <= max_frames + 2 and has_source_frame(start,end):
+                result.append({**chunk, 'sampling_limit': max_frames})
                 continue
             raise ValueError(
                 'Indivisible source unit exceeds the bounded visual view: '
@@ -233,6 +249,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
     components = {name: component_identity(name)['digest'] for name in ('local_prompt', 'recovery', 'storyboard')}
     source_path = Path(source)
     source_stat = source_path.stat() if source_path.is_file() else None
+    frame_times = None
     if source_stat is not None and scenes:
         from .bounded_storyboard import _source_times
         frame_times, *_ = _source_times(source_path, scenes[0]['start'], scenes[-1]['end'],
@@ -285,7 +302,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         previous = scenes[index-1] if index else None
         following = scenes[index+1] if index+1 < len(scenes) else None
         chunk_results, scene_boards, all_units = [], [], []
-        chunks = bounded_chunks(scene, transcript, shots)
+        chunks = bounded_chunks(scene, transcript, shots, frame_times=frame_times)
         with diagnostics.stage('scene_analysis', scene_id=scene['id'], provider=type(vision).__name__,
                                source_start=scene['start'], source_end=scene['end'], chunks=len(chunks)):
             for number, chunk in enumerate(chunks):
@@ -321,7 +338,8 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 diagnostics.event('scene_analysis', 'chunk_cache_miss',
                                   scene_id=scene['id'], chunk_id=chunk['id'])
                 board_start = len(scene_boards)
-                timestamps = inference_storyboard(source,start,end,units,image,cancelled)
+                sampling = {'sample_limit': chunk['sampling_limit']} if chunk.get('sampling_limit') else {}
+                timestamps = inference_storyboard(source,start,end,units,image,cancelled,**sampling)
                 all_units.extend(units)
                 board = load_json(image.with_suffix('.storyboard.json'))
                 images = [Path(p) for p in board.get('pages', [str(image)])] if getattr(vision, 'supports_image_pages', False) else [image]
@@ -378,7 +396,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 current.update(scene_id=scene['id'],chunk_id=chunk['id'])
                 if recovery_trigger(current):
                     recovery_image = visual_dir/f'{event_id}_chunk_{number:03d}_recovery.jpg'
-                    recovery_times = inference_storyboard(source,start,end,units,recovery_image,cancelled,recovery=True)
+                    recovery_times = inference_storyboard(source,start,end,units,recovery_image,cancelled,recovery=True,**sampling)
                     recovery_board = load_json(recovery_image.with_suffix('.storyboard.json'))
                     recovery_board.update(scene_id=scene['id'],chunk_id=chunk['id'],role='recovery_current',image=str(recovery_image))
                     scene_boards.append(recovery_board)

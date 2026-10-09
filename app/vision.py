@@ -233,10 +233,18 @@ def inference_samples(start, end, units, *, recovery=False):
     return sorted(samples)
 
 
-def inference_storyboard(source, start, end, units, destination, cancelled, *, recovery=False, context=False):
+def inference_storyboard(source, start, end, units, destination, cancelled, *,
+                         recovery=False, context=False, sample_limit=None):
     from .bounded_storyboard import build_bounded_storyboard
     from .media_probe import atomic_json, load_json
     times = None if context else inference_samples(start,end,units,recovery=recovery)
+    if times is not None and sample_limit is not None and len(times) > sample_limit:
+        if not isinstance(sample_limit, int) or sample_limit < 2:
+            raise ValueError('Некорректный лимит кадров')
+        # Deterministic stratified selection: retain first/last sample and
+        # distribute all other choices across the full original interval.
+        times = [times[round(i * (len(times) - 1) / (sample_limit - 1))]
+                 for i in range(sample_limit)]
     timestamps = build_bounded_storyboard(source,start,end,destination,cancelled,times=times,context=context)
     board = load_json(destination.with_suffix('.storyboard.json'))
     for frame in board['frames']:
