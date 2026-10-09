@@ -49,11 +49,34 @@ def context_record(scene, transcript, interval=None):
             'transcript': records}
 
 
+def merge_subframe_chunks(chunks, minimum_seconds=.125):
+    """Avoid frame-less technical splits at word/scene timing boundaries.
+
+    Attach sub-frame fragments to adjacent chunks inside the *same semantic
+    scene*. No video/words are dropped or timestamps fabricated.
+    """
+    values = [dict(chunk) for chunk in chunks]
+    index = 0
+    while len(values) > 1 and index < len(values):
+        chunk = values[index]
+        if chunk['end'] - chunk['start'] >= minimum_seconds:
+            index += 1
+            continue
+        if index > 0:
+            values[index - 1]['end'] = max(values[index - 1]['end'], chunk['end'])
+            values.pop(index)
+            index -= 1
+        else:
+            values[1]['start'] = min(values[1]['start'], chunk['start'])
+            values.pop(0)
+    return values
+
+
 def bounded_chunks(scene, transcript, shots, max_frames=12):
     """Bound inference by actual frame demand, preserving semantic ownership."""
     from .scene_detection import analysis_chunks
     from .vision import inference_samples
-    pending = analysis_chunks(scene, transcript)
+    pending = merge_subframe_chunks(analysis_chunks(scene, transcript))
     result = []
     while pending:
         chunk = pending.pop(0)
@@ -67,10 +90,16 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
             edges = [u['end'] for u in units if start+.000001 < u['end'] < end-.000001]
             if edges:
                 boundary = min(edges, key=lambda t: abs(t-midpoint))
-                pending[0:0] = [{**chunk, 'start': start, 'end': boundary}, {**chunk, 'start': boundary, 'end': end}]
+                # Split then reattach subframe slivers: 38ms ASR pauses
+                # cannot be independent visual samples.
+                pending[0:0] = merge_subframe_chunks([
+                    {**chunk, 'start': start, 'end': boundary},
+                    {**chunk, 'start': boundary, 'end': end}
+                ])
                 continue
             raise ValueError('Indivisible source unit exceeds the bounded visual view')
         result.append(chunk)
+    result = merge_subframe_chunks(result)
     for index, chunk in enumerate(result):
         chunk['id'] = f'{scene["id"]}_chunk_{index:03d}'
     return result
