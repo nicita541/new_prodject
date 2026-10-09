@@ -57,7 +57,11 @@ beforeEach(() => {
     cues:index===1?[{start:0,end:4.4,text:'ПРОВЕРКА СУБТИТРОВ'}]:
       [{start:0,end:3,text:'ВТОРАЯ ЧАСТЬ'}]
   }));
-  vi.mocked(api.saveFinishing).mockImplementation(async(_,p)=>({...p,revision:1}));
+  vi.mocked(api.saveFinishing).mockImplementation(async(_,p)=>({
+    ...p, revision:1,
+    part_overrides: Object.fromEntries(Object.entries(p.part_overrides).map(
+      ([key, value]) => [key, { ...value, cues: undefined }]))
+  }));
   vi.mocked(api.saveFinishCaptions).mockImplementation(async(_,i,cues)=>({
     job_id:job.id,part_index:i,cues,revision:1
   }));
