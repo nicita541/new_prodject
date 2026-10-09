@@ -61,7 +61,10 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
         units = candidate_units(start, end, transcript, shots,annotated=True,max_unit_seconds=4)
         if max(len(inference_samples(start,end,units,recovery=value)) for value in (False,True)) > max_frames:
             midpoint = (start+end)/2
-            edges = [u['end'] for u in units if start+.08 < u['end'] < end-.08]
+            # These are already word-safe source-unit edges. A short silent
+            # unit still adds frame demand (especially in recovery), so do not
+            # discard its edge using the candidate-merging distance of .08s.
+            edges = [u['end'] for u in units if start+.000001 < u['end'] < end-.000001]
             if edges:
                 boundary = min(edges, key=lambda t: abs(t-midpoint))
                 pending[0:0] = [{**chunk, 'start': start, 'end': boundary}, {**chunk, 'start': boundary, 'end': end}]

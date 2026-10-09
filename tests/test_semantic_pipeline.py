@@ -144,6 +144,37 @@ class SemanticPipelineTests(unittest.TestCase):
                        for key in ('start','end')}
         self.assertTrue(all(c['start'] in known_edges and c['end'] in known_edges for c in chunks))
 
+    def test_short_silence_edge_can_split_recovery_frame_overflow(self):
+        # An 80ms pre-speech unit and a 3.76s phrase fit the initial view
+        # (12 samples), but need 13 samples during recovery. Both units are
+        # word-safe; the short pause must not make the phrase indivisible.
+        for offset in (0, 178.25):
+            with self.subTest(offset=offset):
+                start, speech_start, end = offset, offset+.08, offset+3.84
+                transcript = {'segments': [{'start': speech_start, 'end': end, 'text': 'Реплика'}],
+                              'words': [{'start': speech_start, 'end': end, 'text': 'Реплика'}]}
+                scene = {'id': 'scene_pause', 'start': start, 'end': end}
+                units = candidate_units(start, end, transcript, [], annotated=True, max_unit_seconds=4)
+                self.assertEqual(len(inference_samples(start, end, units)), 12)
+                self.assertEqual(len(inference_samples(start, end, units, recovery=True)), 13)
+                chunks = bounded_chunks(scene, transcript, [])
+                self.assertEqual([(c['start'], c['end']) for c in chunks],
+                                 [(start, speech_start), (speech_start, end)])
+                self.assertEqual({c['parent_scene_id'] for c in chunks}, {scene['id']})
+                for chunk in chunks:
+                    child_units = candidate_units(chunk['start'], chunk['end'], transcript, [],
+                                                  annotated=True, max_unit_seconds=4)
+                    for recovery in (False, True):
+                        self.assertLessEqual(len(inference_samples(chunk['start'], chunk['end'],
+                                                                    child_units, recovery=recovery)), 12)
+
+    def test_truly_indivisible_oversize_word_still_fails_without_cutting_speech(self):
+        scene = {'id': 'scene_word', 'start': 0, 'end': 9}
+        transcript = {'segments': [{'start': 0, 'end': 9, 'text': 'Слово'}],
+                      'words': [{'start': 0, 'end': 9, 'text': 'Слово'}]}
+        with self.assertRaisesRegex(ValueError, 'Indivisible source unit'):
+            bounded_chunks(scene, transcript, [])
+
     @unittest.skipUnless(FFMPEG.is_file() and FFPROBE.is_file(), 'Portable FFmpeg/FFprobe absent')
     def test_real_bounded_current_pages_preserve_red_blue_green_pixels_and_source_pts(self):
         from PIL import Image
