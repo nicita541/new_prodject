@@ -57,7 +57,8 @@ const jobs = [
     url:'/api/jobs/'+job+'/files/part_001.mp4',subtitle_url:'/api/jobs/'+job+'/files/part_001.srt',duration:4}]}
 ];
 const plan = {source:{duration:4},parts:[{index:1,duration:4,
-  cuts:[{start:0,end:4}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'}]}]};
+  cuts:[{start:0,end:4}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'},
+    {start:3.8,end:4,text:'ДРУГАЯ РЕПЛИКА'}]}]};
 let saveCalls = 0;
 window.fetch = async (input,options={}) => {
   const p = String(input);
@@ -113,6 +114,16 @@ assert.equal(captionOverlay.style.visibility, 'hidden', 'subtitle must not appea
 playbackPaused = true;
 videoForCaptions.dispatchEvent(new window.Event('pause'));
 assert.equal(captionOverlay.style.visibility, 'visible', 'pausing restores selected caption for editing');
+videoForCaptions.currentTime = 3.9;
+videoForCaptions.dispatchEvent(new window.Event('timeupdate'));
+assert.equal(captionOverlay.textContent, 'РЕАЛЬНАЯ РЕПЛИКА',
+  'paused editor shows selected caption, not the unrelated cue under the playhead');
+playbackPaused = false;
+videoForCaptions.dispatchEvent(new window.Event('play'));
+assert.equal(captionOverlay.textContent, 'ДРУГАЯ РЕПЛИКА',
+  'playback switches back to the cue at the actual video time');
+playbackPaused = true;
+videoForCaptions.dispatchEvent(new window.Event('pause'));
 
 const editorNav = window.document.querySelector('button[data-action="nav"][data-screen="editor"]');
 assert(editorNav, 'settings navigation should exist');

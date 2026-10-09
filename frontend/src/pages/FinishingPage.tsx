@@ -122,7 +122,7 @@ export function FinishingPage() {
   const currentStyle = profile?.part_overrides[partKey]?.style || profile?.subtitles;
   const cues = profile?.part_overrides[partKey]?.cues ?? currentPart?.subtitles ?? [];
   const activeCue = cues[Math.min(cueIndex, Math.max(0, cues.length - 1))];
-  const showingCue = cues.find(c => c.start <= playTime && playTime < c.end) ?? (!isPlaying ? activeCue : undefined);
+  const showingCue = !isPlaying ? (activeCue ?? cues.find(c => c.start <= playTime && playTime < c.end)) : cues.find(c => c.start <= playTime && playTime < c.end);
 
   const patchVideo = (update: Partial<FinishVideo>) =>
     setProfile(old => old ? { ...old, video: { ...old.video, ...update } } : old);

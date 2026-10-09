@@ -110,6 +110,24 @@ describe('Studio Edition actual backend contract', () => {
     expect(screen.getByLabelText('Текст реплики')).toHaveValue('ПРОВЕРКА СУБТИТРОВ');
   });
 
+  it('keeps the selected cue visible while paused over a different spoken cue', async () => {
+    vi.mocked(api.getFinishCaptions).mockImplementation(async (_,partIndex)=>({
+      job_id:job.id, part_index:partIndex, revision:0,
+      cues:partIndex===1?[
+        {start:0,end:4.4,text:'ПРОВЕРКА СУБТИТРОВ'},
+        {start:5,end:5.8,text:'ДРУГАЯ РЕПЛИКА'}
+      ]:[{start:0,end:3,text:'ВТОРАЯ ЧАСТЬ'}]
+    }));
+    page();
+    await screen.findByText('Финальный штрих.');
+    const video = screen.getByLabelText('Видео предпросмотра') as HTMLVideoElement;
+    video.currentTime = 5.2;
+    fireEvent.timeUpdate(video);
+    expect(document.querySelector('.st-caption-layer')).toHaveTextContent('ПРОВЕРКА СУБТИТРОВ');
+    fireEvent.play(video);
+    await waitFor(() => expect(document.querySelector('.st-caption-layer')).toHaveTextContent('ДРУГАЯ РЕПЛИКА'));
+  });
+
   it('moves subtitles and copies styles to all parts without altering cues', async () => {
     const user = userEvent.setup();
     page();
