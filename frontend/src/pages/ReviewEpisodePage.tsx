@@ -22,6 +22,7 @@ export function ReviewEpisodePage() {
   const [job, setJob] = useState<Job | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [viewMode, setViewMode] = useState<'compare' | 'shorts' | 'source'>('compare');
   const [fetchError, setFetchError] = useState<string>('');
   const [isFetching, setIsFetching] = useState(true);
   const allEpisodeJobs = completedJobsForEpisode(episode);
@@ -119,44 +120,63 @@ export function ReviewEpisodePage() {
         {fetchError && <p className="message" style={{ color: 'var(--danger)' }}>{fetchError}</p>}
         {job && plan ? (
           <>
-            {/* Timeline Panel */}
-            <Timeline key={job.id} job={job} plan={plan} selectedIndex={activeIndex} onSelectPart={setSelectedIndex} />
-            <QualityWarnings plan={plan} />
-
-            {/* Results Panel */}
-            <section id="results-panel" className="panel playlist-panel">
-              <div className="panel-heading">
-                <h2 id="results-heading" className="panel-title">Готовые шортсы ({filesCount})</h2>
-              </div>
-              
-              <div className="shorts-viewer-layout">
-                <div className="shorts-player-col">
-                  <VideoPlayer file={job.files?.[activeIndex]}
-                    onEnded={activeIndex < filesCount - 1 ? () => setSelectedIndex(activeIndex + 1) : undefined} />
-                  {/* Music Badge could go here */}
-                  {plan.parts[activeIndex]?.music_track && (
-                    <div id="music-badge" className="notice" style={{ marginTop: '12px', padding: '8px 12px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <span>🎵</span>
-                      <div>
-                        <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-secondary)' }}>Фоновая музыка</div>
-                        <strong id="music-track-name" style={{ fontSize: '13px' }}>{plan.parts[activeIndex].music_track}</strong>
-                      </div>
+            <div className="st-review-grid">
+              <div className="st-review-main">
+                <section id="results-panel" className="st-review-player-panel" aria-label="Проверка видео">
+                  <div className="st-review-panel-head">
+                    <span>● Исходник + готовый Shorts</span>
+                    <div className="st-review-tabs" role="group" aria-label="Режим просмотра">
+                      <button type="button" className={viewMode === 'shorts' ? 'active' : ''}
+                        onClick={() => setViewMode('shorts')}>Shorts</button>
+                      <button type="button" className={viewMode === 'source' ? 'active' : ''}
+                        onClick={() => setViewMode('source')}>Исходник</button>
+                      <button type="button" className={viewMode === 'compare' ? 'active' : ''}
+                        onClick={() => setViewMode('compare')}>Сравнить</button>
                     </div>
-                  )}
-                </div>
-
-                <div className="shorts-playlist-col">
-                  <p className="small muted" style={{ marginBottom: '10px', fontWeight: 600 }}>Выберите часть для просмотра:</p>
-                  <Playlist files={job.files || []} selectedIndex={activeIndex} onSelect={setSelectedIndex} />
-                  
-                  <div style={{ marginTop: '24px' }}>
-                    <DownloadControls jobId={job.id} files={job.files || []} selectedIndex={activeIndex} />
                   </div>
-
-                  <PartContext part={plan.parts[activeIndex]} />
+                  <div className={'st-review-stage view-' + viewMode}>
+                    {viewMode !== 'shorts' && <div className="st-review-original">
+                      <small>● Исходная серия · 16:9</small>
+                      <video controls playsInline preload="metadata" aria-label="Исходная серия"
+                        src={'/api/jobs/' + job.id + '/source'}/>
+                    </div>}
+                    {viewMode !== 'source' && <div className="st-review-short">
+                      <small>● Готовый Shorts · 9:16</small>
+                      <VideoPlayer file={job.files?.[activeIndex]}
+                        onEnded={activeIndex < filesCount - 1
+                          ? () => setSelectedIndex(activeIndex + 1) : undefined}/>
+                    </div>}
+                  </div>
+                  <div className="st-review-player-foot">
+                    <span>Часть {activeIndex + 1} из {filesCount} · {plan.parts[activeIndex]?.duration?.toFixed(1) ?? '—'} с</span>
+                    <div className="st-review-controls">
+                      <button type="button" aria-label="Предыдущий Shorts"
+                        disabled={activeIndex === 0} onClick={() => setSelectedIndex(i => Math.max(0,i-1))}>◀</button>
+                      <Link to={'/episode/' + episode.id + '/finishing/' + job.id}>✎ Оформление</Link>
+                      <button type="button" aria-label="Следующий Shorts"
+                        disabled={activeIndex >= maxIndex} onClick={() => setSelectedIndex(i => Math.min(maxIndex,i+1))}>▶</button>
+                    </div>
+                  </div>
+                </section>
+                <div className="st-review-timeline" aria-label="Монтажная лента">
+                  <Timeline key={job.id} job={job} plan={plan} selectedIndex={activeIndex} onSelectPart={setSelectedIndex}/>
                 </div>
+                <QualityWarnings plan={plan}/>
               </div>
-            </section>
+              <aside className="st-review-rail" aria-label="Готовые Shorts">
+                <div className="st-panel-kicker">ГОТОВЫЕ SHORTS</div>
+                <h2 id="results-heading">Готовые Shorts ({filesCount})</h2>
+                <Playlist files={job.files || []} selectedIndex={activeIndex} onSelect={setSelectedIndex}/>
+                {plan.parts[activeIndex]?.music_track && <div id="music-badge" className="st-review-music">
+                  ♫ {plan.parts[activeIndex].music_track}
+                </div>}
+                <div className="st-review-downloads">
+                  <div className="st-panel-kicker">СКАЧИВАНИЕ</div>
+                  <DownloadControls jobId={job.id} files={job.files || []} selectedIndex={activeIndex}/>
+                </div>
+                <PartContext part={plan.parts[activeIndex]}/>
+              </aside>
+            </div>
           </>
         ) : isFetching ? (
           <p className="notice" role="status">Загрузка монтажа...</p>
