@@ -64,6 +64,7 @@ export interface PlanPart {
   music_track?: string | null;
   index: number;
   duration?: number;
+  subtitles?: FinishCue[];
 }
 
 export interface TimelineReason {
@@ -198,4 +199,42 @@ export interface MusicSettingsRequest {
   track?: string | null;
   mode?: MusicSettings['mode'];
   part_tracks?: Record<string, string | null> | null;
+}
+
+
+/* Studio Edition finishing API (separate from AI analysis settings). */
+export interface FinishCue { start: number; end: number; text: string }
+export interface FinishVideo {
+  layout: 'portrait' | 'cinema'; zoom: number; blur: number;
+  brightness: number; vignette: number;
+}
+export interface FinishSubtitles {
+  enabled: boolean; text: string; x: number; y: number;
+  font_size: number; color: string; outline: number;
+  background: boolean; align: 'left' | 'center' | 'right';
+  uppercase: boolean; safe_guides: boolean;
+}
+export interface FinishAudio {
+  enabled: boolean; volume: number; track: string | null;
+  mode: 'single' | 'random_per_part' | 'per_part';
+  fade_in: number; fade_out: number; ducking: boolean;
+  part_tracks: Record<string, string | null>;
+}
+export interface FinishOverride { style?: FinishSubtitles | null; cues?: FinishCue[] | null }
+export interface FinishProfile {
+  version: 1; video: FinishVideo; subtitles: FinishSubtitles;
+  audio: FinishAudio; part_overrides: Record<string, FinishOverride>;
+  episode_id?: string; revision?: number;
+}
+export interface FinishCaptions {
+  job_id: string; part_index: number; revision: number; cues: FinishCue[];
+}
+export interface FinishFile {
+  part_index: number; name: string; duration: number; url: string;
+  subtitle_url: string | null;
+}
+export interface FinishRenderTask {
+  preview_id?: string; export_id?: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+  progress: number; url?: string | null; error?: string | null; files?: FinishFile[];
 }

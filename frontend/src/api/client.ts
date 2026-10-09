@@ -13,7 +13,8 @@ import type {
   MusicSettingsRequest,
   HealthStatus,
   EpisodeSettings,
-  ResetBudgetResponse
+  ResetBudgetResponse,
+  FinishProfile, FinishCaptions, FinishCue, FinishRenderTask
 } from './types';
 import { parseLibrarySnapshot } from '../library/contract';
 
@@ -99,6 +100,41 @@ export const api = {
   }),
   openMusicFolder: () => fetchApi<{opened: boolean, path: string}>('/api/music/open', { method: 'POST' }),
   
+  // Studio Edition: non-destructive finishing APIs
+  getFinishing: (episodeId: string) => fetchApi<FinishProfile>('/api/episodes/' + episodeId + '/finishing'),
+  saveFinishing: (episodeId: string, profile: FinishProfile) =>
+    fetchApi<FinishProfile>('/api/episodes/' + episodeId + '/finishing', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify((({ episode_id: _episode_id, revision: _revision, ...values }) => values)(profile)),
+    }),
+  getFinishCaptions: (jobId: string, index: number) =>
+    fetchApi<FinishCaptions>('/api/jobs/' + jobId + '/parts/' + index + '/captions'),
+  saveFinishCaptions: (jobId: string, index: number, cues: FinishCue[], revision?: number) =>
+    fetchApi<FinishCaptions>('/api/jobs/' + jobId + '/parts/' + index + '/captions', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ part_index: index, cues, revision }),
+    }),
+  importMusic: (file: File) => {
+    const data = new FormData();
+    data.append('file', file);
+    return fetchApi<{name: string; stored: boolean; playback_url: string}>('/api/music/import', {
+      method: 'POST', body: data,
+    });
+  },
+  createFinishPreview: (jobId: string, index: number, profile: FinishProfile, from = 0, duration = 5) =>
+    fetchApi<FinishRenderTask>('/api/jobs/' + jobId + '/previews', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ part_index: index, from, duration, settings: (({episode_id: _episode_id, revision: _revision, ...values}) => values)(profile) }),
+    }),
+  getFinishPreview: (jobId: string, previewId: string) =>
+    fetchApi<FinishRenderTask>('/api/jobs/' + jobId + '/previews/' + previewId),
+  createFinishExport: (jobId: string, partIndices: number[], profile: FinishProfile) =>
+    fetchApi<FinishRenderTask>('/api/jobs/' + jobId + '/exports', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ part_indices: partIndices, settings: (({episode_id: _episode_id, revision: _revision, ...values}) => values)(profile) }),
+    }),
+  getFinishExport: (exportId: string) =>
+    fetchApi<FinishRenderTask>('/api/exports/' + exportId),
+
   // DeepSeek
   getDeepSeekStatus: () => fetchApi<DeepSeekStatus>('/api/deepseek'),
   checkDeepSeek: () => fetchApi<DeepSeekCheck>('/api/deepseek/check', { method: 'POST' }),

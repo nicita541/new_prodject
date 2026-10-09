@@ -111,6 +111,7 @@ export function ReviewEpisodePage() {
             </select>
           )}
           <Link id="review-edit-link" className="btn-secondary" to={`/episode/${episode.id}/edit`}>⚙ Настройки серии</Link>
+          {job?.status === 'completed' && <Link className="btn-primary" to={'/episode/' + episode.id + '/finishing/' + job.id}>✦ Оформление</Link>}
         </div>
       </div>
       
