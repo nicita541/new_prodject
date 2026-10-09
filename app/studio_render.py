@@ -18,6 +18,11 @@ from app.media import inspect_media, render_part
 from app.music import pick_track_for_part
 
 _RENDER_SEMAPHORE = threading.Semaphore(1)
+# A restarted process cannot have any of the old threads. Persisted queued /
+# running exports must become interrupted, not remain spinning forever.
+_TASKS_LOCK = threading.Lock()
+_ACTIVE_TASKS: set[str] = set()
+
 
 
 def slice_part(part: dict, start: float, duration: float) -> dict:
@@ -158,6 +163,16 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
         update(status="failed", progress=0.0, error="Не удалось создать видео. Проверьте локальный журнал рендера.")
 
 
+def _registered_export(identifier: str, manager, job_id: str, part_indices: list[int],
+                       profile: dict, target: Path, status_file: Path,
+                       preview: tuple[int, float, float] | None):
+    try:
+        run_export(manager, job_id, part_indices, profile, target, status_file, preview)
+    finally:
+        with _TASKS_LOCK:
+            _ACTIVE_TASKS.discard(identifier)
+
+
 def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
                   *, preview: tuple[int, float, float] | None = None) -> dict:
     if manager.busy():
@@ -177,10 +192,20 @@ def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
         "error": None, "files": [],
     }
     atomic_json(status_file, status)
-    worker = threading.Thread(target=run_export,
-                              args=(manager, job_id, part_indices, profile, base, status_file, preview),
+    worker = threading.Thread(target=_registered_export,
+                              args=(identifier, manager, job_id, part_indices, profile,
+                                    base, status_file, preview),
                               daemon=True, name="finishing-" + identifier)
-    worker.start()
+    with _TASKS_LOCK:
+        _ACTIVE_TASKS.add(identifier)
+    try:
+        worker.start()
+    except BaseException:
+        with _TASKS_LOCK:
+            _ACTIVE_TASKS.discard(identifier)
+        atomic_json(status_file, {**status, "status": "failed",
+                                  "error": "Не удалось запустить поток экспорта"})
+        raise
     return status
 
 
@@ -203,6 +228,13 @@ def task_status(manager, identifier: str, job_id: str | None = None) -> dict:
     status = read_json(base / "status.json")
     if not status:
         raise KeyError(identifier)
+    if status.get("status") in {"queued", "running"}:
+        with _TASKS_LOCK:
+            alive = identifier in _ACTIVE_TASKS
+        if not alive:
+            status = {**status, "status": "interrupted",
+                      "error": "Монтажёр был перезапущен во время экспорта. Запустите новый экспорт."}
+            atomic_json(base / "status.json", status)
     files = [
         {"part_index": item["part_index"], "name": item["name"],
          "duration": item["duration"],
