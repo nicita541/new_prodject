@@ -91,6 +91,7 @@ describe('Studio Edition actual backend contract', () => {
     expect(api.saveFinishing).toHaveBeenCalledWith(e1.id,
       expect.objectContaining({ part_overrides: expect.any(Object) }));
     expect(await screen.findByText(/реплики сохранены на сервере/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Текст реплики')).toHaveValue('НОВАЯ РЕПЛИКА');
   });
 
   it('hides the video subtitle after its time span, even when the cue stays selected', async () => {

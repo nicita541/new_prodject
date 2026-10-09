@@ -173,7 +173,14 @@ export function FinishingPage() {
     try {
       await saveDraftCaptions();
       const stored = await api.saveFinishing(episodeId, profile);
-      setProfile(stored);
+      // The API intentionally stores styles at episode scope and captions at
+      // job scope. Keep the current job's captions in view after the profile
+      // response (which has no cues) so Save cannot blank the editor.
+      setProfile({
+        ...stored,
+        part_overrides: Object.fromEntries(Object.entries(stored.part_overrides).map(
+          ([key, value]) => [key, { ...value, cues: profile.part_overrides[key]?.cues }]))
+      });
       setMessage('Настройки и реплики сохранены на сервере');
     } catch (err) { setProblem(errorMessage(err)); }
     finally { setSaving(false); }
