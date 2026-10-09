@@ -347,6 +347,50 @@ class BackgroundMusicIntegrationTests(unittest.TestCase):
             self.assertLess(abs(float(streams["video"]["duration"]) - float(streams["audio"]["duration"])), 0.15)
 
 
+    def test_nvenc_failure_really_encodes_cpu_video_with_background_music(self):
+        """Force NVENC failure, then inspect the actual CPU-encoded MP4."""
+        with workspace_directory() as directory:
+            source = directory / "source.mp4"
+            original_run = run_command
+            original_run([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                          "color=size=160x90:rate=30", "-f", "lavfi", "-i",
+                          "sine=frequency=440:sample_rate=48000", "-t", "2",
+                          "-c:v", "libx264", "-preset", "ultrafast",
+                          "-c:a", "aac", str(source)], directory)
+            track = directory / "music.wav"
+            original_run([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                          "sine=frequency=660:sample_rate=48000", "-t", "0.5",
+                          "-c:a", "pcm_s16le", str(track)], directory)
+            part = {"index": 1, "duration": 2.0, "subtitles": [],
+                    "cuts": [{"start": 0, "end": 2.0,
+                              "focus": [{"time": 0, "x": 0.5, "y": 0.5, "confidence": 0.9}]}]}
+            nvenc_attempts = []
+
+            def fail_only_hardware_encoder(argv, cwd, cancelled=lambda: False, timeout=None):
+                if "h264_nvenc" in argv:
+                    nvenc_attempts.append(True)
+                    raise RuntimeError("Simulated NVENC driver error")
+                return original_run(argv, cwd, cancelled, timeout)
+
+            with patch("app.media.run_command", side_effect=fail_only_hardware_encoder):
+                rendered = render_part(source, part, {"width": 160, "height": 90},
+                                       directory / "output", directory / "work",
+                                       "h264_nvenc",
+                                       background_music={"path": track, "volume": 0.15})
+            self.assertEqual(nvenc_attempts, [True])
+            metadata = json.loads((directory / "work" / "render-info.json").read_text("utf-8"))
+            self.assertEqual(metadata["encoder"], "libx264")
+            self.assertTrue((directory / "output" / "part_001.srt").is_file())
+            self.assertTrue((directory / "output" / "part_001.ass").is_file())
+            filter_text = (directory / "work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("amix=inputs=2", filter_text)
+            info = inspect_media(rendered, directory)
+            streams = {stream["codec_type"]: stream for stream in info["streams"]}
+            self.assertEqual(streams["video"]["codec_name"], "h264")
+            self.assertEqual(streams["audio"]["codec_name"], "aac")
+            self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
+
+
 class MusicApiTests(unittest.TestCase):
     def test_get_and_put_music_settings(self):
         from fastapi.testclient import TestClient
