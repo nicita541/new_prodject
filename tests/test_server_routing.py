@@ -40,6 +40,18 @@ def test_studio_routes_serve_exact_ui_or_explicit_build_error():
         assert bridge.status_code == 503
 
 
+
+def test_active_server_identifies_loaded_backend_and_real_studio_assets():
+    from app.studio_identity import server_identity
+    response = client.get("/api/studio/identity")
+    assert response.status_code == 200
+    assert response.json() == server_identity()
+    assert response.json()["application"] == "kadr-studio"
+    assert response.json()["interface"] == "studio-edition"
+    assert response.json()["backend"] is not None
+    assert "workspace" in response.json()
+
+
 def test_studio_deep_links_preserve_screen_and_identifiers():
     dist = config.ROOT / "frontend" / "dist"
     built = (dist / "studio-edition.html").is_file() and (dist / "studio-live-bridge.js").is_file()
