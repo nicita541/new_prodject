@@ -75,6 +75,10 @@
       if(method==='PUT'&&/^\/api\/episodes\/[^/]+\/finishing$/.test(path)){
         const {episode_id,revision,...profile}=body;data=profile;
       }
+      if(method==='POST'&&/\/api\/jobs\/[^/]+\/(?:previews|exports)$/.test(path)&&body.settings){
+        const {episode_id,revision,...settings}=body.settings;
+        data={...body,settings};
+      }
       options.headers={'Content-Type':'application/json'};
       options.body=JSON.stringify(data);
     }
