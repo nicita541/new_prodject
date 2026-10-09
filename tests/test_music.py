@@ -1,7 +1,9 @@
 import json
+import os
 import random
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +11,8 @@ from unittest.mock import patch
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media import inspect_media, render_part, run_command
 from app.music import (DEFAULT_CONFIG, list_tracks, load_config, load_settings,
-                       pick_track, pick_track_for_part, save_settings, validate_config)
+                       music_library_identity, pick_track, pick_track_for_part,
+                       save_settings, validate_config)
 
 
 @contextmanager
@@ -122,6 +125,18 @@ class TrackTests(unittest.TestCase):
             track3 = pick_track_for_part(directory, config, part_index=3)
             self.assertEqual(track3.name, "a.mp3")
 
+    def test_replacing_track_with_same_name_size_and_timestamp_changes_fingerprint(self):
+        with workspace_directory() as directory:
+            song = directory / "song.mp3"
+            song.write_bytes(b"original")
+            before = music_library_identity(directory)
+            stat = song.stat()
+            song.write_bytes(b"modified")
+            os.utime(song, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            after = music_library_identity(directory)
+            self.assertEqual(before[0]["name"], after[0]["name"])
+            self.assertNotEqual(before, after)
+
     def test_pick_track_for_part_random_per_part_is_stable(self):
         with workspace_directory() as directory:
             for name in ("a.mp3", "b.mp3", "c.mp3"):
@@ -142,6 +157,17 @@ class SettingsPersistenceTests(unittest.TestCase):
                 self.assertEqual(saved["volume"], 0.3)
                 self.assertEqual(load_settings(), saved)
                 self.assertTrue(settings_path.is_file())
+
+    def test_simultaneous_settings_writes_leave_valid_json(self):
+        with workspace_directory() as directory:
+            settings_path = directory / "settings" / "music.json"
+            with patch("app.music.MUSIC_SETTINGS", settings_path):
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    values = list(executor.map(lambda i: save_settings({"volume": i / 20}), range(20)))
+                saved = load_settings()
+                self.assertIn(saved, values)
+                self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["music"], saved)
+                self.assertEqual(list(settings_path.parent.glob("*.tmp")), [])
 
     def test_load_settings_prefers_runtime_file(self):
         with workspace_directory() as directory:
@@ -194,6 +220,35 @@ class BackgroundMusicFilterTests(unittest.TestCase):
             self.assertIn("afade=t=in", script)
             self.assertIn("afade=t=out", script)
             self.assertIn("[mixed]", argv)
+
+    def test_nvenc_error_falls_back_to_cpu_without_losing_background_music(self):
+        with workspace_directory() as directory:
+            source = directory / "source.mp4"
+            source.write_bytes(b"source")
+            track = directory / "music.wav"
+            track.write_bytes(b"audio")
+            calls = []
+
+            def fake_run(argv, cwd, cancelled=lambda: False, timeout=None):
+                calls.append([str(arg) for arg in argv])
+                if "h264_nvenc" in argv:
+                    raise RuntimeError("GPU encoder unavailable")
+                Path(argv[-1]).write_bytes(b"x" * 2000)
+                return ""
+
+            with patch("app.media.run_command", side_effect=fake_run), \
+                    patch("app.media.validate_export", return_value={"duration": 2.0}), \
+                    patch("app.media.write_ass", side_effect=lambda path, *a, **k: path.write_text("")), \
+                    patch("app.media.write_srt", side_effect=lambda path, *a, **k: path.write_text("")):
+                render_part(source, self._part(), {"width": 320, "height": 180},
+                            directory / "output", directory / "work", "h264_nvenc",
+                            background_music={"path": track, "volume": 0.15})
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all("-stream_loop" in argv for argv in calls))
+            self.assertIn("libx264", calls[-1])
+            self.assertIn("amix=inputs=2", (directory / "work" / "render.ffscript").read_text(encoding="utf-8"))
+            metadata = json.loads((directory / "work" / "render-info.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["encoder"], "libx264")
 
     def test_no_music_keeps_original_audio_path(self):
         with workspace_directory() as directory:

@@ -260,7 +260,8 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     except RuntimeError:
         if encoder != "h264_nvenc":
             raise
-        return render_part(source, part, probe, output_dir, workdir, "libx264", cancelled)
+        return render_part(source, part, probe, output_dir, workdir, "libx264", cancelled,
+                           background_music=background_music)
     validate_export(partial, part["duration"], workdir, cancelled,
                     max_duration=150.0 if part.get("duration", 0) > MAX_DURATION else None)
     if cancelled():

@@ -20,7 +20,7 @@ from .media import choose_encoder, inspect_media, render_part, validate_export
 from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
-from .music import load_settings, pick_track, pick_track_for_part
+from .music import load_settings, pick_track, pick_track_for_part, music_library_identity
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -284,6 +284,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     check()
     options = load_options(job_dir)
     music_config = load_settings()
+    music_sources = music_library_identity(MUSIC) if music_config["enabled"] else []
     with _timed_stage(timings, "analysis"):
         analysis = analyze(job_dir, source, report, cancelled)
     check()
@@ -314,7 +315,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
                     "semantic_components": semantic_identity(),
                     "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
-                    "editorial_profile": editorial_prof,"music": music_config,
+                    "editorial_profile": editorial_prof, "music": music_config,
+                    "music_sources": music_sources,
                     "subtitle_style": style_identity(options['caption_style'])}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
         gate = inspect_final_quality(analysis)
