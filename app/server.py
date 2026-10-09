@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
+from app.studio_identity import server_identity
 from app.jobs import BusyError, JobManager, contained, read_json
 from app.quality import debug_timeline, summarize_plan
 from app.part_context import with_context
@@ -298,6 +299,11 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
                           docs_url=None, redoc_url=None, openapi_url=None)
     application.state.download_picker_lock = threading.Lock()
     application.add_middleware(UploadLimitMiddleware)
+
+    @application.get("/api/studio/identity")
+    def studio_version():
+        # Captured backend code + current UI assets; no user data exposed.
+        return server_identity()
 
     @application.middleware("http")
     async def protect_loopback(request: Request, call_next):
