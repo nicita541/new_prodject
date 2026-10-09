@@ -377,6 +377,9 @@ class StudioApiTests(unittest.TestCase):
                               preview=(1, 0, 1))
                 self.assertTrue(started.wait(timeout=2), "Finishing worker never started")
                 self.assertEqual(self.manager.finishing_tasks.get(self.job_id), 1)
+                from app.jobs import BusyError
+                with self.assertRaisesRegex(BusyError, "предпросмотра или экспорта"):
+                    self.manager._assert_available()
                 response = self.client.delete("/api/jobs/" + self.job_id)
                 self.assertEqual(response.status_code, 409, response.text)
                 self.assertTrue(self.directory.is_dir())
@@ -387,6 +390,7 @@ class StudioApiTests(unittest.TestCase):
                     break
                 time.sleep(0.01)
             self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
+            self.manager._assert_available()
 
     def test_finishing_queue_is_bounded_without_creating_rejected_files(self):
         import threading

@@ -458,6 +458,10 @@ class JobManager:
             raise BusyError("Приложение завершает работу")
         if self.active is not None:
             raise BusyError("Сейчас обрабатывается другая серия")
+        # Finishing jobs also consume FFmpeg, CPU, memory and source files.
+        # Do not start a fresh analysis while any preview/export is active.
+        if any(self.finishing_tasks.values()):
+            raise BusyError("Дождитесь завершения предпросмотра или экспорта")
 
     def _start(self, job: dict) -> dict:
         directory = self.job_dir(job["id"])
