@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import copy
+from bisect import bisect_left
 from pathlib import Path
 import urllib.error
 
@@ -135,6 +137,41 @@ def _scene_image_hashes(boards, visual_dir):
     return result
 
 
+def frame_backed_scenes(scenes, frame_times):
+    """Preserve source coverage while coalescing intervals with no video PTS.
+
+    Word-safe boundaries can create a sub-frame interval without a picture.
+    It belongs to an adjacent analysis scene, never to an invented frame.
+    Raw detector scenes remain unchanged and their interval IDs are recorded.
+    """
+    result, leading = [], []
+    for original in scenes:
+        scene = copy.deepcopy(original)
+        record = {key: scene[key] for key in ('id', 'start', 'end')}
+        if bisect_left(frame_times, scene['start']) == bisect_left(frame_times, scene['end']):
+            if result:
+                previous = result[-1]
+                if previous['end'] != scene['start']:
+                    raise ValueError('Frame-empty scene is not adjacent to its source owner')
+                previous['end'] = scene['end']
+                previous.setdefault('evidence', {}).setdefault('frame_empty_intervals', []).append(record)
+            else:
+                if leading and leading[-1]['end'] != scene['start']:
+                    raise ValueError('Frame-empty scene is not adjacent to its source owner')
+                leading.append(record)
+            continue
+        if leading:
+            if leading[-1]['end'] != scene['start']:
+                raise ValueError('Frame-empty scene is not adjacent to its source owner')
+            scene['start'] = leading[0]['start']
+            scene.setdefault('evidence', {}).setdefault('frame_empty_intervals', []).extend(leading)
+            leading = []
+        result.append(scene)
+    if leading:
+        raise ValueError('Source scene range contains no video frames')
+    return result
+
+
 def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature, report, cancelled):
     from .vision import storyboard, inference_storyboard
     from .semantic_identity import component_identity
@@ -144,6 +181,16 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
     components = {name: component_identity(name)['digest'] for name in ('local_prompt', 'recovery', 'storyboard')}
     source_path = Path(source)
     source_stat = source_path.stat() if source_path.is_file() else None
+    if source_stat is not None and scenes:
+        from .bounded_storyboard import _source_times
+        frame_times, *_ = _source_times(source_path, scenes[0]['start'], scenes[-1]['end'],
+                                       visual_dir, cancelled,
+                                       timeout=max(45, (scenes[-1]['end']-scenes[0]['start'])/4+30))
+        scenes = frame_backed_scenes(scenes, frame_times)
+        diagnostics.write('frame_backed_scenes.json', {'source_frame_count': len(frame_times),
+            'scenes': [{key: scene[key] for key in ('id', 'start', 'end')} |
+                       {'frame_empty_intervals': scene.get('evidence', {}).get('frame_empty_intervals', [])}
+                       for scene in scenes]})
     model_files = []
     for name in ('model', 'projector'):
         path = Path(str(getattr(vision, name, 'unknown')))

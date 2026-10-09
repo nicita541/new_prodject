@@ -81,13 +81,13 @@ def _requested(start, end, times, context):
     return sorted(result)
 
 
-def _source_times(source, start, end, directory, cancelled):
+def _source_times(source, start, end, directory, cancelled, *, timeout=45):
     key = hashlib.sha256(f'{start!r}:{end!r}'.encode()).hexdigest()
     log = directory/(key+'.probe.log')
     run_process([FFPROBE, '-v', 'error', '-select_streams', 'v:0', '-read_intervals',
                  f'{start:.9f}%{end+1:.9f}', '-show_entries',
                  'stream=time_base,start_pts:frame=best_effort_timestamp', '-of', 'json', source],
-                log, cancelled, timeout=45)
+                log, cancelled, timeout=timeout)
     raw = json.loads(log.read_text('utf-8'))
     streams = raw.get('streams', [])
     if not streams:

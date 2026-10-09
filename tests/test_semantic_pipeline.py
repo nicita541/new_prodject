@@ -10,7 +10,7 @@ from app.config import TEMP, FFMPEG, FFPROBE
 from app.media import run_command
 from app.media_probe import atomic_json, load_json
 from app.pipeline_diagnostics import Diagnostics
-from app.scene_analysis import analyze_scenes, query_scene, bounded_chunks
+from app.scene_analysis import analyze_scenes, query_scene, bounded_chunks, frame_backed_scenes
 from app.scene_detection import detect_semantic_scenes
 from app.story_review import candidate_units
 from app.vision import storyboard_samples, storyboard_times, storyboard, inference_samples
@@ -174,6 +174,63 @@ class SemanticPipelineTests(unittest.TestCase):
                       'words': [{'start': 0, 'end': 9, 'text': 'Слово'}]}
         with self.assertRaisesRegex(ValueError, 'Indivisible source unit'):
             bounded_chunks(scene, transcript, [])
+
+    def test_frame_empty_scene_keeps_its_interval_without_borrowing_a_picture(self):
+        scenes = [{'id': 'before', 'start': 0, 'end': .04},
+                  {'id': 'gap', 'start': .04, 'end': .08},
+                  {'id': 'after', 'start': .08, 'end': .2}]
+        result = frame_backed_scenes(scenes, [0, .1])
+        self.assertEqual([(s['id'], s['start'], s['end']) for s in result],
+                         [('before', 0, .08), ('after', .08, .2)])
+        self.assertEqual(result[0]['evidence']['frame_empty_intervals'], [scenes[1]])
+        self.assertEqual(scenes[0]['end'], .04)
+        self.assertNotIn('evidence', scenes[0])
+
+    def test_leading_and_trailing_frame_empty_intervals_keep_total_source_coverage(self):
+        scenes = [{'id': 'lead', 'start': 0, 'end': .01},
+                  {'id': 'middle', 'start': .01, 'end': .11},
+                  {'id': 'tail', 'start': .11, 'end': .2}]
+        result = frame_backed_scenes(scenes, [.1])
+        self.assertEqual([(s['start'], s['end']) for s in result], [(0, .2)])
+        self.assertEqual([s['id'] for s in result[0]['evidence']['frame_empty_intervals']], ['lead', 'tail'])
+
+    def test_frame_empty_does_not_mean_short_and_frame_on_end_belongs_to_next_scene(self):
+        scenes = [{'id': 'hold', 'start': 0, 'end': 3},
+                  {'id': 'gap', 'start': 3, 'end': 10},
+                  {'id': 'next', 'start': 10, 'end': 11}]
+        self.assertEqual([s['id'] for s in frame_backed_scenes(scenes, [0, 10])], ['hold', 'next'])
+        self.assertEqual(frame_backed_scenes(scenes, [0, 3, 10]), scenes)
+        with self.assertRaisesRegex(ValueError, 'no video frames'):
+            frame_backed_scenes(scenes, [11])
+
+    def test_frame_empty_coalescing_cannot_cross_an_unrepresented_source_gap(self):
+        scenes = [{'id': 'before', 'start': 0, 'end': .1},
+                  {'id': 'gap', 'start': .2, 'end': .3}]
+        with self.assertRaisesRegex(ValueError, 'not adjacent'):
+            frame_backed_scenes(scenes, [0])
+
+    @unittest.skipUnless(FFMPEG.is_file() and FFPROBE.is_file(), 'Portable FFmpeg/FFprobe absent')
+    def test_real_frame_empty_neighbor_and_current_are_coalesced_without_losing_speech(self):
+        source = self.job/'frame-gap.mp4'
+        run_command([str(FFMPEG), '-y', '-v', 'error', '-f', 'lavfi', '-i',
+                     'testsrc2=s=160x90:r=12:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source)],
+                    cwd=self.job)
+        transcript = {'segments': [{'start': .04, 'end': .08, 'text': 'Да'}],
+                      'words': [{'start': .04, 'end': .08, 'text': 'Да'}]}
+        scenes = [{'id': 'before', 'start': 0, 'end': .04},
+                  {'id': 'gap', 'start': .04, 'end': .08},
+                  {'id': 'after', 'start': .08, 'end': 1}]
+        events = analyze_scenes(source, scenes, transcript, [], self.job, FakeVision(), 'frame-gap',
+                                lambda *args: None, lambda: False)
+        self.assertEqual([(event['start'], event['end']) for event in events], [(0, .08), (.08, 1)])
+        self.assertIn('Да', ' '.join(unit['text'] for unit in events[0]['units']))
+        self.assertEqual(events[0]['scene_evidence']['frame_empty_intervals'][0]['id'], 'gap')
+        self.assertTrue(all(unit['start'] <= .04 and unit['end'] >= .08
+                            for unit in events[0]['units'] if 'Да' in unit['text']))
+        for event in events:
+            for chunk in event['chunk_analyses']:
+                board = load_json(self.job/'visual'/f'{event["id"]}_chunk_{chunk["chunk_id"].rsplit("_",1)[-1]}.storyboard.json')
+                self.assertTrue(all(board['start'] <= frame['time'] < board['end'] for frame in board['frames']))
 
     @unittest.skipUnless(FFMPEG.is_file() and FFPROBE.is_file(), 'Portable FFmpeg/FFprobe absent')
     def test_real_bounded_current_pages_preserve_red_blue_green_pixels_and_source_pts(self):
