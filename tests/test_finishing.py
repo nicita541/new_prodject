@@ -95,7 +95,7 @@ class StudioApiTests(unittest.TestCase):
         stored["part_overrides"]["1"]["cues"] = [
             {"start": .3, "end": 2.0, "text": "РУЧНЫЕ ПРАВКИ"}]
         atomic_json(disk, stored)
-        next_profile = {**profile, "revision": profile["revision"]}
+        next_profile = {key: value for key, value in profile.items() if key != "episode_id"}
         second = self.client.put(path, json=next_profile)
         self.assertEqual(second.status_code, 200, second.text)
         backup_dir = disk.parent / "legacy-caption-backups"
