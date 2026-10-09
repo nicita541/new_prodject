@@ -91,7 +91,6 @@ export function EpisodesPage() {
               className="form-input" 
               min="1" 
               step="1" 
-              required 
               style={{ width: '80px' }}
               value={episodeNumber}
               onChange={e => setEpisodeNumber(e.target.value)}

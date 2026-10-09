@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media import inspect_media, render_part, run_command
+from app.pipeline import _validated_cached_render
 from app.music import (DEFAULT_CONFIG, list_tracks, load_config, load_settings,
                        music_library_identity, pick_track, pick_track_for_part,
                        save_settings, validate_config)
@@ -178,6 +179,44 @@ class SettingsPersistenceTests(unittest.TestCase):
                 config = load_settings()
                 self.assertFalse(config["enabled"])
                 self.assertEqual(config["volume"], 0.5)
+
+
+class RenderCacheTests(unittest.TestCase):
+    def test_valid_cached_video_preserves_recorded_music_track(self):
+        with workspace_directory() as directory:
+            mp4 = directory / "part_001.mp4"
+            mp4.write_bytes(b"existing encoded video")
+            subtitle = mp4.with_suffix(".srt")
+            subtitle.write_text("subtitles", encoding="utf-8")
+            checkpoint = directory / "part_001.json"
+            stat = mp4.stat()
+            checkpoint.write_text(json.dumps({
+                "fingerprint": "same-run",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "srt_hash": __import__("hashlib").sha256(subtitle.read_bytes()).hexdigest(),
+                "music_track": "song.mp3", "encoder": "libx264"
+            }), encoding="utf-8")
+            with patch("app.pipeline.validate_export") as validate:
+                saved = _validated_cached_render(mp4, checkpoint, "same-run",
+                                                 {"duration": 2.0}, directory, lambda: False)
+            self.assertEqual(saved["music_track"], "song.mp3")
+            validate.assert_called_once()
+
+    def test_non_object_or_truncated_cache_is_a_miss(self):
+        with workspace_directory() as directory:
+            mp4 = directory / "part_001.mp4"
+            mp4.write_bytes(b"encoded")
+            mp4.with_suffix(".srt").write_text("subtitles")
+            checkpoint = directory / "part_001.json"
+            with patch("app.pipeline.validate_export") as validate:
+                for broken in ("[]", '{"fingerprint":', 'null', 'true'):
+                    with self.subTest(broken=broken):
+                        checkpoint.write_text(broken, encoding="utf-8")
+                        self.assertIsNone(_validated_cached_render(
+                            mp4, checkpoint, "same-run", {"duration": 2.0},
+                            directory, lambda: False))
+            validate.assert_not_called()
 
 
 class BackgroundMusicFilterTests(unittest.TestCase):
