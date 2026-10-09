@@ -297,7 +297,7 @@ export function FinishingPage() {
         </div>
 
         {tab === 'subtitles' && <div className="st-settings" role="tabpanel">
-          <h2>Слова в кадре</h2><p>Настраивай титры прямо на видео.</p>
+          <h2>Слова в кадре</h2><p>Настраивай титры прямо на видео. Исходный MP4 может уже содержать старые запечённые надписи; точный результат проверяй через FFmpeg-предпросмотр.</p>
           <label className="st-check"><input type="checkbox" checked={viewStyle.enabled}
             onChange={e => patchStyle({enabled: e.target.checked})}/> Показывать субтитры</label>
           <div className="st-cue-list">
@@ -437,7 +437,8 @@ export function FinishingPage() {
               src={sourceUrl} playsInline preload="metadata"
               onTimeUpdate={e=>setPlayTime(e.currentTarget.currentTime)}
               onPlay={()=>setIsPlaying(true)} onPause={()=>setIsPlaying(false)} onEnded={()=>setIsPlaying(false)}
-              style={{filter:'brightness(' + frame.brightness + '%)',transform:'scale('+(frame.zoom/100)+')'}}/>:
+              style={{filter:previewUrl?'none':'brightness(' + frame.brightness + '%',
+                transform:previewUrl?'none':'scale('+(frame.zoom/100)+')'}}/>:
               <div className="st-no-video">Видео ещё не готово</div>}
             {guides && <div className="st-safe-guides" aria-hidden="true"/>}
             {!useRendered && viewStyle.enabled && showingCue &&

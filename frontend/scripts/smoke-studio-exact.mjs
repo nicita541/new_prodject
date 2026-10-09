@@ -146,6 +146,12 @@ enabledControl.checked = true;
 enabledControl.dispatchEvent(new window.Event('change', {bubbles:true}));
 assert.equal(window.document.querySelector('#fcCaption').style.visibility,'visible',
   'captions must be recoverable without resetting all finishing settings');
+videoForCaptions.dataset.renderedPreview='true';
+videoForCaptions.dispatchEvent(new window.Event('timeupdate'));
+assert.equal(captionOverlay.style.visibility,'hidden',
+  'server-rendered preview must not receive a duplicate browser caption');
+videoForCaptions.dataset.renderedPreview='';
+videoForCaptions.dispatchEvent(new window.Event('pause'));
 const editorNav = window.document.querySelector('button[data-action="nav"][data-screen="editor"]');
 assert(editorNav, 'settings navigation should exist');
 editorNav.click();
