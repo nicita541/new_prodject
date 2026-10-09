@@ -53,6 +53,8 @@ jobs:
           node --check frontend/public/studio-edition-app.js
       - name: Execute exact Studio Edition screens with simulated FastAPI
         run: node frontend/scripts/smoke-studio-exact.mjs
+      - name: Exercise Studio API refresh, error isolation and retry cache
+        run: node frontend/scripts/smoke-studio-bridge.mjs
       - name: TypeScript and Vite build
         working-directory: frontend
         run: npm run build
