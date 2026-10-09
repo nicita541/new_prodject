@@ -224,7 +224,13 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     visual = (finishing or {}).get("video", {})
     if visual:
         zoom = float(visual.get("zoom", 100)) / 100
-        if zoom != 1:
+        if zoom < 1:
+            # Scaling below 100% creates an image smaller than 1080x1920.
+            # Cropping that smaller image fails in FFmpeg; pad the zoomed-out
+            # frame to the target canvas instead (matching the editor preview).
+            video_effects.append(f"scale=iw*{zoom:.4f}:ih*{zoom:.4f}:flags=lanczos,"
+                                 "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black")
+        elif zoom > 1:
             video_effects.append(f"scale=iw*{zoom:.4f}:ih*{zoom:.4f}:flags=lanczos,"
                                  "crop=1080:1920:(in_w-out_w)/2:(in_h-out_h)/2")
         brightness = (float(visual.get("brightness", 100)) - 100) / 250

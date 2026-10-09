@@ -62,6 +62,22 @@ class EncoderProbeTests(unittest.TestCase):
 
 
 class RenderTaskTests(unittest.TestCase):
+    def test_finishing_zoom_below_100_percent_uses_padding_not_impossible_crop(self):
+        with workspace_directory() as directory:
+            base = Path(directory)
+            source = base / "source.mp4"
+            source.write_bytes(b"placeholder")
+            part = {"index": 1, "duration": 1.0, "layout": "portrait",
+                    "subtitles": [], "cuts": [{"start": 0, "end": 1, "focus": []}]}
+            with patch("app.media.run_command", side_effect=InterruptedError("filter captured")):
+                with self.assertRaises(InterruptedError):
+                    render_part(source, part, {"width": 320, "height": 180},
+                                base / "output", base / "work", "libx264",
+                                finishing={"video": {"zoom": 90}})
+            filters = (base / "work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("scale=iw*0.9000:ih*0.9000:flags=lanczos,pad=1080:1920", filters)
+            self.assertNotIn("crop=1080:1920:(in_w-out_w)/2:(in_h-out_h)/2", filters)
+
     def test_worker_count_cannot_exceed_safety_cap(self):
         with self.assertRaises(ValueError):
             _run_render_tasks([],lambda item,cancelled:item,lambda item,result:None,
