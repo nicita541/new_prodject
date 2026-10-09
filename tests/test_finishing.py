@@ -130,6 +130,18 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.manager.get(self.job_id)["outputs"], ["part_001.mp4", "part_001.srt"])
         self.assertEqual(self.client.get("/api/exports/" + export_id + "/files/../job.json").status_code, 404)
 
+    def test_legacy_completed_job_uses_migrated_library_episode(self):
+        job_path = self.directory / "job.json"
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        job.pop("episode_id")
+        atomic_json(job_path, job)
+        self.client.app.state.library.data["legacy_jobs"][self.job_id] = self.episode_id
+        with patch("app.studio_render.submit_render",
+                   return_value={"export_id": "ex_mock", "status": "queued"}):
+            result = self.client.post("/api/jobs/" + self.job_id + "/exports",
+                                      json={"part_indices": [1]})
+        self.assertEqual(result.status_code, 202, result.text)
+
     def test_preview_is_isolated_and_validates_range(self):
         with patch("app.studio_render.render_finishing_part") as render:
             def fake_render(manager, job_id, part, profile, output, work, preview):
