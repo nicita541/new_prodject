@@ -21,10 +21,20 @@ def style_identity(style: str = 'classic') -> dict:
 
 @lru_cache(maxsize=1)
 def _speech_font():
-    # Read the same installed Windows font used by libass; no installation or
-    # font cache is written outside the project.
-    font = Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts' / 'arialbd.ttf'
-    return ImageFont.truetype(str(font), 56)
+    # Windows uses Arial Bold as before. CI/Linux installs often lack
+    # C:/Windows/Fonts, so never abort metadata/cache identity checks simply
+    # because the first preferred font is not installed.
+    candidates = (
+        Path(os.environ.get('WINDIR', 'C:/Windows')) / 'Fonts' / 'arialbd.ttf',
+        Path('/usr/share/fonts/truetype/msttcorefonts/Arial_Bold.ttf'),
+        Path('/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf'),
+        Path('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'),
+    )
+    for font in candidates:
+        if font.is_file():
+            return ImageFont.truetype(str(font), 56)
+    raise FileNotFoundError(
+        'Не найден жирный шрифт для субтитров. Установите Arial, Liberation Sans или DejaVu Sans.')
 
 
 def _width(text: str) -> float:
