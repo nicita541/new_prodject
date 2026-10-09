@@ -107,5 +107,17 @@ for(const [tab,contains] of [['audio','Звуковое сопровождени
 window.document.querySelector('#fcSave').click();
 await new Promise(resolve=>setTimeout(resolve,150));
 assert(saveCalls > 0,'save action must use real API bridge');
+const projectsNav = window.document.querySelector('button[data-action="nav"][data-screen="projects"]');
+assert(projectsNav, 'projects navigation missing');
+projectsNav.click();
+const overview = window.document.querySelector('.overview-stats')?.textContent || '';
+assert(overview.includes('Готовых серий'), 'project summary not rendered');
+const stat = [...window.document.querySelectorAll('.stat-card')].find(el=>el.textContent.includes('Готовых серий'));
+assert(stat?.querySelector('strong')?.textContent.trim()==='1',
+  'older completed Shorts must count as ready even if latest attempt failed');
+assert(window.document.body.textContent.includes('РЕАЛЬНЫЕ ПРОЕКТЫ'), 'demo label remained in live UI');
+const readyButton = window.document.querySelector('button[data-action="filter"][data-filter="ready"]');
+if(readyButton){readyButton.click();assert(window.document.body.textContent.includes('Проверка визуала'), 'ready filter lost project after failed retry');}
+
 dom.window.close();
 console.log('Exact Studio Edition DOM smoke: live API, reference layout, tabs, save passed');
