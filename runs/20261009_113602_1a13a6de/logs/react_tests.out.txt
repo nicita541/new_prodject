@@ -1,0 +1,57 @@
+﻿
+> frontend@0.0.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.3 [39m[90mF:/new_prodject-fixed/frontend[39m
+
+ [32mвњ“[39m src/components/QualityWarnings.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 324[2mms[22m[39m
+ [32mвњ“[39m src/components/Playlist.test.tsx [2m([22m[2m2 tests[22m[2m)[22m[33m 353[2mms[22m[39m
+   [32mвњ“[39m Playlist [2m(2)[22m
+     [33m[2mвњ“[22m[39m renders items and handles selection[33m 322[2mms[22m[39m
+ [32mвњ“[39m src/components/PartContext.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 455[2mms[22m[39m
+ [32mвњ“[39m src/components/DeepSeekPanel.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 516[2mms[22m[39m
+   [32mвњ“[39m DeepSeekPanel [2m(4)[22m
+     [33m[2mвњ“[22m[39m refreshes status on click[33m 302[2mms[22m[39m
+ [32mвњ“[39m src/components/MusicPanel.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 675[2mms[22m[39m
+   [32mвњ“[39m MusicPanel [2m(4)[22m
+     [33m[2mвњ“[22m[39m coalesces rapid slider changes and serializes requests[33m 405[2mms[22m[39m
+ [32mвњ“[39m src/pages/EditEpisodePage.test.tsx [2m([22m[2m3 tests[22m[2m)[22m[33m 489[2mms[22m[39m
+ [32mвњ“[39m src/pages/TrashPage.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 491[2mms[22m[39m
+   [32mвњ“[39m Trash archived_at contract [2m(4)[22m
+     [33m[2mвњ“[22m[39m restores project using actual id/archived response then refetches[33m 323[2mms[22m[39m
+ [32mвњ“[39m src/components/DownloadControls.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 612[2mms[22m[39m
+   [32mвњ“[39m DownloadControls backend receipt contract [2m(5)[22m
+     [33m[2mвњ“[22m[39m disables actions with no registered file[33m 359[2mms[22m[39m
+ [32mвњ“[39m src/components/SourceSelect.test.tsx [2m([22m[2m8 tests[22m[2m)[22m[33m 605[2mms[22m[39m
+ [32mвњ“[39m src/pages/ReviewEpisodePage.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[33m 459[2mms[22m[39m
+ [32mвњ“[39m src/pages/EpisodesPage.test.tsx [2m([22m[2m5 tests[22m[2m)[22m[33m 759[2mms[22m[39m
+   [32mвњ“[39m Episodes flat backend contract [2m(5)[22m
+     [33m[2mвњ“[22m[39m creates an episode with a real number and follows its ID[33m 442[2mms[22m[39m
+ [32mвњ“[39m src/pages/ProjectsPage.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[33m 721[2mms[22m[39m
+   [32mвњ“[39m Projects backend contract [2m(4)[22m
+     [33m[2mвњ“[22m[39m creates a project with the entered title and refetches[33m 486[2mms[22m[39m
+ [32mвњ“[39m src/components/JobProgressPanel.test.tsx [2m([22m[2m21 tests[22m[2m)[22m[33m 939[2mms[22m[39m
+ [32mвњ“[39m src/components/Timeline.test.tsx [2m([22m[2m7 tests[22m[2m)[22m[33m 798[2mms[22m[39m
+   [32mвњ“[39m Timeline Component [2m(7)[22m
+     [33m[2mвњ“[22m[39m click retained interval changes selected part[33m 326[2mms[22m[39m
+ [32mвњ“[39m src/library/selectors.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32mвњ“[39m src/components/VideoPlayer.test.tsx [2m([22m[2m4 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+ [32mвњ“[39m src/utils/timeline.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32mвњ“[39m src/library/contract.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32mвњ“[39m src/components/App.test.tsx [2m([22m[2m6 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32mвњ“[39m src/hooks/useJobPolling.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 2673[2mms[22m[39m
+   [32mвњ“[39m useJobPolling [2m(12)[22m
+     [33m[2mвњ“[22m[39m recovers after a temporary server error without manual refresh[33m 1073[2mms[22m[39m
+     [33m[2mвњ“[22m[39m resumes polling a failed job with the same ID after retry and observes completion[33m 1099[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m20 passed[39m[22m[90m (20)[39m
+[2m      Tests [22m [1m[32m122 passed[39m[22m[90m (122)[39m
+[2m   Start at [22m 18:36:06
+[2m   Duration [22m 5.61s[2m (environment 60%, tests 17%, setup 12%, import 7%, transform 2%, worker 1%)[22m
+
+[2mEnvironment [22m [33mjsdom was created 20 times[39m[2m В· 37.89s total, 60% of tracked time[22m
+[2m            [22m [2mcreate it once per worker with [22m[33mpool: 'vmThreads'[39m[2m (keeps per-file isolation) or [22m[33misolate: false[39m[2m (shares it across files)[22m
+[2m            [22m [2mlearn more: https://vitest.dev/guide/improving-performance#test-environments[22m
+
+
