@@ -116,6 +116,37 @@ class CaptionsUpdate(BaseModel):
     revision: int | None = Field(None, ge=0)
 
 
+
+class PreviewSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    part_index: int = Field(ge=1, le=100)
+    from_seconds: float = Field(0, ge=0, alias="from", allow_inf_nan=False)
+    duration: float = Field(5, gt=0, le=10, allow_inf_nan=False)
+    settings: FinishProfile | None = None
+
+
+class ExportSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    part_indices: list[int] = Field(min_length=1, max_length=50)
+    settings: FinishProfile | None = None
+
+    @field_validator("part_indices")
+    @classmethod
+    def valid_indices(cls, values):
+        if len(set(values)) != len(values) or any(not 1 <= v <= 100 for v in values):
+            raise ValueError("Выберите уникальные номера частей от 1 до 100")
+        return values
+
+
+def _checked_render_job(request: Request, job_id: str):
+    job, plan = _job_plan(request, job_id)
+    episode_id = job.get("episode_id")
+    if not episode_id:
+        raise HTTPException(400, "Для этого монтажа не найдена серия с настройками оформления")
+    _episode(request, episode_id)
+    return job, plan, episode_id
+
+
 def _manager(request: Request):
     return request.app.state.manager
 
@@ -220,6 +251,86 @@ def create_finishing_router() -> APIRouter:
             atomic_json(path, stored)
         return stored
 
+
+
+    @router.post("/api/jobs/{job_id}/previews", status_code=202)
+    def create_preview(request: Request, job_id: str, body: PreviewSubmission):
+        from .studio_render import submit_render
+        _, plan, episode_id = _checked_render_job(request, job_id)
+        part = _part(plan, body.part_index)
+        if body.from_seconds >= float(part["duration"]):
+            raise HTTPException(422, "Выбранное время за пределами части")
+        duration = min(body.duration, float(part["duration"]) - body.from_seconds)
+        profile = body.settings.model_dump() if body.settings else _stored_profile(request, episode_id)
+        try:
+            state = submit_render(_manager(request), job_id, [body.part_index], profile,
+                                  preview=(body.part_index, body.from_seconds, duration))
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+        return {"preview_id": state["preview_id"], "job_id": job_id,
+                "part_index": body.part_index, "status": state["status"], "progress": 0,
+                "url": None, "error": None}
+
+    @router.api_route("/api/jobs/{job_id}/previews/{preview_file}.mp4", methods=["GET", "HEAD"])
+    def stream_preview(request: Request, job_id: str, preview_file: str):
+        from .studio_render import task_status, _locate_task
+        from .server import ranged_file
+        identifier = preview_file
+        if not re.fullmatch(r"pv_[0-9a-f]{32}", identifier):
+            raise HTTPException(404, "Предпросмотр не найден")
+        state = task_status(_manager(request), identifier, job_id)
+        if state["status"] != "completed" or not state["files"]:
+            raise HTTPException(404, "Предпросмотр ещё не готов")
+        _, directory = _locate_task(_manager(request), identifier, job_id)
+        source = (directory / "output" / state["files"][0]["name"]).resolve()
+        if not source.is_relative_to((directory / "output").resolve()) or not source.is_file():
+            raise HTTPException(404, "Файл предпросмотра не найден")
+        return ranged_file(source, request)
+
+    @router.get("/api/jobs/{job_id}/previews/{preview_id}")
+    def get_preview(request: Request, job_id: str, preview_id: str):
+        from .studio_render import task_status
+        _manager(request).get(job_id)
+        if not re.fullmatch(r"pv_[0-9a-f]{32}", preview_id):
+            raise HTTPException(404, "Предпросмотр не найден")
+        return task_status(_manager(request), preview_id, job_id)
+
+    @router.post("/api/jobs/{job_id}/exports", status_code=202)
+    def create_export(request: Request, job_id: str, body: ExportSubmission):
+        from .studio_render import submit_render
+        _, plan, episode_id = _checked_render_job(request, job_id)
+        for index in body.part_indices:
+            _part(plan, index)
+        profile = body.settings.model_dump() if body.settings else _stored_profile(request, episode_id)
+        try:
+            return submit_render(_manager(request), job_id, body.part_indices, profile)
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @router.get("/api/exports/{export_id}")
+    def get_export(request: Request, export_id: str):
+        from .studio_render import task_status
+        if not re.fullmatch(r"ex_[0-9a-f]{32}", export_id):
+            raise HTTPException(404, "Экспорт не найден")
+        return task_status(_manager(request), export_id)
+
+    @router.api_route("/api/exports/{export_id}/files/{filename}", methods=["GET", "HEAD"])
+    def stream_export(request: Request, export_id: str, filename: str):
+        from .studio_render import task_status, _locate_task
+        from .server import ranged_file
+        if not re.fullmatch(r"ex_[0-9a-f]{32}", export_id):
+            raise HTTPException(404, "Экспорт не найден")
+        state = task_status(_manager(request), export_id)
+        allowed = {item["name"] for item in state["files"]}
+        allowed |= {Path(name).with_suffix(".srt").name for name in allowed}
+        if state["status"] != "completed" or filename not in allowed:
+            raise HTTPException(404, "Файл экспорта не найден")
+        _, directory = _locate_task(_manager(request), export_id)
+        output_dir = (directory / "output").resolve()
+        source = (output_dir / filename).resolve()
+        if not source.is_relative_to(output_dir) or not source.is_file():
+            raise HTTPException(404, "Файл экспорта не найден")
+        return ranged_file(source, request, as_attachment=bool(request.query_params.get("download")))
 
     @router.api_route("/api/music/tracks/{filename}/stream", methods=["GET", "HEAD"])
     def stream_music(request: Request, filename: str):
