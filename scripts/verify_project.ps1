@@ -117,7 +117,7 @@ if ($branch -ne "fix/montage-stability") {
 
 if ($python) {
     Run-Check "python_compile" $python @("-m", "compileall", "-q", "app", "scripts", "tests") $root 180
-    Run-Check "python_dependencies" $python @("-c", "import fastapi, starlette, httpx, pytest, multipart") $root 30
+    Run-Check "python_dependencies" $python @("-c", "__import__('fastapi');__import__('starlette');__import__('httpx');__import__('pytest');__import__('multipart')") $root 30
     $dependenciesReady = @($script:checks | Where-Object { $_.name -eq "python_dependencies" -and $_.status -eq "PASS" }).Count -eq 1
     if (-not $dependenciesReady) {
         Add-Check "python_tests" "SKIP" 0 "Required Python packages missing; create .venv and install requirements"
