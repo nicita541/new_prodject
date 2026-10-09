@@ -294,6 +294,25 @@ class JobTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["name"], "Ручное имя.mp4")
 
+    def test_prune_rejects_invalid_limits_without_touching_jobs(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        directory = self.manager.job_dir(job["id"])
+        marker = directory / "output" / "part_001.mp4"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_bytes(b"do not delete")
+        for kwargs in (
+            {"max_jobs": -1},
+            {"max_age_days": -1},
+            {"max_jobs": True},
+            {"max_age_days": 1.5},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    self.manager.prune_jobs(**kwargs)
+                self.assertTrue(directory.is_dir())
+                self.assertEqual(marker.read_bytes(), b"do not delete")
+
     def test_delete_job_and_prune_jobs(self):
         job = self.manager.create(self.source_id)
         # Cannot delete active running job
@@ -319,6 +338,26 @@ class JobTests(unittest.TestCase):
         prune_res = self.manager.prune_jobs(max_jobs=1)
         self.assertEqual(prune_res["pruned_count"], 1)
         self.assertEqual(prune_res["remaining_terminal"], 1)
+
+    def test_delete_job_does_not_claim_success_when_removal_fails(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        directory = self.manager.job_dir(job["id"])
+        with patch("app.jobs.shutil.rmtree", side_effect=PermissionError("locked")):
+            with self.assertRaises(PermissionError):
+                self.manager.delete_job(job["id"])
+        self.assertTrue(directory.is_dir())
+
+    def test_prune_reports_only_successful_removals(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        with patch("app.jobs.shutil.rmtree", side_effect=PermissionError("locked")):
+            with self.assertLogs("app.jobs", level="ERROR"):
+                result = self.manager.prune_jobs(max_jobs=0)
+        self.assertEqual(result["pruned_count"], 0)
+        self.assertEqual(result["pruned_ids"], [])
+        self.assertEqual(result["remaining_terminal"], 1)
+        self.assertTrue(self.manager.job_dir(job["id"]).is_dir())
 
     def test_setup_environment_idempotent(self):
         config.setup_environment()

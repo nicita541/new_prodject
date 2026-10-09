@@ -233,6 +233,16 @@ describe('JobProgressPanel', () => {
     expect(analysis).not.toHaveAttribute('aria-current');
   });
 
+  it('signals completion once so the episode library can refresh', () => {
+    const done: Job = { ...mockJob, status: 'completed' };
+    const callback = vi.fn();
+    mockPolling({ job: done, isPolling: false, error: null });
+    const { rerender } = render(<BrowserRouter><JobProgressPanel jobId="test-job" episodeId="test-episode" onJobFinished={callback} /></BrowserRouter>);
+    expect(callback).toHaveBeenCalledOnce();
+    rerender(<BrowserRouter><JobProgressPanel jobId="test-job" episodeId="test-episode" onJobFinished={callback} /></BrowserRouter>);
+    expect(callback).toHaveBeenCalledOnce();
+  });
+
   it('renders completed state', () => {
     const completedJob: Job = { ...mockJob, status: 'completed' };
     mockPolling({ job: completedJob, isLoading: false, error: null } as any);

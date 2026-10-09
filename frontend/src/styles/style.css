@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+/* System UI font: no external CDN or requests needed. */
 
 :root {
   --bg-deep: #090a0f;
@@ -1294,3 +1294,41 @@ progress { display: block; width: 100%; height: 8px; accent-color: var(--accent-
   .sidebar { grid-template-columns: minmax(0, 1fr); }
   .nav-menu { grid-row: 2; }
 }
+
+/* Studio Edition global theme — cohesive across library, trash, monitoring. */
+:root {
+  --bg-deep:#0b1011;--bg-sidebar:#101716;--bg-surface:#141d1a;
+  --bg-card:#19241f;--bg-card-hover:#233329;--bg-input:#111c18;
+  --text-primary:#e9f1e7;--text-secondary:#a6b5aa;--text-muted:#81978a;
+  --accent:#c5e59c;--accent-light:#d2edad;--accent-hover:#b4d48c;
+  --accent-glow:#b9de8b2b;--accent-gradient:linear-gradient(135deg,#d7edaa,#b6d98d);
+  --success:#a4d29b;--border-subtle:#ffffff12;--border-light:#71897855;
+  --border-strong:#8aa98c80;--radius-md:8px;--radius-lg:11px;
+  --shadow-card:none;--shadow-hover:0 5px 18px #0004;
+}
+body{font-family:Bahnschrift,Aptos,'Segoe UI',sans-serif;letter-spacing:.012em}
+.brand-mark{background:#d5e9a5;color:#1c2a1e;box-shadow:none;border-radius:7px}
+.brand{letter-spacing:.04em}.nav-link{border-radius:7px}
+.nav-link.nav-active{background:#304535;color:#e4f4d2;border-color:#60866665;box-shadow:inset 2px 0 #d3e99e}
+.btn-primary{background:#d5ecaa;color:#182718;box-shadow:none}
+.btn-primary:hover:not(:disabled){box-shadow:0 5px 15px #7daa7848}
+.form-input:focus,.form-select:focus{border-color:#bedc9a;box-shadow:0 0 0 3px #b6de8b20}
+.item-card:hover,.item-card-wrap:hover{transform:none}
+.color-0,.color-1,.color-2,.color-3{background:#304b3e;color:#dcefb7;box-shadow:none}
+.card-icon{background:#273d32;border-color:#49694d;color:#cfe7a0;border-radius:8px}
+input[type=range]::-webkit-slider-thumb{background:#cee7a0;box-shadow:none}
+.app-layout:has(.st-room) .sidebar{width:64px;min-width:64px;max-width:64px;padding:17px 7px;gap:6px}
+.app-layout:has(.st-room) .brand{font-size:0;margin:0 0 18px;padding:0;justify-content:center}
+.app-layout:has(.st-room) .brand-mark{width:39px;height:39px;font-size:24px}
+.app-layout:has(.st-room) .nav-menu{align-items:stretch;gap:6px}
+.app-layout:has(.st-room) .nav-link{font-size:0;min-height:44px;padding:0;justify-content:center}
+.app-layout:has(.st-room) .nav-link::before{font-size:20px;font-weight:500;color:#a0b3a5}
+.app-layout:has(.st-room) .nav-link[href="/projects"]::before{content:"▦"}
+.app-layout:has(.st-room) .nav-link[href="/studio"]::before{content:"✎"}
+.app-layout:has(.st-room) .nav-link[href="/trash"]::before{content:"♧"}
+.app-layout:has(.st-room) .nav-link.nav-active::before{color:#d5ee9e}
+.app-layout:has(.st-room) .status-pill{width:33px;height:33px;margin:auto auto 0;padding:0;display:grid;place-items:center}
+.app-layout:has(.st-room) #connection-label{display:none}
+.app-layout:has(.st-room) .main-content{background:#0b1011}
+.app-layout:has(.st-room) .app-footer{display:none}
+@media(max-width:650px){.app-layout:has(.st-room) .sidebar{display:none}.app-layout:has(.st-room) .main-content{width:100%}}

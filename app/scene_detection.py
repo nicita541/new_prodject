@@ -691,6 +691,45 @@ def _cached(path: Path, metadata: Path, identity):
     return None
 
 
+def coalesce_subframe_scenes(scenes: list[dict], minimum_seconds: float = 0.125) -> list[dict]:
+    """Attach sub-frame scene fragments to a neighboring scene, without discarding video.
+
+    Shot/ASR boundaries can differ by 0.038–0.08 s; those intervals may not
+    contain any source PTS. Treating them as independent scenes crashes image
+    extraction. Keep their exact original ranges as source segments/evidence
+    and analyze them with a neighbor rather than inventing a frame.
+    """
+    from copy import deepcopy
+    values = deepcopy(scenes)
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if item['end'] - item['start'] >= minimum_seconds or len(values) == 1:
+            index += 1
+            continue
+        use_previous = index > 0
+        target_index = index - 1 if use_previous else index + 1
+        target = values[target_index]
+        if use_previous:
+            target['end'] = max(target['end'], item['end'])
+        else:
+            target['start'] = min(target['start'], item['start'])
+        target['shot_ids'] = list(dict.fromkeys([*target.get('shot_ids', []), *item.get('shot_ids', [])]))
+        target['candidate_ids'] = list(dict.fromkeys([*target.get('candidate_ids', []), *item.get('candidate_ids', [])]))
+        evidence = target.setdefault('evidence', {})
+        evidence.setdefault('merged_subframe_scenes', []).append({
+            'id': item['id'], 'start': item['start'], 'end': item['end'],
+            'boundary_reason': item.get('boundary_reason', []),
+        })
+        evidence.setdefault('source_segments', []).extend(item.get('evidence', {}).get('source_segments', []))
+        target['uncertain'] = bool(target.get('uncertain')) or bool(item.get('uncertain'))
+        target['confidence'] = min(target.get('confidence', 0), item.get('confidence', 0))
+        values.pop(index)
+        if use_previous:
+            index -= 1
+    return values
+
+
 def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: list[dict], transcript: dict,
                      job_dir: Path, cancelled, *, settings: dict | None = None, audio_features=None,
                      cache_status: dict | None = None, vision=None, perception=None, audio_stream=0,
@@ -742,8 +781,14 @@ def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: lis
                   if perception is not None else None)
         scenes = detect_semantic_scenes(shots, transcript, duration, visual_features=features,
                                         audio_features=audio_features, settings=config, boundary_verifications=proofs)
+        scenes = coalesce_subframe_scenes(scenes)
         atomic_json(path, scenes)
         atomic_json(meta, identity)
+    # Coalesce old cached scene lists too; retain existing visual/ASR caches.
+    collapsed = coalesce_subframe_scenes(scenes)
+    if collapsed != scenes:
+        scenes = collapsed
+        atomic_json(path, scenes)
     if cache_status is not None:
         cache_status.update({'cache_hit': scene_hit, 'visual_cache_hit': feature_hit})
     for scene in scenes:

@@ -51,11 +51,34 @@ def context_record(scene, transcript, interval=None):
             'transcript': records}
 
 
+def merge_subframe_chunks(chunks, minimum_seconds=.125):
+    """Avoid frame-less technical splits at word/scene timing boundaries.
+
+    Attach sub-frame fragments to adjacent chunks inside the *same semantic
+    scene*. No video/words are dropped or timestamps fabricated.
+    """
+    values = [dict(chunk) for chunk in chunks]
+    index = 0
+    while len(values) > 1 and index < len(values):
+        chunk = values[index]
+        if chunk['end'] - chunk['start'] >= minimum_seconds:
+            index += 1
+            continue
+        if index > 0:
+            values[index - 1]['end'] = max(values[index - 1]['end'], chunk['end'])
+            values.pop(index)
+            index -= 1
+        else:
+            values[1]['start'] = min(values[1]['start'], chunk['start'])
+            values.pop(0)
+    return values
+
+
 def bounded_chunks(scene, transcript, shots, max_frames=12):
     """Bound inference by actual frame demand, preserving semantic ownership."""
     from .scene_detection import analysis_chunks
     from .vision import inference_samples
-    pending = analysis_chunks(scene, transcript)
+    pending = merge_subframe_chunks(analysis_chunks(scene, transcript))
     result = []
     while pending:
         chunk = pending.pop(0)
@@ -69,10 +92,16 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
             edges = [u['end'] for u in units if start+.000001 < u['end'] < end-.000001]
             if edges:
                 boundary = min(edges, key=lambda t: abs(t-midpoint))
-                pending[0:0] = [{**chunk, 'start': start, 'end': boundary}, {**chunk, 'start': boundary, 'end': end}]
+                # Split then reattach subframe slivers: 38ms ASR pauses
+                # cannot be independent visual samples.
+                pending[0:0] = merge_subframe_chunks([
+                    {**chunk, 'start': start, 'end': boundary},
+                    {**chunk, 'start': boundary, 'end': end}
+                ])
                 continue
             raise ValueError('Indivisible source unit exceeds the bounded visual view')
         result.append(chunk)
+    result = merge_subframe_chunks(result)
     for index, chunk in enumerate(result):
         chunk['id'] = f'{scene["id"]}_chunk_{index:03d}'
     return result
@@ -245,6 +274,30 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 for unit in units:
                     unit['id'] = f'c{number:03d}_{unit["id"]}'
                     unit['parent_scene_id'] = scene['id']
+                # Durable, model-specific checkpoint for every *completed* chunk.
+                # Includes source, transcript, context, scene and semantic versions.
+                piece = visual_dir / f'{event_id}_chunk_{number:03d}.checkpoint.json'
+                piece_key = hashlib.sha256(json.dumps({
+                    'version': 1, 'signature': signature,
+                    'identity': semantic_cache, 'chunk': chunk, 'units': units,
+                    'previous': previous, 'following': following,
+                }, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()
+                saved_piece = load_json(piece) if piece.exists() else {}
+                if (saved_piece.get('identity') == piece_key
+                        and isinstance(saved_piece.get('result'), dict)
+                        and isinstance(saved_piece.get('units'), list)
+                        and isinstance(saved_piece.get('boards'), list)
+                        and isinstance(saved_piece.get('image_hashes'), dict)
+                        and _scene_image_hashes(saved_piece['boards'], visual_dir) == saved_piece['image_hashes']):
+                    all_units.extend(saved_piece['units'])
+                    scene_boards.extend(saved_piece['boards'])
+                    chunk_results.append(saved_piece['result'])
+                    diagnostics.event('scene_analysis', 'chunk_cache_hit',
+                                      scene_id=scene['id'], chunk_id=chunk['id'])
+                    continue
+                diagnostics.event('scene_analysis', 'chunk_cache_miss',
+                                  scene_id=scene['id'], chunk_id=chunk['id'])
+                board_start = len(scene_boards)
                 timestamps = inference_storyboard(source,start,end,units,image,cancelled)
                 all_units.extend(units)
                 board = load_json(image.with_suffix('.storyboard.json'))
@@ -316,6 +369,12 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                         [*recovery_pages,*context_pages],diagnostics)
                 current.setdefault('understanding_status','unresolved' if current.get('uncertain') or current.get('confidence',0)<.85 else 'accepted')
                 chunk_results.append(current)
+                durable_boards = scene_boards[board_start:]
+                atomic_json(piece, {'identity': piece_key, 'units': units, 'result': current,
+                                    'boards': durable_boards,
+                                    'image_hashes': _scene_image_hashes(durable_boards, visual_dir)})
+                diagnostics.event('scene_analysis', 'chunk_cache_saved',
+                                  scene_id=scene['id'], chunk_id=chunk['id'])
         kinds = {result['kind'] for result in chunk_results}
         event = validated_event({'summary': '\n'.join(r['summary'] for r in chunk_results),
             'kind': kinds.pop() if len(kinds)==1 else 'story',

@@ -1,15 +1,20 @@
+import hashlib
 import json
+import os
 import random
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media import inspect_media, render_part, run_command
+from app.pipeline import _validated_cached_render
 from app.music import (DEFAULT_CONFIG, list_tracks, load_config, load_settings,
-                       pick_track, pick_track_for_part, save_settings, validate_config)
+                       music_library_identity, pick_track, pick_track_for_part,
+                       save_settings, validate_config)
 
 
 @contextmanager
@@ -122,6 +127,18 @@ class TrackTests(unittest.TestCase):
             track3 = pick_track_for_part(directory, config, part_index=3)
             self.assertEqual(track3.name, "a.mp3")
 
+    def test_replacing_track_with_same_name_size_and_timestamp_changes_fingerprint(self):
+        with workspace_directory() as directory:
+            song = directory / "song.mp3"
+            song.write_bytes(b"original")
+            before = music_library_identity(directory)
+            stat = song.stat()
+            song.write_bytes(b"modified")
+            os.utime(song, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            after = music_library_identity(directory)
+            self.assertEqual(before[0]["name"], after[0]["name"])
+            self.assertNotEqual(before, after)
+
     def test_pick_track_for_part_random_per_part_is_stable(self):
         with workspace_directory() as directory:
             for name in ("a.mp3", "b.mp3", "c.mp3"):
@@ -143,6 +160,17 @@ class SettingsPersistenceTests(unittest.TestCase):
                 self.assertEqual(load_settings(), saved)
                 self.assertTrue(settings_path.is_file())
 
+    def test_simultaneous_settings_writes_leave_valid_json(self):
+        with workspace_directory() as directory:
+            settings_path = directory / "settings" / "music.json"
+            with patch("app.music.MUSIC_SETTINGS", settings_path):
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    values = list(executor.map(lambda i: save_settings({"volume": i / 20}), range(20)))
+                saved = load_settings()
+                self.assertIn(saved, values)
+                self.assertEqual(json.loads(settings_path.read_text(encoding="utf-8"))["music"], saved)
+                self.assertEqual(list(settings_path.parent.glob("*.tmp")), [])
+
     def test_load_settings_prefers_runtime_file(self):
         with workspace_directory() as directory:
             runtime = directory / "runtime.json"
@@ -152,6 +180,63 @@ class SettingsPersistenceTests(unittest.TestCase):
                 config = load_settings()
                 self.assertFalse(config["enabled"])
                 self.assertEqual(config["volume"], 0.5)
+
+
+class RenderCacheTests(unittest.TestCase):
+    def test_valid_cached_video_preserves_recorded_music_track(self):
+        with workspace_directory() as directory:
+            mp4 = directory / "part_001.mp4"
+            mp4.write_bytes(b"existing encoded video")
+            subtitle = mp4.with_suffix(".srt")
+            subtitle.write_text("subtitles", encoding="utf-8")
+            checkpoint = directory / "part_001.json"
+            stat = mp4.stat()
+            checkpoint.write_text(json.dumps({
+                "fingerprint": "same-run",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "srt_hash": hashlib.sha256(subtitle.read_bytes()).hexdigest(),
+                "music_track": "song.mp3", "encoder": "libx264"
+            }), encoding="utf-8")
+            with patch("app.pipeline.validate_export") as validate:
+                saved = _validated_cached_render(mp4, checkpoint, "same-run",
+                                                 {"duration": 2.0}, directory, lambda: False)
+            self.assertEqual(saved["music_track"], "song.mp3")
+            validate.assert_called_once()
+
+    def test_cache_validation_cancellation_is_not_swallowed(self):
+        with workspace_directory() as directory:
+            mp4 = directory / "part_001.mp4"
+            mp4.write_bytes(b"encoded")
+            subtitle = mp4.with_suffix(".srt")
+            subtitle.write_text("subtitles")
+            checkpoint = directory / "part_001.json"
+            stat = mp4.stat()
+            checkpoint.write_text(json.dumps({
+                "fingerprint": "same-run",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "srt_hash": hashlib.sha256(subtitle.read_bytes()).hexdigest(),
+            }), encoding="utf-8")
+            with patch("app.pipeline.validate_export", side_effect=InterruptedError("cancel")):
+                with self.assertRaises(InterruptedError):
+                    _validated_cached_render(mp4, checkpoint, "same-run",
+                                             {"duration": 2.0}, directory, lambda: False)
+
+    def test_non_object_or_truncated_cache_is_a_miss(self):
+        with workspace_directory() as directory:
+            mp4 = directory / "part_001.mp4"
+            mp4.write_bytes(b"encoded")
+            mp4.with_suffix(".srt").write_text("subtitles")
+            checkpoint = directory / "part_001.json"
+            with patch("app.pipeline.validate_export") as validate:
+                for broken in ("[]", '{"fingerprint":', 'null', 'true'):
+                    with self.subTest(broken=broken):
+                        checkpoint.write_text(broken, encoding="utf-8")
+                        self.assertIsNone(_validated_cached_render(
+                            mp4, checkpoint, "same-run", {"duration": 2.0},
+                            directory, lambda: False))
+            validate.assert_not_called()
 
 
 class BackgroundMusicFilterTests(unittest.TestCase):
@@ -195,6 +280,35 @@ class BackgroundMusicFilterTests(unittest.TestCase):
             self.assertIn("afade=t=out", script)
             self.assertIn("[mixed]", argv)
 
+    def test_nvenc_error_falls_back_to_cpu_without_losing_background_music(self):
+        with workspace_directory() as directory:
+            source = directory / "source.mp4"
+            source.write_bytes(b"source")
+            track = directory / "music.wav"
+            track.write_bytes(b"audio")
+            calls = []
+
+            def fake_run(argv, cwd, cancelled=lambda: False, timeout=None):
+                calls.append([str(arg) for arg in argv])
+                if "h264_nvenc" in argv:
+                    raise RuntimeError("GPU encoder unavailable")
+                Path(argv[-1]).write_bytes(b"x" * 2000)
+                return ""
+
+            with patch("app.media.run_command", side_effect=fake_run), \
+                    patch("app.media.validate_export", return_value={"duration": 2.0}), \
+                    patch("app.media.write_ass", side_effect=lambda path, *a, **k: path.write_text("")), \
+                    patch("app.media.write_srt", side_effect=lambda path, *a, **k: path.write_text("")):
+                render_part(source, self._part(), {"width": 320, "height": 180},
+                            directory / "output", directory / "work", "h264_nvenc",
+                            background_music={"path": track, "volume": 0.15})
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(all("-stream_loop" in argv for argv in calls))
+            self.assertIn("libx264", calls[-1])
+            self.assertIn("amix=inputs=2", (directory / "work" / "render.ffscript").read_text(encoding="utf-8"))
+            metadata = json.loads((directory / "work" / "render-info.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["encoder"], "libx264")
+
     def test_no_music_keeps_original_audio_path(self):
         with workspace_directory() as directory:
             argv, script = self._render(directory, None)
@@ -231,6 +345,110 @@ class BackgroundMusicIntegrationTests(unittest.TestCase):
             streams = {s["codec_type"]: s for s in info["streams"]}
             self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
             self.assertLess(abs(float(streams["video"]["duration"]) - float(streams["audio"]["duration"])), 0.15)
+
+
+    def test_studio_finishing_renders_positioned_captions_and_frame_grading(self):
+        """Studio values must reach a real MP4, not merely be saved as JSON."""
+        with workspace_directory() as directory:
+            source = directory / "original.mp4"
+            run_command([str(FFMPEG), "-v", "error", "-y",
+                         "-f", "lavfi", "-i", "color=size=160x90:rate=30",
+                         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                         "-t", "2", "-c:v", "libx264", "-preset", "ultrafast",
+                         "-c:a", "aac", str(source)], directory)
+            part = {"index": 1, "duration": 2.0,
+                    "cuts": [{"start": 0, "end": 2,
+                              "focus": [{"time": 0, "x": 0.5, "y": 0.5}]}],
+                    "subtitles": [{"start": 0.2, "end": 1.5, "text": "Studio test"}]}
+            render = render_part(source, part, {"width": 160, "height": 90},
+                                 directory / "finishing-output", directory / "finishing-work",
+                                 "libx264", finishing={
+                                     "video": {"zoom": 110, "brightness": 115, "vignette": 12},
+                                     "subtitles": {"enabled": True, "x": 50, "y": 69, "font_size": 32,
+                                                   "color": "#f6d779", "outline": 3, "uppercase": True},
+                                 })
+            ass = (directory / "finishing-output" / "part_001.ass").read_text("utf-8")
+            self.assertIn(r"\pos(540,1325)", ass)
+            self.assertIn("STUDIO TEST", ass)
+            filters = (directory / "finishing-work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("vignette=", filters)
+            self.assertIn("eq=brightness=", filters)
+            result = inspect_media(render, directory)
+            self.assertLess(abs(float(result["format"]["duration"]) - 2.0), .15)
+            self.assertTrue(any(p["codec_type"] == "audio" for p in result["streams"]))
+
+
+    def test_smart_music_ducking_keeps_real_export_valid(self):
+        """Exercise dynamic FFmpeg volume expressions, not only mock strings."""
+        with workspace_directory() as directory:
+            source = directory / "source.mp4"
+            run_command([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                         "color=size=160x90:rate=30", "-f", "lavfi", "-i",
+                         "sine=frequency=440:sample_rate=48000", "-t", "2",
+                         "-c:v", "libx264", "-preset", "ultrafast",
+                         "-c:a", "aac", str(source)], directory)
+            track = directory / "music.wav"
+            run_command([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                         "sine=frequency=660:sample_rate=48000", "-t", "0.5",
+                         "-c:a", "pcm_s16le", str(track)], directory)
+            part = {"index": 1, "duration": 2.0,
+                    "cuts": [{"start": 0, "end": 2.0,
+                              "focus": [{"time": 0, "x": 0.5, "y": 0.5, "confidence": 0.9}]}],
+                    "subtitles": []}
+            result = render_part(source, part, {"width": 160, "height": 90},
+                                 directory / "output", directory / "work", "libx264",
+                                 background_music={"path": track, "volume": 0.15,
+                                                   "volume_music_duck": 0.015,
+                                                   "duck_intervals": [(0.5, 1.0)]})
+            filter_text = (directory / "work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("eval=frame", filter_text)
+            info = inspect_media(result, directory)
+            streams = {stream["codec_type"] for stream in info["streams"]}
+            self.assertEqual(streams, {"video", "audio"})
+            self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
+
+    def test_nvenc_failure_really_encodes_cpu_video_with_background_music(self):
+        """Force NVENC failure, then inspect the actual CPU-encoded MP4."""
+        with workspace_directory() as directory:
+            source = directory / "source.mp4"
+            original_run = run_command
+            original_run([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                          "color=size=160x90:rate=30", "-f", "lavfi", "-i",
+                          "sine=frequency=440:sample_rate=48000", "-t", "2",
+                          "-c:v", "libx264", "-preset", "ultrafast",
+                          "-c:a", "aac", str(source)], directory)
+            track = directory / "music.wav"
+            original_run([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                          "sine=frequency=660:sample_rate=48000", "-t", "0.5",
+                          "-c:a", "pcm_s16le", str(track)], directory)
+            part = {"index": 1, "duration": 2.0, "subtitles": [],
+                    "cuts": [{"start": 0, "end": 2.0,
+                              "focus": [{"time": 0, "x": 0.5, "y": 0.5, "confidence": 0.9}]}]}
+            nvenc_attempts = []
+
+            def fail_only_hardware_encoder(argv, cwd, cancelled=lambda: False, timeout=None):
+                if "h264_nvenc" in argv:
+                    nvenc_attempts.append(True)
+                    raise RuntimeError("Simulated NVENC driver error")
+                return original_run(argv, cwd, cancelled, timeout)
+
+            with patch("app.media.run_command", side_effect=fail_only_hardware_encoder):
+                rendered = render_part(source, part, {"width": 160, "height": 90},
+                                       directory / "output", directory / "work",
+                                       "h264_nvenc",
+                                       background_music={"path": track, "volume": 0.15})
+            self.assertEqual(nvenc_attempts, [True])
+            metadata = json.loads((directory / "work" / "render-info.json").read_text("utf-8"))
+            self.assertEqual(metadata["encoder"], "libx264")
+            self.assertTrue((directory / "output" / "part_001.srt").is_file())
+            self.assertTrue((directory / "output" / "part_001.ass").is_file())
+            filter_text = (directory / "work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("amix=inputs=2", filter_text)
+            info = inspect_media(rendered, directory)
+            streams = {stream["codec_type"]: stream for stream in info["streams"]}
+            self.assertEqual(streams["video"]["codec_name"], "h264")
+            self.assertEqual(streams["audio"]["codec_name"], "aac")
+            self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
 
 
 class MusicApiTests(unittest.TestCase):

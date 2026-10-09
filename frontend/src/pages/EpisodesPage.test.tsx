@@ -21,6 +21,14 @@ describe('Episodes flat backend contract',()=>{
     expect(api.createEpisode).toHaveBeenCalledWith(p1.id,3);expect(refetch).toHaveBeenCalled();
     expect(await screen.findByText('Created episode')).toBeInTheDocument();
   });
+  it('allows an empty episode number so the backend can assign the next one',async()=>{
+    const {jobs:_,...stored}=e1;vi.mocked(api.createEpisode).mockResolvedValue(stored);page();
+    const field=screen.getByRole('spinbutton');
+    expect(field).not.toBeRequired();
+    await userEvent.click(screen.getByRole('button',{name:/Добавить серию/}));
+    expect(api.createEpisode).toHaveBeenCalledWith(p1.id,undefined);
+    expect(await screen.findByText('Created episode')).toBeInTheDocument();
+  });
   it('archives an idle episode, locks running episode and parent deletion',async()=>{
     vi.mocked(api.deleteEpisode).mockResolvedValue({id:e1.id,archived:true});page();
     const buttons=screen.getAllByRole('button',{name:'Удалить серию'});expect(buttons[1]).toBeDisabled();

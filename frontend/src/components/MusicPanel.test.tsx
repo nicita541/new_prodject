@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MusicPanel } from './MusicPanel';
 import * as client from '../api/client';
@@ -24,6 +24,27 @@ describe('MusicPanel', () => {
 
   beforeEach(() => {
     vi.mocked(client.api.getMusicSettings).mockResolvedValue(mockSettings as any);
+  });
+
+  it('coalesces rapid slider changes and serializes requests', async () => {
+    let finishFirst: (() => void) | undefined;
+    vi.mocked(client.api.saveMusicSettings).mockReset();
+    vi.mocked(client.api.saveMusicSettings)
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finishFirst = () => resolve({} as any);
+      }))
+      .mockResolvedValue({} as any);
+    render(<MusicPanel partCount={2} />);
+    const slider = await screen.findByRole('slider');
+    fireEvent.change(slider, { target: { value: '40' } });
+    fireEvent.change(slider, { target: { value: '70' } });
+    fireEvent.change(slider, { target: { value: '85' } });
+    expect(client.api.saveMusicSettings).toHaveBeenCalledTimes(1);
+    finishFirst?.();
+    await waitFor(() => expect(client.api.saveMusicSettings).toHaveBeenCalledTimes(2));
+    expect(client.api.saveMusicSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({ volume: .85 })
+    );
   });
 
   it('renders correctly with 6 parts', async () => {
