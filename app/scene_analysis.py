@@ -93,7 +93,9 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
             # back recreates the same oversized chunk and loops forever.
             # Prefer an actual source-unit edge with a frame-bearing margin on
             # BOTH sides. Never re-coalesce validated bounded chunks afterward.
-            minimum_margin = .125
+            # Two nominal 30-fps frames are preferable to a 38-ms sliver,
+            # but a real 80-ms silent unit can still hold source pictures.
+            minimum_margin = 1 / 15
             edges = sorted({
                 float(u['end']) for u in units
                 if start + minimum_margin <= float(u['end']) <= end - minimum_margin
@@ -106,6 +108,7 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
                 ]
                 continue
             raise ValueError(
+                'Indivisible source unit exceeds the bounded visual view: '
                 'Нет безопасной границы для разделения визуального фрагмента '
                 f'{start:.3f}–{end:.3f} с ограничением {max_frames} кадров')
         result.append(chunk)
