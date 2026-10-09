@@ -153,6 +153,19 @@ def query_scene(vision, prompt, image, units, event_id, start, end, timestamps, 
     raise RuntimeError(f'Не удалось проанализировать {event_id}: {errors[-1]}') from errors[-1]
 
 
+def _read_optional_checkpoint(path):
+    """A torn/corrupted cache must be rebuilt, not fail the entire episode.
+
+    Only recovery metadata is optional. Source and freshly extracted
+    storyboard data still use strict load_json so real errors are visible.
+    """
+    try:
+        data = load_json(path)
+    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _scene_image_hashes(boards, visual_dir):
     if not isinstance(boards, list) or not boards:
         return None
@@ -249,7 +262,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
             raise InterruptedError('Обработка отменена')
         event_id = f'event_{index:04d}'
         checkpoint = visual_dir / f'{event_id}.json'
-        saved = load_json(checkpoint) if checkpoint.exists() else {}
+        saved = _read_optional_checkpoint(checkpoint)
         semantic_cache = {'components': components,
             'input_hash': hashlib.sha256(json.dumps({**base_identity, 'scene': scene,
                 'previous': scenes[index-1] if index else None,
@@ -289,7 +302,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                     'identity': semantic_cache, 'chunk': chunk, 'units': units,
                     'previous': previous, 'following': following,
                 }, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()
-                saved_piece = load_json(piece) if piece.exists() else {}
+                saved_piece = _read_optional_checkpoint(piece)
                 if (saved_piece.get('identity') == piece_key
                         and isinstance(saved_piece.get('result'), dict)
                         and isinstance(saved_piece.get('units'), list)
