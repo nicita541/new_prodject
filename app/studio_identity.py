@@ -43,6 +43,7 @@ def server_identity() -> dict:
     return {
         "application": "kadr-studio",
         "interface": "studio-edition",
+        "workspace": hashlib.sha256(str(ROOT.resolve()).casefold().encode("utf-8")).hexdigest()[:20],
         "backend": RUNNING_BACKEND_FINGERPRINT,
         "ui": ui_fingerprint(),
     }
