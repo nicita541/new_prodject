@@ -20,6 +20,14 @@
    const n=typeof value==='number'?value:Date.parse(value||'');
    return Number.isFinite(n)?n:Date.now();
  };
+ // Real montage plans expose source.duration, not plan.duration.
+ // The reference timeline uses plan.duration, so normalize at the API border.
+ function normalizePlan(plan){
+   const cuts=(plan.parts||[]).flatMap(part=>part.cuts||[]);
+   const last=Math.max(0,...cuts.map(c=>Number(c.end)||0));
+   const duration=Number(plan.source?.duration)||last||1;
+   return {...plan,duration:Math.max(duration,last,1)};
+ }
  async function refresh(db,ui){
   const [library,sources,jobs,music,health]=await Promise.all([
     get('/api/library'),get('/api/sources'),get('/api/jobs'),get('/api/music'),get('/api/health')
@@ -38,7 +46,7 @@
   const completed=db.jobs.filter(j=>j.status==='completed');
   await Promise.all(completed.map(async j=>{
     if(!db.plans[j.id]){
-      try{db.plans[j.id]=await get('/api/jobs/'+encodeURIComponent(j.id)+'/plan')}
+      try{db.plans[j.id]=normalizePlan(await get('/api/jobs/'+encodeURIComponent(j.id)+'/plan'))}
       catch(e){console.warn('KADR plan:',j.id,e)}
     }
   }));
@@ -89,7 +97,7 @@
     else if(path==='/api/health')db.health=result;
     else if(path==='/api/library')await refresh(db,ui);
     else if(/^\/api\/jobs\/[^/]+\/plan$/.test(path)){
-      db.plans[path.split('/')[3]]=result;
+      db.plans[path.split('/')[3]]=normalizePlan(result);
     }
   }else if(method==='PUT'&&/^\/api\/episodes\/[^/]+\/finishing$/.test(path)){
     db.finishing ||= {};db.finishing[path.split('/')[3]]=result;
