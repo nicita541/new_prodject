@@ -35,9 +35,34 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
             Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds")
             return
         }
+        $process.Refresh()
+        if (-not $process.HasExited) { throw "Process did not exit after WaitForExit" }
         $code = [int]$process.ExitCode
-        if ($code -eq 0) { Add-Check $Name "PASS" $code "" }
-        else { Add-Check $Name "FAIL" $code ("exit=" + $code) }
+        $note = if ($code -eq 0) { "" } else { "exit=" + $code }
+
+        # Never trust just the process exit code for test suites: certain
+        # Windows launchers/hosts can report success despite collection
+        # errors. Validate the actual pytest summary as a second signal.
+        if ($Name -eq "python_tests") {
+            $outputText = Get-Content -LiteralPath $outFile -Raw -ErrorAction Stop
+            $hasTests = $outputText -match '(?m)\b[1-9][0-9]* passed\b'
+            $hasErrors = $outputText -match '(?im)(ERROR collecting|^ERROR\s+tests[/\\]|^FAILED\s+tests[/\\]|^=+\s*(ERRORS|FAILURES)\s*=+|^no tests ran)'
+            if (-not $hasTests -or $hasErrors) {
+                $code = 1
+                $note = "Pytest did not finish successfully; check python_tests.out.txt"
+            } elseif ($code -eq 0 -and $outputText -match '(?m)\b([1-9][0-9]* passed)\b') {
+                $note = $Matches[1]
+            }
+        }
+        if ($Name -eq "react_lint" -and $code -eq 0) {
+            $outputText = Get-Content -LiteralPath $outFile -Raw -ErrorAction Stop
+            if ($outputText -match 'Found (\d+) warnings and 0 errors') {
+                $note = "$($Matches[1]) warnings, 0 errors"
+            }
+        }
+        if ($code -eq 0) { Add-Check $Name "PASS" $code $note }
+        else { Add-Check $Name "FAIL" $code $note }
+        $process.Dispose()
     } catch {
         Set-Content -LiteralPath $errFile -Value $_.Exception.Message -Encoding UTF8
         Add-Check $Name "FAIL" 1 "could not start"
@@ -52,9 +77,13 @@ if ($git) {
     $commit = (& git.exe -C $root rev-parse HEAD 2>$null | Select-Object -First 1)
 }
 $python = Join-Path $root "tools\python\python.exe"
+$virtualPython = Join-Path $root ".venv\Scripts\python.exe"
 if ($PythonExe) {
     if (-not (Test-Path -LiteralPath $PythonExe)) { throw "Python executable not found: $PythonExe" }
     $python = (Resolve-Path -LiteralPath $PythonExe).Path
+} elseif (Test-Path -LiteralPath $virtualPython) {
+    # Prefer isolated dependencies to avoid touching the running worktree.
+    $python = $virtualPython
 } elseif (-not (Test-Path -LiteralPath $python) -and $Quick -and $git) {
     # Git worktrees have separate tracked files, but a portable interpreter
     # installed in the original worktree can safely run read-only tests here.
@@ -88,7 +117,11 @@ if ($branch -ne "fix/montage-stability") {
 
 if ($python) {
     Run-Check "python_compile" $python @("-m", "compileall", "-q", "app", "scripts", "tests") $root 180
-    if ($Quick) {
+    Run-Check "python_dependencies" $python @("-c", "import fastapi, starlette, httpx, pytest, multipart") $root 30
+    $dependenciesReady = @($script:checks | Where-Object { $_.name -eq "python_dependencies" -and $_.status -eq "PASS" }).Count -eq 1
+    if (-not $dependenciesReady) {
+        Add-Check "python_tests" "SKIP" 0 "Required Python packages missing; create .venv and install requirements"
+    } elseif ($Quick) {
         # No model loading and no real video renders. FFmpeg-only integration
         # cases in test_music.py are skipped if this worktree has no FFmpeg.
         Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests/test_music.py", "tests/test_jobs.py", "tests/test_server_routing.py") $root 600
@@ -99,6 +132,7 @@ if ($python) {
     }
 } else {
     Add-Check "python_compile" "SKIP" 0 "Python unavailable"
+    Add-Check "python_dependencies" "SKIP" 0 "Python unavailable"
     Add-Check "python_tests" "SKIP" 0 "Python unavailable"
 }
 
