@@ -175,19 +175,25 @@ class SemanticIdentityTests(unittest.TestCase):
         requests = len(vision.requests)
         self.analyze(vision)
         self.assertEqual(len(vision.requests), requests)
-        (self.directory/'visual/event_0000.jpg').write_bytes(b'changed-submitted-image')
+        canonical = self.directory/'visual/event_0000.jpg'
+        canonical.write_bytes(b'changed-submitted-image')
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2*requests)
+        # The canonical collage is generated locally; re-extract it from
+        # valid chunk evidence without paying for an unnecessary model call.
+        self.assertEqual(canonical.read_bytes(), b'collage-fixture')
+        self.assertEqual(len(vision.requests), requests)
+        self.assertTrue(load_json(self.directory/'visual/event_0000.json')['image_hashes'])
         transcript = {'words': [{'start': 1, 'end': 2, 'text': 'New word.'}],
                       'segments': [{'start': 1, 'end': 2, 'text': 'New word.'}]}
         self.analyze(vision, transcript)
-        transcript_requests = len(vision.requests)-2*requests
-        self.assertGreater(transcript_requests,0)
+        after_transcript = len(vision.requests)
+        self.assertGreater(after_transcript, requests)
         vision.cache_profile = 'different-provider-policy'
         self.analyze(vision, transcript)
-        self.assertEqual(len(vision.requests),2*requests+2*transcript_requests)
+        after_provider = len(vision.requests)
+        self.assertGreater(after_provider, after_transcript)
         self.analyze(vision, transcript)
-        self.assertEqual(len(vision.requests),2*requests+2*transcript_requests)
+        self.assertEqual(len(vision.requests), after_provider)
 
     def test_legacy_scene_cache_without_component_identity_is_rebuilt(self):
         vision = SceneVision()
