@@ -32,10 +32,22 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
     Write-Host ("RUN: " + $Name)
     try {
         $process = Start-Process -FilePath $Exe -ArgumentList $Arguments -WorkingDirectory $Working -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-        if (-not $process.WaitForExit($Timeout * 1000)) {
-            try { $process.Kill() } catch { }
-            Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds")
-            return
+        $elapsed = 0
+        while (-not $process.WaitForExit(3000)) {
+            $elapsed += 3
+            if (($elapsed % 15) -eq 0) {
+                $bytes = if (Test-Path -LiteralPath $outFile) { (Get-Item $outFile).Length } else { 0 }
+                Write-Host ("[{0}] {1}s elapsed, stdout={2} bytes (limit {3}s)" -f $Name,$elapsed,$bytes,$Timeout)
+            }
+            if ($elapsed -ge $Timeout) {
+                # On Windows kill the entire child process tree, not just npm
+                # or pytest parent; otherwise detached workers survive forever.
+                if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+                    & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
+                } else { try { $process.Kill() } catch { } }
+                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; last stdout in " + $outFile)
+                return
+            }
         }
         $process.Refresh()
         if (-not $process.HasExited) { throw "Process did not exit after WaitForExit" }
@@ -133,7 +145,8 @@ if ($python) {
             "tests/test_music.py::BackgroundMusicFilterTests",
             "tests/test_music.py::MusicApiTests",
             "tests/test_jobs.py", "tests/test_server_routing.py",
-            "tests/test_finishing.py") $root 600
+            "tests/test_finishing.py", "tests/test_recovery_tokens.py",
+            "tests/test_scene_detection.py") $root 600
     } elseif ($Video) {
         if ((Test-Path -LiteralPath $ffmpeg) -and (Test-Path -LiteralPath $ffprobe)) {
             # Synthetic 2-second color/sine source. No user episode or AI model.

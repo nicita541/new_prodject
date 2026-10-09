@@ -74,7 +74,7 @@ jobs:
       - name: Check Python compilation
         run: python -m compileall -q app scripts tests
       - name: Test Studio Edition API and isolated exports
-        run: python -m pytest -q tests/test_finishing.py tests/test_server_routing.py
+        run: python -m pytest -q tests/test_finishing.py tests/test_server_routing.py tests/test_recovery_tokens.py tests/test_scene_detection.py
       - name: Smoke-check actual synthetic demo in isolated checkout
         run: |
           if ! command -v ffmpeg >/dev/null; then
