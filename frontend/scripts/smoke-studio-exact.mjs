@@ -77,7 +77,7 @@ assert(window.document.querySelector('.topbar'));
 assert(window.document.querySelector('#fcCanvas'));
 assert(window.document.querySelector('#fcVideo')?.getAttribute('src')?.includes(job));
 assert(window.document.body.textContent.includes('РЕАЛЬНАЯ РЕПЛИКА'));
-for(const [tab,contains] of [['audio','Звуковое сопровождение'],['frame','Кадрирование'],['captions','Слова в кадре']]){
+for(const [tab,contains] of [['audio','Звуковое сопровождение'],['frame','Композиция кадра'],['captions','Слова в кадре']]){
   window.document.querySelector('[data-ftab="'+tab+'"]').click();
   assert(window.document.querySelector('.fc-workspace'),tab+' workspace missing');
   assert(window.document.body.textContent.includes(contains),tab+' panel not displayed');
