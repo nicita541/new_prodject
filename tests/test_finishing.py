@@ -192,6 +192,29 @@ class StudioApiTests(unittest.TestCase):
         self.assertFalse((self.directory / "finishing" / "captions_001.json").exists())
         self.assertFalse(profile_path.exists())
 
+    def test_finishing_never_substitutes_random_music_for_missing_selected_track(self):
+        from app.studio_render import _music
+        music_dir = self.root / "test-music"
+        music_dir.mkdir(exist_ok=True)
+        (music_dir / "available.mp3").write_bytes(b"dummy")
+        audio = {"enabled": True, "volume": .15, "fade_in": 0, "fade_out": 0,
+                 "ducking": False, "mode": "single", "track": "deleted.mp3",
+                 "part_tracks": {}}
+        with patch("app.studio_render.config.MUSIC", music_dir):
+            with self.assertRaisesRegex(FileNotFoundError, "недоступен"):
+                _music({"audio": audio}, 1, 2, self.plan["parts"][0])
+            audio["track"] = "available.mp3"
+            self.assertEqual(_music({"audio": audio}, 1, 2, self.plan["parts"][0])[
+                "path"].name, "available.mp3")
+            audio.update(mode="per_part", part_tracks={"1": "gone.wav"})
+            with self.assertRaises(FileNotFoundError):
+                _music({"audio": audio}, 1, 2, self.plan["parts"][0])
+            audio["part_tracks"]["1"] = "none"
+            self.assertIsNone(_music({"audio": audio}, 1, 2, self.plan["parts"][0]))
+            audio["part_tracks"]["1"] = "available.mp3"
+            self.assertEqual(_music({"audio": audio}, 1, 2, self.plan["parts"][0])[
+                "path"].name, "available.mp3")
+
     def test_finishing_uses_same_russian_audio_track_as_initial_montage(self):
         from app.studio_render import _probe
         media = {"streams": [

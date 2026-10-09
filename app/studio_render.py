@@ -15,7 +15,7 @@ from pathlib import Path
 from app import config
 from app.jobs import atomic_json, read_json
 from app.media import inspect_media, render_part
-from app.music import pick_track_for_part
+from app.music import list_tracks, pick_track_for_part
 
 _RENDER_SEMAPHORE = threading.Semaphore(1)
 # A restarted process cannot have any of the old threads. Persisted queued /
@@ -115,6 +115,15 @@ def _music(profile: dict, index: int, total: int, part: dict) -> dict | None:
     audio = profile["audio"]
     if not audio["enabled"]:
         return None
+    # A missing explicitly selected track must not silently turn into an
+    # unrelated random soundtrack. Explicit "none" still means no music.
+    chosen = (audio.get("part_tracks", {}).get(str(index))
+              if audio.get("mode") == "per_part" else audio.get("track")
+              if audio.get("mode") == "single" else None)
+    if chosen and chosen not in {"none", "__none__", "off", "без музыки",
+                                 "random", "__random__", "случайный"}:
+        if not any(path.name == chosen for path in list_tracks(config.MUSIC)):
+            raise FileNotFoundError("Выбранный музыкальный трек больше недоступен")
     track = pick_track_for_part(config.MUSIC, audio, index, total)
     if not track:
         return None
@@ -172,6 +181,9 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
                 update(progress=round((k + 1) / len(part_indices), 4))
             update(status="completed", progress=1.0, files=files,
                    message="Части пересобраны" if not preview else "Предпросмотр готов")
+    except FileNotFoundError:
+        update(status="failed", progress=0.0,
+               error="Выбранный музыкальный файл не найден. Выберите другой трек.")
     except Exception:
         # Do not expose FFmpeg stderr containing absolute private filesystem paths.
         update(status="failed", progress=0.0, error="Не удалось создать видео. Проверьте локальный журнал рендера.")
