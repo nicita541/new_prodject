@@ -159,9 +159,17 @@ for(const [tab,contains] of [['audio','Звуковое сопровождени
   assert(window.document.querySelector('.fc-workspace'),tab+' workspace missing');
   assert(window.document.body.textContent.includes(contains),tab+' panel not displayed');
 }
+// Change the caption in the real editor: the combined save must contain
+// the job-scoped text, not stale episode-level cues.
+const editedField=window.document.querySelector('#fcCaptionText');
+editedField.value='ИЗМЕНЁННАЯ РЕПЛИКА';
+editedField.dispatchEvent(new window.Event('input',{bubbles:true}));
 window.document.querySelector('#fcSave').click();
 await new Promise(resolve=>setTimeout(resolve,150));
 assert(saveCalls > 0,'save action must use real API bridge');
+assert.equal(savedCaptionBodies.length,1,'changed job captions must be batched');
+assert.equal(savedCaptionBodies[0].cues[0].text,'ИЗМЕНЁННАЯ РЕПЛИКА');
+assert.equal(savedCaptionBodies[0].revision,0);
 assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
 assert(Array.isArray(savedCaptionBodies),'save must bundle captions in one validated request');
 assert(!('episode_id' in savedProfileBody), 'profile path data must not contain response-only fields');

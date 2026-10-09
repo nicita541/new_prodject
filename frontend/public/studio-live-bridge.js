@@ -156,7 +156,9 @@
     db.finishing ||= {};db.finishing[path.split('/')[3]]=result;
   }else if(method==='PUT'&&/\/captions$/.test(path)){
     db.captionOverrides ||= {};
-    db.captionOverrides[path.split('/')[3]+':'+path.split('/')[5]]=result;
+    const key=path.split('/')[3]+':'+path.split('/')[5];
+    db.captionOverrides[key]=result;
+    if(db.finishDirtyCues)delete db.finishDirtyCues[key];
   }else{
     // Retrying the SAME job may regenerate plan.json. Drop the old browser
     // snapshot so review/finishing never show cuts from an earlier attempt.

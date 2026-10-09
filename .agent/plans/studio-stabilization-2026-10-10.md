@@ -44,7 +44,7 @@ Restore reliable caption editing and finishing in the *actual production Studio 
 - [x] Re-read actual caption data flow, current CI and past regression commits.
 - [x] Publish this execution plan.
 - [x] Milestone 1: job-scoped captions in API, Studio Edition, React and FFmpeg; archive ambiguous legacy episode cues; add regression tests. Commits 9683bd89, 4a9d2c84, d2d87ada, c9fa6c4a, 3280ec8e, 417f7fce.
-- [ ] Milestone 2: PARTIAL — profile optimistic revisions and saving dirty captions before preview/export are implemented (972e0f1f, 49182d6c). Still needed: atomic profile+captions save and explicit reset semantics.
+- [x] Milestone 2: profile optimistic revisions, joint preflight of changed captions and style, rollback on ordinary disk write errors, job-scoped original-caption retention, and explicit style-only reset are implemented. Commits include 20e3dad7, bd5149c5, 754cf353. Multi-file writes are NOT crash-atomic; crash-recovery journaling is a future hardening task.
 - [ ] Milestone 3: PARTIAL — production subtitle enabled toggle implemented (9226563d). Still needed: FFmpeg real MP4 preview parity, burnt-subtitles limitations and Windows zoom checks.
 - [ ] Milestone 4: export, queue, music and concurrency.
 - [ ] Milestone 5: library, Windows and test expansion.
