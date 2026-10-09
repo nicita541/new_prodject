@@ -15,9 +15,10 @@ assert(script.includes('window.KadrBridge.refresh'), 'live bootstrap must be pre
 const episode = '10000000-0000-4000-8000-000000000001';
 const project = '10000000-0000-4000-8000-000000000002';
 const job = '10000000-0000-4000-8000-000000000003';
+const failedJob = '10000000-0000-4000-8000-000000000004';
 const dom = new JSDOM(src, {
   runScripts: 'outside-only', pretendToBeVisual: true,
-  url: 'http://127.0.0.1:8766/studio-edition.html?screen=finishing&episode='+episode+'&job='+job,
+  url: 'http://127.0.0.1:8766/studio-edition.html?screen=finishing&episode='+episode+'&job='+failedJob,
 });
 const { window } = dom;
 const style = window.document.createElement('style');
@@ -43,13 +44,18 @@ const library = {
   projects: [{id:project,title:'Проверка визуала',created_at:'2026-10-09T00:00:00Z'}],
   episodes: [{id:episode,project_id:project,number:1,title:'Серия 1',source_id:'a',
     settings:{layout:'portrait',caption_style:'classic',analysis_provider:'local'},
-    jobs:[{id:job,status:'completed',created_at:'2026-10-09T00:00:00Z'}]}],
+    jobs:[{id:failedJob,status:'failed',created_at:'2026-10-09T01:00:00Z'}, {id:job,status:'completed',created_at:'2026-10-09T00:00:00Z'}]}],
 };
-const jobs = [{id:job,episode_id:episode,source_id:'a',source_name:'sample.mp4',
+const jobs = [
+ {id:failedJob,episode_id:episode,source_id:'a',source_name:'sample.mp4',
+  created_at:'2026-10-09T01:00:00Z',status:'failed',stage:'analyzing',
+  progress:.6,caption_style:'classic',layout:'portrait',outputs:[],files:[]},
+ {id:job,episode_id:episode,source_id:'a',source_name:'sample.mp4',
   created_at:'2026-10-09T00:00:00Z',status:'completed',stage:'completed',
   progress:1,caption_style:'classic',layout:'portrait',
   outputs:['part_001.mp4','part_001.srt'],files:[{name:'part_001.mp4',
-    url:'/api/jobs/'+job+'/files/part_001.mp4',subtitle_url:'/api/jobs/'+job+'/files/part_001.srt',duration:4}]}];
+    url:'/api/jobs/'+job+'/files/part_001.mp4',subtitle_url:'/api/jobs/'+job+'/files/part_001.srt',duration:4}]}
+];
 const plan = {source:{duration:4},parts:[{index:1,duration:4,
   cuts:[{start:0,end:4}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'}]}]};
 let saveCalls = 0;
@@ -61,7 +67,7 @@ window.fetch = async (input,options={}) => {
   else if(p==='/api/jobs')value=jobs;
   else if(p==='/api/music')value={enabled:true,volume:.15,tracks:[],mode:'single',track:null};
   else if(p==='/api/health')value={ready:true,missing:[],busy:false};
-  else if(p==='/api/deepseek')value={configured:false};
+  else if(p==='/api/deepseek')value={configured:false,remaining_usd:null,model:'deepseek-chat',budget_usd:null};
   else if(p.endsWith('/plan'))value=plan;
   else if(p.endsWith('/finishing')){
     if(options.method==='PUT'){saveCalls++;value={...JSON.parse(options.body),revision:saveCalls};}
@@ -84,6 +90,15 @@ assert(window.document.querySelector('.topbar'));
 assert(window.document.querySelector('#fcCanvas'));
 assert(window.document.querySelector('#fcVideo')?.getAttribute('src')?.includes(job));
 assert(window.document.body.textContent.includes('РЕАЛЬНАЯ РЕПЛИКА'));
+assert(!window.document.querySelector('.empty')?.textContent.includes('нет готового монтажа'),'failed newer job should not hide completed Shorts');
+const editorNav = window.document.querySelector('button[data-action="nav"][data-screen="editor"]');
+assert(editorNav, 'settings navigation should exist');
+editorNav.click();
+assert(window.document.querySelector('#dBalance')?.textContent.includes('неизвестен'), 'null DeepSeek budget must not break rendering');
+const finishingNav = window.document.querySelector('button[data-action="nav"][data-screen="finishing"]');
+finishingNav.click();
+for(let i=0;i<60 && !window.document.querySelector('#fcCanvas');i++) await new Promise(done=>setTimeout(done,30));
+assert(window.document.querySelector('#fcCanvas'), 'editor must return after visiting settings with null balance');
 for(const [tab,contains] of [['audio','Звуковое сопровождение'],['frame','Композиция кадра'],['captions','Слова в кадре']]){
   window.document.querySelector('[data-ftab="'+tab+'"]').click();
   assert(window.document.querySelector('.fc-workspace'),tab+' workspace missing');
