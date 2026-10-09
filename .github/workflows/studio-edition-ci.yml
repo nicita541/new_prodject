@@ -69,6 +69,35 @@ jobs:
         working-directory: frontend
         run: npm run lint
 
+  engine:
+    name: Montage engine offline regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install engine test dependencies
+        run: python -m pip install -q fastapi uvicorn python-multipart pillow numpy opencv-python-headless pytest httpx
+      - name: Provide system FFmpeg as an isolated test binary
+        run: |
+          if ! command -v ffmpeg >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg; fi
+          mkdir -p tools/ffmpeg/bin
+          ln -sf "$(command -v ffmpeg)" tools/ffmpeg/bin/ffmpeg.exe
+          ln -sf "$(command -v ffprobe)" tools/ffmpeg/bin/ffprobe.exe
+      - name: Test scene comprehension, media, caches, model API, job lifecycle and music
+        run: |
+          python -m pytest -q -x \
+            tests/test_analysis.py \
+            tests/test_semantic_pipeline.py \
+            tests/test_media.py \
+            tests/test_music.py \
+            tests/test_deepseek.py \
+            tests/test_jobs.py \
+            tests/test_job_progress.py \
+            tests/test_recovery_tokens.py
+
   backend:
     name: Finishing API safety tests
     runs-on: ubuntu-latest
