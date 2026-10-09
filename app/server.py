@@ -181,11 +181,9 @@ def choose_download_directory() -> str | None:
     except Exception:
         pass
 
-    # 3. Graceful fallback to user's standard Downloads folder
-    downloads = Path.home() / "Downloads"
-    if downloads.is_dir():
-        return str(downloads.resolve())
-    return str(Path.home().resolve())
+    # The caller must explicitly choose where exports go. Never copy to an
+    # unrelated default directory when both native file pickers are broken.
+    raise RuntimeError("Интерактивный выбор папки недоступен")
 
 
 def validate_media(path: Path) -> None:
@@ -758,9 +756,9 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(404, "Legacy UI not found")
         if (dist_dir / "index.html").is_file():
             return FileResponse(dist_dir / "index.html")
-        elif (static_legacy / "index.html").is_file():
-            return FileResponse(static_legacy / "index.html")
-        raise HTTPException(404, "Frontend is not built yet")
+        # Legacy stays available explicitly at /legacy, but must not silently
+        # replace the React app after a clean installation.
+        raise HTTPException(503, "React-интерфейс не собран. Установите Node.js и выполните npm ci и npm run build в папке frontend.")
     return application
 
 

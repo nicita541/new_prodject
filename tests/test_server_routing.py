@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 from app.server import app
+from app import config
 
 client = TestClient(app, base_url="http://127.0.0.1")
 
@@ -15,9 +16,13 @@ def test_react_routes_serve_index():
     ]
     for route in routes:
         response = client.get(route)
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-        assert "<div id=\"root\"></div>" in response.text, f"Route {route} did not serve React index"
+        if (config.ROOT / "frontend" / "dist" / "index.html").is_file():
+            assert response.status_code == 200
+            assert "text/html" in response.headers["content-type"]
+            assert "<div id=\"root\"></div>" in response.text, f"Route {route} did not serve React index"
+        else:
+            assert response.status_code == 503
+            assert "React-интерфейс не собран" in response.json()["detail"]
 
 def test_legacy_route_serves_legacy_index():
     response = client.get("/legacy")

@@ -19,5 +19,18 @@ if (-not (Test-Path -LiteralPath $projectPython)) {
     & tar.exe -xzf $archive -C (Join-Path $projectRoot 'tools')
     if ($LASTEXITCODE -ne 0) { throw 'Portable Python extraction failed' }
 }
+# A fresh checkout does not contain frontend/dist (it is gitignored).
+# Build React explicitly instead of silently falling back to the old UI.
+$npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+if (-not $npm) { throw 'Node.js / npm is required for the React UI. Install Node.js LTS and rerun setup.' }
+Push-Location -LiteralPath (Join-Path $projectRoot 'frontend')
+try {
+    & $npm.Source ci --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend npm ci failed' }
+    & $npm.Source run build
+    if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed' }
+} finally {
+    Pop-Location
+}
 & $projectPython scripts/setup.py all
 if ($LASTEXITCODE -ne 0) { throw 'Setup failed' }
