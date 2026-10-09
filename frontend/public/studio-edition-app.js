@@ -246,7 +246,7 @@ routes.push(...finishingRoutes);
 const finishingDefaults=()=>({version:1,video:{layout:'cinema',zoom:100,blur:24,brightness:100,vignette:15},subtitles:{enabled:true,text:'',x:50,y:74,font_size:32,color:'#f6d779',outline:3,background:false,align:'center',uppercase:true,safe_guides:true},audio:{enabled:true,volume:.15,track:null,mode:'random_per_part',fade_in:.8,fade_out:1.3,ducking:false,part_tracks:{}},part_overrides:{}});
 function getFinishing(id=ui.episodeId){db.finishing ||= {}; if(!db.finishing[id])db.finishing[id]=finishingDefaults();return db.finishing[id]}
 function selectedCues(partIndex=ui.finishPart??0){const job=currentJob(),part=db.plans[job?.id]?.parts?.[partIndex];db.captionOverrides ||= {};const key=job?.id+':'+(part?.index??(partIndex+1));if(!db.captionOverrides[key])db.captionOverrides[key]={job_id:job?.id,part_index:part?.index??(partIndex+1),revision:0,cues:structuredClone(part?.subtitles||[])};return db.captionOverrides[key].cues;}
-function selectedSubtitle(){const f=getFinishing(),key=String((ui.finishPart??0)+1);f.part_overrides[key] ||= {};f.part_overrides[key].style ||= structuredClone(f.subtitles);return f.part_overrides[key].style;}
+function selectedSubtitle(){const f=getFinishing(),job=currentJob(),part=db.plans[job?.id]?.parts?.[ui.finishPart??0],key=String(part?.index??((ui.finishPart??0)+1));f.part_overrides[key] ||= {};f.part_overrides[key].style ||= structuredClone(f.subtitles);return f.part_overrides[key].style;}
 function chosenCue(partIndex=ui.finishPart??0){const cues=selectedCues(partIndex);ui.finishCue=Math.max(0,Math.min(cues.length-1,ui.finishCue??0));return cues[ui.finishCue]||{start:0,end:4.4,text:''};}
 function audioName(f){const job=currentJob(),part=db.plans[job?.id]?.parts?.[ui.finishPart??0],index=part?.index??((ui.finishPart??0)+1);const pick=f.audio.mode==='per_part'?f.audio.part_tracks?.[String(index)]:null;if(['none','__none__','off','без музыки'].includes(pick))return '';return pick||f.audio.track||db.music.tracks?.[0]||''}
 function finishCueBody(partIndex){const j=currentJob(),part=db.plans[j?.id]?.parts?.[partIndex],index=part?.index??(partIndex+1),record=db.captionOverrides?.[j?.id+':'+index];return {part_index:index,revision:record?.revision??0,cues:structuredClone(selectedCues(partIndex))};}
@@ -376,7 +376,7 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
  optionalElement('fcPreviewReset').onclick=()=>{video.pause();video.dataset.renderedPreview='';const origin=currentJob()?.files?.[ui.finishPart]?.url;if(origin&&video.getAttribute('src')!==origin){video.src=origin;video.load();const back=$('fcBackdrop');if(back){back.src=origin;back.load();}}video.currentTime=0;finishUpdateView()};
  optionalElement('fcReset').onclick=()=>{modal({title:'Сбросить стиль оформления?',text:'Вернуть стандартные цвет, положение, размер, музыку и кадр. Тексты и таймкоды субтитров текущего монтажа останутся без изменений.',confirm:'Сбросить стиль',danger:true,onConfirm:async()=>{const fresh=finishingDefaults();fresh.revision=getFinishing().revision??0;fresh.video.layout=currE()?.settings?.layout||getFinishing().video.layout;await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,fresh);store();render();notify('Стиль сброшен. Реплики монтажа сохранены.')}})};
  optionalElement('fcSave').onclick=async()=>{try{const j=currentJob();if(!j||j.status!=='completed')throw new Error('Нужен завершённый монтаж');await request('PUT',`/api/jobs/${j.id}/finishing/state`,{profile:getFinishing(),captions:finishPendingCaptions(j)});store();notify('Правки сохранены на локальном сервере');}catch(e){notify(e.message,true)}};
- optionalElement('fcCopyStyle').onclick=()=>{const style=structuredClone(s);const prev=getFinishing().part_overrides;for(let i=1;i<=(db.plans[currentJob()?.id]?.parts?.length||5);i++){prev[String(i)] ||= {};prev[String(i)].style=structuredClone(style)}store();notify('Стиль выбранной части применён ко всем частям, тексты не изменены.');render()};
+ optionalElement('fcCopyStyle').onclick=()=>{const style=structuredClone(s);const prev=getFinishing().part_overrides;for(const part of db.plans[currentJob()?.id]?.parts||[]){prev[String(part.index)] ||= {};prev[String(part.index)].style=structuredClone(style)}store();notify('Стиль выбранной части применён ко всем частям, тексты не изменены.');render()};
  $('fcDownloadPresets')?.addEventListener('click',()=>{const episode=currE();if(episode)downloadText(`KADR_episode_${episode.number}_finishing.json`,JSON.stringify({episode_id:episode.id,...f},null,2))});
  optionalElement('fcPreviewRequest').onclick=async()=>{
   try{
@@ -384,7 +384,7 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
    if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
    await persistSelectedCaptions(job,part);
    const task=await request('POST',"/api/jobs/"+job.id+"/previews",{
-    part_index:part+1,from:0,duration:5,settings:f
+    part_index:db.plans[job.id]?.parts?.[part]?.index??(part+1),from:0,duration:5,settings:f
    });
    notify('FFmpeg создаёт предпросмотр. Подождите несколько секунд.');
    const result=await waitForFinishingJob('/api/jobs/'+job.id+'/previews/'+task.preview_id);
@@ -406,7 +406,7 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
     if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
     await persistSelectedCaptions(job,ui.finishPart);
     const task=await request('POST','/api/jobs/'+job.id+'/exports',{
-      part_indices:[ui.finishPart+1],settings:f
+      part_indices:[db.plans[job.id]?.parts?.[ui.finishPart]?.index??(ui.finishPart+1)],settings:f
     });
     notify('Экспорт запущен. MP4 появится после обработки FFmpeg.');
     (async()=>{

@@ -39,7 +39,7 @@ const profile = {
     fade_in: .8, fade_out: 1.3, ducking: false, part_tracks: {} },
   // Simulate an old episode-scoped cue from another completed montage.
   // Production editor must instead show captions for the selected job.
-  part_overrides: { '1': {cues:[{start:0,end:2,text:'ЧУЖАЯ РЕПЛИКА'}]} },
+  part_overrides: { '7': {cues:[{start:0,end:2,text:'ЧУЖАЯ РЕПЛИКА'}]} },
 };
 const sources = [{id:'a',name:'sample.mp4',size:1500000}];
 const library = {
@@ -58,7 +58,7 @@ const jobs = [
   outputs:['part_001.mp4','part_001.srt'],files:[{name:'part_001.mp4',
     url:'/api/jobs/'+job+'/files/part_001.mp4',subtitle_url:'/api/jobs/'+job+'/files/part_001.srt',duration:4}]}
 ];
-const plan = {source:{duration:4},parts:[{index:1,duration:4,
+const plan = {source:{duration:4},parts:[{index:7,duration:4,
   cuts:[{start:0,end:4}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'},
     {start:3.8,end:4,text:'ДРУГАЯ РЕПЛИКА'}]}]};
 let saveCalls = 0;
@@ -84,7 +84,7 @@ window.fetch = async (input,options={}) => {
     if(options.method==='PUT'){saveCalls++;savedProfileBody=JSON.parse(options.body);value={...savedProfileBody,revision:saveCalls};}
     else value=profile;
   }
-  else if(p.includes('/captions'))value={job_id:job,part_index:1,cues:plan.parts[0].subtitles,revision:0};
+  else if(p.includes('/captions'))value={job_id:job,part_index:7,cues:plan.parts[0].subtitles,revision:0};
   else throw new Error('Unexpected endpoint '+p);
   return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>value};
 };
@@ -176,6 +176,7 @@ assert(saveCalls > 0,'save action must use real API bridge');
 assert.equal(savedCaptionBodies.length,1,'changed job captions must be batched');
 assert.equal(savedCaptionBodies[0].cues[0].text,'ИЗМЕНЁННАЯ РЕПЛИКА');
 assert.equal(savedCaptionBodies[0].revision,0);
+assert.equal(savedCaptionBodies[0].part_index,7,'nonsequential part index must be preserved');
 assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
 assert(Array.isArray(savedCaptionBodies),'save must bundle captions in one validated request');
 assert(!('episode_id' in savedProfileBody), 'profile path data must not contain response-only fields');
