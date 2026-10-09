@@ -17,6 +17,8 @@ def test_production_entrypoint_uses_portable_runtime_and_real_build():
     assert r"tools\python\python.exe" in launcher
     assert r"frontend\dist\studio-edition.html" in launcher
     assert r"frontend\dist\studio-live-bridge.js" in launcher
+    assert 'fc /b "%~dp0frontend\\public\\studio-edition.html"' in launcher
+    assert 'fc /b "%~dp0frontend\\public\\studio-live-bridge.js"' in launcher
     assert "npm.cmd run build" in launcher
     assert "http://127.0.0.1:8765" in launcher
     assert "create_studio_demo" not in launcher
