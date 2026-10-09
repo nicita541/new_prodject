@@ -91,6 +91,19 @@
   if(method==='GET'){
     if(path==='/api/music')db.music={...db.music,...result};
     else if(path==='/api/health')db.health=result;
+    else if(path==='/api/sources')db.sources=Array.isArray(result)?result:[];
+    else if(path==='/api/jobs'){
+      db.jobs=(Array.isArray(result)?result:[]).map(j=>({...j,
+        created_at:date(j.created_at),updated_at:date(j.updated_at),
+        episode_id:j.episode_id||db.episodes.find(e=>e.jobs?.some(a=>a.id===j.id))?.id}));
+    }else if(/^\/api\/jobs\/[^/]+$/.test(path)){
+      const id=path.split('/')[3];
+      const item={...result,created_at:date(result.created_at),updated_at:date(result.updated_at),
+        episode_id:result.episode_id||db.episodes.find(e=>e.jobs?.some(a=>a.id===id))?.id};
+      const index=db.jobs.findIndex(j=>j.id===id);
+      if(index>=0)db.jobs[index]=item;
+      else db.jobs.push(item);
+    }else if(path==='/api/deepseek')db.deepseek=result;
     else if(path==='/api/library')await refresh(db,ui);
     else if(/^\/api\/jobs\/[^/]+\/plan$/.test(path)){
       db.plans[path.split('/')[3]]=normalizePlan(result);
@@ -101,6 +114,10 @@
     db.captionOverrides ||= {};
     db.captionOverrides[path.split('/')[3]+':'+path.split('/')[5]]=result;
   }else{
+    // Retrying the SAME job may regenerate plan.json. Drop the old browser
+    // snapshot so review/finishing never show cuts from an earlier attempt.
+    const retry=method==='POST'&&path.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+    if(retry){delete db.plans[retry[1]];}
     await refresh(db,ui);
   }
   return result;
