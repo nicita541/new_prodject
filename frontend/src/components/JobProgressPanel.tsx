@@ -39,18 +39,21 @@ export function JobProgressPanel({ jobId, episodeId, onJobFinished }: {
 }) {
   const { job, refresh } = useJobPolling(jobId);
   const notifiedJobRef = useRef<string | null>(null);
+  const polledJobId = job?.id;
+  const polledJobStatus = job?.status;
 
   useEffect(() => {
-    if (!job || job.status === 'running' || job.status === 'queued') {
+    if (!polledJobId || !polledJobStatus ||
+        polledJobStatus === 'running' || polledJobStatus === 'queued') {
       notifiedJobRef.current = null;
       return;
     }
-    if (['completed', 'failed', 'cancelled', 'interrupted'].includes(job.status) &&
-        notifiedJobRef.current !== job.id) {
-      notifiedJobRef.current = job.id;
+    if (['completed', 'failed', 'cancelled', 'interrupted'].includes(polledJobStatus) &&
+        notifiedJobRef.current !== polledJobId) {
+      notifiedJobRef.current = polledJobId;
       onJobFinished?.();
     }
-  }, [job?.id, job?.status, onJobFinished]);
+  }, [polledJobId, polledJobStatus, onJobFinished]);
 
   if (!job) {
     return (
