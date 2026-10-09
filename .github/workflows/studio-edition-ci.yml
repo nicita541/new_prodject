@@ -98,7 +98,19 @@ jobs:
             tests/test_deepseek.py \
             tests/test_jobs.py \
             tests/test_job_progress.py \
-            tests/test_recovery_tokens.py
+            tests/test_recovery_tokens.py \
+            tests/test_scene_detection.py \
+            tests/test_scene_refinement.py \
+            tests/test_story_structure.py \
+            tests/test_story_structure_pass.py \
+            tests/test_dramatic_planner.py \
+            tests/test_framing.py \
+            tests/test_quality.py \
+            tests/test_final_quality.py \
+            tests/test_selection_gate.py \
+            tests/test_source_continuity.py \
+            tests/test_global_verification.py \
+            tests/test_continuity_verification.py
 
   backend:
     name: Finishing API safety tests
