@@ -89,19 +89,26 @@ def bounded_chunks(scene, transcript, shots, max_frames=12):
             # These are already word-safe source-unit edges. A short silent
             # unit still adds frame demand (especially in recovery), so do not
             # discard its edge using the candidate-merging distance of .08s.
-            edges = [u['end'] for u in units if start+.000001 < u['end'] < end-.000001]
+            # A split that leaves 38 ms at an edge is not useful: merging it
+            # back recreates the same oversized chunk and loops forever.
+            # Prefer an actual source-unit edge with a frame-bearing margin on
+            # BOTH sides. Never re-coalesce validated bounded chunks afterward.
+            minimum_margin = .125
+            edges = sorted({
+                float(u['end']) for u in units
+                if start + minimum_margin <= float(u['end']) <= end - minimum_margin
+            }, key=lambda t: abs(t-midpoint))
             if edges:
-                boundary = min(edges, key=lambda t: abs(t-midpoint))
-                # Split then reattach subframe slivers: 38ms ASR pauses
-                # cannot be independent visual samples.
-                pending[0:0] = merge_subframe_chunks([
+                boundary = edges[0]
+                pending[0:0] = [
                     {**chunk, 'start': start, 'end': boundary},
-                    {**chunk, 'start': boundary, 'end': end}
-                ])
+                    {**chunk, 'start': boundary, 'end': end},
+                ]
                 continue
-            raise ValueError('Indivisible source unit exceeds the bounded visual view')
+            raise ValueError(
+                'Нет безопасной границы для разделения визуального фрагмента '
+                f'{start:.3f}–{end:.3f} с ограничением {max_frames} кадров')
         result.append(chunk)
-    result = merge_subframe_chunks(result)
     for index, chunk in enumerate(result):
         chunk['id'] = f'{scene["id"]}_chunk_{index:03d}'
     return result
