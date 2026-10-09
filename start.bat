@@ -15,6 +15,12 @@ if not exist "%~dp0tools\python\python.exe" (
 
 if not exist "%~dp0frontend\dist\studio-edition.html" goto build_ui
 if not exist "%~dp0frontend\dist\studio-live-bridge.js" goto build_ui
+rem Vite copies these files verbatim. Compare source with dist so an old build
+rem never silently survives a successful git update.
+fc /b "%~dp0frontend\public\studio-edition.html" "%~dp0frontend\dist\studio-edition.html" >nul 2>&1
+if errorlevel 1 goto build_ui
+fc /b "%~dp0frontend\public\studio-live-bridge.js" "%~dp0frontend\dist\studio-live-bridge.js" >nul 2>&1
+if errorlevel 1 goto build_ui
 goto launch
 
 :build_ui
