@@ -42,6 +42,8 @@ await win.KadrBridge.refresh(db,ui);
 assert.equal(db.projects[0].title,'Real project');
 assert.equal(db.music.tracks.length,0,'Fake demo audio must not survive music API outage');
 assert.equal(db.music.enabled,false);
+assert(!('folder' in db.music), 'Offline mode never invents an absolute Windows folder');
+
 assert.equal(db.deepseek.configured,false,'Never show fake configured DeepSeek');
 assert.equal(db.deepseek.remaining_usd,null);
 assert.equal(ui.jobId,job);

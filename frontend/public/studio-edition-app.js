@@ -179,7 +179,7 @@ case 'launch':{const d=currentEdit();if(!d.source_id)throw new Error('Нужно
 case 'check-deepseek':{const res=await request('POST','/api/deepseek/check');notify(res.available?`Подключение установлено · ${res.model}`:'DeepSeek не подключён');break}
 case 'refresh-balance':await request('POST','/api/deepseek/balance');notify('Сервер: accounting_enabled = false');break;
 case 'music-folder':{const res=await request('POST','/api/music/open');notify(res.opened?'Папка музыки открыта':'Не удалось открыть папку');break}
-case 'copy-music-path':copyText('F:\\new_prodject\\music');notify('Путь скопирован');break;
+case 'copy-music-path':{const settings=await request('GET','/api/music');if(!settings.folder)throw new Error('Сервер не сообщил путь к папке музыки');copyText(settings.folder);notify('Путь скопирован: '+settings.folder);break;}
 case 'refresh-music':await request('GET','/api/music');notify(`Музыка: ${db.music.tracks.length} файлов`);render();break;
 case 'cancel-job':await request('POST',`/api/jobs/${rid}/cancel`);notify('Монтаж отменён');render();break;
 case 'retry-job':await request('POST',`/api/jobs/${rid}/retry`);notify('Обработка продолжена');go('processing');break;

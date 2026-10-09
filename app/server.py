@@ -410,7 +410,8 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
                 "fade_in": settings["fade_in"], "fade_out": settings["fade_out"],
                 "track": settings["track"], "mode": settings.get("mode", "random_per_part"),
                 "part_tracks": settings.get("part_tracks", {}),
-                "tracks": [path.name for path in list_tracks(config.MUSIC)]}
+                "tracks": [path.name for path in list_tracks(config.MUSIC)],
+                "folder": str(config.MUSIC.resolve())}
 
     @application.put("/api/music")
     def save_music_settings(body: MusicSettings):
