@@ -92,6 +92,24 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.put(path, json=data).status_code, 422)
         self.assertEqual((self.directory / "plan.json").read_bytes(), before)
 
+    def test_finishing_uses_same_russian_audio_track_as_initial_montage(self):
+        from app.studio_render import _probe
+        media = {"streams": [
+            {"codec_type": "video", "width": 1280, "height": 720},
+            {"codec_type": "audio", "tags": {"language": "ja"}},
+            {"codec_type": "audio", "tags": {"language": "rus"}},
+        ]}
+        with patch("app.studio_render.inspect_media", return_value=media):
+            self.assertEqual(_probe(self.source, self.root)["audio_stream"], 1)
+            only_one = {"streams": [media["streams"][0], media["streams"][1]]}
+            with patch("app.studio_render.inspect_media", return_value=only_one):
+                self.assertEqual(_probe(self.source, self.root)["audio_stream"], 0)
+            with self.assertRaisesRegex(ValueError, "обозначения русской"):
+                with patch("app.studio_render.inspect_media", return_value={
+                    "streams": [media["streams"][0], media["streams"][1],
+                                {"codec_type": "audio", "tags": {"language": "en"}}]}):
+                    _probe(self.source, self.root)
+
     def test_short_preview_maps_output_seconds_to_source_cuts(self):
         part = slice_part(self.plan["parts"][0], 1.0, 4.0)
         self.assertAlmostEqual(part["duration"], 4.0)
