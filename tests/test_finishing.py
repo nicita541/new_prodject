@@ -183,7 +183,7 @@ class StudioApiTests(unittest.TestCase):
             self.assertEqual(self.client.get(result["url"]).content, b"preview")
 
     def test_music_import_rejects_invalid_windows_filenames(self):
-        for name in ("CON.mp3", "AUX.wav", "bad?.mp3", "song|edit.wav", "track .mp3"):
+        for name in ("CON.mp3", "AUX.wav", "bad?.mp3", "song|edit.wav", "bad<name.mp3"):
             with self.subTest(name=name):
                 response = self.client.post("/api/music/import",
                                             files={"file": (name, b"audio", "audio/mpeg")})
