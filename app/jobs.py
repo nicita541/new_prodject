@@ -344,6 +344,14 @@ class JobManager:
             return {"id": identifier, "deleted": True}
 
     def prune_jobs(self, max_jobs: int = 50, max_age_days: int | None = 30) -> dict:
+        # Validate before inspecting or deleting user exports. Negative values
+        # would otherwise silently select every completed job for deletion.
+        if (max_jobs is not None and
+                (type(max_jobs) is not int or max_jobs < 0)):
+            raise ValueError("max_jobs должно быть неотрицательным целым числом")
+        if (max_age_days is not None and
+                (type(max_age_days) is not int or max_age_days < 0)):
+            raise ValueError("max_age_days должно быть неотрицательным целым числом")
         with self.mutex:
             active_id = self.active[0] if self.active else None
             terminal_jobs = []
