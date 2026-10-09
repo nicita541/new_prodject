@@ -294,7 +294,8 @@ function tokenLabel(t){
  if(!t)return 'Токены ещё не посчитаны';
  const fmt=n=>new Intl.NumberFormat('ru-RU').format(n||0);
  return 'Локально: '+fmt(t.local?.total_tokens)+' · DeepSeek: '+fmt(t.deepseek?.total_tokens)+
-        ' · Всего: '+fmt(t.all_tokens)+' токенов ('+fmt((t.local?.calls||0)+(t.deepseek?.calls||0))+' запросов)';
+        ' · Всего: '+fmt(t.all_tokens)+' токенов ('+fmt((t.local?.calls||0)+(t.deepseek?.calls||0))+' запросов)'+
+        (t.unknown_calls?' · '+fmt(t.unknown_calls)+' ответов без статистики токенов':'');
 }
 async function updateTokenView(){
  const j=currentJob();
