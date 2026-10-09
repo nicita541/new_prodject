@@ -186,6 +186,9 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     filters, video_inputs, audio_inputs = [], [], []
     offset = 0.0
     cw, ch = crop_size(probe["width"], probe["height"])
+    visual_config = (finishing or {}).get("video", {})
+    blur_amount = max(0, round(float(visual_config.get("blur", 24)) / 2))
+    background_blur = f",boxblur={blur_amount}:2" if blur_amount else ""
     for i, cut in enumerate(part["cuts"]):
         duration = cut["end"] - cut["start"]
         args.extend(["-ss", f"{cut['start']:.6f}", "-t", f"{duration:.6f}", "-i", str(source.resolve())])
@@ -195,7 +198,7 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
             # Blur at a small resolution, then upscale: inexpensive background
             # while the sharp foreground preserves the entire source image.
             filters.append(f"[bg{i}]scale=270:480:force_original_aspect_ratio=increase,"
-                           f"crop=270:480,boxblur=12:2,eq=brightness=-0.12:saturation=0.75,"
+                           f"crop=270:480{background_blur},eq=brightness=-0.12:saturation=0.75,"
                            f"scale=1080:1920[back{i}]")
             filters.append(f"[fg{i}]scale=1080:1080:force_original_aspect_ratio=decrease:"
                            f"force_divisible_by=2,setsar=1[front{i}]")

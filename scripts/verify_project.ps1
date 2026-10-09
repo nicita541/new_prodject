@@ -132,7 +132,8 @@ if ($python) {
             "tests/test_music.py::RenderCacheTests",
             "tests/test_music.py::BackgroundMusicFilterTests",
             "tests/test_music.py::MusicApiTests",
-            "tests/test_jobs.py", "tests/test_server_routing.py") $root 600
+            "tests/test_jobs.py", "tests/test_server_routing.py",
+            "tests/test_finishing.py") $root 600
     } elseif ($Video) {
         if ((Test-Path -LiteralPath $ffmpeg) -and (Test-Path -LiteralPath $ffprobe)) {
             # Synthetic 2-second color/sine source. No user episode or AI model.

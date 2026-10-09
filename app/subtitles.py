@@ -143,6 +143,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 '100,100,0,0,1,5,2,2,150,150,285,1')
     if layout == 'cinema':
         header = header.replace(',285,1', ',430,1')
+    if finishing and finishing.get("background"):
+        # ASS BorderStyle=3 renders an opaque backing box instead of the
+        # normal text outline. Keep a semi-transparent black BackColour.
+        header = header.replace("100,100,0,0,1,3,1,2,", "100,100,0,0,3,0,0,2,")
+        header = header.replace("100,100,0,0,1,5,2,2,", "100,100,0,0,3,0,0,2,")
     # Never allow dialogue to insert ASS control/override sequences.
     def escape(text):
         return text.replace("\\", "＼").replace("{", "｛").replace("}", "｝").replace("\r", "").replace("\n", r"\N")

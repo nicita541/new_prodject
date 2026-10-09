@@ -347,6 +347,37 @@ class BackgroundMusicIntegrationTests(unittest.TestCase):
             self.assertLess(abs(float(streams["video"]["duration"]) - float(streams["audio"]["duration"])), 0.15)
 
 
+    def test_studio_finishing_renders_positioned_captions_and_frame_grading(self):
+        """Studio values must reach a real MP4, not merely be saved as JSON."""
+        with workspace_directory() as directory:
+            source = directory / "original.mp4"
+            run_command([str(FFMPEG), "-v", "error", "-y",
+                         "-f", "lavfi", "-i", "color=size=160x90:rate=30",
+                         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                         "-t", "2", "-c:v", "libx264", "-preset", "ultrafast",
+                         "-c:a", "aac", str(source)], directory)
+            part = {"index": 1, "duration": 2.0,
+                    "cuts": [{"start": 0, "end": 2,
+                              "focus": [{"time": 0, "x": 0.5, "y": 0.5}]}],
+                    "subtitles": [{"start": 0.2, "end": 1.5, "text": "Studio test"}]}
+            render = render_part(source, part, {"width": 160, "height": 90},
+                                 directory / "finishing-output", directory / "finishing-work",
+                                 "libx264", finishing={
+                                     "video": {"zoom": 110, "brightness": 115, "vignette": 12},
+                                     "subtitles": {"enabled": True, "x": 50, "y": 69, "font_size": 32,
+                                                   "color": "#f6d779", "outline": 3, "uppercase": True},
+                                 })
+            ass = (directory / "finishing-output" / "part_001.ass").read_text("utf-8")
+            self.assertIn(r"\pos(540,1325)", ass)
+            self.assertIn("STUDIO TEST", ass)
+            filters = (directory / "finishing-work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("vignette=", filters)
+            self.assertIn("eq=brightness=", filters)
+            result = inspect_media(render, directory)
+            self.assertLess(abs(float(result["format"]["duration"]) - 2.0), .15)
+            self.assertTrue(any(p["codec_type"] == "audio" for p in result["streams"]))
+
+
     def test_smart_music_ducking_keeps_real_export_valid(self):
         """Exercise dynamic FFmpeg volume expressions, not only mock strings."""
         with workspace_directory() as directory:

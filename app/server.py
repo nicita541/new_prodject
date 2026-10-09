@@ -44,11 +44,14 @@ class UploadLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("path") != "/api/import" or scope.get("method") != "POST":
+        if (scope["type"] != "http" or scope.get("method") != "POST" or
+                scope.get("path") not in {"/api/import", "/api/music/import"}):
             return await self.app(scope, receive, send)
-        # Permit a small, bounded multipart envelope around the file limit.
-        limit = MAX_UPLOAD + MULTIPART_OVERHEAD
-        rejection = JSONResponse({"detail": "Серия слишком большая (предел 20 ГБ)"}, 413)
+        music_upload = scope.get("path") == "/api/music/import"
+        # Reject an oversized upload before Starlette spools its multipart body.
+        limit = (35 * 1024 * 1024 if music_upload else MAX_UPLOAD) + MULTIPART_OVERHEAD
+        error_text = "Музыкальный файл больше 35 МБ" if music_upload else "Серия слишком большая (предел 20 ГБ)"
+        rejection = JSONResponse({"detail": error_text}, 413)
         for name, value in scope.get("headers", []):
             if name.lower() == b"content-length" and value.isdigit() and int(value) > limit:
                 return await rejection(scope, receive, send)
