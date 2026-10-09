@@ -29,9 +29,20 @@
    return {...plan,duration:Math.max(duration,last,1)};
  }
  async function refresh(db,ui){
-  const [library,sources,jobs,music,health]=await Promise.all([
-    get('/api/library'),get('/api/sources'),get('/api/jobs'),get('/api/music'),get('/api/health')
+  // Music/health are optional for browsing already rendered Shorts. One
+  // misconfigured audio file must not blank the entire projects page.
+  const [library,sources,jobs,musicOutcome,healthOutcome]=await Promise.all([
+    get('/api/library'),get('/api/sources'),get('/api/jobs'),
+    get('/api/music').then(value=>({value}),error=>({error})),
+    get('/api/health').then(value=>({value}),error=>({error})),
   ]);
+  const music=musicOutcome.value||{
+    enabled:false,volume:0.15,track:null,mode:'random_per_part',
+    part_tracks:{},tracks:[],
+  };
+  const health=healthOutcome.value||{ready:false,busy:false,missing:['Сервис недоступен']};
+  if(musicOutcome.error)console.warn('Music settings unavailable:',musicOutcome.error);
+  if(healthOutcome.error)console.warn('Server health unavailable:',healthOutcome.error);
   db.projects=library.projects||[];
   db.episodes=library.episodes||[];
   db.sources=sources||[];
@@ -40,12 +51,17 @@
    episode_id:j.episode_id||library.episodes?.find(e=>e.jobs?.some(a=>a.id===j.id))?.id,
   }));
   db.health=health;
-  db.music={...db.music,...music,tracks:music.tracks||[]};
+  db.music={...music,tracks:Array.isArray(music.tracks)?music.tracks:[]};
   db.plans ||= {};
   db.finishing ||= {};
   // A library can have hundreds of old jobs. Never fetch *every* plan/profile
   // during startup or the 3-second progress refresh: that blocked the UI.
-  try{db.deepseek=await get('/api/deepseek')}catch{}
+  try{
+    db.deepseek=await get('/api/deepseek');
+  }catch(error){
+    console.warn('DeepSeek status unavailable:',error);
+    db.deepseek={configured:false,remaining_usd:null,model:'недоступна'};
+  }
   if(!db.projects.some(p=>p.id===ui.projectId&&!p.archived_at)){
     ui.projectId=db.projects.find(p=>!p.archived_at)?.id||null;
   }
