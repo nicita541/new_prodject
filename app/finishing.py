@@ -123,6 +123,19 @@ class CaptionsUpdate(BaseModel):
 
 
 
+class FinishingSave(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    profile: FinishProfileUpdate
+    captions: list[CaptionsUpdate] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_parts(self):
+        indices = [item.part_index for item in self.captions]
+        if len(indices) != len(set(indices)):
+            raise ValueError("Одна часть не может быть передана дважды")
+        return self
+
+
 class PreviewSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     part_index: int = Field(ge=1, le=100)
@@ -210,6 +223,33 @@ def _stored_profile(request: Request, identifier: str) -> dict:
     return FinishProfile.model_validate({k: v for k, v in saved.items() if k in FinishProfile.model_fields}).model_dump()
 
 
+def _save_shared_profile(request: Request, episode_id: str,
+                         profile: FinishProfileUpdate, previous: dict) -> dict:
+    """Write common *styling* only; keep any unowned legacy cues in backups."""
+    previous_revision = int(previous.get("revision", 0))
+    if profile.revision is not None and profile.revision != previous_revision:
+        raise HTTPException(409, "Оформление изменено в другом окне, обновите страницу")
+    path = _profile_file(request, episode_id)
+    shared = profile.model_dump(exclude={"revision"})
+    old_overrides = previous.get("part_overrides", {})
+    old_had_cues = isinstance(old_overrides, dict) and any(
+        isinstance(value, dict) and value.get("cues") is not None
+        for value in old_overrides.values())
+    incoming_had_cues = any(value.get("cues") is not None
+                            for value in shared["part_overrides"].values())
+    if old_had_cues or incoming_had_cues:
+        backup = (path.parent / "legacy-caption-backups" /
+                  f"{episode_id}-r{previous_revision:06d}.json")
+        if not backup.exists():
+            atomic_json(backup, previous if old_had_cues else {
+                "episode_id": episode_id, **shared, "revision": previous_revision})
+    for override in shared["part_overrides"].values():
+        override.pop("cues", None)
+    stored = {"episode_id": episode_id, **shared, "revision": previous_revision + 1}
+    atomic_json(path, stored)
+    return stored
+
+
 def create_finishing_router() -> APIRouter:
     router = APIRouter()
 
@@ -223,37 +263,61 @@ def create_finishing_router() -> APIRouter:
     @router.put("/api/episodes/{episode_id}/finishing")
     def put_finishing(request: Request, episode_id: str, profile: FinishProfileUpdate):
         _episode(request, episode_id)
-        path = _profile_file(request, episode_id)
         with _manager(request).mutex:
-            previous = read_json(path, {}) or {}
-            previous_revision = int(previous.get("revision", 0))
-            if profile.revision is not None and profile.revision != previous_revision:
+            path = _profile_file(request, episode_id)
+            return _save_shared_profile(request, episode_id, profile,
+                                        read_json(path, {}) or {})
+
+    @router.put("/api/jobs/{job_id}/finishing/state")
+    def save_finishing_state(request: Request, job_id: str, body: FinishingSave):
+        """Preflight all revisions/cues before applying one editor save.
+
+        Disk errors roll back changes in-process. Multi-file writes cannot be
+        guaranteed crash-atomic, so they are not described as such.
+        """
+        _, plan, episode_id = _checked_render_job(request, job_id)
+        manager = _manager(request)
+        with manager.mutex:
+            profile_path = _profile_file(request, episode_id)
+            profile_exists = profile_path.is_file()
+            previous = read_json(profile_path, {}) or {}
+            expected_profile_rev = int(previous.get("revision", 0))
+            if (body.profile.revision is not None
+                    and body.profile.revision != expected_profile_rev):
                 raise HTTPException(409, "Оформление изменено в другом окне, обновите страницу")
-            # The old episode profile may contain caption text that never
-            # recorded which montage job it belonged to. Back up that legacy
-            # data once, before removing ambiguous cues from shared styling.
-            shared = profile.model_dump(exclude={"revision"})
-            old_overrides = previous.get("part_overrides", {})
-            old_had_cues = isinstance(old_overrides, dict) and any(
-                isinstance(value, dict) and value.get("cues") is not None
-                for value in old_overrides.values())
-            incoming_had_cues = any(value.get("cues") is not None
-                                    for value in shared["part_overrides"].values())
-            if old_had_cues or incoming_had_cues:
-                # Revision-scoped archive retains both old on-disk data and
-                # never-before-saved legacy submissions, without assigning
-                # ambiguous captions to an unrelated montage job.
-                backup = (path.parent / "legacy-caption-backups" /
-                          f"{episode_id}-r{previous_revision:06d}.json")
-                if not backup.exists():
-                    atomic_json(backup, previous if old_had_cues else {
-                        "episode_id": episode_id, **shared, "revision": previous_revision})
-            for override in shared["part_overrides"].values():
-                override.pop("cues", None)
-            stored = {"episode_id": episode_id, **shared,
-                      "revision": previous_revision + 1}
-            atomic_json(path, stored)
-        return stored
+            updates = []
+            for item in body.captions:
+                part = _part(plan, item.part_index)
+                _validate_cues(item.cues, float(part["duration"]))
+                path = _caption_file(request, job_id, item.part_index)
+                existed = path.is_file()
+                prev = read_json(path, {}) or {}
+                revision = int(prev.get("revision", 0))
+                if item.revision is not None and item.revision != revision:
+                    raise HTTPException(409, "Реплики изменены в другом окне, обновите страницу")
+                value = {"job_id": job_id, "part_index": item.part_index,
+                         "revision": revision + 1,
+                         "cues": [cue.model_dump() for cue in item.cues]}
+                updates.append((path, existed, prev, value))
+            changed = []
+            try:
+                for path, existed, prev, value in updates:
+                    atomic_json(path, value)
+                    changed.append((path, existed, prev))
+                profile = _save_shared_profile(request, episode_id, body.profile, previous)
+            except Exception:
+                for path, existed, prev in reversed(changed):
+                    if existed:
+                        atomic_json(path, prev)
+                    else:
+                        path.unlink(missing_ok=True)
+                if profile_exists and read_json(profile_path, {}) != previous:
+                    atomic_json(profile_path, previous)
+                elif not profile_exists:
+                    profile_path.unlink(missing_ok=True)
+                raise
+            return {"profile": profile,
+                    "captions": [value for _, _, _, value in updates]}
 
     @router.get("/api/jobs/{job_id}/parts/{part_index}/captions")
     def get_captions(request: Request, job_id: str, part_index: int):

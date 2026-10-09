@@ -145,6 +145,53 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.put(path, json=data).status_code, 422)
         self.assertEqual((self.directory / "plan.json").read_bytes(), before)
 
+    def test_batch_save_preflights_all_caption_revisions_before_writing(self):
+        profile = self.client.get("/api/episodes/" + self.episode_id + "/finishing").json()
+        body = {"profile": {key: val for key, val in profile.items() if key != "episode_id"},
+                "captions": [
+                    {"part_index": 1, "revision": 0,
+                     "cues": [{"start": 0, "end": 1, "text": "ПЕРВАЯ"}]},
+                    {"part_index": 2, "revision": 0,
+                     "cues": [{"start": 0, "end": 1, "text": "ВТОРАЯ"}]}]}
+        path = "/api/jobs/" + self.job_id + "/finishing/state"
+        first = self.client.put(path, json=body)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["profile"]["revision"], 1)
+        self.assertEqual(len(first.json()["captions"]), 2)
+        old_profile = (self.manager.root / "finishing" / "episodes" /
+                       (self.episode_id + ".json")).read_bytes()
+        old_caption = (self.directory / "finishing" / "captions_001.json").read_bytes()
+        body["profile"]["revision"] = 1
+        body["captions"][0]["revision"] = 1
+        stale = self.client.put(path, json=body)
+        self.assertEqual(stale.status_code, 409, stale.text)
+        self.assertEqual((self.directory / "finishing" / "captions_001.json").read_bytes(), old_caption)
+        self.assertEqual((self.manager.root / "finishing" / "episodes" /
+                          (self.episode_id + ".json")).read_bytes(), old_profile)
+        body["captions"][1]["revision"] = 1
+        body["captions"][1]["cues"] = [{"start": 0, "end": 90, "text": "ВЫХОД ЗА КРАЙ"}]
+        invalid = self.client.put(path, json=body)
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+        self.assertEqual((self.directory / "finishing" / "captions_001.json").read_bytes(), old_caption)
+
+    def test_batch_save_rolls_back_caption_files_on_profile_write_error(self):
+        path = "/api/jobs/" + self.job_id + "/finishing/state"
+        profile = self.client.get("/api/episodes/" + self.episode_id + "/finishing").json()
+        data = {"profile": {key: val for key, val in profile.items() if key != "episode_id"},
+                "captions": [{"part_index": 1, "revision": 0,
+                               "cues": [{"start": 0, "end": 1, "text": "НЕ СОХРАНЯТЬ"}]}]}
+        profile_path = self.manager.root / "finishing" / "episodes" / (self.episode_id + ".json")
+        original_write = atomic_json
+        def fail_profile(target, value):
+            if Path(target) == profile_path:
+                raise OSError("Disk full writing profile")
+            return original_write(target, value)
+        with patch("app.finishing.atomic_json", side_effect=fail_profile):
+            with self.assertRaises(OSError):
+                self.client.put(path, json=data)
+        self.assertFalse((self.directory / "finishing" / "captions_001.json").exists())
+        self.assertFalse(profile_path.exists())
+
     def test_finishing_uses_same_russian_audio_track_as_initial_montage(self):
         from app.studio_render import _probe
         media = {"streams": [
