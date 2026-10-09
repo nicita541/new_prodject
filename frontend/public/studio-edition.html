@@ -291,7 +291,11 @@ function renderProcessing(){const e=currE(),j=currentJob();if(!j)return `<div cl
 function bindProcessing(){if(ui.screen==='processing')runTicker()}
 function runTicker(){
  clearInterval(processTimer);
+ let polling=false;
  processTimer=setInterval(async()=>{
+  if(polling)return;
+  if(ui.screen!=='processing')return;
+  polling=true;
   try{
    const current=ui.jobId;
    const previous=db.jobs.find(j=>j.id===current);
@@ -312,6 +316,7 @@ function runTicker(){
    // Other views aren't re-rendered every few seconds: doing so would stop
    // video playback and lose focus while editing captions.
   }catch(error){console.warn('Live status polling failed',error)}
+  finally{polling=false}
  },3200);
 }
 function reviewTime(sec){const v=Math.max(0,Math.floor(Number(sec)||0));return v>=3600?`${Math.floor(v/3600)}:${String(Math.floor(v%3600/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`:`${Math.floor(v/60)}:${String(v%60).padStart(2,'0')}`}
@@ -412,11 +417,11 @@ case 'review-scroll-selected':{ui.reviewScrollNeeded=true;const node=document.qu
 case 'review-prev':{const pl=db.plans[j?.id];ui.part=Math.max(0,ui.part-1);ui.reviewSelection=null;ui.reviewMode='short';ui.reviewScrollNeeded=true;render();break}
 case 'review-next':{const pl=db.plans[j?.id];ui.part=Math.min(pl.parts.length-1,ui.part+1);ui.reviewSelection=null;ui.reviewMode='short';ui.reviewScrollNeeded=true;render();break}
 case 'review-toggle-play':{const source=$('reviewSourceVideo'),short=$('reviewShortVideo');const video=ui.reviewMode==='source'?source:short||source;if(!video){notify('Видео недоступно');break}if(video.paused){await video.play().catch(()=>notify('Браузер не разрешил воспроизведение',true));if(ui.reviewMode==='compare'&&source&&short&&source!==video){source.play().catch(()=>{})}}else{video.pause();if(ui.reviewMode==='compare'&&source)source.pause()}break}
-case 'seek-source':{const pl=db.plans[j?.id],segment=reviewSelection(pl);await request('GET',`/api/jobs/${j.id}/source`);ui.reviewMode=ui.reviewMode==='compare'?'compare':'source';render();reviewSeek($('reviewSourceVideo'),segment.start,true);if(!ui.localMedia[j.source_id])notify('В демо 7-секундный исходник: длинная временная шкала показана условно.');break}
+case 'seek-source':{const pl=db.plans[j?.id],segment=reviewSelection(pl);ui.reviewMode=ui.reviewMode==='compare'?'compare':'source';render();reviewSeek($('reviewSourceVideo'),segment.start,true);break}
 case 'download-plan':{const res=await request('GET',`/api/jobs/${j.id}/plan`);downloadText(`plan_${j.id.slice(0,8)}.json`,JSON.stringify(res,null,2));notify('Монтажный план сохранён как JSON');break}
 case 'inspect-plan':await request('GET',`/api/jobs/${j.id}/plan`);ui.selectedCall=0;go('api');break;
 case 'copy-context':copyText($('contextPrompt')?.value||'');notify('Контекстный промпт скопирован');break;
-case 'demo-play':modalVideo();break;
+case 'demo-play':{const file=j?.files?.[ui.part];if(!file)throw new Error('Готовый Shorts не найден');window.open(file.url,'_blank','noopener');break;}
 case 'download-mp4':{const file=j.files?.[ui.part];if(!file)throw new Error('MP4 не найден');window.open(file.url+'?download=1','_blank','noopener');break;}
 case 'download-srt':{const file=j.files?.[ui.part];if(!file?.subtitle_url)throw new Error('SRT не найден');window.open(file.subtitle_url+'?download=1','_blank','noopener');break;}
 case 'download-all':{const res=await request('POST',`/api/jobs/${j.id}/save-videos`,{all:true});notify('Видео сохранены на диск: '+(res.path||res.count||''));break;}
@@ -425,7 +430,7 @@ case 'open-output':{const res=await request('POST',`/api/jobs/${j.id}/open-folde
 case 'refresh-all':{await Promise.all([request('GET','/api/health'),request('GET','/api/library'),request('GET','/api/jobs'),request('GET','/api/sources'),request('GET','/api/music'),request('GET','/api/deepseek')]);notify('Данные из шести API-методов обновлены');render();break}
 case 'api-route':ui.apiSelected=idx;ui.selectedCall=null;render();break;
 case 'api-call':ui.selectedCall=idx;render();break;
-case 'api-send':{const route=exemplarRoute(routes[ui.apiSelected]);let body=route.body;const raw=$('apiBodyInput')?.value;if(raw!==undefined){try{body=JSON.parse(raw)}catch{throw new Error('Неверный JSON в теле запроса')}}const execute=async()=>{await request(route.method,route.path,body);ui.selectedCall=0;render();notify(`Ответ сервера: ${route.method} ${route.path}`)};if(route.method==='DELETE'||route.path==='/api/jobs/prune'){modal({title:'Подтвердите запрос',text:`Вы хотите выполнить ${route.method} ${route.path}. Данные демонстрационной базы будут изменены.`,confirm:'Выполнить запрос',danger:true,onConfirm:execute})}else await execute();break}
+case 'api-send':{const route=exemplarRoute(routes[ui.apiSelected]);let body=route.body;const raw=$('apiBodyInput')?.value;if(raw!==undefined){try{body=JSON.parse(raw)}catch{throw new Error('Неверный JSON в теле запроса')}}const execute=async()=>{await request(route.method,route.path,body);ui.selectedCall=0;render();notify(`Ответ сервера: ${route.method} ${route.path}`)};if(route.method==='DELETE'||route.path==='/api/jobs/prune'){modal({title:'Подтвердите запрос',text:`Вы хотите выполнить ${route.method} ${route.path}. Запрос изменит реальные данные локального сервера.`,confirm:'Выполнить запрос',danger:true,onConfirm:execute})}else await execute();break}
 case 'copy-json':copyText($('jsonContent')?.textContent||'');notify('JSON скопирован');break;
 case 'download-json':downloadText('kadr_api_response.json',$('jsonContent')?.textContent||'{}');notify('Ответ JSON сохранён');break;
 case 'download-api':downloadText('kadr_api_log.json',JSON.stringify(ui.apiEntries,null,2));notify('Журнал API скачан');break;
