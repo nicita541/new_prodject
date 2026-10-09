@@ -43,20 +43,8 @@
   db.music={...db.music,...music,tracks:music.tracks||[]};
   db.plans ||= {};
   db.finishing ||= {};
-  const completed=db.jobs.filter(j=>j.status==='completed');
-  await Promise.all(completed.map(async j=>{
-    if(!db.plans[j.id]){
-      try{db.plans[j.id]=normalizePlan(await get('/api/jobs/'+encodeURIComponent(j.id)+'/plan'))}
-      catch(e){console.warn('KADR plan:',j.id,e)}
-    }
-  }));
-  await Promise.all(completed.map(async j=>{
-    const eid=j.episode_id;
-    if(eid&&!db.finishing[eid]){
-      try{db.finishing[eid]=await get('/api/episodes/'+encodeURIComponent(eid)+'/finishing')}
-      catch(e){console.warn('KADR finish:',eid,e)}
-    }
-  }));
+  // A library can have hundreds of old jobs. Never fetch *every* plan/profile
+  // during startup or the 3-second progress refresh: that blocked the UI.
   try{db.deepseek=await get('/api/deepseek')}catch{}
   if(!db.projects.some(p=>p.id===ui.projectId&&!p.archived_at)){
     ui.projectId=db.projects.find(p=>!p.archived_at)?.id||null;
@@ -68,6 +56,14 @@
   if(!db.jobs.some(j=>j.id===ui.jobId)){
     const list=db.jobs.filter(j=>j.episode_id===ui.episodeId);
     ui.jobId=list.find(j=>j.status==='completed')?.id||list[0]?.id||null;
+  }
+ }
+ async function loadSelected(db,ui){
+  const job=db.jobs.find(j=>j.id===ui.jobId);
+  if(!job||job.status!=='completed')return;
+  if(!db.plans[job.id]) db.plans[job.id]=normalizePlan(await get('/api/jobs/'+encodeURIComponent(job.id)+'/plan'));
+  if(job.episode_id&&!db.finishing[job.episode_id]) {
+    db.finishing[job.episode_id]=await get('/api/episodes/'+encodeURIComponent(job.episode_id)+'/finishing');
   }
  }
  async function request(method,path,body,db,ui){
@@ -109,5 +105,5 @@
   }
   return result;
  }
- window.KadrBridge={get,refresh,request};
+ window.KadrBridge={get,refresh,loadSelected,request};
 })();
