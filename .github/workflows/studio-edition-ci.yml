@@ -1,0 +1,52 @@
+name: Studio Edition checks
+
+on:
+  push:
+    branches: [fix/montage-stability]
+  pull_request:
+    branches: [codex/dramatic-montage]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: React tests, lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: React regression tests
+        working-directory: frontend
+        run: npm test
+      - name: TypeScript and Vite build
+        working-directory: frontend
+        run: npm run build
+      - name: ESLint
+        working-directory: frontend
+        run: npm run lint
+
+  backend:
+    name: Finishing API safety tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install lightweight API dependencies
+        run: python -m pip install fastapi uvicorn python-multipart pillow pytest httpx
+      - name: Check Python compilation
+        run: python -m compileall -q app tests
+      - name: Test Studio Edition API and isolated exports
+        run: python -m pytest -q tests/test_finishing.py
