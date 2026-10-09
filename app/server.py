@@ -15,10 +15,10 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlencode
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -753,19 +753,72 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     if static_legacy.is_dir():
         application.mount("/static", StaticFiles(directory=static_legacy), name="static_legacy")
         
-    @application.get("/{full_path:path}")
-    def index(full_path: str):
-        if full_path.startswith("api/") or full_path.startswith("assets/") or full_path.startswith("static/"):
+    # The user's Studio Edition HTML is the *canonical application*, not an
+    # unserved file buried in frontend/public. Vite copies it to dist. A catch-all
+    # that always returns React index.html previously made every preview of the
+    # supplied design display the different React UI instead.
+    studio_html = dist_dir / "studio-edition.html"
+    studio_bridge = dist_dir / "studio-live-bridge.js"
+
+    @application.api_route("/studio-live-bridge.js", methods=["GET", "HEAD"])
+    def studio_bridge_asset():
+        if not studio_bridge.is_file():
+            raise HTTPException(503, "Studio Edition не собрана. Выполните npm run build в frontend.")
+        return FileResponse(studio_bridge, media_type="text/javascript",
+                            headers={"Cache-Control": "no-cache"})
+
+    @application.api_route("/{full_path:path}", methods=["GET", "HEAD"])
+    def index(full_path: str, request: Request):
+        if full_path.startswith(("api/", "assets/", "static/")):
             raise HTTPException(404)
-        if full_path.startswith("legacy"):
+        if full_path in {"legacy", "legacy/"}:
             if (static_legacy / "index.html").is_file():
                 return FileResponse(static_legacy / "index.html")
             raise HTTPException(404, "Legacy UI not found")
-        if (dist_dir / "index.html").is_file():
-            return FileResponse(dist_dir / "index.html")
-        # Legacy stays available explicitly at /legacy, but must not silently
-        # replace the React app after a clean installation.
-        raise HTTPException(503, "React-интерфейс не собран. Установите Node.js и выполните npm ci и npm run build в папке frontend.")
+
+        # A debug-only escape hatch; the previous React UX must never become
+        # the default at /, /studio, /projects or a deep project link.
+        if full_path == "react-debug" and (dist_dir / "index.html").is_file():
+            return FileResponse(dist_dir / "index.html", headers={"Cache-Control": "no-cache"})
+        if full_path in {"studio-edition.html", "studio-edition-reference.html"}:
+            filename = full_path
+            target = dist_dir / filename
+            if target.is_file():
+                return FileResponse(target, media_type="text/html",
+                                    headers={"Cache-Control": "no-cache"})
+            raise HTTPException(503, "Studio Edition не собрана. Выполните npm run build в frontend.")
+
+        if not studio_html.is_file() or not studio_bridge.is_file():
+            raise HTTPException(503, "Studio Edition не собрана. Выполните npm ci и npm run build в frontend.")
+
+        if full_path in {"", "projects"}:
+            return FileResponse(studio_html, media_type="text/html",
+                                headers={"Cache-Control": "no-cache"})
+
+        screen = None
+        ids = {}
+        if full_path == "trash":
+            screen = "trash"
+        elif full_path == "studio":
+            screen = "finishing"
+        elif full_path == "api":
+            screen = "api"
+        else:
+            project = re.fullmatch(r"project/([^/]+)", full_path)
+            episode = re.fullmatch(r"episode/([^/]+)/(edit|review|finishing)(?:/([^/]+))?", full_path)
+            if project:
+                screen = "episodes"
+                ids["project"] = project.group(1)
+            elif episode:
+                screen = {"edit": "editor", "review": "review",
+                          "finishing": "finishing"}[episode.group(2)]
+                ids["episode"] = episode.group(1)
+                if episode.group(3):
+                    ids["job"] = episode.group(3)
+        if screen is None:
+            raise HTTPException(404, "Экран не найден")
+        return RedirectResponse("/studio-edition.html?" + urlencode({"screen": screen, **ids}),
+                                status_code=307)
     return application
 
 
