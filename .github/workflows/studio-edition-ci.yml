@@ -46,6 +46,8 @@ jobs:
           PY
           node --check frontend/public/studio-live-bridge.js
           node --check /tmp/studio-exact.js
+      - name: Execute exact Studio Edition screens with simulated FastAPI
+        run: node frontend/scripts/smoke-studio-exact.mjs
       - name: TypeScript and Vite build
         working-directory: frontend
         run: npm run build
