@@ -119,3 +119,14 @@ def test_token_ledger_skips_malformed_rows_and_does_not_abort_inference(tmp_path
     assert values["unknown_calls"] == 1
     monkeypatch.setattr(Path, "mkdir", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("locked")))
     token_usage.record(tmp_path / "nested", "local", "qwen", {"usage": {"total_tokens": 8}})
+
+
+def test_corrupted_scene_cache_only_rebuilds_affected_chunk(tmp_path):
+    from app.scene_analysis import _read_optional_checkpoint
+    checkpoint = tmp_path / "event_0000_chunk_001.checkpoint.json"
+    assert _read_optional_checkpoint(checkpoint) == {}
+    for value in ('{"identity":', 'null', '[]', '{not-json}', '"wrong-type"'):
+        checkpoint.write_text(value, encoding="utf-8")
+        assert _read_optional_checkpoint(checkpoint) == {}
+    checkpoint.write_text('{"identity":"valid","result":{}}', encoding="utf-8")
+    assert _read_optional_checkpoint(checkpoint)["identity"] == "valid"
