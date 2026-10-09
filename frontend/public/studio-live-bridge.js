@@ -62,14 +62,16 @@
     console.warn('DeepSeek status unavailable:',error);
     db.deepseek={configured:false,remaining_usd:null,model:'недоступна'};
   }
-  if(!db.projects.some(p=>p.id===ui.projectId&&!p.archived_at)){
+  const activeProjects=new Set(db.projects.filter(p=>!p.archived_at).map(p=>p.id));
+  const activeEpisode=e=>!e.archived_at&&activeProjects.has(e.project_id);
+  if(!activeProjects.has(ui.projectId)){
     ui.projectId=db.projects.find(p=>!p.archived_at)?.id||null;
   }
-  if(!db.episodes.some(e=>e.id===ui.episodeId&&!e.archived_at)){
-    ui.episodeId=db.episodes.find(e=>e.project_id===ui.projectId&&!e.archived_at)?.id||
-                 db.episodes.find(e=>!e.archived_at)?.id||null;
+  if(!db.episodes.some(e=>e.id===ui.episodeId&&e.project_id===ui.projectId&&activeEpisode(e))){
+    ui.episodeId=db.episodes.find(e=>e.project_id===ui.projectId&&activeEpisode(e))?.id||
+                 db.episodes.find(activeEpisode)?.id||null;
   }
-  if(!db.jobs.some(j=>j.id===ui.jobId)){
+  if(!db.jobs.some(j=>j.id===ui.jobId&&j.episode_id===ui.episodeId)){
     const list=db.jobs.filter(j=>j.episode_id===ui.episodeId);
     ui.jobId=list.find(j=>j.status==='completed')?.id||list[0]?.id||null;
   }
