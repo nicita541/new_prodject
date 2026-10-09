@@ -53,9 +53,12 @@ class SemanticPipelineTests(unittest.TestCase):
         return [f['time'] for f in frames]
 
     @staticmethod
-    def fake_inference_board(source, start, end, units, destination, cancelled, *, recovery=False, context=False):
+    def fake_inference_board(source, start, end, units, destination, cancelled, *,
+                             recovery=False, context=False, sample_limit=None):
         destination.write_bytes(b'bounded-source-collage-placeholder')
         times = [start, max(start, end-.05)] if context else inference_samples(start,end,units,recovery=recovery)
+        if sample_limit is not None and len(times) > sample_limit:
+            times = [times[round(i*(len(times)-1)/(sample_limit-1))] for i in range(sample_limit)]
         assert len(times) <= (2 if context else 12)
         frames = [{'index':i+1, 'time':time,
                    'unit_ids':[u['id'] for u in units if u['start'] <= time < u['end']],
