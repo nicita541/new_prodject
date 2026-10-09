@@ -558,6 +558,13 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         from .deepseek import job_spending
         return job_spending(current.job_dir(identifier))
 
+    @application.get("/api/jobs/{identifier}/tokens")
+    def token_stats(request: Request, identifier: str):
+        current = get_manager(request)
+        current.get(identifier)
+        from .token_usage import summary
+        return summary(current.job_dir(identifier))
+
     @application.post("/api/jobs/{identifier}/cancel")
     def cancel(request: Request, identifier: str):
         current = get_manager(request)

@@ -552,6 +552,8 @@ class DeepSeekVision:
 
     def _record_response(self, raw, digest, attempt, issue, value):
         """Keep bounded response diagnostics, never request headers/key/images."""
+        from .token_usage import record as record_tokens
+        record_tokens(self.job_dir, "deepseek", MODEL, raw)
         from .pipeline_diagnostics import _clean
         import uuid
         try:
