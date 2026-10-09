@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import random
@@ -194,7 +195,7 @@ class RenderCacheTests(unittest.TestCase):
                 "fingerprint": "same-run",
                 "size": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
-                "srt_hash": __import__("hashlib").sha256(subtitle.read_bytes()).hexdigest(),
+                "srt_hash": hashlib.sha256(subtitle.read_bytes()).hexdigest(),
                 "music_track": "song.mp3", "encoder": "libx264"
             }), encoding="utf-8")
             with patch("app.pipeline.validate_export") as validate:
@@ -205,7 +206,6 @@ class RenderCacheTests(unittest.TestCase):
 
     def test_cache_validation_cancellation_is_not_swallowed(self):
         with workspace_directory() as directory:
-            import hashlib
             mp4 = directory / "part_001.mp4"
             mp4.write_bytes(b"encoded")
             subtitle = mp4.with_suffix(".srt")

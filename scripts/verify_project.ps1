@@ -1,6 +1,8 @@
-param([switch]$Quick, [switch]$Full, [switch]$NoUpload, [string]$PythonExe)
+param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [string]$PythonExe)
 
-if ($Quick -and $Full) { throw 'Choose either -Quick or -Full, not both.' }
+if (@($Quick, $Full, $Video) | Where-Object { $_ } | Select-Object -Skip 1) {
+    throw 'Choose only one mode: -Quick, -Full, or -Video.'
+}
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -122,9 +124,18 @@ if ($python) {
     if (-not $dependenciesReady) {
         Add-Check "python_tests" "SKIP" 0 "Required Python packages missing; create .venv and install requirements"
     } elseif ($Quick) {
-        # No model loading and no real video renders. FFmpeg-only integration
-        # cases in test_music.py are skipped if this worktree has no FFmpeg.
-        Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests/test_music.py", "tests/test_jobs.py", "tests/test_server_routing.py") $root 600
+        # Strictly no FFmpeg renders, even if the video tools are installed.
+        Run-Check "python_tests" $python @("-m", "pytest", "-q",
+            "tests/test_music.py", "tests/test_jobs.py", "tests/test_server_routing.py",
+            "-k", "not BackgroundMusicIntegrationTests") $root 600
+    } elseif ($Video) {
+        if ((Test-Path -LiteralPath $ffmpeg) -and (Test-Path -LiteralPath $ffprobe)) {
+            # Synthetic 2-second color/sine source. No user episode or AI model.
+            Run-Check "python_tests" $python @("-m", "pytest", "-q",
+                "tests/test_music.py::BackgroundMusicIntegrationTests") $root 600
+        } else {
+            Add-Check "python_tests" "SKIP" 0 "Video mode requires portable FFmpeg and FFprobe inside this worktree"
+        }
     } elseif ($Full) {
         Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests") $root 7200
     } else {
@@ -161,7 +172,7 @@ $summary = [pscustomobject]@{
     timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
     branch = $branch
     commit = $commit
-    mode = if ($Quick) { "quick" } elseif ($Full) { "full" } else { "standard" }
+    mode = if ($Quick) { "quick" } elseif ($Video) { "video" } elseif ($Full) { "full" } else { "standard" }
     overall = $overall
     passed = $passed
     failed = $failed
@@ -190,7 +201,7 @@ foreach ($check in $script:checks) {
     }
 }
 $nl = [Environment]::NewLine
-$md = @("# Local verification report", "", "- Run: $runId", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Full) {'full'} else {'standard'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
+$md = @("# Local verification report", "", "- Run: $runId", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Video) {'video'} elseif ($Full) {'full'} else {'standard'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8
