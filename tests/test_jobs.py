@@ -320,6 +320,26 @@ class JobTests(unittest.TestCase):
         self.assertEqual(prune_res["pruned_count"], 1)
         self.assertEqual(prune_res["remaining_terminal"], 1)
 
+    def test_delete_job_does_not_claim_success_when_removal_fails(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        directory = self.manager.job_dir(job["id"])
+        with patch("app.jobs.shutil.rmtree", side_effect=PermissionError("locked")):
+            with self.assertRaises(PermissionError):
+                self.manager.delete_job(job["id"])
+        self.assertTrue(directory.is_dir())
+
+    def test_prune_reports_only_successful_removals(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        with patch("app.jobs.shutil.rmtree", side_effect=PermissionError("locked")):
+            with self.assertLogs("app.jobs", level="ERROR"):
+                result = self.manager.prune_jobs(max_jobs=0)
+        self.assertEqual(result["pruned_count"], 0)
+        self.assertEqual(result["pruned_ids"], [])
+        self.assertEqual(result["remaining_terminal"], 1)
+        self.assertTrue(self.manager.job_dir(job["id"]).is_dir())
+
     def test_setup_environment_idempotent(self):
         config.setup_environment()
         path1 = os.environ.get("PATH", "")

@@ -338,8 +338,9 @@ class JobManager:
             directory = self.job_dir(identifier)
             if not directory.is_dir():
                 raise KeyError(identifier)
+            # Never report success if Windows locks or permissions prevent removal.
+            shutil.rmtree(directory)
             self.pending_states.pop(identifier, None)
-            shutil.rmtree(directory, ignore_errors=True)
             return {"id": identifier, "deleted": True}
 
     def prune_jobs(self, max_jobs: int = 50, max_age_days: int | None = 30) -> dict:
@@ -369,10 +370,11 @@ class JobManager:
             for jid, created_at, mtime, directory in terminal_jobs:
                 if cutoff_ts is not None and mtime < cutoff_ts:
                     try:
-                        shutil.rmtree(directory, ignore_errors=True)
-                        pruned.append(jid)
+                        shutil.rmtree(directory)
                     except OSError:
-                        pass
+                        LOGGER.exception("Cannot prune job %s", jid)
+                    else:
+                        pruned.append(jid)
                 else:
                     remaining_jobs.append((jid, created_at, mtime, directory))
 
@@ -381,10 +383,11 @@ class JobManager:
             if excess > 0:
                 for jid, _, _, directory in remaining_jobs[:excess]:
                     try:
-                        shutil.rmtree(directory, ignore_errors=True)
-                        pruned.append(jid)
+                        shutil.rmtree(directory)
                     except OSError:
-                        pass
+                        LOGGER.exception("Cannot prune job %s", jid)
+                    else:
+                        pruned.append(jid)
 
             return {"pruned_count": len(pruned), "pruned_ids": pruned,
                     "remaining_terminal": len(terminal_jobs) - len(pruned)}

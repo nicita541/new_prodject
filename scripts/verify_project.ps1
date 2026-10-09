@@ -161,6 +161,7 @@ if (-not $NoUpload) {
                 & git.exe -C $publisher checkout -q --orphan test-reports
             }
             if ($LASTEXITCODE -ne 0) { throw "Cannot initialize report branch" }
+            New-Item -ItemType Directory -Force -Path (Join-Path $publisher "runs") | Out-Null
             $target = Join-Path $publisher ("runs\" + $runId)
             Copy-Item -LiteralPath $uploadDir -Destination $target -Recurse
             & git.exe -C $publisher add -- ("runs/" + $runId)
