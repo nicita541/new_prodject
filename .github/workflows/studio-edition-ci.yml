@@ -76,6 +76,14 @@ jobs:
         run: python -m compileall -q app scripts tests
       - name: Test Studio Edition API and isolated exports
         run: python -m pytest -q tests/test_finishing.py tests/test_server_routing.py tests/test_recovery_tokens.py tests/test_scene_detection.py tests/test_production_entrypoints.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare actual Studio assets for backend integration smoke
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
       - name: Smoke-check actual production API and UI without demo projects
         run: |
           python - <<'PY'
