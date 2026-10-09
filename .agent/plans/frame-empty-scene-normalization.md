@@ -35,4 +35,4 @@ Coalescing changes scene analysis input and invalidates its semantic caches, so 
 - [x] Implemented source-PTS-based coalescing and provenance.
 - [x] 95 focused regressions passed. Actual 34,050-frame source scan found zero empty views after one interval coalesced; coverage is contiguous.
 - [x] Full Python suite passed: 1076 tests in 130.109 seconds. Actual repaired CURRENT, recovery and context extraction passed.
-- [ ] Saved fix and restarted normal local processing in the visible app.
+- [x] Saved fix in `177db4b`; restarted the same local job with the visible application's `Повторить` button. The panel resumed automatically and the native worker reported running with no error. Previous attempt metadata/pages/diagnostics are preserved in `scratch/local-run-second-attempt-da7770a1.zip`; immutable original frame caches remain in the job directory. No observer was restarted, respecting the user's request. Successful export remains pending.
