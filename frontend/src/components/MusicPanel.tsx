@@ -1,15 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../api/client';
 import type { MusicSettings } from '../api/types';
 
 export function MusicPanel({ partCount = 15 }: { partCount?: number }) {
   const [settings, setSettings] = useState<MusicSettings | null>(null);
   const [msg, setMsg] = useState('');
+  const latestSettingsRef = useRef<MusicSettings | null>(null);
+  const queuedSettingsRef = useRef<MusicSettings | null>(null);
+  const savingRef = useRef(false);
 
   const loadSettings = async () => {
     try {
       const data = await api.getMusicSettings();
-      setSettings(data);
+      // Preserve newer local edits if a refresh races with a save.
+      if (!savingRef.current && !queuedSettingsRef.current) {
+        latestSettingsRef.current = data;
+        setSettings(data);
+      }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Ошибка загрузки музыки');
     }
@@ -19,21 +26,41 @@ export function MusicPanel({ partCount = 15 }: { partCount?: number }) {
     loadSettings();
   }, []);
 
-  const handleChange = async (newSettings: Partial<MusicSettings>) => {
-    if (!settings) return;
-    const updated = { ...settings, ...newSettings };
-    setSettings(updated);
+  // Requests cannot race with one another. While a request is in flight,
+  // intermediate slider events are coalesced into the most recent settings.
+  const flushSettings = async () => {
+    if (savingRef.current) return;
+    savingRef.current = true;
     try {
-      await api.saveMusicSettings({
-        enabled: updated.enabled,
-        volume: updated.volume,
-        mode: updated.mode,
-        track: updated.track,
-        part_tracks: updated.part_tracks
-      });
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : 'Ошибка сохранения');
+      while (queuedSettingsRef.current) {
+        const updated = queuedSettingsRef.current;
+        queuedSettingsRef.current = null;
+        try {
+          await api.saveMusicSettings({
+            enabled: updated.enabled,
+            volume: updated.volume,
+            mode: updated.mode,
+            track: updated.track,
+            part_tracks: updated.part_tracks
+          });
+          setMsg('');
+        } catch (e) {
+          setMsg(e instanceof Error ? e.message : 'Ошибка сохранения');
+        }
+      }
+    } finally {
+      savingRef.current = false;
     }
+  };
+
+  const handleChange = (newSettings: Partial<MusicSettings>) => {
+    const previous = latestSettingsRef.current ?? settings;
+    if (!previous) return;
+    const updated = { ...previous, ...newSettings };
+    latestSettingsRef.current = updated;
+    setSettings(updated);
+    queuedSettingsRef.current = updated;
+    void flushSettings();
   };
 
   const handleOpenFolder = async () => {
