@@ -198,7 +198,23 @@ class SemanticIdentityTests(unittest.TestCase):
         saved.pop('semantic_identity')
         atomic_json(checkpoint, saved)
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2*requests)
+        # Legacy parent metadata is rejected and regenerated. Its individually
+        # verified, current-identity chunk checkpoints remain reusable.
+        repaired = load_json(checkpoint)
+        self.assertTrue(repaired.get('semantic_identity'))
+        self.assertTrue(repaired['storyboards'])
+        self.assertEqual(len(vision.requests), requests)
+        # A legacy *chunk* without identity must trigger model re-analysis.
+        chunk = self.directory/'visual/event_0000_chunk_000.checkpoint.json'
+        stale_chunk = load_json(chunk)
+        stale_chunk.pop('identity')
+        atomic_json(chunk, stale_chunk)
+        repaired.pop('semantic_identity')
+        atomic_json(checkpoint, repaired)
+        self.analyze(vision)
+        self.assertGreater(len(vision.requests), requests)
+        self.assertTrue(load_json(chunk).get('identity'))
+        self.assertTrue(load_json(checkpoint).get('semantic_identity'))
 
     def test_incomplete_scene_image_cache_is_rebuilt(self):
         vision = SceneVision()
