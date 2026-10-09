@@ -109,6 +109,12 @@
           part_overrides:Object.fromEntries(Object.entries(profile.part_overrides||{}).map(
             ([key,override])=>[key,{...override,cues:undefined}]))};
       }
+      if(method==='PUT'&&/^\/api\/jobs\/[^/]+\/finishing\/state$/.test(path)){
+        const {episode_id,...profile}=body.profile;
+        data={...body,profile:{...profile,
+          part_overrides:Object.fromEntries(Object.entries(profile.part_overrides||{}).map(
+            ([key,override])=>[key,{...override,cues:undefined}]))}};
+      }
       if(method==='POST'&&/\/api\/jobs\/[^/]+\/(?:previews|exports)$/.test(path)&&body.settings){
         const {episode_id,revision,...settings}=body.settings;
         data={...body,settings};
@@ -137,6 +143,14 @@
     else if(path==='/api/library')await refresh(db,ui);
     else if(/^\/api\/jobs\/[^/]+\/plan$/.test(path)){
       db.plans[path.split('/')[3]]=normalizePlan(result);
+    }
+  }else if(method==='PUT'&&/^\/api\/jobs\/[^/]+\/finishing\/state$/.test(path)){
+    db.finishing ||= {};
+    db.finishing[result.profile.episode_id]=result.profile;
+    db.captionOverrides ||= {};
+    for(const caption of result.captions){
+      db.captionOverrides[caption.job_id+':'+caption.part_index]=caption;
+      if(db.finishDirtyCues)delete db.finishDirtyCues[caption.job_id+':'+caption.part_index];
     }
   }else if(method==='PUT'&&/^\/api\/episodes\/[^/]+\/finishing$/.test(path)){
     db.finishing ||= {};db.finishing[path.split('/')[3]]=result;

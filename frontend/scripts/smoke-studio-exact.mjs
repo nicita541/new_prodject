@@ -63,6 +63,7 @@ const plan = {source:{duration:4},parts:[{index:1,duration:4,
     {start:3.8,end:4,text:'ДРУГАЯ РЕПЛИКА'}]}]};
 let saveCalls = 0;
 let savedProfileBody;
+let savedCaptionBodies;
 window.fetch = async (input,options={}) => {
   const p = String(input);
   let value;
@@ -73,6 +74,12 @@ window.fetch = async (input,options={}) => {
   else if(p==='/api/health')value={ready:true,missing:[],busy:false};
   else if(p==='/api/deepseek')value={configured:false,remaining_usd:null,model:'deepseek-chat',budget_usd:null};
   else if(p.endsWith('/plan'))value=plan;
+  else if(p.endsWith('/finishing/state')){
+    const data=JSON.parse(options.body);
+    saveCalls++;savedProfileBody=data.profile;savedCaptionBodies=data.captions;
+    value={profile:{...data.profile,episode_id:episode,revision:saveCalls},
+      captions:data.captions.map(item=>({...item,job_id:job,revision:item.revision+1}))};
+  }
   else if(p.endsWith('/finishing')){
     if(options.method==='PUT'){saveCalls++;savedProfileBody=JSON.parse(options.body);value={...savedProfileBody,revision:saveCalls};}
     else value=profile;
@@ -156,6 +163,8 @@ window.document.querySelector('#fcSave').click();
 await new Promise(resolve=>setTimeout(resolve,150));
 assert(saveCalls > 0,'save action must use real API bridge');
 assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
+assert(Array.isArray(savedCaptionBodies),'save must bundle captions in one validated request');
+assert(!('episode_id' in savedProfileBody), 'profile path data must not contain response-only fields');
 const projectsNav = window.document.querySelector('button[data-action="nav"][data-screen="projects"]');
 assert(projectsNav, 'projects navigation missing');
 projectsNav.click();
