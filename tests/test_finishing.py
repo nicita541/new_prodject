@@ -365,6 +365,21 @@ class StudioApiTests(unittest.TestCase):
                 time.sleep(0.01)
             self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
 
+    def test_task_status_never_marks_just_completed_preview_interrupted(self):
+        from app.studio_render import task_status
+        identifier = "pv_" + uuid.uuid4().hex
+        folder = self.directory / "finishing" / "previews" / identifier
+        complete = {"preview_id": identifier, "source_job_id": self.job_id,
+                    "status": "completed", "progress": 1.0,
+                    "files": [{"part_index":1,"name":"part_001.mp4","duration":1.0}]}
+        atomic_json(folder / "status.json", complete)
+        stale = {**complete, "status": "running", "files": []}
+        with patch("app.studio_render.read_json", side_effect=[stale, complete]) as reads:
+            status = task_status(self.manager, identifier, self.job_id)
+        self.assertEqual(reads.call_count, 2)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(json.loads((folder / "status.json").read_text("utf-8")), complete)
+
     def test_restart_marks_orphaned_preview_interrupted_but_keeps_live_worker(self):
         from app.studio_render import task_status, _ACTIVE_TASKS, _TASKS_LOCK
         orphan = "pv_" + uuid.uuid4().hex

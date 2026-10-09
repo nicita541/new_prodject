@@ -257,10 +257,16 @@ def task_status(manager, identifier: str, job_id: str | None = None) -> dict:
     if status.get("status") in {"queued", "running"}:
         with _TASKS_LOCK:
             alive = identifier in _ACTIVE_TASKS
-        if not alive:
-            status = {**status, "status": "interrupted",
-                      "error": "Монтажёр был перезапущен во время экспорта. Запустите новый экспорт."}
-            atomic_json(base / "status.json", status)
+            if not alive:
+                # A worker can finish and leave _ACTIVE_TASKS between our
+                # initial read and this lock. Re-read before declaring a
+                # completed preview/export to be interrupted.
+                latest = read_json(base / "status.json") or status
+                if latest.get("status") in {"queued", "running"}:
+                    latest = {**latest, "status": "interrupted",
+                              "error": "Монтажёр был перезапущен во время экспорта. Запустите новый экспорт."}
+                    atomic_json(base / "status.json", latest)
+                status = latest
     files = [
         {"part_index": item["part_index"], "name": item["name"],
          "duration": item["duration"],
