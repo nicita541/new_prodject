@@ -106,3 +106,16 @@ def test_bounded_chunks_fail_fast_when_only_edge_is_subframe(monkeypatch):
     with pytest.raises(ValueError, match="Нет безопасной границы"):
         scene_analysis.bounded_chunks({"id": "scene", "start": 0, "end": 8},
                                       {"segments": []}, [], max_frames=12)
+
+
+def test_token_ledger_skips_malformed_rows_and_does_not_abort_inference(tmp_path, monkeypatch):
+    from app import token_usage
+    path = tmp_path / "token-usage.jsonl"
+    path.write_text('[]\nnull\nnot-json\n{"provider":"local","usage_reported":false}\n'
+                    '{"provider":"deepseek","usage_reported":true,"total_tokens":77}\n',
+                    encoding="utf-8")
+    values = token_usage.summary(tmp_path)
+    assert values["all_tokens"] == 77
+    assert values["unknown_calls"] == 1
+    monkeypatch.setattr(Path, "mkdir", lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("locked")))
+    token_usage.record(tmp_path / "nested", "local", "qwen", {"usage": {"total_tokens": 8}})
