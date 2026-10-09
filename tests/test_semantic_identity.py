@@ -210,7 +210,26 @@ class SemanticIdentityTests(unittest.TestCase):
         saved['image_hashes'] = {}
         atomic_json(checkpoint, saved)
         self.analyze(vision)
-        self.assertEqual(len(vision.requests), 2*requests)
+        # The scene manifest must be rebuilt, but valid, fully validated
+        # *chunk* checkpoints should prevent redundant model requests.
+        self.assertEqual(len(vision.requests), requests)
+        repaired = load_json(checkpoint)
+        self.assertTrue(repaired['storyboards'])
+        self.assertTrue(repaired['image_hashes'])
+        # Corrupt both the parent and a chunk checkpoint: only now must the
+        # model reprocess missing visual evidence instead of accepting it.
+        chunk = self.directory/'visual/event_0000_chunk_000.checkpoint.json'
+        piece = load_json(chunk)
+        piece['boards'] = []
+        piece['image_hashes'] = {}
+        atomic_json(chunk, piece)
+        repaired['storyboards'] = []
+        repaired['image_hashes'] = {}
+        atomic_json(checkpoint, repaired)
+        self.analyze(vision)
+        self.assertGreater(len(vision.requests), requests)
+        self.assertTrue(load_json(chunk)['image_hashes'])
+        self.assertTrue(load_json(checkpoint)['image_hashes'])
 
     def test_story_cache_invalidates_changed_embedded_prompt_with_same_version(self):
         (self.directory/'visual').mkdir()
