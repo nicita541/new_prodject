@@ -8,6 +8,13 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Studio Edition exact design is the primary UI for this branch.
+      // The original React frontend remains at /projects and other deep routes.
+      if (location.pathname === '/' && !new URLSearchParams(location.search).has('react')) {
+        location.replace('/studio-edition.html' + location.search);
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
