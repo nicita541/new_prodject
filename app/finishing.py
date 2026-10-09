@@ -229,8 +229,20 @@ def create_finishing_router() -> APIRouter:
             previous_revision = int(previous.get("revision", 0))
             if profile.revision is not None and profile.revision != previous_revision:
                 raise HTTPException(409, "Оформление изменено в другом окне, обновите страницу")
-            stored = {"episode_id": episode_id,
-                      **profile.model_dump(exclude={"revision"}),
+            # The old episode profile may contain caption text that never
+            # recorded which montage job it belonged to. Back up that legacy
+            # data once, before removing ambiguous cues from shared styling.
+            old_overrides = previous.get("part_overrides", {})
+            if isinstance(old_overrides, dict) and any(
+                    isinstance(value, dict) and value.get("cues") is not None
+                    for value in old_overrides.values()):
+                backup = path.parent / "legacy-caption-backups" / (episode_id + ".json")
+                if not backup.exists():
+                    atomic_json(backup, previous)
+            shared = profile.model_dump(exclude={"revision"})
+            for override in shared["part_overrides"].values():
+                override.pop("cues", None)
+            stored = {"episode_id": episode_id, **shared,
                       "revision": previous_revision + 1}
             atomic_json(path, stored)
         return stored

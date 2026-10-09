@@ -76,6 +76,34 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.put(path, json=bad).status_code, 422)
         self.assertEqual((self.directory / "plan.json").read_bytes(), before)
 
+    def test_legacy_episode_captions_are_backed_up_not_shared_with_other_jobs(self):
+        path = "/api/episodes/" + self.episode_id + "/finishing"
+        saved = self.client.get(path).json()
+        legacy = {key: value for key, value in saved.items()
+                  if key in {"version", "video", "subtitles", "audio", "part_overrides", "revision"}}
+        legacy["part_overrides"] = {"1": {"cues": [
+            {"start": .1, "end": 2.0, "text": "СТАРАЯ ВЕРСИЯ"}]}}
+        updated = self.client.put(path, json=legacy)
+        self.assertEqual(updated.status_code, 200, updated.text)
+        # Fresh clients never inherit unowned episode-wide caption text.
+        self.assertIsNone(updated.json()["part_overrides"]["1"]["cues"])
+        profile = self.client.get(path).json()
+        self.assertIsNone(profile["part_overrides"]["1"]["cues"])
+        # A pre-existing legacy profile must be copied before cleanup.
+        disk = self.manager.root / "finishing" / "episodes" / (self.episode_id + ".json")
+        stored = json.loads(disk.read_text("utf-8"))
+        stored["part_overrides"]["1"]["cues"] = [
+            {"start": .3, "end": 2.0, "text": "РУЧНЫЕ ПРАВКИ"}]
+        atomic_json(disk, stored)
+        next_profile = {**profile, "revision": profile["revision"]}
+        second = self.client.put(path, json=next_profile)
+        self.assertEqual(second.status_code, 200, second.text)
+        backup = disk.parent / "legacy-caption-backups" / (self.episode_id + ".json")
+        self.assertTrue(backup.is_file())
+        preserved = json.loads(backup.read_text("utf-8"))
+        self.assertEqual(preserved["part_overrides"]["1"]["cues"][0]["text"], "РУЧНЫЕ ПРАВКИ")
+        self.assertIsNone(self.client.get(path).json()["part_overrides"]["1"]["cues"])
+
     def test_finishing_profile_rejects_stale_revision_without_losing_changes(self):
         path = "/api/episodes/" + self.episode_id + "/finishing"
         original = self.client.get(path).json()
