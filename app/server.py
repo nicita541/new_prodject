@@ -333,7 +333,11 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; media-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; media-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; script-src 'self'; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+        )
         return response
 
     def get_manager(request: Request):
@@ -779,6 +783,20 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(503, "Studio Edition не собрана. Выполните npm run build в frontend.")
         return FileResponse(studio_bridge, media_type="text/javascript",
                             headers={"Cache-Control": "no-cache"})
+
+    @application.api_route("/studio-edition.css", methods=["GET", "HEAD"])
+    def studio_stylesheet():
+        file = dist_dir / "studio-edition.css"
+        if not file.is_file():
+            raise HTTPException(503, "Studio Edition CSS не собран. Выполните npm run build в frontend.")
+        return FileResponse(file, media_type="text/css", headers={"Cache-Control": "no-store"})
+
+    @application.api_route("/studio-edition-app.js", methods=["GET", "HEAD"])
+    def studio_application_script():
+        file = dist_dir / "studio-edition-app.js"
+        if not file.is_file():
+            raise HTTPException(503, "Studio Edition JS не собран. Выполните npm run build в frontend.")
+        return FileResponse(file, media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
     @application.api_route("/{full_path:path}", methods=["GET", "HEAD"])
     def index(full_path: str, request: Request):
