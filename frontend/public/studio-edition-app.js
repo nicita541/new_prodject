@@ -243,7 +243,7 @@ const finishingRoutes = [
  ['POST','/api/music/import','НОВОЕ · Импорт музыки через интерфейс']
 ];
 routes.push(...finishingRoutes);
-const finishingDefaults=()=>({version:1,video:{layout:'cinema',zoom:100,blur:24,brightness:100,vignette:15},subtitles:{enabled:true,text:'',x:50,y:74,font_size:32,color:'#f6d779',outline:3,background:false,align:'center',uppercase:true,safe_guides:true},audio:{enabled:true,volume:.12,track:null,mode:'single',fade_in:.8,fade_out:1.3,ducking:false},part_overrides:{}});
+const finishingDefaults=()=>({version:1,video:{layout:'cinema',zoom:100,blur:24,brightness:100,vignette:15},subtitles:{enabled:true,text:'',x:50,y:74,font_size:32,color:'#f6d779',outline:3,background:false,align:'center',uppercase:true,safe_guides:true},audio:{enabled:true,volume:.15,track:null,mode:'random_per_part',fade_in:.8,fade_out:1.3,ducking:false,part_tracks:{}},part_overrides:{}});
 function getFinishing(id=ui.episodeId){db.finishing ||= {}; if(!db.finishing[id])db.finishing[id]=finishingDefaults();return db.finishing[id]}
 function selectedCues(partIndex=ui.finishPart??0){const job=currentJob(),part=db.plans[job?.id]?.parts?.[partIndex];db.captionOverrides ||= {};const key=job?.id+':'+(part?.index??(partIndex+1));if(!db.captionOverrides[key])db.captionOverrides[key]={job_id:job?.id,part_index:part?.index??(partIndex+1),revision:0,cues:structuredClone(part?.subtitles||[])};return db.captionOverrides[key].cues;}
 function selectedSubtitle(){const f=getFinishing(),key=String((ui.finishPart??0)+1);f.part_overrides[key] ||= {};f.part_overrides[key].style ||= structuredClone(f.subtitles);return f.part_overrides[key].style;}
