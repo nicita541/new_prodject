@@ -274,6 +274,7 @@ function renderFinishing(){
  <div class="fc-preset-strip"><button type="button" data-fpreset="accent" class="${s.color==='#f6d779'?'active':''}">Яркие</button><button type="button" data-fpreset="classic" class="${s.color==='#ffffff'?'active':''}">Классика</button><button type="button" data-fpreset="soft">Минимализм</button></div>
  <div class="fc-colors">${palette}<label title="Свой цвет"><input type="color" id="fcCustomColor" value="${s.color}"></label></div>
  ${r('Размер','fcSize',s.font_size,18,54,' px')}${r('По горизонтали','fcX',s.x,5,95)}${r('По вертикали','fcY',s.y,8,92)}${r('Обводка','fcOutline',s.outline,0,6,' px')}
+ <label class="fc-toggle"><input type="checkbox" id="fcCaptionEnabled" ${s.enabled?'checked':''}><span>Показывать субтитры</span></label>
  <div class="fc-double"><label><input type="checkbox" id="fcUppercase" ${s.uppercase?'checked':''}> Верхний регистр</label><label><input type="checkbox" id="fcCaptionBg" ${s.background?'checked':''}> Подложка</label></div>
  <p class="fc-inline-tip">Перетаскивайте субтитры мышью прямо на видео. Двойной клик возвращает их в безопасную область.</p>`:
  tab==='audio'?`${label('Звуковое сопровождение','Оригинальная речь остаётся слышимой')}
@@ -357,7 +358,7 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
  document.querySelectorAll('[data-flayout]').forEach(el=>el.onclick=()=>{v.layout=el.dataset.flayout;store();render()});
  const binds=[['fcSize',s,'font_size',Number],['fcX',s,'x',Number],['fcY',s,'y',Number],['fcOutline',s,'outline',Number],['fcZoom',v,'zoom',Number],['fcBlur',v,'blur',Number],['fcBrightness',v,'brightness',Number],['fcVignette',v,'vignette',Number],['fcVolume',a,'volume',x=>Number(x)/100],['fcFadeIn',a,'fade_in',Number],['fcFadeOut',a,'fade_out',Number]];
  binds.forEach(([id,obj,key,convert])=>{const el=$(id);if(!el)return;el.addEventListener('input',()=>{obj[key]=convert(el.value);const target=$(id+'Label');if(target)target.textContent=el.value+({fcSize:' px',fcOutline:' px',fcBlur:' px',fcFadeIn:' с',fcFadeOut:' с'}[id]||'%');if(id==='fcVolume'){const audio=$('fcAudio');if(audio)audio.volume=Math.min(1,obj[key]);}finishUpdateView()});el.addEventListener('change',store)});
- for(const [id,obj,key] of [['fcUppercase',s,'uppercase'],['fcCaptionBg',s,'background'],['fcMusicEnabled',a,'enabled'],['fcDucking',a,'ducking'],['fcGuides',s,'safe_guides']]){const el=$(id);if(el)el.onchange=()=>{obj[key]=el.checked;finishUpdateView();store()}}
+ for(const [id,obj,key] of [['fcCaptionEnabled',s,'enabled'],['fcUppercase',s,'uppercase'],['fcCaptionBg',s,'background'],['fcMusicEnabled',a,'enabled'],['fcDucking',a,'ducking'],['fcGuides',s,'safe_guides']]){const el=$(id);if(el)el.onchange=()=>{obj[key]=el.checked;finishUpdateView();store()}}
  document.querySelectorAll('[data-fcue]').forEach(el=>el.onclick=()=>{ui.finishCue=Number(el.dataset.fcue);render()});
  $('fcAddCue')?.addEventListener('click',()=>{const cues=selectedCues();const prev=cues[cues.length-1],st=Number(prev?.end)||0;cues.push({start:st,end:st+3,text:'Новая реплика'});ui.finishCue=cues.length-1;store();render()});
  $('fcDeleteCue')?.addEventListener('click',()=>{const cues=selectedCues();if(cues.length<=1)return;cues.splice(ui.finishCue||0,1);ui.finishCue=0;store();render()});

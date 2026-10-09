@@ -129,6 +129,16 @@ assert.equal(captionOverlay.textContent, 'ДРУГАЯ РЕПЛИКА',
 playbackPaused = true;
 videoForCaptions.dispatchEvent(new window.Event('pause'));
 
+const enabledControl = window.document.querySelector('#fcCaptionEnabled');
+assert(enabledControl, 'real Studio must offer an explicit subtitle visibility toggle');
+enabledControl.checked = false;
+enabledControl.dispatchEvent(new window.Event('change', {bubbles:true}));
+assert.equal(window.document.querySelector('#fcCaption').style.visibility,'hidden',
+  'disabling captions should hide the editor overlay');
+enabledControl.checked = true;
+enabledControl.dispatchEvent(new window.Event('change', {bubbles:true}));
+assert.equal(window.document.querySelector('#fcCaption').style.visibility,'visible',
+  'captions must be recoverable without resetting all finishing settings');
 const editorNav = window.document.querySelector('button[data-action="nav"][data-screen="editor"]');
 assert(editorNav, 'settings navigation should exist');
 editorNav.click();
