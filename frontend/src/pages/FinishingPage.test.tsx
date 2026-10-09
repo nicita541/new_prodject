@@ -110,6 +110,17 @@ describe('Studio Edition actual backend contract', () => {
     expect(screen.getByLabelText('Текст реплики')).toHaveValue('ПРОВЕРКА СУБТИТРОВ');
   });
 
+  it('uses the current job captions rather than legacy episode-level text', async () => {
+    vi.mocked(api.getFinishing).mockResolvedValue({
+      ...profile,
+      part_overrides: { '1': { cues: [{ start:0,end:3,text:'ЧУЖОЙ МОНТАЖ' }] } }
+    });
+    page();
+    await screen.findByText('Финальный штрих.');
+    await waitFor(()=>expect(screen.getByLabelText('Текст реплики')).toHaveValue('ПРОВЕРКА СУБТИТРОВ'));
+    expect(screen.queryByText('ЧУЖОЙ МОНТАЖ')).not.toBeInTheDocument();
+  });
+
   it('keeps the selected cue visible while paused over a different spoken cue', async () => {
     vi.mocked(api.getFinishCaptions).mockImplementation(async (_,partIndex)=>({
       job_id:job.id, part_index:partIndex, revision:0,

@@ -78,18 +78,18 @@ export function FinishingPage() {
     setProblem('');
     Promise.all([api.getJob(jobId), api.getJobPlan(jobId), api.getFinishing(episodeId), api.getMusicSettings()])
       .then(async ([j, p, saved, music]) => {
-        const captionResults = await Promise.allSettled(p.parts.map(part =>
+        // The episode profile stores style only. The current job's caption
+        // endpoint is authoritative, even if a legacy profile contains cues
+        // copied from a *different* montage of the same episode.
+        const captionResults = await Promise.all(p.parts.map(part =>
           api.getFinishCaptions(jobId, part.index)));
         if (!live) return;
         const overrides = { ...saved.part_overrides };
         const revisions: Record<string, number> = {};
         captionResults.forEach((result, idx) => {
-          if (result.status === 'fulfilled') {
-            const partKey = String(p.parts[idx].index);
-            overrides[partKey] = { ...overrides[partKey],
-              cues: overrides[partKey]?.cues ?? result.value.cues };
-            revisions[partKey] = result.value.revision;
-          }
+          const partKey = String(p.parts[idx].index);
+          overrides[partKey] = { ...overrides[partKey], cues: result.cues };
+          revisions[partKey] = result.revision;
         });
         setJob(j); setPlan(p); setProfile({ ...saved, part_overrides: overrides });
         setTracks(music.tracks || []); setCueRevision(revisions);

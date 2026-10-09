@@ -37,7 +37,9 @@ const profile = {
     outline: 3, background: false, align: 'center', uppercase: true, safe_guides: true },
   audio: { enabled: true, volume: .15, mode: 'single', track: null,
     fade_in: .8, fade_out: 1.3, ducking: false, part_tracks: {} },
-  part_overrides: {},
+  // Simulate an old episode-scoped cue from another completed montage.
+  // Production editor must instead show captions for the selected job.
+  part_overrides: { '1': {cues:[{start:0,end:2,text:'ЧУЖАЯ РЕПЛИКА'}]} },
 };
 const sources = [{id:'a',name:'sample.mp4',size:1500000}];
 const library = {
@@ -100,6 +102,7 @@ let playbackPaused = true;
 Object.defineProperty(videoForCaptions, 'paused', { configurable: true, get: () => playbackPaused });
 assert.equal(captionOverlay.style.visibility, 'visible', 'paused editor must display selected caption at 00:00');
 assert.equal(captionOverlay.textContent, 'РЕАЛЬНАЯ РЕПЛИКА');
+assert(!window.document.body.textContent.includes('ЧУЖАЯ РЕПЛИКА'), 'another job captions leaked into editor');
 playbackPaused = false;
 videoForCaptions.dispatchEvent(new window.Event('play'));
 videoForCaptions.currentTime = 1;

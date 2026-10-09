@@ -83,6 +83,16 @@
   if(job.episode_id&&!db.finishing[job.episode_id]) {
     db.finishing[job.episode_id]=await get('/api/episodes/'+encodeURIComponent(job.episode_id)+'/finishing');
   }
+  // Eagerly resolve captions only for the *selected* completed job.
+  // Never re-use episode-level cue text from a previous montage attempt.
+  db.captionOverrides ||= {};
+  await Promise.all((db.plans[job.id]?.parts||[]).map(async part=>{
+    const key=job.id+':'+part.index;
+    if(!db.captionOverrides[key]){
+      db.captionOverrides[key]=await get('/api/jobs/'+encodeURIComponent(job.id)+
+        '/parts/'+encodeURIComponent(part.index)+'/captions');
+    }
+  }));
  }
  async function request(method,path,body,db,ui){
   let options={method};

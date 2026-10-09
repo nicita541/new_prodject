@@ -99,12 +99,11 @@ def _effective_part(manager, job_id: str, part: dict, profile: dict) -> dict:
     result = copy.deepcopy(part)
     index = result["index"]
     stored = read_json(manager.job_dir(job_id) / "finishing" / ("captions_%03d.json" % index))
-    overrides = profile.get("part_overrides", {}).get(str(index), {})
-    cues = overrides.get("cues")
-    if cues is None and stored is not None:
-        cues = stored.get("cues")
-    if cues is not None:
-        result["subtitles"] = cues
+    # Speech belongs to this *job*. Episode-wide legacy part_overrides.cues
+    # are not attributable to any particular completed montage and must never
+    # overwrite the text or timing of a different attempt.
+    if stored is not None:
+        result["subtitles"] = stored.get("cues", result.get("subtitles", []))
     result["layout"] = profile["video"]["layout"]
     return result
 

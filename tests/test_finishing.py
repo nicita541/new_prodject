@@ -110,6 +110,31 @@ class StudioApiTests(unittest.TestCase):
                                 {"codec_type": "audio", "tags": {"language": "en"}}]}):
                     _probe(self.source, self.root)
 
+    def test_two_montages_of_same_episode_never_share_legacy_caption_text(self):
+        from app.finishing import FinishProfile
+        from app.studio_render import _effective_part
+        profile = FinishProfile().model_dump()
+        profile["part_overrides"]["1"] = {
+            "cues": [{"start": 0.1, "end": 1.0, "text": "НЕ ТА ВЕРСИЯ"}]
+        }
+        # A fresh montage uses its plan even if the episode's shared profile
+        # still contains an older montage's unsafely stored captions.
+        current = _effective_part(self.manager, self.job_id, self.plan["parts"][0], profile)
+        self.assertEqual(current["subtitles"][0]["text"], "Оригинал")
+        # The current job's saved caption has precedence over legacy profile.
+        captions = self.directory / "finishing" / "captions_001.json"
+        atomic_json(captions, {"revision": 1, "part_index": 1, "job_id": self.job_id,
+                               "cues": [{"start": .2, "end": 1.1, "text": "ТОЛЬКО ЭТО ЗАДАНИЕ"}]})
+        updated = _effective_part(self.manager, self.job_id, self.plan["parts"][0], profile)
+        self.assertEqual(updated["subtitles"][0]["text"], "ТОЛЬКО ЭТО ЗАДАНИЕ")
+        another = str(uuid.uuid4())
+        second = self.manager.job_dir(another)
+        second.mkdir()
+        second_part = {**self.plan["parts"][0], "subtitles": [
+            {"start": 0, "end": 1, "text": "РЕПЛИКА НОВОГО МОНТАЖА"}]}
+        other_result = _effective_part(self.manager, another, second_part, profile)
+        self.assertEqual(other_result["subtitles"][0]["text"], "РЕПЛИКА НОВОГО МОНТАЖА")
+
     def test_short_preview_maps_output_seconds_to_source_cuts(self):
         part = slice_part(self.plan["parts"][0], 1.0, 4.0)
         self.assertAlmostEqual(part["duration"], 4.0)
