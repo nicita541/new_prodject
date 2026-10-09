@@ -203,6 +203,26 @@ class RenderCacheTests(unittest.TestCase):
             self.assertEqual(saved["music_track"], "song.mp3")
             validate.assert_called_once()
 
+    def test_cache_validation_cancellation_is_not_swallowed(self):
+        with workspace_directory() as directory:
+            import hashlib
+            mp4 = directory / "part_001.mp4"
+            mp4.write_bytes(b"encoded")
+            subtitle = mp4.with_suffix(".srt")
+            subtitle.write_text("subtitles")
+            checkpoint = directory / "part_001.json"
+            stat = mp4.stat()
+            checkpoint.write_text(json.dumps({
+                "fingerprint": "same-run",
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "srt_hash": hashlib.sha256(subtitle.read_bytes()).hexdigest(),
+            }), encoding="utf-8")
+            with patch("app.pipeline.validate_export", side_effect=InterruptedError("cancel")):
+                with self.assertRaises(InterruptedError):
+                    _validated_cached_render(mp4, checkpoint, "same-run",
+                                             {"duration": 2.0}, directory, lambda: False)
+
     def test_non_object_or_truncated_cache_is_a_miss(self):
         with workspace_directory() as directory:
             mp4 = directory / "part_001.mp4"

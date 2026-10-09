@@ -113,6 +113,9 @@ def _validated_cached_render(path: Path, checkpoint: Path, fingerprint: str,
             return None
         validate_export(path, part["duration"], workdir, cancelled,
                         max_duration=150.0 if part.get("duration", 0) > 120.0 else None)
+    except InterruptedError:
+        # A cancellation is not a cache miss; never start a new encode.
+        raise
     except (OSError, ValueError, KeyError, TypeError, RuntimeError):
         return None
     return saved
