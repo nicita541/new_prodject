@@ -33,13 +33,13 @@ def record(job_dir: Path, provider: str, model: str, response: dict):
              "usage_reported": reported, **numbers}
     path = Path(job_dir) / "token-usage.jsonl"
     with _LOCK:
-        path.parent.mkdir(parents=True, exist_ok=True)
         try:
+            path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
                 stream.flush()
         except OSError:
-            # Metering must NEVER abort the actual inference pipeline.
+            # Disk errors in optional accounting must never abort inference.
             return
 
 
@@ -51,11 +51,18 @@ def summary(job_dir: Path):
     if not path.is_file():
         return {"version": 1, **totals, "all_tokens": 0}
     with _LOCK:
-        with path.open("r", encoding="utf-8") as stream:
+        try:
+            stream = path.open("r", encoding="utf-8")
+        except FileNotFoundError:
+            return {"version": 1, **totals, "all_tokens": 0}
+        with stream:
             for line in stream:
                 try:
                     row = json.loads(line)
                 except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(row, dict):
+                    # A partial/corrupted line must not take down the UI.
                     continue
                 provider = row.get("provider")
                 if provider not in ("local", "deepseek"):
