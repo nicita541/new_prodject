@@ -347,6 +347,35 @@ class BackgroundMusicIntegrationTests(unittest.TestCase):
             self.assertLess(abs(float(streams["video"]["duration"]) - float(streams["audio"]["duration"])), 0.15)
 
 
+    def test_smart_music_ducking_keeps_real_export_valid(self):
+        """Exercise dynamic FFmpeg volume expressions, not only mock strings."""
+        with workspace_directory() as directory:
+            source = directory / "source.mp4"
+            run_command([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                         "color=size=160x90:rate=30", "-f", "lavfi", "-i",
+                         "sine=frequency=440:sample_rate=48000", "-t", "2",
+                         "-c:v", "libx264", "-preset", "ultrafast",
+                         "-c:a", "aac", str(source)], directory)
+            track = directory / "music.wav"
+            run_command([str(FFMPEG), "-v", "error", "-y", "-f", "lavfi", "-i",
+                         "sine=frequency=660:sample_rate=48000", "-t", "0.5",
+                         "-c:a", "pcm_s16le", str(track)], directory)
+            part = {"index": 1, "duration": 2.0,
+                    "cuts": [{"start": 0, "end": 2.0,
+                              "focus": [{"time": 0, "x": 0.5, "y": 0.5, "confidence": 0.9}]}],
+                    "subtitles": []}
+            result = render_part(source, part, {"width": 160, "height": 90},
+                                 directory / "output", directory / "work", "libx264",
+                                 background_music={"path": track, "volume": 0.15,
+                                                   "volume_music_duck": 0.015,
+                                                   "duck_intervals": [(0.5, 1.0)]})
+            filter_text = (directory / "work" / "render.ffscript").read_text("utf-8")
+            self.assertIn("eval=frame", filter_text)
+            info = inspect_media(result, directory)
+            streams = {stream["codec_type"] for stream in info["streams"]}
+            self.assertEqual(streams, {"video", "audio"})
+            self.assertLess(abs(float(info["format"]["duration"]) - 2.0), 0.15)
+
     def test_nvenc_failure_really_encodes_cpu_video_with_background_music(self):
         """Force NVENC failure, then inspect the actual CPU-encoded MP4."""
         with workspace_directory() as directory:
