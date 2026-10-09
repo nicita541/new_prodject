@@ -28,7 +28,12 @@ def main() -> None:
         saved = json.loads(MANIFEST.read_text(encoding="utf-8"))
         job_dir = config.JOBS / saved.get("job_id", "_invalid")
         if (job_dir / "job.json").is_file() and (job_dir / "output" / "part_001.mp4").is_file():
-            print("Visual demo already prepared: " + saved["url"])
+            target = ("http://127.0.0.1:8766/studio-edition.html?screen=finishing"
+                      "&episode=" + saved["episode_id"] + "&job=" + saved["job_id"])
+            if saved.get("url") != target:
+                saved["url"] = target
+                atomic_json(MANIFEST, saved)
+            print("Visual demo already prepared: " + target)
             return
         raise RuntimeError("Demo metadata found without files: data/studio-demo.json")
 
@@ -93,8 +98,8 @@ def main() -> None:
             "cancel_requested": False, "analysis_provider": "local",
             "layout": "portrait", "caption_style": "classic", "outputs": outputs,
         })
-        link = ("http://127.0.0.1:8766/episode/" + episode["id"] +
-                "/finishing/" + job_id)
+        link = ("http://127.0.0.1:8766/studio-edition.html?screen=finishing"
+                "&episode=" + episode["id"] + "&job=" + job_id)
         atomic_json(MANIFEST, {"url": link, "job_id": job_id,
                                "episode_id": episode["id"], "synthetic": True})
         print("Three synthetic Shorts ready. Open: " + link)
