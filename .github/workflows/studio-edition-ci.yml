@@ -86,6 +86,8 @@ jobs:
           mkdir -p tools/ffmpeg/bin
           ln -sf "$(command -v ffmpeg)" tools/ffmpeg/bin/ffmpeg.exe
           ln -sf "$(command -v ffprobe)" tools/ffmpeg/bin/ffprobe.exe
+      - name: Prepare engine-only writable directories
+        run: mkdir -p temp cache data/jobs data/imports
       - name: Test scene comprehension, media, caches, model API, job lifecycle and music
         run: |
           python -m pytest -q -x \
