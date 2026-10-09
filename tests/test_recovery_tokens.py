@@ -130,3 +130,41 @@ def test_corrupted_scene_cache_only_rebuilds_affected_chunk(tmp_path):
         assert _read_optional_checkpoint(checkpoint) == {}
     checkpoint.write_text('{"identity":"valid","result":{}}', encoding="utf-8")
     assert _read_optional_checkpoint(checkpoint)["identity"] == "valid"
+
+
+def test_frame_empty_80ms_pause_keeps_speech_and_caps_sampled_frames(tmp_path, monkeypatch):
+    """Preserve the single word when the only ASR boundary has zero actual PTS."""
+    from app.scene_analysis import bounded_chunks
+    from app import scene_detection
+    from app.vision import inference_samples, inference_storyboard
+    from app import bounded_storyboard
+    from app.media_probe import atomic_json
+
+    transcript = {"segments": [{"start": .08, "end": 3.84, "text": "Реплика"}],
+                  "words": [{"start": .08, "end": 3.84, "text": "Реплика"}]}
+    scene = {"id": "visual", "start": 0., "end": 3.84}
+    monkeypatch.setattr(scene_detection, "analysis_chunks",
+                        lambda *_: [{"start": 0., "end": 3.84}])
+    units = __import__("app.story_review", fromlist=["candidate_units"]).candidate_units(
+        0., 3.84, transcript, [], annotated=True, max_unit_seconds=4)
+    assert len(inference_samples(0, 3.84, units, recovery=True)) == 13
+    # A variable-rate file can start showing frames only at 100ms.
+    frames = [.1 + i * .04 for i in range(90)]
+    parts = bounded_chunks(scene, transcript, [], frame_times=frames)
+    assert len(parts) == 1
+    assert parts[0]["sampling_limit"] == 12
+    assert (parts[0]["start"], parts[0]["end"]) == (0, 3.84)
+
+    observations = []
+    def fake_board(source, start, end, destination, cancelled, *, times, context):
+        observations.extend(times)
+        destination.write_bytes(b"source frames")
+        atomic_json(destination.with_suffix(".storyboard.json"), {"frames": []})
+        return times
+    monkeypatch.setattr(bounded_storyboard, "build_bounded_storyboard", fake_board)
+    result = inference_storyboard(tmp_path/"source.mp4",0,3.84,units,
+                                  tmp_path/"board.jpg",lambda:False,
+                                  recovery=True,sample_limit=parts[0]["sampling_limit"])
+    assert result == observations
+    assert len(result) == 12
+    assert result[0] < result[-1]
