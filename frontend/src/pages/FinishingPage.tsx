@@ -171,8 +171,17 @@ export function FinishingPage() {
     if (!profile || !episodeId || !jobId || saving) return;
     setSaving(true); setProblem(''); setMessage('');
     try {
-      await saveDraftCaptions();
-      const stored = await api.saveFinishing(episodeId, profile);
+      const changes = Object.keys(dirtyCues).filter(key => dirtyCues[key]).map(key => ({
+        part_index: Number(key), revision: cueRevision[key] ?? 0,
+        cues: profile.part_overrides[key]?.cues ?? []
+      }));
+      const result = await api.saveFinishingState(jobId, profile, changes);
+      const stored = result.profile;
+      setCueRevision(old => ({
+        ...old, ...Object.fromEntries(result.captions.map(entry => [
+          String(entry.part_index), entry.revision]))
+      }));
+      setDirtyCues({});
       // The API intentionally stores styles at episode scope and captions at
       // job scope. Keep the current job's captions in view after the profile
       // response (which has no cues) so Save cannot blank the editor.

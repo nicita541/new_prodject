@@ -62,6 +62,14 @@ beforeEach(() => {
     part_overrides: Object.fromEntries(Object.entries(p.part_overrides).map(
       ([key, value]) => [key, { ...value, cues: undefined }]))
   }));
+  vi.mocked(api.saveFinishingState).mockImplementation(async (_, p, captions) => ({
+    profile: { ...p, revision:1,
+      part_overrides: Object.fromEntries(Object.entries(p.part_overrides).map(
+        ([key,value]) => [key,{...value,cues:undefined}])) },
+    captions: captions.map(entry=>({
+      job_id:job.id,part_index:entry.part_index,cues:entry.cues,revision:entry.revision+1
+    }))
+  }));
   vi.mocked(api.saveFinishCaptions).mockImplementation(async(_,i,cues)=>({
     job_id:job.id,part_index:i,cues,revision:1
   }));
@@ -83,17 +91,18 @@ describe('Studio Edition actual backend contract', () => {
     expect(api.getFinishCaptions).toHaveBeenCalledTimes(2);
   });
 
-  it('persists updated captions and finish style via separate APIs', async () => {
+  it('persists updated captions and styles through a single validated request', async () => {
     const user = userEvent.setup();
     page();
     const textarea = await screen.findByLabelText('Текст реплики');
     await user.clear(textarea);
     await user.type(textarea,'НОВАЯ РЕПЛИКА');
     await user.click(screen.getByRole('button',{name:/Сохранить правки/}));
-    await waitFor(()=>expect(api.saveFinishCaptions).toHaveBeenCalledWith(
-      job.id,1,[{start:0,end:4.4,text:'НОВАЯ РЕПЛИКА'}],0));
-    expect(api.saveFinishing).toHaveBeenCalledWith(e1.id,
-      expect.objectContaining({ part_overrides: expect.any(Object) }));
+    await waitFor(()=>expect(api.saveFinishingState).toHaveBeenCalledWith(
+      job.id,expect.objectContaining({part_overrides:expect.any(Object)}),
+      [{part_index:1,revision:0,cues:[{start:0,end:4.4,text:'НОВАЯ РЕПЛИКА'}]}]));
+    expect(api.saveFinishCaptions).not.toHaveBeenCalled();
+    expect(api.saveFinishing).not.toHaveBeenCalled();
     expect(await screen.findByText(/реплики сохранены на сервере/)).toBeInTheDocument();
     expect(screen.getByLabelText('Текст реплики')).toHaveValue('НОВАЯ РЕПЛИКА');
   });

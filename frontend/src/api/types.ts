@@ -229,6 +229,9 @@ export interface FinishProfile {
 export interface FinishCaptions {
   job_id: string; part_index: number; revision: number; cues: FinishCue[];
 }
+export interface FinishSaveResult {
+  profile: FinishProfile; captions: FinishCaptions[];
+}
 export interface FinishFile {
   part_index: number; name: string; duration: number; url: string;
   subtitle_url: string | null;

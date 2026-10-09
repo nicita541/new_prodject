@@ -14,7 +14,7 @@ import type {
   HealthStatus,
   EpisodeSettings,
   ResetBudgetResponse,
-  FinishProfile, FinishCaptions, FinishCue, FinishRenderTask
+  FinishProfile, FinishCaptions, FinishCue, FinishRenderTask, FinishSaveResult
 } from './types';
 import { parseLibrarySnapshot } from '../library/contract';
 
@@ -109,6 +109,19 @@ export const api = {
         part_overrides: Object.fromEntries(Object.entries(values.part_overrides).map(
           ([key, override]) => [key, { ...override, cues: undefined }]))
       }))(profile)),
+    }),
+  saveFinishingState: (jobId: string, profile: FinishProfile,
+    captions: Array<{part_index: number; revision: number; cues: FinishCue[]}>) =>
+    fetchApi<FinishSaveResult>('/api/jobs/' + jobId + '/finishing/state', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        profile: (({episode_id: _episode_id, ...values}) => ({
+          ...values,
+          part_overrides: Object.fromEntries(Object.entries(values.part_overrides).map(
+            ([key, value]) => [key, {...value, cues: undefined}]))
+        }))(profile),
+        captions
+      })
     }),
   getFinishCaptions: (jobId: string, index: number) =>
     fetchApi<FinishCaptions>('/api/jobs/' + jobId + '/parts/' + index + '/captions'),
