@@ -13,7 +13,10 @@ from unittest.mock import Mock, patch
 
 
 HERE = Path(__file__).resolve().parents[1]
-ROOT = next(p for p in (HERE, *HERE.parents) if (p/'tools/python/python.exe').is_file())
+# CI and clean Linux worktrees use the active Python interpreter rather than
+# a bundled Windows tools/python/python.exe; retain multi-worktree comparison
+# when the bundled runtime is available.
+ROOT = next((p for p in (HERE, *HERE.parents) if (p/'tools/python/python.exe').is_file()), HERE)
 if HERE == ROOT:
     from app import story_structure_pass as structure
 else:
