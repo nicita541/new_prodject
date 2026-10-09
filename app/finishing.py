@@ -140,7 +140,10 @@ class ExportSubmission(BaseModel):
 
 def _checked_render_job(request: Request, job_id: str):
     job, plan = _job_plan(request, job_id)
-    episode_id = job.get("episode_id")
+    # Older jobs are linked by Library._migrate() without rewriting job.json.
+    # A completed legacy montage is still a valid editing target.
+    library = request.app.state.library
+    episode_id = job.get("episode_id") or library.data.get("legacy_jobs", {}).get(job_id)
     if not episode_id:
         raise HTTPException(400, "Для этого монтажа не найдена серия с настройками оформления")
     _episode(request, episode_id)
