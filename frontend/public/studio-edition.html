@@ -467,7 +467,11 @@ function finishCueBody(partIndex){const f=getFinishing();return {part_index:part
 function escAttr(s){return esc(String(s??''))}
 function renderFinishing(){
  const e=currE();if(!e)return '<div class="empty">Выберите серию для настройки.</div>';
- const f=getFinishing(),j=currentJob(),plan=db.plans[j?.id],cnt=plan?.parts?.length||5;
+ const j=currentJob();
+ if(!j||j.status!=='completed'||!db.plans[j.id]?.parts?.length){
+  return '<div class="empty"><strong>Для этой серии ещё нет готового монтажа</strong>Редактор оформления станет доступен после завершения Shorts. Выберите другую серию или запустите монтаж.</div>';
+ }
+ const f=getFinishing(),plan=db.plans[j.id],cnt=plan.parts.length;
  ui.finishPart=Math.max(0,Math.min(cnt-1,ui.finishPart??ui.part??0));
  const s=selectedSubtitle(),a=f.audio,v=f.video,cue=chosenCue();const tab=ui.finishTab||'captions';
  const tone=['#f6d779','#ffffff','#ace7d2','#ffc7c7','#d4c4ff'];
