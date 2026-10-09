@@ -64,3 +64,45 @@ def test_tiny_asr_pause_chunks_are_merged_not_sampled_independently():
     assert len(fixed)==3
     assert chunks[1]["end"]==20.038
     assert sum(x["end"]-x["start"] for x in fixed)==48
+
+
+def test_bounded_chunks_use_frame_safe_edges_and_preserve_limit(monkeypatch):
+    """Regression for endless split->remerge when a candidate edge is 38 ms."""
+    from app import scene_analysis
+    from app import scene_detection
+    from app import vision
+
+    def units(start, end, *args, **kwargs):
+        # A word boundary 38 ms after the start must never be the split edge.
+        return [{"start": start, "end": min(start + .038, end)},
+                {"start": start, "end": min(start + 4., end)},
+                {"start": min(start + 4., end), "end": end}]
+    def samples(start, end, units, *, recovery=False):
+        # Emulates the visual frame budget of one inference request.
+        return list(range(int((end-start)*2) + 1))
+    monkeypatch.setattr(scene_detection, "analysis_chunks", lambda *args: [
+        {"id": "t", "start": 0., "end": 8.}])
+    monkeypatch.setattr(scene_analysis, "candidate_units", units)
+    monkeypatch.setattr(vision, "inference_samples", samples)
+    chunks = scene_analysis.bounded_chunks(
+        {"id": "scene", "start": 0., "end": 8.}, {"segments": []}, [], max_frames=12)
+    assert len(chunks) == 2
+    assert chunks[0]["start"] == 0.
+    assert chunks[0]["end"] == chunks[1]["start"] == 4.
+    assert chunks[1]["end"] == 8.
+    assert all(len(samples(x["start"], x["end"], [], recovery=True)) <= 12 for x in chunks)
+
+
+def test_bounded_chunks_fail_fast_when_only_edge_is_subframe(monkeypatch):
+    from app import scene_analysis, scene_detection, vision
+    import pytest
+    monkeypatch.setattr(scene_detection, "analysis_chunks", lambda *args: [
+        {"id": "t", "start": 0., "end": 8.}])
+    monkeypatch.setattr(scene_analysis, "candidate_units",
+                        lambda *args, **kwargs: [{"start": 0, "end": .038},
+                                                  {"start": .038, "end": 8}])
+    monkeypatch.setattr(vision, "inference_samples",
+                        lambda *args, **kwargs: list(range(20)))
+    with pytest.raises(ValueError, match="Нет безопасной границы"):
+        scene_analysis.bounded_chunks({"id": "scene", "start": 0, "end": 8},
+                                      {"segments": []}, [], max_frames=12)
