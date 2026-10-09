@@ -172,7 +172,7 @@ def choose_encoder(workdir: Path, cancelled=lambda: False) -> str:
 
 def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir: Path,
                 encoder: str, cancelled=lambda: False,
-                background_music: dict | None = None) -> Path:
+                background_music: dict | None = None, finishing: dict | None = None) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
     basename = f"part_{part['index']:03}"
@@ -181,7 +181,7 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     ass_path = workdir / "captions.ass"
     layout = part.get('layout', 'portrait')
     write_ass(ass_path, part["subtitles"], part["index"], part["duration"],
-              part.get('caption_style', 'classic'), layout)
+              part.get('caption_style', 'classic'), layout, (finishing or {}).get("subtitles"))
     args = [str(FFMPEG), "-hide_banner", "-loglevel", "warning", "-nostdin", "-y"]
     filters, video_inputs, audio_inputs = [], [], []
     offset = 0.0
@@ -217,7 +217,24 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
                    f"trim=duration={part['duration']:.6f},fps=30[joined]")
     filters.append("".join(audio_inputs) + f"concat=n={len(part['cuts'])}:v=0:a=1[audio]")
     # The script and ASS names are safe ASCII relative paths, independent of source path characters.
-    filters.append("[joined]ass=filename=captions.ass[video]")
+    video_effects = []
+    visual = (finishing or {}).get("video", {})
+    if visual:
+        zoom = float(visual.get("zoom", 100)) / 100
+        if zoom != 1:
+            video_effects.append(f"scale=iw*{zoom:.4f}:ih*{zoom:.4f}:flags=lanczos,"
+                                 "crop=1080:1920:(in_w-out_w)/2:(in_h-out_h)/2")
+        brightness = (float(visual.get("brightness", 100)) - 100) / 250
+        if brightness:
+            video_effects.append(f"eq=brightness={brightness:.4f}")
+        vignette = float(visual.get("vignette", 0))
+        if vignette:
+            video_effects.append(f"vignette=angle=PI/{max(3.0, 28.0 - vignette / 2):.3f}")
+    if video_effects:
+        filters.append("[joined]" + ",".join(video_effects) + "[graded]")
+        filters.append("[graded]ass=filename=captions.ass[video]")
+    else:
+        filters.append("[joined]ass=filename=captions.ass[video]")
     audio_label = "[audio]"
     if background_music:
         music_path = background_music["path"]
@@ -228,7 +245,8 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
         fade_out = bool(background_music.get("fade_out", True))
         music_index = len(part["cuts"])
         args.extend(["-stream_loop", "-1", "-i", str(music_path.resolve())])
-        fade_duration = min(1.0, part["duration"] / 2.0)
+        fade_in_duration = min(float(background_music.get("fade_in_seconds", 1.0)), part["duration"] / 2.0)
+        fade_out_duration = min(float(background_music.get("fade_out_seconds", 1.0)), part["duration"] / 2.0)
         from .audio_analysis import build_volume_expression
         vol_expr = build_volume_expression(duck_intervals, volume, duck_volume)
         chain = (f"[{music_index}:a:0]atrim=duration={part['duration']:.6f},asetpts=PTS-STARTPTS,"
@@ -238,9 +256,9 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
                  f"aresample=48000,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,"
                  f"volume={vol_expr}")
         if fade_in:
-            chain += f",afade=t=in:st=0:d={fade_duration:.6f}"
+            chain += f",afade=t=in:st=0:d={fade_in_duration:.6f}"
         if fade_out:
-            chain += f",afade=t=out:st={max(0.0, part['duration'] - fade_duration):.6f}:d={fade_duration:.6f}"
+            chain += f",afade=t=out:st={max(0.0, part['duration'] - fade_out_duration):.6f}:d={fade_out_duration:.6f}"
         chain += "[music]"
         filters.append(chain)
         filters.append("[audio][music]amix=inputs=2:duration=first:normalize=0[mix]")
@@ -261,7 +279,7 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
         if encoder != "h264_nvenc":
             raise
         return render_part(source, part, probe, output_dir, workdir, "libx264", cancelled,
-                           background_music=background_music)
+                           background_music=background_music, finishing=finishing)
     validate_export(partial, part["duration"], workdir, cancelled,
                     max_duration=150.0 if part.get("duration", 0) > MAX_DURATION else None)
     if cancelled():

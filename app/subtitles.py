@@ -123,7 +123,7 @@ def write_srt(path: Path, cues: list[dict]) -> None:
 
 
 def write_ass(path: Path, cues: list[dict], index: int, duration: float,
-              style: str = 'classic', layout: str = 'portrait') -> None:
+              style: str = 'classic', layout: str = 'portrait', finishing: dict | None = None) -> None:
     header = """[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -146,8 +146,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     # Never allow dialogue to insert ASS control/override sequences.
     def escape(text):
         return text.replace("\\", "＼").replace("{", "｛").replace("}", "｝").replace("\r", "").replace("\n", r"\N")
+    # The finishing editor writes captions as independent overlays. FFmpeg
+    # rendering uses exactly the same stored x/y/size/color values as preview.
+    override = ""
+    if finishing:
+        if not finishing.get("enabled", True):
+            cues = []
+        x = round(float(finishing.get("x", 50)) * 10.8)
+        y = round(float(finishing.get("y", 74)) * 19.2)
+        px = round(float(finishing.get("font_size", 32)) * 2)
+        color = str(finishing.get("color", "#f6d779")).lstrip("#")
+        bgr = color[4:6] + color[2:4] + color[0:2]
+        outline = int(finishing.get("outline", 3))
+        alignment = {"left": 1, "center": 2, "right": 3}.get(finishing.get("align"), 2)
+        override = (r"{\an" + str(alignment) + r"\pos(" + str(x) + "," + str(y) +
+                    r")\fs" + str(px) + r"\1c&H" + bgr + r"&\bord" +
+                    str(outline) + r"\shad0}")
     lines = [header]
     for cue in cues:
-        effect = r'{\fad(50,60)}' if style == 'accent' else ''
-        lines.append(f"Dialogue: 0,{_clock(cue['start'], True)},{_clock(cue['end'], True)},Speech,,0,0,0,,{effect}{escape(cue['text'])}\n")
+        effect = override or (r'{\fad(50,60)}' if style == 'accent' else '')
+        text = cue['text'].upper() if finishing and finishing.get("uppercase", True) else cue['text']
+        lines.append(f"Dialogue: 0,{_clock(cue['start'], True)},{_clock(cue['end'], True)},Speech,,0,0,0,,{effect}{escape(text)}\n")
     path.write_text("".join(lines), encoding="utf-8")
