@@ -20,7 +20,7 @@ from .media import choose_encoder, inspect_media, render_part, validate_export
 from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
-from .music import load_settings, pick_track, pick_track_for_part
+from .music import load_settings, pick_track, pick_track_for_part, music_library_identity
 
 
 def _atomic_json(path: Path, value) -> None:
@@ -92,6 +92,33 @@ def _run_render_tasks(items, render, commit, cancelled, workers=2):
         finally:
             stopped.set()
     return results
+
+
+def _validated_cached_render(path: Path, checkpoint: Path, fingerprint: str,
+                             part: dict, workdir: Path, cancelled) -> dict | None:
+    """Return verified cached export metadata, or None for a rerender.
+
+    A malformed or partially written checkpoint is a cache miss, never a
+    failed user job. Validation still checks the actual exported media.
+    """
+    if not (path.is_file() and checkpoint.is_file() and path.with_suffix(".srt").is_file()):
+        return None
+    try:
+        saved = json.loads(checkpoint.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict):
+            return None
+        if (saved.get("fingerprint") != fingerprint or saved.get("size") != path.stat().st_size
+                or saved.get("mtime_ns") != path.stat().st_mtime_ns
+                or saved.get("srt_hash") != hashlib.sha256(path.with_suffix(".srt").read_bytes()).hexdigest()):
+            return None
+        validate_export(path, part["duration"], workdir, cancelled,
+                        max_duration=150.0 if part.get("duration", 0) > 120.0 else None)
+    except InterruptedError:
+        # A cancellation is not a cache miss; never start a new encode.
+        raise
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+        return None
+    return saved
 
 
 def _run_identity(job_dir: Path) -> dict:
@@ -284,6 +311,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     check()
     options = load_options(job_dir)
     music_config = load_settings()
+    music_sources = music_library_identity(MUSIC) if music_config["enabled"] else []
     with _timed_stage(timings, "analysis"):
         analysis = analyze(job_dir, source, report, cancelled)
     check()
@@ -314,7 +342,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
                     "semantic_components": semantic_identity(),
                     "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
-                    "editorial_profile": editorial_prof,"music": music_config,
+                    "editorial_profile": editorial_prof, "music": music_config,
+                    "music_sources": music_sources,
                     "subtitle_style": style_identity(options['caption_style'])}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
         gate = inspect_final_quality(analysis)
@@ -429,19 +458,11 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         name = f"part_{part['index']:03}.mp4"
         path = output_dir / name
         checkpoint = workdir / f"part_{part['index']:03}.json"
-        valid = False
-        if path.is_file() and checkpoint.is_file() and path.with_suffix(".srt").is_file():
-            try:
-                saved = json.loads(checkpoint.read_text(encoding="utf-8"))
-                if (saved.get("fingerprint") == fingerprint and saved.get("size") == path.stat().st_size
-                        and saved.get("mtime_ns") == path.stat().st_mtime_ns
-                        and saved.get("srt_hash") == hashlib.sha256(path.with_suffix(".srt").read_bytes()).hexdigest()):
-                    validate_export(path, part["duration"], workdir, cancelled,
-                                    max_duration=150.0 if part.get("duration", 0) > 120.0 else None)
-                    valid = True
-            except (ValueError, KeyError, RuntimeError):
-                pass
-        if valid:
+        saved = _validated_cached_render(path, checkpoint, fingerprint, part, workdir, cancelled)
+        if saved is not None:
+            # The root plan is saved before rendering; on a cache hit it may
+            # have no music_track even though the media contains the track.
+            part["music_track"] = saved.get("music_track")
             timings["parts"].append({"index": part["index"], "cached": True,
                                      "encoder": saved.get("encoder"),
                                      "seconds": round(time.perf_counter() - started, 6)})
@@ -502,6 +523,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     _archive_obsolete_outputs(job_dir, previous_plan, plan, cancelled)
     if unfinished_plan != previous_plan:
         _archive_obsolete_outputs(job_dir, unfinished_plan, plan, cancelled)
+    # /api/jobs/{id}/plan reads the job-root plan, not output/plan.json.
+    # Persist the final per-part music metadata in both locations.
     _atomic_json(output_dir / "plan.json", plan)
+    _atomic_json(plan_path, plan)
     report("completed", 1.0, f"Готово: {len(plan['parts'])} частей. Проверьте сюжет и кадрирование в просмотре.")
     return outputs

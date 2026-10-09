@@ -200,3 +200,26 @@ export function mergeDebugPieces(rawPieces: (TimelineReason & { partIndex: numbe
 
   return result;
 }
+
+export type LimitedPlaybackAction = { kind: 'continue' } | { kind: 'seek'; time: number } | { kind: 'pause' };
+
+/** Review retained cuts only; never play footage removed from the selected Shorts. */
+export function limitedSourcePlaybackAction(
+  cuts: Array<{ start: number; end: number }>,
+  time: number,
+  selection: { start: number; end: number; retained: boolean },
+): LimitedPlaybackAction {
+  const tolerance = 0.02;
+  if (time >= selection.end - tolerance) return { kind: 'pause' };
+  if (time < selection.start - tolerance) return { kind: 'seek', time: selection.start };
+  // A removed/debug source interval should remain independently previewable.
+  if (!selection.retained) return { kind: 'continue' };
+  for (const cut of cuts) {
+    const start = Math.max(cut.start, selection.start);
+    const end = Math.min(cut.end, selection.end);
+    if (end <= start) continue;
+    if (time < start - tolerance) return { kind: 'seek', time: start };
+    if (time < end - tolerance) return { kind: 'continue' };
+  }
+  return { kind: 'pause' };
+}

@@ -1,0 +1,109 @@
+/* KADR STUDIO / LIVE.  Exact reference DOM/CSS; real same-origin FastAPI.
+   No demo records are ever sent to the server. */
+(() => {
+ 'use strict';
+ async function get(path,options={}){
+  const response=await fetch(path,{credentials:'same-origin',...options});
+  const type=response.headers.get('content-type')||'';
+  const value=type.includes('json')?await response.json():{url:path};
+  if(!response.ok){
+   const detail=value?.detail;
+   const e=new Error(typeof detail==='string'?detail:
+     Array.isArray(detail)?detail.map(v=>v.msg||'Ошибка').join('; '):
+     'Ошибка HTTP '+response.status);
+   e.status=response.status;
+   throw e;
+  }
+  return value;
+ }
+ const date=value=>{
+   const n=typeof value==='number'?value:Date.parse(value||'');
+   return Number.isFinite(n)?n:Date.now();
+ };
+ // Real montage plans expose source.duration, not plan.duration.
+ // The reference timeline uses plan.duration, so normalize at the API border.
+ function normalizePlan(plan){
+   const cuts=(plan.parts||[]).flatMap(part=>part.cuts||[]);
+   const last=Math.max(0,...cuts.map(c=>Number(c.end)||0));
+   const duration=Number(plan.source?.duration)||last||1;
+   return {...plan,duration:Math.max(duration,last,1)};
+ }
+ async function refresh(db,ui){
+  const [library,sources,jobs,music,health]=await Promise.all([
+    get('/api/library'),get('/api/sources'),get('/api/jobs'),get('/api/music'),get('/api/health')
+  ]);
+  db.projects=library.projects||[];
+  db.episodes=library.episodes||[];
+  db.sources=sources||[];
+  db.jobs=(jobs||[]).map(j=>({
+   ...j,created_at:date(j.created_at),updated_at:date(j.updated_at),
+   episode_id:j.episode_id||library.episodes?.find(e=>e.jobs?.some(a=>a.id===j.id))?.id,
+  }));
+  db.health=health;
+  db.music={...db.music,...music,tracks:music.tracks||[]};
+  db.plans ||= {};
+  db.finishing ||= {};
+  // A library can have hundreds of old jobs. Never fetch *every* plan/profile
+  // during startup or the 3-second progress refresh: that blocked the UI.
+  try{db.deepseek=await get('/api/deepseek')}catch{}
+  if(!db.projects.some(p=>p.id===ui.projectId&&!p.archived_at)){
+    ui.projectId=db.projects.find(p=>!p.archived_at)?.id||null;
+  }
+  if(!db.episodes.some(e=>e.id===ui.episodeId&&!e.archived_at)){
+    ui.episodeId=db.episodes.find(e=>e.project_id===ui.projectId&&!e.archived_at)?.id||
+                 db.episodes.find(e=>!e.archived_at)?.id||null;
+  }
+  if(!db.jobs.some(j=>j.id===ui.jobId)){
+    const list=db.jobs.filter(j=>j.episode_id===ui.episodeId);
+    ui.jobId=list.find(j=>j.status==='completed')?.id||list[0]?.id||null;
+  }
+ }
+ async function loadSelected(db,ui){
+  const job=db.jobs.find(j=>j.id===ui.jobId);
+  if(!job||job.status!=='completed')return;
+  if(!db.plans[job.id]) db.plans[job.id]=normalizePlan(await get('/api/jobs/'+encodeURIComponent(job.id)+'/plan'));
+  if(job.episode_id&&!db.finishing[job.episode_id]) {
+    db.finishing[job.episode_id]=await get('/api/episodes/'+encodeURIComponent(job.episode_id)+'/finishing');
+  }
+ }
+ async function request(method,path,body,db,ui){
+  let options={method};
+  if(!['GET','HEAD'].includes(method)&&body!=null){
+    if(body.file instanceof File){
+      const form=new FormData();form.append('file',body.file);
+      options.body=form;
+    }else if(body instanceof FormData){
+      options.body=body;
+    }else{
+      let data=body;
+      if(method==='PUT'&&/^\/api\/episodes\/[^/]+\/finishing$/.test(path)){
+        const {episode_id,revision,...profile}=body;data=profile;
+      }
+      if(method==='POST'&&/\/api\/jobs\/[^/]+\/(?:previews|exports)$/.test(path)&&body.settings){
+        const {episode_id,revision,...settings}=body.settings;
+        data={...body,settings};
+      }
+      options.headers={'Content-Type':'application/json'};
+      options.body=JSON.stringify(data);
+    }
+  }
+  const result=await get(path,options);
+  if(method==='GET'){
+    if(path==='/api/music')db.music={...db.music,...result};
+    else if(path==='/api/health')db.health=result;
+    else if(path==='/api/library')await refresh(db,ui);
+    else if(/^\/api\/jobs\/[^/]+\/plan$/.test(path)){
+      db.plans[path.split('/')[3]]=normalizePlan(result);
+    }
+  }else if(method==='PUT'&&/^\/api\/episodes\/[^/]+\/finishing$/.test(path)){
+    db.finishing ||= {};db.finishing[path.split('/')[3]]=result;
+  }else if(method==='PUT'&&/\/captions$/.test(path)){
+    db.captionOverrides ||= {};
+    db.captionOverrides[path.split('/')[3]+':'+path.split('/')[5]]=result;
+  }else{
+    await refresh(db,ui);
+  }
+  return result;
+ }
+ window.KadrBridge={get,refresh,loadSelected,request};
+})();

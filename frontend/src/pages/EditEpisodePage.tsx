@@ -209,7 +209,7 @@ export function EditEpisodePage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-            <JobProgressPanel jobId={activeJobId} episodeId={episode.id} />
+            <JobProgressPanel jobId={activeJobId} episodeId={episode.id} onJobFinished={refetch} />
             {completedJobsForEpisode(episode)[0] && (
               <Link className="btn-secondary" to={`/episode/${episode.id}/review/${completedJobsForEpisode(episode)[0].id}`}>Посмотреть готовый монтаж</Link>
             )}

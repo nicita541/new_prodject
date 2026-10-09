@@ -48,6 +48,9 @@ export function Sidebar() {
         >
           Проекты
         </NavLink>
+        <NavLink to="/studio" className={({ isActive }) => 'nav-link ' + (isActive ? 'nav-active' : '')}>
+          Оформление
+        </NavLink>
         <NavLink 
           to="/trash" 
           className={({ isActive }) => `nav-link ${isActive ? 'nav-active' : ''}`}

@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8765',
+        target: 'http://127.0.0.1:' + (process.env.KADR_STUDIO_API_PORT || '8766'),
         changeOrigin: true,
       },
     },

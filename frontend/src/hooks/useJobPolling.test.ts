@@ -14,6 +14,21 @@ const snapshot = (): LiveStageProgress => ({ version: 1, job_id: 'job-1', status
 
 describe('useJobPolling', () => {
   beforeEach(() => { vi.resetAllMocks(); });
+  it('recovers after a temporary server error without manual refresh', async () => {
+    vi.mocked(api.getJob).mockRejectedValueOnce(new Error('Temporary network failure'))
+      .mockResolvedValue({ ...legacyJob, stage_progress: snapshot().stage_progress });
+    const { result, unmount } = renderHook(() => useJobPolling('job-1'));
+    try {
+      await waitFor(() => expect(result.current.error?.message).toBe('Temporary network failure'));
+      expect(result.current.isPolling).toBe(true);
+      await waitFor(() => expect(result.current.job?.id).toBe('job-1'), { timeout: 3000 });
+      expect(result.current.error).toBeNull();
+      expect(api.getJob).toHaveBeenCalledTimes(2);
+    } finally {
+      unmount();
+    }
+  });
+
   it('does not poll if no jobId', () => {
     const { result } = renderHook(() => useJobPolling(null));
     expect(result.current.job).toBeNull();

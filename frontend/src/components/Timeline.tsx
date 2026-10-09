@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import type { Plan, Job } from '../api/types';
-import { buildTimelinePieces, buildDebugPieces, pieceLabel, sourceTime, DEBUG_KIND_LABELS } from '../utils/timeline';
+import { buildTimelinePieces, buildDebugPieces, pieceLabel, sourceTime, limitedSourcePlaybackAction, DEBUG_KIND_LABELS } from '../utils/timeline';
 
 interface TimelineProps {
   job: Job | null;
@@ -23,9 +23,26 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
 
   const duration = plan?.source?.duration || 1;
   const parts = plan?.parts || [];
+  const selectedCuts = parts[selectedIndex]?.cuts;
 
   const pieces = useMemo(() => plan ? buildTimelinePieces(plan, duration) : [], [plan, duration]);
   const debugPieces = useMemo(() => plan && plan.debug_timeline?.reasons ? buildDebugPieces(plan.debug_timeline.reasons, pieces, duration) : [], [plan, pieces, duration]);
+
+  // Selecting another Shorts from the playlist must update its source bounds.
+  useEffect(() => {
+    if (!limitToPart) return;
+    if (!selectedCuts?.length) {
+      setSourceSelection(null);
+      return;
+    }
+    const start = selectedCuts[0].start;
+    const end = selectedCuts[selectedCuts.length - 1].end;
+    setSourceSelection({ start, end, retained: true });
+    const player = videoRef.current;
+    if (player && (player.currentTime < start || player.currentTime >= end)) {
+      player.currentTime = start;
+    }
+  }, [limitToPart, selectedCuts]);
 
   // Sync player limits and time
   useEffect(() => {
@@ -35,15 +52,15 @@ export function Timeline({ job, plan, selectedIndex, onSelectPart }: TimelinePro
     const handleTimeUpdate = () => {
       setCurrentTime(video.currentTime);
       if (limitToPart && sourceSelection) {
-        if (video.currentTime >= sourceSelection.end) {
-          video.pause();
-        }
+        const action = limitedSourcePlaybackAction(selectedCuts ?? [], video.currentTime, sourceSelection);
+        if (action.kind === 'seek') video.currentTime = action.time;
+        if (action.kind === 'pause') video.pause();
       }
     };
 
     video.addEventListener('timeupdate', handleTimeUpdate);
     return () => video.removeEventListener('timeupdate', handleTimeUpdate);
-  }, [limitToPart, sourceSelection]);
+  }, [limitToPart, sourceSelection, selectedCuts]);
 
   const handleSeek = (time: number) => {
     if (videoRef.current) {

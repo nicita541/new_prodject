@@ -5,6 +5,17 @@ vi.mock('../api/client');const onChange=vi.fn();
 beforeEach(()=>{vi.clearAllMocks();vi.mocked(api.getSources).mockResolvedValue([{id:'s1',name:'video1.mp4',size:10},{id:'s2',name:'video2.mp4',size:20}]);});
 afterEach(()=>vi.unstubAllGlobals());
 describe('SourceSelect actual sources/import contract',()=>{
+ it('rejects WebM before starting an upload because the API supports only MP4/MKV',()=>{
+  const xhr = vi.fn();
+  vi.stubGlobal('XMLHttpRequest', xhr);
+  const view = render(<SourceSelect episodeId="e1" sourceId="" onChange={onChange}/>);
+  const input = view.container.querySelector('input[type="file"]') as HTMLInputElement;
+  expect(input.accept).toBe('.mp4,.mkv');
+  fireEvent.change(input,{target:{files:[new File(['video'],'unsupported.webm')]}});
+  expect(screen.getByRole('alert')).toHaveTextContent('MP4 или MKV');
+  expect(xhr).not.toHaveBeenCalled();
+ });
+
  it('renders sources and returns selected source ID',async()=>{
   render(<SourceSelect episodeId="e1" sourceId="" onChange={onChange}/>);await screen.findByText('video1.mp4');
   await userEvent.selectOptions(screen.getByRole('combobox'),'s2');expect(onChange).toHaveBeenCalledWith('s2');

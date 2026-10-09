@@ -20,6 +20,15 @@ from tests.test_jobs import FakeWorker, deepseek_stub
 
 
 class ApiTests(unittest.TestCase):
+    def test_folder_picker_does_not_silently_select_downloads_when_dialogs_fail(self):
+        from app.server import choose_download_directory
+        # There is no direct destination or valid environment override.
+        with patch.dict(os.environ, {"AUTOSHORT_DOWNLOAD_DIR": ""}):
+            with patch("app.server.subprocess.run", side_effect=OSError("no powershell")), \
+                    patch.dict(sys.modules, {"tkinter": None}):
+                with self.assertRaises(RuntimeError):
+                    choose_download_directory()
+
     def test_stage_progress_is_readonly_and_tolerates_incomplete_diagnostics(self):
         job = self.start_job()
         self.client.post(f"/api/jobs/{job['id']}/cancel")

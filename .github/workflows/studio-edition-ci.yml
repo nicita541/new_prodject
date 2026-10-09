@@ -1,0 +1,107 @@
+name: Studio Edition checks
+
+on:
+  push:
+    branches: [fix/montage-stability]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: React tests, lint and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: React regression tests
+        working-directory: frontend
+        run: npm test
+      - name: Verify exact Studio Edition HTML, JavaScript and CSS
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          original = Path("frontend/public/studio-edition-reference.html").read_text("utf-8")
+          live = Path("frontend/public/studio-edition.html").read_text("utf-8")
+          original_css = original.split("<style>", 1)[1].split("</style>", 1)[0]
+          live_css = live.split("<style>", 1)[1].split("</style>", 1)[0]
+          assert original_css == live_css, "Studio Edition visual styles drifted"
+          assert 'src="/studio-live-bridge.js"' in live
+          for required in ("fc-workspace", "rv2-layout", "navset", "sidebar", "topbar"):
+              assert required in live, required
+          scripts = re.findall(r"<script(?:\s[^>]*)?>(.*?)</script>", live, re.S)
+          assert len(scripts) == 2, len(scripts)
+          Path("/tmp/studio-exact.js").write_text(scripts[-1], encoding="utf-8")
+          print("Exact CSS retained; interactive screens present")
+          PY
+          node --check frontend/public/studio-live-bridge.js
+          node --check /tmp/studio-exact.js
+      - name: Execute exact Studio Edition screens with simulated FastAPI
+        run: node frontend/scripts/smoke-studio-exact.mjs
+      - name: TypeScript and Vite build
+        working-directory: frontend
+        run: npm run build
+      - name: Verify exact HTML and bridge included in production dist
+        run: |
+          test -s frontend/dist/studio-edition.html
+          test -s frontend/dist/studio-live-bridge.js
+          test -s frontend/dist/studio-edition-reference.html
+      - name: ESLint
+        working-directory: frontend
+        run: npm run lint
+
+  backend:
+    name: Finishing API safety tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install lightweight API dependencies
+        run: python -m pip install fastapi uvicorn python-multipart pillow pytest httpx
+      - name: Check Python compilation
+        run: python -m compileall -q app scripts tests
+      - name: Test Studio Edition API and isolated exports
+        run: python -m pytest -q tests/test_finishing.py tests/test_server_routing.py tests/test_recovery_tokens.py tests/test_scene_detection.py
+      - name: Smoke-check actual synthetic demo in isolated checkout
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          fi
+          mkdir -p tools/ffmpeg/bin
+          ln -s "$(command -v ffmpeg)" tools/ffmpeg/bin/ffmpeg.exe
+          python scripts/create_studio_demo.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from fastapi.testclient import TestClient
+          from app.server import create_app
+          data=json.loads(Path("data/studio-demo.json").read_text("utf-8"))
+          with TestClient(create_app(),base_url="http://127.0.0.1:8766") as client:
+              job=client.get("/api/jobs/"+data["job_id"])
+              assert job.status_code==200,job.text
+              assert job.json()["status"]=="completed"
+              assert len(job.json()["files"])==3
+              lib=client.get("/api/library")
+              assert lib.status_code==200,lib.text
+              assert any(e["id"]==data["episode_id"] for e in lib.json()["episodes"])
+              url="/api/episodes/"+data["episode_id"]+"/finishing"
+              assert client.get(url).status_code==200
+              assert client.get("/api/jobs/"+data["job_id"]+"/parts/1/captions").status_code==200
+              assert client.get("/api/jobs/"+data["job_id"]+"/files/part_001.mp4",
+                  headers={"Range":"bytes=0-15"}).status_code==206
+          print("Studio synthetic demo: 3 parts, API, captions and media OK")
+          PY

@@ -8,6 +8,30 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Vite dev's SPA fallback must open the SAME Studio Edition as FastAPI.
+      // Otherwise /projects or /episode/:id would silently display old React.
+      (() => {
+        if (location.pathname === '/studio-edition.html' || location.pathname === '/react-debug' ||
+            new URLSearchParams(location.search).has('react')) return;
+        const path = location.pathname.replace(/^\/+|\/+$/g, '');
+        const args = new URLSearchParams(location.search);
+        const route = {
+          '': 'projects', projects: 'projects', trash: 'trash',
+          studio: 'finishing', api: 'api',
+        };
+        const project = path.match(/^project\/([^/]+)$/);
+        const episode = path.match(/^episode\/([^/]+)\/(edit|review|finishing)(?:\/([^/]+))?$/);
+        if (project) { args.set('screen', 'episodes'); args.set('project', project[1]); }
+        else if (episode) {
+          args.set('screen', episode[2] === 'edit' ? 'editor' : episode[2]);
+          args.set('episode', episode[1]);
+          if (episode[3]) args.set('job', episode[3]);
+        } else if (route[path]) args.set('screen', route[path]);
+        else return;
+        location.replace('/studio-edition.html?' + args.toString());
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

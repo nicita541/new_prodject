@@ -5,6 +5,7 @@ import { TrashPage } from './pages/TrashPage';
 import { EpisodesPage } from './pages/EpisodesPage';
 import { EditEpisodePage } from './pages/EditEpisodePage';
 import { ReviewEpisodePage } from './pages/ReviewEpisodePage';
+import { FinishingPage, StudioHomePage } from './pages/FinishingPage';
 
 import { useEffect } from 'react';
 import { redirectLegacyHash } from './navigation';
@@ -25,6 +26,8 @@ export default function App() {
             <Route path="/" element={<Navigate to="/projects" replace />} />
             <Route path="/projects" element={<ProjectsPage />} />
             <Route path="/trash" element={<TrashPage />} />
+            <Route path="/studio" element={<StudioHomePage />} />
+            <Route path="/episode/:episodeId/finishing/:jobId?" element={<FinishingPage />} />
             <Route path="/project/:projectId" element={<EpisodesPage />} />
             <Route path="/episode/:episodeId/edit" element={<EditEpisodePage />} />
             <Route path="/episode/:episodeId/review/:jobId?" element={<ReviewEpisodePage />} />

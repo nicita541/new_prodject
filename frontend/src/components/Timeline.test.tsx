@@ -69,6 +69,25 @@ describe('Timeline Component', () => {
     expect(video.pause).toHaveBeenCalled();
   });
 
+  it('skips discarded footage between two retained cuts in the same part', async () => {
+    const splitPlan: Plan = {
+      ...mockPlan,
+      parts: [{ index: 0, cuts: [{ start: 10, end: 20 }, { start: 30, end: 40 }] },
+              mockPlan.parts[1]],
+    };
+    const { container } = render(<Timeline job={mockJob} plan={splitPlan} selectedIndex={0} onSelectPart={() => {}} />);
+    await userEvent.click(screen.getByLabelText(/В пределах части/));
+    const video = container.querySelector('video')!;
+    expect(video.currentTime).toBe(10);
+    video.currentTime = 20.5;
+    fireEvent.timeUpdate(video);
+    expect(video.currentTime).toBe(30);
+    expect(video.pause).not.toHaveBeenCalled();
+    video.currentTime = 40;
+    fireEvent.timeUpdate(video);
+    expect(video.pause).toHaveBeenCalledOnce();
+  });
+
   it('selecting a whole part establishes its playback limit', async () => {
     const { container } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
     await userEvent.click(screen.getByLabelText(/В пределах части/));
@@ -78,6 +97,19 @@ describe('Timeline Component', () => {
     video.currentTime = 40;
     fireEvent.timeUpdate(video);
     expect(video.pause).toHaveBeenCalled();
+  });
+
+  it('updates the playback bounds after a playlist selection changes externally', async () => {
+    const { container, rerender } = render(<Timeline job={mockJob} plan={mockPlan} selectedIndex={0} onSelectPart={() => {}} />);
+    await userEvent.click(screen.getByLabelText(/В пределах части/));
+    const player = container.querySelector('video')!;
+    expect(player.currentTime).toBe(10);
+    rerender(<Timeline job={mockJob} plan={mockPlan} selectedIndex={1} onSelectPart={() => {}} />);
+    expect(player.currentTime).toBe(30);
+    expect(container.querySelector('#source-selection')).toHaveTextContent('00:30');
+    player.currentTime = 40;
+    fireEvent.timeUpdate(player);
+    expect(player.pause).toHaveBeenCalled();
   });
 
   it('reads debug reasons from plan, seeks and respects the enabled interval limit', async () => {

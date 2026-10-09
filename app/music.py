@@ -1,9 +1,12 @@
 """Configurable background music for shorts rendering."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
+import threading
+import uuid
 from pathlib import Path
 
 from .config import MUSIC_CONFIG, MUSIC_SETTINGS
@@ -21,6 +24,8 @@ DEFAULT_CONFIG = {
 }
 
 SUPPORTED_SUFFIXES = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus"}
+
+_SETTINGS_WRITE_LOCK = threading.Lock()
 
 
 def validate_config(value) -> dict:
@@ -90,11 +95,16 @@ def load_settings() -> dict:
 def save_settings(config: dict) -> dict:
     """Persist normalized music settings to the ignored runtime file."""
     normalized = validate_config(config)
-    MUSIC_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
-    temporary = MUSIC_SETTINGS.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps({"music": normalized}, ensure_ascii=False, indent=2),
-                         encoding="utf-8")
-    os.replace(temporary, MUSIC_SETTINGS)
+    with _SETTINGS_WRITE_LOCK:
+        MUSIC_SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+        # Unique temporary names also prevent clashes with another process.
+        temporary = MUSIC_SETTINGS.with_name(MUSIC_SETTINGS.name + "." + uuid.uuid4().hex + ".tmp")
+        try:
+            temporary.write_text(json.dumps({"music": normalized}, ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+            os.replace(temporary, MUSIC_SETTINGS)
+        finally:
+            temporary.unlink(missing_ok=True)
     return normalized
 
 
@@ -106,6 +116,22 @@ def list_tracks(music_dir: Path) -> list[Path]:
         path for path in music_dir.iterdir()
         if path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
     )
+
+
+def music_library_identity(music_dir: Path) -> list[dict[str, str]]:
+    """Fingerprint track contents, not just the music settings or filenames.
+
+    A replaced file with unchanged name, size and timestamp must invalidate
+    previously rendered parts. Read in chunks to avoid holding songs in RAM.
+    """
+    identity = []
+    for path in list_tracks(music_dir):
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        identity.append({"name": path.name, "sha256": digest.hexdigest()})
+    return identity
 
 
 def pick_track_for_part(

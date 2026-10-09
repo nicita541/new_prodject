@@ -33,8 +33,8 @@ export function SourceSelect({ sourceId, onChange, disabled }: SourceSelectProps
 
   const uploadFile = (file: File | undefined) => {
     if (!file || disabled || uploadingRef.current) return;
-    if (!/\.(mp4|mkv|webm)$/i.test(file.name)) {
-      setError('Выберите видео MP4, MKV или WebM.');
+    if (!/\.(mp4|mkv)$/i.test(file.name)) {
+      setError('Выберите видео MP4 или MKV.');
       return;
     }
     uploadingRef.current = true;
@@ -109,8 +109,8 @@ export function SourceSelect({ sourceId, onChange, disabled }: SourceSelectProps
           onDrop={e => { e.preventDefault(); uploadFile(e.dataTransfer.files[0]); }}>
           <span className="upload-icon">⇪</span>
           <span className="upload-text" id="upload-label">Перетащите или нажмите для загрузки видео</span>
-          <span className="upload-hint">MP4, MKV или WebM</span>
-          <input ref={fileInputRef} type="file" id="file-input" accept=".mp4,.mkv,.webm" hidden onClick={e => e.stopPropagation()} onChange={e => { uploadFile(e.target.files?.[0]); e.target.value = ''; }} disabled={isUploading} />
+          <span className="upload-hint">MP4 или MKV</span>
+          <input ref={fileInputRef} type="file" id="file-input" accept=".mp4,.mkv" hidden onClick={e => e.stopPropagation()} onChange={e => { uploadFile(e.target.files?.[0]); e.target.value = ''; }} disabled={isUploading} />
         </div>
       )}
       {error && <p className="message" role="alert">{error}</p>}
