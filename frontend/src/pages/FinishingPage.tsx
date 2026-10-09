@@ -6,7 +6,7 @@ import type {
   FinishSubtitles, FinishVideo, Job, Plan
 } from '../api/types';
 import { useLibrary } from '../hooks/useLibrary';
-import { completedJobsForEpisode, episodeById, projectById } from '../library/selectors';
+import { activeEpisodes, completedJobsForEpisode, episodeById, projectById } from '../library/selectors';
 import './FinishingPage.css';
 
 type Tab = 'subtitles' | 'audio' | 'frame';
@@ -22,7 +22,7 @@ export function StudioHomePage() {
   const { data, error, isLoading } = useLibrary();
   if (isLoading && !data) return <main className="st-room"><p>Загружаем библиотеку…</p></main>;
   if (error) return <main className="st-room"><p role="alert">{error.message}</p></main>;
-  const ready = (data?.episodes || []).filter(ep => !ep.archived_at && completedJobsForEpisode(ep).length > 0);
+  const ready = activeEpisodes(data).filter(ep => completedJobsForEpisode(ep).length > 0);
   return <main className="st-room st-home">
     <p className="st-overline">КАДР / STUDIO EDITION</p>
     <h1>Финальный штрих.</h1>
@@ -121,7 +121,7 @@ export function FinishingPage() {
   const currentStyle = profile?.part_overrides[partKey]?.style || profile?.subtitles;
   const cues = profile?.part_overrides[partKey]?.cues ?? currentPart?.subtitles ?? [];
   const activeCue = cues[Math.min(cueIndex, Math.max(0, cues.length - 1))];
-  const showingCue = cues.find(c => c.start <= playTime && playTime < c.end) ?? activeCue;
+  const showingCue = cues.find(c => c.start <= playTime && playTime < c.end);
 
   const patchVideo = (update: Partial<FinishVideo>) =>
     setProfile(old => old ? { ...old, video: { ...old.video, ...update } } : old);
@@ -222,7 +222,7 @@ export function FinishingPage() {
 
   if (loading) return <main className="st-room"><p role="status">Загружаем монтаж и настройки оформления…</p></main>;
   if (libraryError || problem && !profile) return <main className="st-room"><p role="alert">{problem || libraryError?.message}</p></main>;
-  if (!job || !plan || !profile || !jobId || !episode || !project || job.status !== 'completed')
+  if (!job || !plan || !profile || !jobId || !episode || !project || episode.archived_at || project.archived_at || job.status !== 'completed')
     return <main className="st-room"><p className="st-empty">Готовый монтаж недоступен. <Link to="/studio">Вернуться в студию</Link></p></main>;
 
   const currentFile = job.files?.[index];

@@ -93,6 +93,17 @@ describe('Studio Edition actual backend contract', () => {
     expect(await screen.findByText(/реплики сохранены на сервере/)).toBeInTheDocument();
   });
 
+  it('hides the video subtitle after its time span, even when the cue stays selected', async () => {
+    page();
+    await screen.findByText('Финальный штрих.');
+    expect(document.querySelector('.st-caption-layer')).toHaveTextContent('ПРОВЕРКА СУБТИТРОВ');
+    const video = screen.getByLabelText('Видео предпросмотра') as HTMLVideoElement;
+    video.currentTime = 5;
+    fireEvent.timeUpdate(video);
+    await waitFor(() => expect(document.querySelector('.st-caption-layer')).not.toBeInTheDocument());
+    expect(screen.getByLabelText('Текст реплики')).toHaveValue('ПРОВЕРКА СУБТИТРОВ');
+  });
+
   it('moves subtitles and copies styles to all parts without altering cues', async () => {
     const user = userEvent.setup();
     page();
@@ -145,6 +156,17 @@ describe('Studio Edition actual backend contract', () => {
 });
 
 describe('Studio landing', () => {
+  it('excludes finished episodes belonging to an archived project', () => {
+    const snapshot = libraryCopy();
+    const archivedProject = snapshot.projects.find(project => Boolean(project.archived_at))!;
+    const child = snapshot.episodes.find(ep => ep.project_id === archivedProject.id && !ep.archived_at)!;
+    child.jobs = [{ ...completedJob, id: '00000000-0000-0000-0000-000000000099' }];
+    vi.mocked(useLibrary).mockReturnValue({data: snapshot,isLoading:false,error:null,refetch:vi.fn()});
+    render(<MemoryRouter><StudioHomePage/></MemoryRouter>);
+    expect(screen.queryByText(/Archived Project/)).not.toBeInTheDocument();
+    expect(document.querySelectorAll('a[href*="/finishing/"]')).toHaveLength(1);
+  });
+
   it('shows eligible finished episodes from the library', () => {
     render(<MemoryRouter><StudioHomePage/></MemoryRouter>);
     expect(document.querySelectorAll('a[href*="/finishing/"]').length).toBeGreaterThan(0);
