@@ -156,19 +156,24 @@ export function FinishingPage() {
     if (video) video.currentTime = 0;
   };
 
+  const saveDraftCaptions = async () => {
+    if (!profile || !jobId) return;
+    for (const key of Object.keys(dirtyCues)) {
+      if (!dirtyCues[key]) continue;
+      const items = profile.part_overrides[key]?.cues ?? [];
+      const updated = await api.saveFinishCaptions(jobId, Number(key), items, cueRevision[key] ?? 0);
+      setCueRevision(old => ({ ...old, [key]: updated.revision }));
+      // Keep the other dirty parts editable if a subsequent part fails.
+      setDirtyCues(old => { const next = { ...old }; delete next[key]; return next; });
+    }
+  };
   const save = async () => {
     if (!profile || !episodeId || !jobId || saving) return;
     setSaving(true); setProblem(''); setMessage('');
     try {
-      for (const key of Object.keys(dirtyCues)) {
-        if (!dirtyCues[key]) continue;
-        const items = profile.part_overrides[key]?.cues ?? [];
-        const updated = await api.saveFinishCaptions(jobId, Number(key), items, cueRevision[key] ?? 0);
-        setCueRevision(old => ({ ...old, [key]: updated.revision }));
-      }
+      await saveDraftCaptions();
       const stored = await api.saveFinishing(episodeId, profile);
       setProfile(stored);
-      setDirtyCues({});
       setMessage('Настройки и реплики сохранены на сервере');
     } catch (err) { setProblem(errorMessage(err)); }
     finally { setSaving(false); }
@@ -178,14 +183,18 @@ export function FinishingPage() {
     if (!jobId || !profile || !currentPart) return;
     setProblem(''); setMessage('Создаём предпросмотр на сервере…');
     setUseRendered(false);
-    try { setPreview(await api.createFinishPreview(jobId, currentPart.index, profile, 0,
-        Math.min(5, currentPart.duration || 5))); }
+    try {
+      await saveDraftCaptions();
+      setPreview(await api.createFinishPreview(jobId, currentPart.index, profile, 0,
+        Math.min(5, currentPart.duration || 5)));
+    }
     catch (err) { setProblem(errorMessage(err)); }
   };
   const exportParts = async (all: boolean) => {
     if (!jobId || !profile || !plan) return;
     setProblem(''); setMessage('Создана отдельная задача повторного экспорта');
     try {
+      await saveDraftCaptions();
       setExportTask(await api.createFinishExport(jobId,
         all ? plan.parts.map(p => p.index) : [currentPart!.index], profile));
     } catch (err) { setProblem(errorMessage(err)); }

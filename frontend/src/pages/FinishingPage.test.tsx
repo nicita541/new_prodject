@@ -153,6 +153,20 @@ describe('Studio Edition actual backend contract', () => {
     expect(stored?.part_overrides['2']?.cues?.[0].text).toBe('ВТОРАЯ ЧАСТЬ');
   });
 
+  it('persists edited captions before asking FFmpeg to render a preview', async () => {
+    const user = userEvent.setup();
+    page();
+    await screen.findByText('Финальный штрих.');
+    fireEvent.change(screen.getByLabelText('Текст реплики'), {target:{value:'НОВЫЕ СУБТИТРЫ'}});
+    await user.click(screen.getByRole('button',{name:/Запрос предпросмотра/}));
+    await waitFor(()=>expect(api.createFinishPreview).toHaveBeenCalled());
+    expect(api.saveFinishCaptions).toHaveBeenCalledWith(job.id,1,
+      expect.arrayContaining([expect.objectContaining({text:'НОВЫЕ СУБТИТРЫ'})]),0);
+    const saveOrder = vi.mocked(api.saveFinishCaptions).mock.invocationCallOrder[0];
+    const renderOrder = vi.mocked(api.createFinishPreview).mock.invocationCallOrder[0];
+    expect(saveOrder).toBeLessThan(renderOrder);
+  });
+
   it('offers real audio import and the server-side preview request', async () => {
     const user = userEvent.setup();
     vi.mocked(api.importMusic).mockResolvedValue({name:'own.wav',stored:true,playback_url:'/api/music/tracks/own.wav/stream'});

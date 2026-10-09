@@ -249,7 +249,8 @@ function selectedCues(partIndex=ui.finishPart??0){const job=currentJob(),part=db
 function selectedSubtitle(){const f=getFinishing(),key=String((ui.finishPart??0)+1);f.part_overrides[key] ||= {};f.part_overrides[key].style ||= structuredClone(f.subtitles);return f.part_overrides[key].style;}
 function chosenCue(partIndex=ui.finishPart??0){const cues=selectedCues(partIndex);ui.finishCue=Math.max(0,Math.min(cues.length-1,ui.finishCue??0));return cues[ui.finishCue]||{start:0,end:4.4,text:''};}
 function audioName(f){return (f.audio.mode==='per_part'?f.audio.part_tracks?.[String((ui.finishPart??0)+1)]:null)||f.audio.track||db.music.tracks?.[0]||'A Distant Call.mp3'}
-function finishCueBody(partIndex){const f=getFinishing();return {part_index:partIndex+1,cues:structuredClone(selectedCues(partIndex))};}
+function finishCueBody(partIndex){const j=currentJob(),part=db.plans[j?.id]?.parts?.[partIndex],index=part?.index??(partIndex+1),record=db.captionOverrides?.[j?.id+':'+index];return {part_index:index,revision:record?.revision??0,cues:structuredClone(selectedCues(partIndex))};}
+async function persistSelectedCaptions(job,partIndex){const part=db.plans[job.id]?.parts?.[partIndex];if(!part)throw new Error('Монтажная часть не найдена');await request('PUT',`/api/jobs/${job.id}/parts/${part.index}/captions`,finishCueBody(partIndex));}
 function escAttr(s){return esc(String(s??''))}
 function renderFinishing(){
  const e=currE();if(!e)return '<div class="empty">Выберите серию для настройки.</div>';
@@ -370,13 +371,14 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
  optionalElement('fcGuideToggle').onclick=()=>{s.safe_guides=!s.safe_guides;finishUpdateView();store();$('fcGuideToggle').classList.toggle('active',s.safe_guides)};
  optionalElement('fcPreviewReset').onclick=()=>{video.pause();video.currentTime=0;finishUpdateView()};
  optionalElement('fcReset').onclick=()=>{modal({title:'Сбросить оформление?',text:'Вернуть исходные настройки оформления этой серии на сервере.',confirm:'Сбросить',danger:true,onConfirm:async()=>{const fresh=finishingDefaults();await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,fresh);db.finishing[ui.episodeId]=fresh;store();render();notify('Оформление сброшено и сохранено')}})};
- optionalElement('fcSave').onclick=async()=>{try{const res=await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,getFinishing());const j=currentJob();if(j&&j.status==='completed'){await request('PUT',`/api/jobs/${j.id}/parts/${ui.finishPart+1}/captions`,finishCueBody(ui.finishPart));}store();notify('Правки сохранены на локальном сервере');}catch(e){notify(e.message,true)}};
+ optionalElement('fcSave').onclick=async()=>{try{const res=await request('PUT',`/api/episodes/${ui.episodeId}/finishing`,getFinishing());const j=currentJob();if(j&&j.status==='completed'){await persistSelectedCaptions(j,ui.finishPart);}store();notify('Правки сохранены на локальном сервере');}catch(e){notify(e.message,true)}};
  optionalElement('fcCopyStyle').onclick=()=>{const style=structuredClone(s);const prev=getFinishing().part_overrides;for(let i=1;i<=(db.plans[currentJob()?.id]?.parts?.length||5);i++){prev[String(i)] ||= {};prev[String(i)].style=structuredClone(style)}store();notify('Стиль выбранной части применён ко всем частям, тексты не изменены.');render()};
  $('fcDownloadPresets')?.addEventListener('click',()=>{const episode=currE();if(episode)downloadText(`KADR_episode_${episode.number}_finishing.json`,JSON.stringify({episode_id:episode.id,...f},null,2))});
  optionalElement('fcPreviewRequest').onclick=async()=>{
   try{
    const job=currentJob(),part=ui.finishPart;
    if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
+   await persistSelectedCaptions(job,part);
    const task=await request('POST',"/api/jobs/"+job.id+"/previews",{
     part_index:part+1,from:0,duration:5,settings:f
    });
@@ -398,6 +400,7 @@ function bindFinishing(){const canvasRoot=$('fcCanvas');if(!canvasRoot||!$('fcVi
    onConfirm:async()=>{
     const job=currentJob();
     if(!job||job.status!=='completed')throw new Error('Нужен завершённый монтаж');
+    await persistSelectedCaptions(job,ui.finishPart);
     const task=await request('POST','/api/jobs/'+job.id+'/exports',{
       part_indices:[ui.finishPart+1],settings:f
     });
