@@ -13,6 +13,12 @@ on:
       - app/scene_detection.py
       - app/scene_analysis.py
       - app/semantic_boundary.py
+      - app/vision.py
+      - app/model_perf.py
+      - app/story.py
+      - app/analysis.py
+      - scripts/export_safe_ai_diagnostics.py
+      - scripts/export_stage_timings.py
       - app/titles.py
       - scripts/verify_project.ps1
       - app/studio_render.py

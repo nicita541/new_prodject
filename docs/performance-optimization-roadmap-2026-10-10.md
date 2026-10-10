@@ -175,3 +175,10 @@
 **Добавлено после утверждения дорожной карты:** отдельный файл `model-performance.jsonl` в локальном каталоге работы. Числовые START/END-записи каждого вызова `LocalVision.query` и попыток запуска llama.cpp фиксируют модель как `visual4b`/`story9b`, тип решения, число страниц кадров, длину входа, requested output tokens, thinking, CPU fallback, завершение, latency, реальные usage tokens, а также prefill/decode timings, если их возвращает сервер. При жёстком тайм-ауте остаются незавершённые START-записи. Не записываются реплики, промпты, ответы, изображения, полные локальные пути и текст ошибок.
 
 Автоматические экспортёры теперь добавляют в `ai_diagnostics.json` и `stage_timings.json|md` разрешённую статистику по модели и типу решения: число вызовов, pending, p50/p95, реальные токены и доступные prefill/decode. `null` означает отсутствие показателя, а не ноль. **Эта работа — профилирование, не ускорение 9B.** Настройки GPU, контекста и thinking не менялись до замеров на реальном исходнике.
+
+
+### Wave I — profiling implementation, status update
+
+Instrumented real `LocalVision.query` attempts and llama.cpp model startup, with private append-only START/END records, 4B/9B model alias, purpose labels `semantic_boundary`, `scene_analysis`, `choose_units`, `verify_omissions`, thinking and CPU-fallback. The private log includes only numeric usage and timings when present (no user data or errors). Public `ai_diagnostics.json` and `stage_timings.md/json` expose per-model/per-purpose request counts, pending requests, p50/p95 HTTP latency, prompt/output/reasoning tokens when reported, completion finish_reason length counts, and optional prefill/decode. **Metrics are null when not reported.**
+
+The 180s technical E2E is automatically triggered by changes in model instrumentation. This does not replace a real 180s ASR+4B+9B acceptance on the user's machine. Next task after CI: compare story9b choose_units vs verify_omissions latencies using a full real test, then implement risk-based optimization only with benchmarked quality gates.
