@@ -145,8 +145,8 @@ def test_public_report_contains_only_flash_trial_counters(tmp_path):
     public = summarize(tmp_path)
     result = public["flash_story_pilot"]
     assert result["available"]
-    assert result["reserved_paid_attempts"] == 1
-    assert result["local_story_fallbacks"] == 1
+    assert result["reserved_paid_attempts"] == 2
+    assert result["local_story_fallbacks"] == 0
     assert result["local_response_cache_hits"] == 0
     assert private not in json.dumps(public)
     private_record = json.loads((job / "deepseek-story-pilot.json").read_text("utf-8"))
