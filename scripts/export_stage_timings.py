@@ -403,7 +403,26 @@ def main(argv=None):
     args.output.write_text(json.dumps(result, ensure_ascii=True, indent=2, allow_nan=False) + "\n",
                            encoding="utf-8")
     args.output.with_suffix(".md").write_text(markdown(result), encoding="utf-8")
+    # One-screen console summary; values come ONLY from allowlisted numeric
+    # aggregates and fixed aliases. User needn't open every JSON in GitHub.
+    ledger = result["token_usage_totals"]
+    total = ledger["total_reported_tokens"]
     print("SAFE_STAGE_TIMINGS_EXPORTED", flush=True)
+    print("TOKENS_TOTAL reported=" + (str(total) if total is not None else "not_measured") +
+          " unknown_usage_calls=" + str(ledger["unknown_calls"]), flush=True)
+    for group in result["model_performance"]["by_model"]:
+        def show(value):
+            return str(value) if value is not None else "not_measured"
+        print("MODEL_AVERAGES " + group["model"] +
+              " completed=" + str(group["completed"]) + "/" + str(group["requests"]) +
+              " pending=" + str(group["pending"]) +
+              " input_tokens=" + str(group["prompt_tokens"]) +
+              " output_tokens=" + str(group["completion_tokens"]) +
+              " avg_input_tokens=" + show(group["avg_prompt_tokens_per_call"]) +
+              " avg_output_tokens=" + show(group["avg_completion_tokens_per_call"]) +
+              " avg_latency_s=" + show(group["avg_seconds_per_completed_call"]) +
+              " decode_tokens_per_s=" + show(group["generation_tokens_per_second"]) +
+              " unmeasured_token_calls=" + str(group["unknown_token_calls"]), flush=True)
     return 0
 
 

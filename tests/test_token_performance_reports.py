@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from scripts.export_safe_ai_diagnostics import model_perf_summary, token_ledger_summary, summarize as safe_summary
-from scripts.export_stage_timings import summarize, markdown
+from scripts.export_stage_timings import summarize, markdown, main
 
 
 def append(path, row):
@@ -132,3 +132,19 @@ def test_no_usage_ledger_does_not_claim_zero_tokens(tmp_path):
     assert empty["available"] is False
     assert empty["total_reported_tokens"] is None
     assert empty["unknown_calls"] == 0
+
+
+
+def test_console_summary_contains_model_averages_without_dialogue(tmp_path, capsys):
+    job = tmp_path / "real_model_3min" / "real-job"
+    query(job, 1, "visual4b", "scene_analysis", elapsed=6,
+          prompt=120, generated=30, predicted_ms=1500, predicted_n=30)
+    ledger(job, "local", 120, 30)
+    output = tmp_path / "stage_timings.json"
+    assert main(["--test-dir", str(tmp_path), "--output", str(output)]) == 0
+    printed = capsys.readouterr().out
+    assert "TOKENS_TOTAL reported=150" in printed
+    assert "MODEL_AVERAGES visual4b" in printed
+    assert "avg_latency_s=6.0" in printed
+    assert "decode_tokens_per_s=20.0" in printed
+    assert "PRIVATE_CANNOT_EXPORT_ME" not in printed
