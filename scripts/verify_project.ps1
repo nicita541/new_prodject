@@ -235,6 +235,23 @@ if ($RequireRealModel -and -not $RealSource) {
     }
 }
 if ($StartSeconds -lt 0) { throw "StartSeconds cannot be negative" }
+# The historical BAT files still mention obsolete call/USD ceilings.
+# Demand informed approval here before ANY real paid processing, so a YES
+# entered for a stated $0.05/8-call pilot cannot authorize unlimited costs.
+if ($FlashStory -or $FlashBudgeted) {
+    Write-Warning "DeepSeek has NO KADR USD cap and NO KADR HTTP request-count cap. Old BAT file descriptions are outdated."
+    Write-Host "Actual DeepSeek billing applies to each request. KADR does not enforce the available balance."
+    $approved = [Environment]::GetEnvironmentVariable("KADR_UNLIMITED_DEEPSEEK_AUTHORIZATION")
+    if ($approved -ne "UNLIMITED") {
+        if ($env:KADR_NONINTERACTIVE -eq "1") {
+            throw "Paid DeepSeek requires explicit KADR_UNLIMITED_DEEPSEEK_AUTHORIZATION=UNLIMITED in noninteractive mode."
+        }
+        $approved = Read-Host "Type UNLIMITED to authorize paid DeepSeek requests without a local cost or request cap"
+    }
+    if ($approved -cne "UNLIMITED") {
+        throw "Unrestricted DeepSeek API use was not authorized."
+    }
+}
 if ($RequireRealModel -or $RealSource) {
     $script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)
     Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
