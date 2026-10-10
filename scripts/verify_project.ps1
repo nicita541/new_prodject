@@ -1,4 +1,4 @@
-param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
+param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
 
 if (@($Quick, $Full, $Video) | Where-Object { $_ } | Select-Object -Skip 1) {
     throw 'Choose only one mode: -Quick, -Full, or -Video.'
@@ -128,12 +128,42 @@ $frontend = Join-Path $root "frontend"
 $ffmpeg = Join-Path $root "tools\ffmpeg\bin\ffmpeg.exe"
 $ffprobe = Join-Path $root "tools\ffmpeg\bin\ffprobe.exe"
 
+# The full-model BAT opens a chooser instead of requiring the user to type a
+# 180-second file path. A cancellation is a failed acceptance test, never PASS.
+$realSelectionError = ""
+if ($RequireRealModel -and -not $RealSource) {
+    if ($env:KADR_NONINTERACTIVE -eq "1" -or $env:CI -eq "true") {
+        $realSelectionError = "Real-model mode requires -RealSource in noninteractive mode"
+    } else {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            $picker = New-Object System.Windows.Forms.OpenFileDialog
+            $picker.Title = "Select a story video for the FULL local ASR/VLM test"
+            $picker.Filter = "Videos (*.mp4;*.mkv;*.mov;*.webm)|*.mp4;*.mkv;*.mov;*.webm|All files (*.*)|*.*"
+            $picker.Multiselect = $false
+            $picker.CheckFileExists = $true
+            $initial = Join-Path $root "data\imports"
+            if (Test-Path -LiteralPath $initial) { $picker.InitialDirectory = $initial }
+            try {
+                if ($picker.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+                    $RealSource = $picker.FileName
+                } else {
+                    $realSelectionError = "Real-model verification cancelled: no story video selected"
+                }
+            } finally { $picker.Dispose() }
+        } catch {
+            $realSelectionError = "Cannot select story video: " + $_.Exception.GetType().Name
+        }
+    }
+}
+if ($StartSeconds -lt 0) { throw "StartSeconds cannot be negative" }
+
 Write-Host ("Run: " + $runId)
 Write-Host ("Branch: " + $branch)
 Write-Host ("Commit: " + $commit)
 Write-Host ("Mode: " + $(if ($Quick) { "quick (no 180s E2E)" } elseif ($Video) { "video + 180s E2E" } else { "FULL: all Python/React checks + 180s E2E" }))
-if ($RealSource) { Write-Host "Real-model 180s run requested in addition to offline video E2E." }
-else { Write-Host "Real ASR/VLM: NOT INCLUDED without -RealSource (separate acceptance)." }
+if ($RequireRealModel -or $RealSource) { Write-Host "FULL ACCEPTANCE: 180s real local ASR/VLM run required in addition to technical E2E." }
+else { Write-Host "TECHNICAL ONLY: local ASR/VLM will not run (clearly marked in report)." }
 if ($branch -ne "fix/montage-stability") {
     Write-Warning "Results belong to the checked-out commit above. Suggested branch: fix/montage-stability."
 }
@@ -208,22 +238,41 @@ if (-not $Quick) {
     }
 }
 
-# Real ASR/VLM must NEVER be silently replaced by the synthetic fixture.
-# Run it additionally when the user explicitly supplies a 180s story video.
+# Real ASR/VLM is never simulated by the technical fixture. Missing input
+# or models are a FAIL when this mode is requested; the report still uploads.
 if ($RealTranscript -and -not $RealSource) {
     Add-Check "real_model_3min" "FAIL" 1 "-RealTranscript requires -RealSource"
+} elseif ($RequireRealModel -and -not $RealSource) {
+    Add-Check "real_model_3min" "FAIL" 1 $realSelectionError
 } elseif ($RealSource) {
     if ($Quick) {
-        Add-Check "real_model_3min" "SKIP" 0 "Real-model E2E cannot run in -Quick mode"
+        Add-Check "real_model_3min" "FAIL" 1 "Real-model test cannot run in -Quick mode"
     } elseif (-not $python -or -not (Test-Path -LiteralPath $ffmpeg) -or -not (Test-Path -LiteralPath $ffprobe)) {
-        Add-Check "real_model_3min" "SKIP" 0 "Real-model E2E requires Python, FFmpeg, FFprobe"
+        Add-Check "real_model_3min" "FAIL" 1 "Real-model test requires Python, FFmpeg and FFprobe"
+    } elseif (-not (Test-Path -LiteralPath $RealSource -PathType Leaf)) {
+        Add-Check "real_model_3min" "FAIL" 1 "The selected real video file is unavailable"
     } else {
+        # A long original is NEVER modified. A 180s excerpt is created inside
+        # the private report folder, and its path is excluded from publication.
+        $realInput = Join-Path $localDir "input_real_180s"
         $realDir = Join-Path $localDir "real_model_3min"
-        New-Item -ItemType Directory -Force -Path $realDir | Out-Null
-        $realArgs = @("scripts/full_pipeline_3min.py", "--mode", "real",
-                      "--directory", $realDir, "--source", $RealSource)
-        if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
-        Run-Check "real_model_3min" $python $realArgs $root 7200
+        Run-Check "prepare_real_source" $python @(
+            "scripts/prepare_real_test_video.py", "--source", $RealSource,
+            "--directory", $realInput, "--start-seconds", ([string]$StartSeconds)
+        ) $root 2400
+        $preparedOkay = @($script:checks | Where-Object {
+            $_.name -eq "prepare_real_source" -and $_.status -eq "PASS"
+        }).Count -eq 1
+        if (-not $preparedOkay) {
+            Add-Check "real_model_3min" "FAIL" 1 "Could not prepare a valid 180s story excerpt"
+        } else {
+            $preparedSource = (Get-Content -LiteralPath (Join-Path $realInput "selected-source.txt") -Raw -Encoding UTF8).Trim()
+            New-Item -ItemType Directory -Force -Path $realDir | Out-Null
+            $realArgs = @("scripts/full_pipeline_3min.py", "--mode", "real",
+                          "--directory", $realDir, "--source", $preparedSource)
+            if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
+            Run-Check "real_model_3min" $python $realArgs $root 21600
+        }
     }
 }
 
@@ -237,7 +286,8 @@ $summary = [pscustomobject]@{
     branch = $branch
     commit = $commit
     mode = if ($Quick) { "quick" } elseif ($Video) { "video" } else { "full" }
-    real_model_scope = if ($RealSource) { "requested" } else { "not_run_no_real_video" }
+    run_profile = if ($RequireRealModel -or $RealSource) { "full_with_local_ai" } else { "technical_without_ai" }
+    real_model_scope = if ($RequireRealModel -or $RealSource) { "required" } else { "not_run_technical_only" }
     overall = $overall
     passed = $passed
     failed = $failed
@@ -280,7 +330,11 @@ foreach ($kind in @("full_pipeline_3min", "real_model_3min")) {
 $uploadDir = Join-Path $localDir "sanitized"
 $uploadLogs = Join-Path $uploadDir "logs"
 New-Item -ItemType Directory -Force -Path $uploadLogs | Out-Null
-$summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $uploadDir "checks.json") -Encoding UTF8
+# Sanitize source paths from the published summary while preserving detailed
+# local checks.json for support. Original media and ASR never leave this PC.
+$publicSummary = $summary | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+$publicSummary.logs_dir = "[LOCAL_ONLY]"
+$publicSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $uploadDir "checks.json") -Encoding UTF8
 $e2eOverview | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $uploadDir "e2e_overview.json") -Encoding UTF8
 foreach ($check in $script:checks) {
     foreach ($stream in @("out", "err")) {
@@ -295,15 +349,16 @@ foreach ($check in $script:checks) {
         $body = $body -replace '(?i)(api[_-]?key|password|access[_-]?token|secret)\s*[:=]\s*\S+', '$1=[REDACTED]'
         $body = $body -replace '(?i)https?://[^\s/@]+:[^\s/@]+@', 'https://[REDACTED]@'
         $body = $body -replace '[A-Za-z]:\\Users\\[^\\\s]+', '[USER_HOME]'
+        if ($RealSource) { $body = $body.Replace($RealSource, '[SELECTED_VIDEO]') }
         Set-Content -LiteralPath (Join-Path $uploadLogs ($check.name + "." + $stream + ".txt")) -Value $body -Encoding UTF8
     }
 }
 $nl = [Environment]::NewLine
-$md = @("# Local verification report", "", "- Run: $runId", "- Logs: $logsDir", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Video) {'video'} else {'full'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "- AI analysis: $(if ($RealSource) {'requested, see real_model_3min'} else {'NOT TESTED; provide -RealSource to test Whisper/VLM'})", "", "| Check | Result | Details |", "| --- | --- | --- |")
+$md = @("# KADR verification report", "", "- Run: $runId", "- Logs: [LOCAL_ONLY]", "- Branch: $branch", "- Commit: $commit", "- Profile: $(if ($RequireRealModel -or $RealSource) {'FULL WITH LOCAL AI'} else {'TECHNICAL WITHOUT AI'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "- Real ASR/VLM: $(if ($RequireRealModel -or $RealSource) {'REQUIRED, see real_model_3min'} else {'NOT RUN (technical test)'})", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8
-($md -join $nl) | Set-Content -LiteralPath (Join-Path $localDir "summary.md") -Encoding UTF8
+(($md -join $nl) -replace '\[LOCAL_ONLY\]', $logsDir) | Set-Content -LiteralPath (Join-Path $localDir "summary.md") -Encoding UTF8
 
 $uploadStatus = "disabled"
 if (-not $NoUpload) {
