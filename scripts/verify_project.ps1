@@ -1,9 +1,12 @@
-param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
+param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [switch]$FastLocalStory, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
 
 if (@($Quick, $Full, $Video) | Where-Object { $_ } | Select-Object -Skip 1) {
     throw 'Choose only one mode: -Quick, -Full, or -Video.'
 }
 
+if ($FastLocalStory -and -not $RequireRealModel) {
+    throw '-FastLocalStory requires -RequireRealModel; only full real local ASR/VLM tests are accepted.'
+}
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location -LiteralPath $root
@@ -219,6 +222,7 @@ if ($StartSeconds -lt 0) { throw "StartSeconds cannot be negative" }
 if ($RequireRealModel -or $RealSource) {
     $script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)
     Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
+    if ($FastLocalStory) { Write-Host "EXPERIMENTAL: 4B local story selection, no DeepSeek API; strict quality gate stays enabled." }
 }
 
 Write-Host ("Run: " + $runId)
@@ -338,6 +342,7 @@ if ($RequireRealModel -and $RealTranscript) {
             $realArgs = @("scripts/full_pipeline_3min.py", "--mode", "real",
                           "--directory", $realDir, "--source", $preparedSource)
             if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
+            if ($FastLocalStory) { $realArgs += @("--local-provider", "local_fast_story") }
             Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds
         }
     }
@@ -398,7 +403,7 @@ $summary = [pscustomobject]@{
     branch = $branch
     commit = $commit
     mode = if ($Quick) { "quick" } elseif ($Video) { "video" } else { "full" }
-    run_profile = if ($RequireRealModel -or $RealSource) { "full_with_local_ai" } else { "technical_without_ai" }
+    run_profile = if ($FastLocalStory) { "full_with_experimental_local_4b_story" } elseif ($RequireRealModel -or $RealSource) { "full_with_local_ai" } else { "technical_without_ai" }
     real_model_scope = if ($RequireRealModel -or $RealSource) { "required" } else { "not_run_technical_only" }
     overall = $overall
     passed = $passed

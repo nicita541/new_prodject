@@ -285,7 +285,8 @@ def verify_studio_api_delivery(root: Path, job: Path, outputs: list[str]) -> dic
     return {"api_job_id": job.name, "files": len(outputs), "range_requests_valid": True}
 
 
-def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: Path | None) -> None:
+def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: Path | None,
+             local_provider: str = "local") -> None:
     from scripts.run_production_raw_quality import run as production_run
     # This path does not patch any inference model or semantic stage.
     # Actual content must have a storyline and speech; a synthetic test card
@@ -306,10 +307,11 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
         entry["transcript"] = str(transcript_arg)
     atomic_json(inp / "input.json", entry)
     report["analysis_mode"] = "real_local_whisper_and_vision" if not transcript_arg else "provided_asr_and_real_local_vision"
+    report["actual_local_provider"] = local_provider
     report["source"] = {"path": str(source), "sha256": sha(source)}
     job = root / "real-job"
     outcome = inspect_step(report, "genuine_production_analysis_to_final_mp4",
-                           lambda: production_run(inp, job, render=True))
+                           lambda: production_run(inp, job, render=True, analysis_provider=local_provider))
     if not outcome["complete"]:
         raise RuntimeError("Production quality gate did not pass; see observed-outcome.json")
     assert outcome["actual_model_requests"] > 0, "Real mode made zero model requests"
@@ -320,7 +322,7 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
     # A completed real-model run must be resumable with no additional model
     # inference or FFmpeg encode when the source and settings are unchanged.
     second = inspect_step(report, "genuine_model_and_video_cache_resume",
-                          lambda: production_run(inp, job, render=True))
+                          lambda: production_run(inp, job, render=True, analysis_provider=local_provider))
     if not second["complete"]:
         raise RuntimeError("The resumed production quality gate is unresolved")
     if second["actual_model_requests"] != first_calls:
@@ -343,6 +345,8 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("offline", "real"), default="offline")
+    parser.add_argument("--local-provider", choices=("local", "local_fast_story"), default="local",
+                        help="Real only: opt-in local-only 4B story selection comparison")
     parser.add_argument("--source", type=Path, help="Real mode: existing 180s video inside project")
     parser.add_argument("--transcript", type=Path, help="Real mode: optional ordinary ASR JSON inside project")
     parser.add_argument("--directory", type=Path, help="Output directory inside project/temp")
@@ -369,7 +373,7 @@ def main(argv=None) -> int:
         if args.mode == "offline":
             run_offline(directory, report)
         else:
-            run_real(directory, report, args.source, args.transcript)
+            run_real(directory, report, args.source, args.transcript, args.local_provider)
         report["status"] = "passed"
         return_code = 0
     except BaseException as error:

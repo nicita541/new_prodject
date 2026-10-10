@@ -199,6 +199,14 @@ def vision_session(job_dir: Path, cancelled, provider='local', **local_settings)
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import DeepSeekVision
         return DeepSeekVision(job_dir, cancelled)
+    if provider == 'local_fast_story':
+        # Explicit experimental mode: 4B handles semantic story selection,
+        # while the ordinary independent source-contract checks still apply.
+        # Later pacing/framing are routed to local Qwen9B by app.analysis.
+        settings = dict(local_settings)
+        if Path(settings.get('model', VLM_MODEL)) == STORY_MODEL:
+            settings.update(model=VLM_MODEL, projector=VLM_PROJECTOR, thinking=False)
+        return _analysis.LocalVision(job_dir, cancelled, **settings)
     if provider == 'local_flash_story':
         from .flash_story_trial import TrialStoryVision
         selected = Path(local_settings.get('model', VLM_MODEL))

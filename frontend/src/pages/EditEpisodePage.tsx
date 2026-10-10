@@ -22,7 +22,7 @@ export function EditEpisodePage() {
   const [sourceId, setSourceId] = useState<string>('');
   const [layout, setLayout] = useState<'portrait' | 'cinema'>('cinema');
   const [captionStyle, setCaptionStyle] = useState<'classic' | 'accent'>('accent');
-  const [provider, setProvider] = useState<'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story'>('deepseek_plan');
+  const [provider, setProvider] = useState<'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story'>('deepseek_plan');
 
   // Job state
   const [isStarting, setIsStarting] = useState(false);
@@ -169,11 +169,12 @@ export function EditEpisodePage() {
               <div className="settings-group">
                 <div className="form-group">
                   <label className="form-label" htmlFor="analysis-provider">Сценарист (Нейросеть)</label>
-                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story')} disabled={isStarting}>
+                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story')} disabled={isStarting}>
                     <option value="deepseek_plan">DeepSeek · сюжет и план (Облако)</option>
                     <option value="local_flash_story">Пробный: локальная 4B + DeepSeek Flash для сюжета (до 8 платных обращений)</option>
                     <option value="hybrid">Локально + DeepSeek API (Старый)</option>
                     <option value="local">На компьютере · без сети</option>
+                    <option value="local_fast_story">Эксперимент: быстрый локальный сюжет Qwen 4B (без DeepSeek)</option>
                   </select>
                 </div>
                 <p className="muted small" style={{ marginTop: '8px' }}>
@@ -183,6 +184,8 @@ export function EditEpisodePage() {
                     ? 'Следующий запуск: анализ с помощью DeepSeek.'
                     : provider === 'hybrid'
                     ? 'Следующий запуск: локальный анализ с проверками DeepSeek.'
+                    : provider === 'local_fast_story'
+                    ? 'Эксперимент без сети: Qwen 4B выполняет сюжетное сокращение, строгая проверка исключений остаётся. Qwen 9B используется для финального темпа и кадрирования. Возможна разница в качестве — проверяйте переходные действия и диалоги.'
                     : 'Следующий запуск: анализ на компьютере.'}
                 </p>
                 <DeepSeekPanel />

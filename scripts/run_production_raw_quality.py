@@ -23,10 +23,13 @@ from app.semantic_identity import semantic_identity
 from scripts.run_raw_video_quality import RecordedVision, sha256, workspace
 
 
-def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None):
+def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None,
+        analysis_provider="local"):
     import app.analysis as analysis_module
     from app.vision import LocalVision
     from app.editorial import DEFAULT_PROFILE, DRAMATIC_PROFILE
+    if analysis_provider not in ("local", "local_fast_story"):
+        raise ValueError("Raw quality observer supports genuine local providers only")
     fixture, job = workspace(fixture), workspace(job)
     manifest = load_json(fixture/'input.json')
     if set(manifest) not in ({'source'}, {'source', 'transcript'}):
@@ -38,7 +41,8 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
     job.mkdir(parents=True, exist_ok=True)
     if preferred_part_count is not None and (type(preferred_part_count) is not int or not 1 <= preferred_part_count <= 64):
         raise ValueError('Editorial preferred part count must be 1..64')
-    requested_settings = {'dramatic':bool(dramatic),'preferred_part_count':preferred_part_count}
+    requested_settings = {'dramatic':bool(dramatic),'preferred_part_count':preferred_part_count,
+                          'analysis_provider':analysis_provider}
     run_settings = job/'observed-run-settings.json'
     if run_settings.is_file() and load_json(run_settings) != requested_settings:
         raise ValueError('Resume editorial settings do not match original run')
@@ -53,7 +57,7 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
     else:
         atomic_json(input_path, original_inputs)
         atomic_json(job/'source.json', {'path':str(source), 'name':source.name})
-        settings={'provider':'local'}
+        settings={'provider':analysis_provider}
         if transcript_path:
             atomic_json(job/'transcript.json', load_json(transcript_path))
             settings.update(transcript_mode='provided', transcript_source_sha256=original_inputs['source_sha256'])

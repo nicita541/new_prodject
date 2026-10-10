@@ -31,7 +31,7 @@ export interface Job {
   source_id: string;
   source_name: string;
   status: JobStatus;
-  analysis_provider: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story';
+  analysis_provider: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story';
   layout: 'portrait' | 'cinema';
   caption_style: 'classic' | 'accent';
   progress: number;
@@ -133,7 +133,7 @@ export interface EpisodeSettings {
   source_id: string;
   layout?: 'portrait' | 'cinema';
   caption_style?: 'classic' | 'accent';
-  analysis_provider?: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story';
+  analysis_provider?: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story';
 }
 
 export interface ResetBudgetResponse {
@@ -171,7 +171,7 @@ export interface LibraryEpisode {
   settings: {
     layout: 'portrait' | 'cinema';
     caption_style: 'classic' | 'accent';
-    analysis_provider: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story';
+    analysis_provider: 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story';
   };
   created_at: string;
   archived_at?: string | null;

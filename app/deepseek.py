@@ -243,6 +243,10 @@ def _response_discipline(schema):
 def provider_identity(provider: str):
     if provider == 'local':
         return {'provider': 'local'}
+    if provider == 'local_fast_story':
+        return {'provider': 'local_fast_story', 'profile': 'source-preserving-4b-story-pilot-v1',
+                'early_visual': 'local4b', 'story': 'local4b-nonthinking',
+                'framing': 'local9b', 'pacing': 'local9b'}
     if provider == 'hybrid':
         from .hybrid import routing_profile
         return routing_profile()

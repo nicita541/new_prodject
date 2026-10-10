@@ -431,11 +431,11 @@ class JobManager:
 
     @staticmethod
     def _check_analysis_provider(provider: str) -> None:
-        if provider not in {"local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story"}:
+        if provider not in {"local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story"}:
             raise ValueError("Неизвестный способ анализа")
         # Hybrid always has a local path; remote availability is evaluated
         # only when the pipeline actually needs an optional fallback.
-        if provider in {"local", "hybrid"}:
+        if provider in {"local", "hybrid", "local_fast_story"}:
             return
         try:
             from app.deepseek import public_status
