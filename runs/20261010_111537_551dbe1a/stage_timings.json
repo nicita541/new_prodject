@@ -1,0 +1,547 @@
+{
+  "schema_version": 1,
+  "time_unit": "seconds",
+  "scope": "full_verification_and_nested_production",
+  "total": {
+    "seconds_until_report_generation": 1808.677,
+    "measurement": "monotonic_wall_clock",
+    "excludes": "git_report_upload"
+  },
+  "verification_checks": [
+    {
+      "name": "python_compile",
+      "status": "PASS",
+      "seconds": 0.367,
+      "share_of_test_pct": 0.02
+    },
+    {
+      "name": "python_dependencies",
+      "status": "PASS",
+      "seconds": 0.655,
+      "share_of_test_pct": 0.04
+    },
+    {
+      "name": "python_tests",
+      "status": "PASS",
+      "seconds": 139.116,
+      "share_of_test_pct": 7.69
+    },
+    {
+      "name": "react_tests",
+      "status": "PASS",
+      "seconds": 10.54,
+      "share_of_test_pct": 0.58
+    },
+    {
+      "name": "react_lint",
+      "status": "PASS",
+      "seconds": 0.397,
+      "share_of_test_pct": 0.02
+    },
+    {
+      "name": "react_build",
+      "status": "PASS",
+      "seconds": 2.568,
+      "share_of_test_pct": 0.14
+    },
+    {
+      "name": "ffmpeg",
+      "status": "PASS",
+      "seconds": 0.027,
+      "share_of_test_pct": 0.0
+    },
+    {
+      "name": "ffprobe",
+      "status": "PASS",
+      "seconds": 0.025,
+      "share_of_test_pct": 0.0
+    },
+    {
+      "name": "full_pipeline_3min",
+      "status": "PASS",
+      "seconds": 97.685,
+      "share_of_test_pct": 5.4
+    },
+    {
+      "name": "prepare_real_source",
+      "status": "PASS",
+      "seconds": 10.72,
+      "share_of_test_pct": 0.59
+    },
+    {
+      "name": "real_model_3min",
+      "status": "TIMEOUT",
+      "seconds": 1539.491,
+      "share_of_test_pct": 85.12
+    },
+    {
+      "name": "safe_ai_diagnostics",
+      "status": "PASS",
+      "seconds": null,
+      "share_of_test_pct": null
+    }
+  ],
+  "offline_180s_e2e_steps": [
+    {
+      "name": "generate_true_180_second_mp4",
+      "status": "passed",
+      "seconds": 0.672
+    },
+    {
+      "name": "ffprobe_source_and_prepare_decision_fixture",
+      "status": "passed",
+      "seconds": 0.031
+    },
+    {
+      "name": "real_pipeline_plan_and_ffmpeg_render",
+      "status": "passed",
+      "seconds": 84.422
+    },
+    {
+      "name": "decode_validate_mp4_audio_srt_and_plan",
+      "status": "passed",
+      "seconds": 0.078
+    },
+    {
+      "name": "second_full_pipeline_run_for_cache",
+      "status": "passed",
+      "seconds": 1.297
+    },
+    {
+      "name": "invalidate_corrupted_subtitles_and_rerender",
+      "status": "passed",
+      "seconds": 8.657
+    },
+    {
+      "name": "ffmpeg_finishing_zoom_music_and_edited_captions",
+      "status": "passed",
+      "seconds": 1.422
+    },
+    {
+      "name": "real_studio_http_source_plan_mp4_srt_and_range",
+      "status": "passed",
+      "seconds": 0.234
+    }
+  ],
+  "real_ai_e2e_steps": [],
+  "real_production": {
+    "elapsed_seconds": null,
+    "stage_order": [
+      {
+        "stage": "pipeline",
+        "invocations": 1,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 1,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "prepare",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 0.289,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "transcribe",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 29.116,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scenes",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 367.328,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "shot_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 2.469,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "media_perception",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 6.719,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scene_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 356.547,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "semantic_boundary",
+        "invocations": 74,
+        "completed_invocations": 74,
+        "seconds": 299.844,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "analysis",
+        "invocations": 0,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "analyze",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 766.927,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scene_analysis",
+        "invocations": 18,
+        "completed_invocations": 18,
+        "seconds": 555.234,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scene_recovery",
+        "invocations": 0,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "story_refinement",
+        "invocations": 1,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 1,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "condense",
+        "invocations": 1,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 1,
+        "share_of_real_run_pct": null
+      }
+    ],
+    "slowest_inclusive_stages": [
+      {
+        "stage": "analyze",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 766.927,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scene_analysis",
+        "invocations": 18,
+        "completed_invocations": 18,
+        "seconds": 555.234,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scenes",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 367.328,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scene_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 356.547,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "semantic_boundary",
+        "invocations": 74,
+        "completed_invocations": 74,
+        "seconds": 299.844,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "transcribe",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 29.116,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "media_perception",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 6.719,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "shot_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 2.469,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "prepare",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 0.289,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "pipeline",
+        "invocations": 1,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 1,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "analysis",
+        "invocations": 0,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "scene_recovery",
+        "invocations": 0,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      }
+    ],
+    "slowest_detailed_stage": {
+      "stage": "scene_analysis",
+      "invocations": 18,
+      "completed_invocations": 18,
+      "seconds": 555.234,
+      "exceptions": 0,
+      "unfinished_invocations": 0,
+      "share_of_real_run_pct": null
+    },
+    "measurement": "inclusive_nested_stage_seconds_not_additive"
+  },
+  "model_inference": {
+    "requests": 149,
+    "responses": 148,
+    "errors": 0,
+    "sum_response_seconds": 897.33,
+    "average_response_seconds": 6.063,
+    "median_response_seconds": 4.219,
+    "max_response_seconds": 147.156,
+    "measurement_note": "Sum of model request durations; not an independent wall-clock phase."
+  },
+  "model_performance": {
+    "schema_version": 1,
+    "available": true,
+    "requests": 149,
+    "pending": 1,
+    "startup": [
+      {
+        "model": "visual4b",
+        "status": "ok",
+        "seconds": 5.093,
+        "cpu": false
+      },
+      {
+        "model": "visual4b",
+        "status": "ok",
+        "seconds": 3.547,
+        "cpu": false
+      },
+      {
+        "model": "story9b",
+        "status": "ok",
+        "seconds": 12.125,
+        "cpu": false
+      }
+    ],
+    "by_model_and_stage": [
+      {
+        "model": "story9b",
+        "stage": "choose_units",
+        "requests": 1,
+        "completed": 1,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 1,
+        "thinking_requests": 1,
+        "cpu_requests": 0,
+        "prompt_chars": 4585,
+        "prompt_tokens": 1700.0,
+        "completion_tokens": 593.0,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "token_reported_calls": 1,
+        "latency_p50_s": 147.159,
+        "latency_p95_s": 147.159,
+        "max_latency_s": 147.1594,
+        "prefill_p50_ms": 15730.887,
+        "decode_p50_ms": 131383.18,
+        "prefill_samples": 1,
+        "decode_samples": 1
+      },
+      {
+        "model": "story9b",
+        "stage": "credit_classifier",
+        "requests": 2,
+        "completed": 1,
+        "pending": 1,
+        "failed": 0,
+        "image_pages": 2,
+        "thinking_requests": 2,
+        "cpu_requests": 0,
+        "prompt_chars": 672,
+        "prompt_tokens": 687.0,
+        "completion_tokens": 556.0,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "token_reported_calls": 1,
+        "latency_p50_s": 132.283,
+        "latency_p95_s": 132.283,
+        "max_latency_s": 132.2829,
+        "prefill_p50_ms": 9305.307,
+        "decode_p50_ms": 122778.217,
+        "prefill_samples": 1,
+        "decode_samples": 1
+      },
+      {
+        "model": "visual4b",
+        "stage": "scene_analysis",
+        "requests": 70,
+        "completed": 70,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 104,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 214113,
+        "prompt_tokens": 141493.0,
+        "completion_tokens": 19426.0,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "token_reported_calls": 70,
+        "latency_p50_s": 4.418,
+        "latency_p95_s": 5.619,
+        "max_latency_s": 5.8228,
+        "prefill_p50_ms": 1180.827,
+        "decode_p50_ms": 3194.197,
+        "prefill_samples": 70,
+        "decode_samples": 70
+      },
+      {
+        "model": "visual4b",
+        "stage": "semantic_boundary",
+        "requests": 76,
+        "completed": 76,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 78,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 208520,
+        "prompt_tokens": 112738.0,
+        "completion_tokens": 18043.0,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "token_reported_calls": 76,
+        "latency_p50_s": 3.82,
+        "latency_p95_s": 4.423,
+        "max_latency_s": 4.617,
+        "prefill_p50_ms": 869.412,
+        "decode_p50_ms": 2908.633,
+        "prefill_samples": 76,
+        "decode_samples": 76
+      }
+    ],
+    "note": "Incomplete requests retain their START; provider prefill/decode timings may be unavailable."
+  },
+  "production_invocations": [
+    {
+      "status": "running",
+      "elapsed_seconds": null,
+      "stages": [],
+      "parts": 0,
+      "cached_parts": 0,
+      "run_number": 1
+    }
+  ],
+  "bottlenecks": {
+    "slowest_verification_check": {
+      "name": "real_model_3min",
+      "status": "TIMEOUT",
+      "seconds": 1539.491,
+      "share_of_test_pct": 85.12
+    },
+    "slowest_detailed_production_stage": {
+      "stage": "scene_analysis",
+      "invocations": 18,
+      "completed_invocations": 18,
+      "seconds": 555.234,
+      "exceptions": 0,
+      "unfinished_invocations": 0,
+      "share_of_real_run_pct": null
+    }
+  },
+  "missing_timing_checks": [
+    "safe_ai_diagnostics"
+  ]
+}
