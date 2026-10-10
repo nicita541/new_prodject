@@ -79,6 +79,85 @@ def json_lines(path):
         return
 
 
+
+PERF_STAGES = frozenset(("general", "semantic_boundary", "scene_analysis", "story_refinement",
+    "choose_units", "verify_omissions", "credit_classifier", "global_story",
+    "global_visual", "source_roles", "titles", "framing", "pacing"))
+PERF_MODELS = frozenset(("visual4b", "story9b", "other"))
+PERF_STATUSES = frozenset(("ok", "failed", "cancelled", "retried", "fallback", "timeout"))
+
+
+def model_perf_summary(job):
+    """Strictly allowlisted profiling; no prompts/answers/errors/paths."""
+    starts, ends, loads = {}, {}, []
+    for row in json_lines(job / "model-performance.jsonl"):
+        model, kind = row.get("model"), row.get("event")
+        if model not in PERF_MODELS:
+            continue
+        if kind == "startup":
+            status = row.get("status")
+            loads.append({"model": model, "status": status if status in PERF_STATUSES else "failed",
+                          "seconds": numeric(row.get("seconds")), "cpu": row.get("cpu") is True})
+            continue
+        if kind not in ("request_start", "request_end"):
+            continue
+        ident, stage = row.get("id"), row.get("stage")
+        if not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{32}", ident) or stage not in PERF_STAGES:
+            continue
+        if kind == "request_start":
+            starts[ident] = {"model": model, "stage": stage, "pages": numeric(row.get("pages")),
+                             "prompt_chars": numeric(row.get("prompt_chars")),
+                             "thinking": row.get("thinking") is True, "cpu": row.get("cpu") is True}
+        else:
+            status = row.get("status")
+            ends[ident] = {"model": model, "stage": stage,
+                           "status": status if status in PERF_STATUSES else "failed",
+                           **{field: numeric(row.get(field)) for field in
+                              ("seconds", "prompt_tokens", "completion_tokens", "prompt_ms", "predicted_ms")}}
+    groups = {}
+    for ident, start in starts.items():
+        key = (start["model"], start["stage"])
+        g = groups.setdefault(key, {"model": key[0], "stage": key[1], "requests": 0,
+            "completed": 0, "pending": 0, "failed": 0, "image_pages": 0,
+            "thinking_requests": 0, "cpu_requests": 0, "prompt_chars": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "token_reported_calls": 0,
+            "_latency": [], "_prefill": [], "_decode": []})
+        g["requests"] += 1
+        g["image_pages"] += int(start["pages"] or 0)
+        g["prompt_chars"] += int(start["prompt_chars"] or 0)
+        g["thinking_requests"] += int(start["thinking"])
+        g["cpu_requests"] += int(start["cpu"])
+        end = ends.get(ident)
+        if end is None:
+            g["pending"] += 1
+            continue
+        g["completed"] += 1
+        g["failed"] += int(end["status"] not in ("ok", "retried"))
+        if end["prompt_tokens"] is not None and end["completion_tokens"] is not None:
+            g["token_reported_calls"] += 1
+        for field in ("prompt_tokens", "completion_tokens"):
+            if end[field] is not None:
+                g[field] += end[field]
+        for field, dest in (("seconds", "_latency"), ("prompt_ms", "_prefill"), ("predicted_ms", "_decode")):
+            if end[field] is not None:
+                g[dest].append(end[field])
+    def pct(values, p):
+        values = sorted(values)
+        return round(values[min(len(values)-1, math.ceil(p*len(values))-1)], 3) if values else None
+    rows = []
+    for g in groups.values():
+        seconds, prefill, decode = g.pop("_latency"), g.pop("_prefill"), g.pop("_decode")
+        rows.append({**g, "latency_p50_s": pct(seconds, .5), "latency_p95_s": pct(seconds, .95),
+                     "max_latency_s": max(seconds, default=None),
+                     "prefill_p50_ms": pct(prefill, .5), "decode_p50_ms": pct(decode, .5),
+                     "prefill_samples": len(prefill), "decode_samples": len(decode)})
+    rows.sort(key=lambda g: (g["model"], g["stage"]))
+    return {"schema_version": 1, "available": bool(starts or loads),
+            "requests": len(starts), "pending": sum(g["pending"] for g in rows),
+            "startup": loads[-60:], "by_model_and_stage": rows,
+            "note": "Incomplete requests retain their START; provider prefill/decode timings may be unavailable."}
+
+
 def summarize(test_dir):
     folder = Path(test_dir) / "real_model_3min"
     job = folder / "real-job"
@@ -192,6 +271,7 @@ def summarize(test_dir):
         if stage:
             progress_counts[stage] += 1
         recent.append({"stage": stage, "progress": numeric(item.get("progress"))})
+    result["model_performance"] = model_perf_summary(job)
     result["optimization"] = {"semantic_boundary_triage": boundary_triage,
                               "visual_context_payload": scene_inference_pages}
     result["progress"] = {"events_by_stage": dict(sorted(progress_counts.items())),

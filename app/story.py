@@ -10,6 +10,13 @@ from pathlib import Path
 import urllib.error
 
 from .config import ROOT, VLM_MODEL, VLM_PROJECTOR
+from .model_perf import purpose as inference_purpose
+
+def _profiled_query(vision, purpose, *args, **kwargs):
+    """Label a model operation without changing any provider API or prompts."""
+    with inference_purpose(purpose):
+        return vision.query(*args, **kwargs)
+
 
 STORY_VERSION = 15
 EDGE_VERSION = 13
@@ -74,7 +81,7 @@ def verify_omissions(units, selected, omissions, collage, frame_map, vision, pro
     schema={'type':'object','properties':{'decisions':{'type':'array','items':{
         'type':'object','properties':fields,'required':list(fields),'additionalProperties':False}}},
         'required':['decisions'],'additionalProperties':False}
-    raw=vision.query(instruction(profile)+' Independently review proposed STORY omissions, not the prior rationale. '
+    raw=_profiled_query(vision, 'verify_omissions', instruction(profile)+' Independently review proposed STORY omissions, not the prior rationale. '
         'Compare each CURRENT unit with the original source-chronological before/after frames and retained units. '
         'Repeated words/names do not mean repeated action: calling a name while someone wakes up, '
         'turns, notices something or responds is an evolving action and its completion must remain. '
@@ -328,7 +335,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     'contains_credits': {'type': 'boolean'},
                     'confidence': {'type': 'number', 'enum': [round(i / 20, 2) for i in range(21)]}},
                     'required': ['credit_montage', 'continuous_narrative', 'contains_credits', 'confidence'], 'additionalProperties': False}
-                raw = vision.query('Look ONLY at these images. Independently identify visible title/production-credit text '
+                raw = _profiled_query(vision, 'credit_classifier', 'Look ONLY at these images. Independently identify visible title/production-credit text '
                                    '(contains_credits) and continuous narrative action. Both can be true in a mixed interval. '
                                    'credit_montage means non-narrative production-credit/title montage. Return JSON booleans '
                                    'contains_credits, credit_montage, continuous_narrative and confidence.',
@@ -410,7 +417,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     'reason': {'type':'string', 'enum':sorted(OMISSION_REASONS)},
                     'reaction_or_humor':{'type':'boolean'}},
                     'required':['unit','reason','reaction_or_humor'], 'additionalProperties':False}}
-                raw = vision.query(prompt, (image_pages if len(image_pages)>1 else collage) if use_images else None, max_tokens=650, schema=schema)
+                raw = _profiled_query(vision, 'choose_units', prompt, (image_pages if len(image_pages)>1 else collage) if use_images else None, max_tokens=650, schema=schema)
                 if not isinstance(raw, dict) or not isinstance(raw.get("summary"), str) or not raw["summary"].strip():
                     raise ValueError("Модель не описала фактические события")
                 keep = _unit_ids(raw, "keep_units", known)

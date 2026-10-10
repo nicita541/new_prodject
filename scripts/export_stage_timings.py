@@ -17,7 +17,7 @@ import sys
 # Direct invocation by Windows BAT/PowerShell must resolve the project package.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.export_safe_ai_diagnostics import json_file, json_lines, name, numeric
+from scripts.export_safe_ai_diagnostics import json_file, json_lines, name, numeric, model_perf_summary
 
 # These names come from source code, never from a user-controlled log message.
 CHECKS = set("""
@@ -232,6 +232,7 @@ def summarize(test_dir):
             "measurement": "inclusive_nested_stage_seconds_not_additive",
         },
         "model_inference": model_request_timing(job),
+        "model_performance": model_perf_summary(job),
         "production_invocations": production_run_manifests(job),
         "bottlenecks": {
             "slowest_verification_check": bottleneck_check,
@@ -310,11 +311,29 @@ def markdown(data):
         f"Sum of response durations: **{human(model['sum_response_seconds'])}**; "
         f"median: {human(model['median_response_seconds'])}.",
     ])
+    perf = data["model_performance"]
+    parts.extend([
+        "", "## 7. Local llama.cpp per-model and per-task profile", "",
+        "| Model | Task | Requests | Pending | p50 HTTP | p95 HTTP | Prompt tokens | Completion tokens | Prefill p50 | Decode p50 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for group in perf["by_model_and_stage"]:
+        parts.append(f"| {group['model']} | {group['stage']} | {group['requests']} | "
+                     f"{group['pending']} | {human(group['latency_p50_s'])} | "
+                     f"{human(group['latency_p95_s'])} | {group['prompt_tokens']} | "
+                     f"{group['completion_tokens']} | "
+                     f"{str(group['prefill_p50_ms'])+' ms' if group['prefill_p50_ms'] is not None else 'not measured'} | "
+                     f"{str(group['decode_p50_ms'])+' ms' if group['decode_p50_ms'] is not None else 'not measured'} |")
+    parts.extend(["", "**llama.cpp startup attempts:**", ""])
+    for item in perf["startup"]:
+        parts.append(f"- {item['model']} / {item['status']} / "
+                     f"{'CPU' if item['cpu'] else 'GPU'}: {human(item['seconds'])}")
+    parts.append("")
     bottleneck = data["bottlenecks"]
     check = bottleneck["slowest_verification_check"]
     detail = bottleneck["slowest_detailed_production_stage"]
     parts.extend([
-        "", "## 7. Bottleneck candidates", "",
+        "", "## 8. Bottleneck candidates", "",
         f"Slowest verification step: **{check['name']} — {human(check['seconds'])}**." if check else "No per-check timing available.",
         f"Slowest detailed production stage: **{detail['stage']} — {human(detail['seconds'])}**." if detail else "No detailed production timing available.",
         "", "Only fixed internal check/stage names and numeric measurements are published.",

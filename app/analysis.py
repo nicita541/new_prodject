@@ -16,6 +16,7 @@ import urllib.error
 from app.config import (
     FFMPEG, ROOT, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR, setup_environment
 )
+from app.model_perf import purpose as inference_purpose
 
 # Re-exports from app.media_probe
 from app.media_probe import (
@@ -346,7 +347,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     report('scenes', .21, 'Объединение планов в смысловые сцены')
     scene_cache = {}
     with diagnostics.stage('scene_detection', shots=len(shots)):
-        with vision_session(job_dir, cancelled, provider) as boundary_vision:
+        with inference_purpose("semantic_boundary"), vision_session(job_dir, cancelled, provider) as boundary_vision:
             scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled,
                                       settings=grouping_settings, cache_status=scene_cache,
                                       vision=boundary_vision, perception=perception,
@@ -390,7 +391,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     diagnostics.event('analysis', 'cache_miss', signature=focus_key)
     from .scene_analysis import analyze_scenes
     report('analyze', .22, 'Анализ смысловых сцен с соседним контекстом')
-    with vision_session(job_dir, cancelled, provider) as vision:
+    with inference_purpose("scene_analysis"), vision_session(job_dir, cancelled, provider) as vision:
         events = analyze_scenes(source, scenes, transcript, shots, job_dir, vision, analysis_key, report, cancelled)
     # Larger model decides story retention; release the visual model before
     # loading it. Framing uses a separate, non-thinking 9B session: short real
@@ -402,7 +403,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         events = saved_story['events']
     else:
         diagnostics.event('story_refinement', 'cache_miss', signature=derived_key)
-        with vision_session(job_dir, cancelled, provider, model=STORY_MODEL, projector=STORY_PROJECTOR, thinking=True) as vision:
+        with inference_purpose("story_refinement"), vision_session(job_dir, cancelled, provider, model=STORY_MODEL, projector=STORY_PROJECTOR, thinking=True) as vision:
             from app.story import preserve_dialogue_in_credits, clean_credit_continuations
             from .scene_refinement import refine_scene_story
             with diagnostics.stage('story_refinement', provider=provider, model=str(STORY_MODEL)):
@@ -431,7 +432,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
                 events = adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled)
             selection_snapshot(diagnostics, 'selection_adjudication', events)
             # Global pass references only existing event IDs, never generated time ranges.
-            with diagnostics.stage('global_story', provider=provider, model=str(STORY_MODEL)):
+            with inference_purpose("global_story"), diagnostics.stage('global_story', provider=provider, model=str(STORY_MODEL)):
                 decisions = global_story_review(vision, events, editorial_profile)
             apply_global_selection(events, decisions, editorial_profile)
             global_path = diagnostics.path/'global_story.json'
@@ -476,7 +477,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         atomic_json(story_checkpoint, {'signature': derived_key, 'events': events,
             'quality_state': 'degraded' if any(e.get('analysis_unresolved') or e.get('source_role_unresolved') for e in events) else 'complete'})
     from .pacing import refine_pacing, refine_silent_sequences, BudgetPacingVision
-    with vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
+    with inference_purpose("pacing"), vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
         if pacing_provider in ('deepseek', 'deepseek_plan'):
             with BudgetPacingVision(vision, job_dir, cancelled) as paced:
                 events = refine_pacing(source, events, transcript, shots, job_dir, paced, report, cancelled)
@@ -493,7 +494,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     from app.framing import refine_focus
     focus_provider = framing_provider(provider)
     if layout == 'portrait':
-        with vision_session(job_dir, cancelled, focus_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
+        with inference_purpose("framing"), vision_session(job_dir, cancelled, focus_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
             events = refine_focus(source, probe, transcript, shots, events, job_dir, vision, report, cancelled)
     else:
         report('framing', 0.65, 'Сохраняем исходный кадр целиком на мягком вертикальном фоне')
