@@ -52,6 +52,8 @@ jobs:
           assert report['cache']['all_parts_reused']
           assert report['cache']['corrupt_srt_forced_rerender']
           assert report['finished_preview']['sha256']
+          assert any(row['name'] == 'real_studio_http_source_plan_mp4_srt_and_range'
+                     and row['status'] == 'passed' for row in report['checks'])
           assert len(report['pipeline_stages']) > 0
           assert all(row['status'] == 'passed' for row in report['checks'])
           print('3-minute FFmpeg pipeline and recovery acceptance PASS')
@@ -66,11 +68,11 @@ jobs:
           path: |
             temp/ci-full-pipeline-3min/report.json
             temp/ci-full-pipeline-3min/source-180s.mp4
-            temp/ci-full-pipeline-3min/jobs/*/output/*.mp4
-            temp/ci-full-pipeline-3min/jobs/*/output/*.srt
-            temp/ci-full-pipeline-3min/jobs/*/finished/*.mp4
-            temp/ci-full-pipeline-3min/jobs/*/e2e-progress.jsonl
-            temp/ci-full-pipeline-3min/jobs/*/timings.json
-            temp/ci-full-pipeline-3min/jobs/*/final_quality_gate.json
-            temp/ci-full-pipeline-3min/jobs/*/diagnostics/summary.json
-            temp/ci-full-pipeline-3min/jobs/*/plan.json
+            temp/ci-full-pipeline-3min/data/jobs/*/output/*.mp4
+            temp/ci-full-pipeline-3min/data/jobs/*/output/*.srt
+            temp/ci-full-pipeline-3min/data/jobs/*/finished/*.mp4
+            temp/ci-full-pipeline-3min/data/jobs/*/e2e-progress.jsonl
+            temp/ci-full-pipeline-3min/data/jobs/*/timings.json
+            temp/ci-full-pipeline-3min/data/jobs/*/final_quality_gate.json
+            temp/ci-full-pipeline-3min/data/jobs/*/diagnostics/summary.json
+            temp/ci-full-pipeline-3min/data/jobs/*/plan.json

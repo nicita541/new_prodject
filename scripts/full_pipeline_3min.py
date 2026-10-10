@@ -137,7 +137,9 @@ def run_offline(root: Path, report: dict) -> None:
     from app import studio_render
     from app.finishing import FinishProfile
     # This job is isolated from real projects; no user data is modified.
-    job = root / "jobs" / str(uuid.uuid4())
+    # Follow the *actual* JobManager storage layout so delivery through
+    # production HTTP endpoints can be tested after rendering.
+    job = root / "data" / "jobs" / str(uuid.uuid4())
     job.mkdir(parents=True)
     source = inspect_step(report, "generate_true_180_second_mp4",
                           lambda: generate_video(root))
@@ -236,7 +238,41 @@ def run_offline(root: Path, report: dict) -> None:
         assert "ГОТОВО: QA" in sidecar.read_text("utf-8")
         assert probe_media(target)["has_audio"]
         report["finished_preview"] = {"path": str(target), "sha256": sha(target)}
+    inspect_step(report, "real_studio_http_source_plan_mp4_srt_and_range",
+                 lambda: verify_studio_api_delivery(root, job, names))
     assert sha(source) == report["source"]["sha256"], "Original 180s source was changed"
+
+
+def verify_studio_api_delivery(root: Path, job: Path, outputs: list[str]) -> dict:
+    """Exercise real FastAPI routes against an actual completed video job."""
+    from fastapi.testclient import TestClient
+    from app.jobs import JobManager
+    from app.server import create_app
+    now = datetime.now(timezone.utc).isoformat()
+    atomic_json(job / "job.json", {
+        "id": job.name, "status": "completed", "stage": "completed",
+        "progress": 1.0, "source_name": "QA 180 секунд",
+        "source_id": "qa-180", "created_at": now, "updated_at": now,
+        "outputs": outputs, "cancel_requested": False})
+    manager = JobManager(root)
+    try:
+        with TestClient(create_app(manager), base_url="http://127.0.0.1:8765") as client:
+            for path in (f"/api/jobs/{job.name}", f"/api/jobs/{job.name}/plan"):
+                response = client.get(path)
+                assert response.status_code == 200, (path, response.text[:300])
+            original = client.get(f"/api/jobs/{job.name}/source",
+                                  headers={"Range": "bytes=0-127"})
+            assert original.status_code == 206 and len(original.content) == 128
+            for name in outputs:
+                path = f"/api/jobs/{job.name}/files/{name}"
+                first = client.get(path, headers={"Range": "bytes=0-127"})
+                assert first.status_code == 206 and len(first.content) == 128, (name, first.status_code)
+                header = client.head(path)
+                assert header.status_code == 200
+                assert int(header.headers["content-length"]) == (job / "output" / name).stat().st_size
+    finally:
+        manager.close()
+    return {"api_job_id": job.name, "files": len(outputs), "range_requests_valid": True}
 
 
 def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: Path | None) -> None:
