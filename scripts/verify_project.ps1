@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $root "temp"), (Join-Path $
 
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmss") + "_" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $localDir = Join-Path $root ("temp\verification-reports\" + $runId)
-$logsDir = Join-Path $root ("logs\\tests\\" + $runId)
+$logsDir = Join-Path (Join-Path $root 'logs\tests') $runId
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 $script:checks = @()
 
