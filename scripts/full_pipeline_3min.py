@@ -160,9 +160,28 @@ def run_offline(root: Path, report: dict) -> None:
     song = {"enabled": True, "volume": .15, "track": track.name, "mode": "single",
             "part_tracks": {}, "fade_in": True, "fade_out": True,
             "smart_ducking": False, "volume_music_duck": .015}
-    # Only the expensive inference provider is replaced. We run real video
-    # decoding, real timeline planning and actual 1080x1920 audio/video render.
+    # Offline fixture is a moving test card and a sine tone, not a story:
+    # normal source-proved quality gating must reject it. Bypass the semantic
+    # *decision* only in this explicitly labelled mechanical run; retain the
+    # real gate's actual findings in the report. Real mode never bypasses it.
+    from app import final_quality
+    real_gate = final_quality.inspect_final_quality
+    report["quality_gate_mode"] = "synthetic_fixture_only; real mode enforces source-proved gate"
+    def fixture_gate(value, plan=None):
+        result = real_gate(value, plan)
+        report.setdefault("real_gate_inspections", []).append({
+            "phase": "before_render" if plan is not None else "before_planner",
+            "status": result["status"],
+            "problem_codes": sorted({p["code"] for p in result.get("problems", [])})})
+        if result["status"] == "passed":
+            return result
+        return {**result, "status": "passed", "problems": [],
+                "synthetic_fixture_override": True}
+
+    # Only inference and the synthetic-only editorial decision are substituted.
+    # Media decode, planning, timestamp remap, FFmpeg and caching remain real.
     with patch("app.analysis.analyze", return_value=analysis), \
+         patch("app.final_quality.inspect_final_quality", side_effect=fixture_gate), \
          patch.object(pipeline, "load_settings", return_value=song), \
          patch.object(pipeline, "MUSIC", music), \
          patch.object(pipeline, "choose_encoder", return_value="libx264"), \
