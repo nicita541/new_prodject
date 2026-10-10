@@ -404,7 +404,6 @@ $summary = [pscustomobject]@{
     commit = $commit
     mode = if ($Quick) { "quick" } elseif ($Video) { "video" } else { "full" }
     run_profile = if ($RequireRealModel -or $RealSource) { "full_with_local_ai" } else { "technical_without_ai" }
-    if ($FastLocalStory) { $run_profile = "full_with_experimental_local_4b_story" }
     real_model_scope = if ($RequireRealModel -or $RealSource) { "required" } else { "not_run_technical_only" }
     overall = $overall
     passed = $passed
@@ -413,6 +412,7 @@ $summary = [pscustomobject]@{
     checks = $script:checks
     logs_dir = $logsDir
 }
+if ($FastLocalStory) { $summary.run_profile = "full_with_experimental_local_4b_story" }
 # A test may remove temporary files while running; recreate output folders
 # before writing reports so a successful test run never fails on a missing dir.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
