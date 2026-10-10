@@ -22,7 +22,9 @@ def test_query_latency_tokens_model_stage_and_startup_are_allowlisted(tmp_path):
     def fake_inference(prompt, images, max_tokens, schema, trace):
         assert SECRET in prompt
         trace.response({"usage": {"prompt_tokens": 130, "completion_tokens": 42,
-                                  "total_tokens": 172},
+                                  "total_tokens": 172,
+                                  "completion_tokens_details": {"reasoning_tokens": 19}},
+                        "choices": [{"finish_reason": "length", "message": {"content": SECRET}}],
                         "timings": {"prompt_ms": 850, "predicted_ms": 4200},
                         "choices": [{"message": {"content": SECRET}}]})
         return {"summary": SECRET}
@@ -44,6 +46,8 @@ def test_query_latency_tokens_model_stage_and_startup_are_allowlisted(tmp_path):
     assert row["prompt_chars"] == len(SECRET)
     assert row["prompt_tokens"] == 130
     assert row["completion_tokens"] == 42
+    assert row["reasoning_tokens"] == 19
+    assert row["finish_length_calls"] == 1
     assert row["prefill_p50_ms"] == 850
     assert row["decode_p50_ms"] == 4200
     assert data["startup"] == [{"model": "story9b", "status": "ok",

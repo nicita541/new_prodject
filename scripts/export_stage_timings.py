@@ -314,14 +314,15 @@ def markdown(data):
     perf = data["model_performance"]
     parts.extend([
         "", "## 7. Local llama.cpp per-model and per-task profile", "",
-        "| Model | Task | Requests | Pending | p50 HTTP | p95 HTTP | Prompt tokens | Completion tokens | Prefill p50 | Decode p50 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Model | Task | Requests | Pending | p50 HTTP | p95 HTTP | Prompt tokens | Completion tokens | Reasoning tokens | Length stops | Prefill p50 | Decode p50 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for group in perf["by_model_and_stage"]:
         parts.append(f"| {group['model']} | {group['stage']} | {group['requests']} | "
                      f"{group['pending']} | {human(group['latency_p50_s'])} | "
                      f"{human(group['latency_p95_s'])} | {group['prompt_tokens']} | "
-                     f"{group['completion_tokens']} | "
+                     f"{group['completion_tokens']} | {group['reasoning_tokens']} | "
+                     f"{group['finish_length_calls']} | "
                      f"{str(group['prefill_p50_ms'])+' ms' if group['prefill_p50_ms'] is not None else 'not measured'} | "
                      f"{str(group['decode_p50_ms'])+' ms' if group['decode_p50_ms'] is not None else 'not measured'} |")
     parts.extend(["", "**llama.cpp startup attempts:**", ""])

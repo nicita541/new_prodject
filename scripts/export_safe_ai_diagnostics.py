@@ -113,14 +113,19 @@ def model_perf_summary(job):
             ends[ident] = {"model": model, "stage": stage,
                            "status": status if status in PERF_STATUSES else "failed",
                            **{field: numeric(row.get(field)) for field in
-                              ("seconds", "prompt_tokens", "completion_tokens", "prompt_ms", "predicted_ms")}}
+                              ("seconds", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+                               "prompt_ms", "predicted_ms")},
+                           "finish_reason": row.get("finish_reason") if row.get("finish_reason") in
+                              ("stop", "length", "tool_calls", "content_filter") else None}
     groups = {}
     for ident, start in starts.items():
         key = (start["model"], start["stage"])
         g = groups.setdefault(key, {"model": key[0], "stage": key[1], "requests": 0,
             "completed": 0, "pending": 0, "failed": 0, "image_pages": 0,
             "thinking_requests": 0, "cpu_requests": 0, "prompt_chars": 0,
-            "prompt_tokens": 0, "completion_tokens": 0, "token_reported_calls": 0,
+            "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
+            "reasoning_reported_calls": 0, "finish_length_calls": 0,
+            "token_reported_calls": 0,
             "_latency": [], "_prefill": [], "_decode": []})
         g["requests"] += 1
         g["image_pages"] += int(start["pages"] or 0)
@@ -133,6 +138,10 @@ def model_perf_summary(job):
             continue
         g["completed"] += 1
         g["failed"] += int(end["status"] not in ("ok", "retried"))
+        g["finish_length_calls"] += int(end["finish_reason"] == "length")
+        if end["reasoning_tokens"] is not None:
+            g["reasoning_reported_calls"] += 1
+            g["reasoning_tokens"] += end["reasoning_tokens"]
         if end["prompt_tokens"] is not None and end["completion_tokens"] is not None:
             g["token_reported_calls"] += 1
         for field in ("prompt_tokens", "completion_tokens"):

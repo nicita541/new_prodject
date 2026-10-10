@@ -95,6 +95,15 @@ class RequestTrace:
         if isinstance(usage, dict):
             for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
                 self.details[key] = metric(usage.get(key))
+        if isinstance(usage, dict):
+            details = usage.get("completion_tokens_details")
+            if isinstance(details, dict):
+                self.details["reasoning_tokens"] = metric(details.get("reasoning_tokens"))
+        choices = raw.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            reason = choices[0].get("finish_reason")
+            if reason in ("stop", "length", "tool_calls", "content_filter"):
+                self.details["finish_reason"] = reason
         timings = raw.get("timings")
         if isinstance(timings, dict):
             for key in ("prompt_ms", "predicted_ms", "prompt_n", "predicted_n"):
