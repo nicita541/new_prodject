@@ -44,6 +44,48 @@ def test_credit_classifier_disables_reasoning_only_for_that_request(tmp_path):
     assert groups["choose_units"]["thinking_requests"] == 1
 
 
+def test_omission_proof_disables_reasoning_but_keeps_select_and_full_source_schema(tmp_path):
+    import json
+    from app.editorial import DEFAULT_PROFILE
+    from app.story import verify_omissions
+    vision = LocalVision(tmp_path, lambda: False, model=STORY_MODEL, thinking=True)
+    vision.port = 9876
+    class Opener:
+        def __init__(self):
+            self.calls = []
+        def open(self, request, timeout):
+            body = json.loads(request.data.decode('utf-8'))
+            self.calls.append(body)
+            answer = {'decisions': [{
+                'unit':'u001', 'keep':True, 'story_change':True,
+                'reaction_or_humor':False, 'current_episode_story':True,
+                'confidence':.99, 'evidence':'A character is tied and moved into the car.',
+                'retained_witness':'none', 'reaction_kind':'none',
+                'frame_indices':[]} ]}
+            return io.BytesIO(json.dumps({'choices':[{'message':{'content':json.dumps(answer)},
+                                                      'finish_reason':'stop'}],
+                                            'usage':{'prompt_tokens':60,'completion_tokens':80}}).encode())
+    vision.opener = Opener()
+    original = [{'id':'u000','start':0,'end':3},{'id':'u001','start':3,'end':5}]
+    approved, proof = verify_omissions(original, {'u000'},
+                  [{'unit':'u001','reason':'waiting'}], None,
+                  [{'frame':1,'unit':'u001','source':4}], vision, DEFAULT_PROFILE)
+    assert not approved
+    assert proof['decisions'][0]['story_change']
+    body = vision.opener.calls[0]
+    assert body['chat_template_kwargs']['enable_thinking'] is False
+    assert body['max_tokens'] == 360
+    assert body['response_format']['schema']['properties']['decisions']['items']['properties']['unit']['enum'] == ['u001']
+    assert vision.thinking is True
+
+
+def test_omission_verification_keeps_external_adapter_contract():
+    class Adapter:
+        def query(self, prompt, image=None, max_tokens=100, schema=None):
+            return {'requested': True}
+    assert _profiled_query(Adapter(), 'verify_omissions', 'verify?') == {'requested': True}
+
+
 def test_credit_safeguards_do_not_discard_mixed_story():
     assert not _credit_decision({"credit_montage": True,
         "continuous_narrative": True, "contains_credits": True,
