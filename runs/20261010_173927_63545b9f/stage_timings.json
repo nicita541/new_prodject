@@ -1,0 +1,813 @@
+{
+  "schema_version": 1,
+  "time_unit": "seconds",
+  "scope": "full_verification_and_nested_production",
+  "total": {
+    "seconds_until_report_generation": 1751.906,
+    "measurement": "monotonic_wall_clock",
+    "excludes": "git_report_upload"
+  },
+  "verification_checks": [
+    {
+      "name": "python_compile",
+      "status": "PASS",
+      "seconds": 0.227,
+      "share_of_test_pct": 0.01
+    },
+    {
+      "name": "python_dependencies",
+      "status": "PASS",
+      "seconds": 0.58,
+      "share_of_test_pct": 0.03
+    },
+    {
+      "name": "python_tests",
+      "status": "PASS",
+      "seconds": 138.986,
+      "share_of_test_pct": 7.93
+    },
+    {
+      "name": "react_tests",
+      "status": "PASS",
+      "seconds": 6.826,
+      "share_of_test_pct": 0.39
+    },
+    {
+      "name": "react_lint",
+      "status": "PASS",
+      "seconds": 0.421,
+      "share_of_test_pct": 0.02
+    },
+    {
+      "name": "react_build",
+      "status": "PASS",
+      "seconds": 2.572,
+      "share_of_test_pct": 0.15
+    },
+    {
+      "name": "ffmpeg",
+      "status": "PASS",
+      "seconds": 0.029,
+      "share_of_test_pct": 0.0
+    },
+    {
+      "name": "ffprobe",
+      "status": "PASS",
+      "seconds": 0.029,
+      "share_of_test_pct": 0.0
+    },
+    {
+      "name": "full_pipeline_3min",
+      "status": "PASS",
+      "seconds": 86.367,
+      "share_of_test_pct": 4.93
+    },
+    {
+      "name": "prepare_real_source",
+      "status": "PASS",
+      "seconds": 6.848,
+      "share_of_test_pct": 0.39
+    },
+    {
+      "name": "real_model_3min",
+      "status": "FAIL",
+      "seconds": 1472.636,
+      "share_of_test_pct": 84.06
+    },
+    {
+      "name": "safe_ai_diagnostics",
+      "status": "PASS",
+      "seconds": null,
+      "share_of_test_pct": null
+    }
+  ],
+  "offline_180s_e2e_steps": [
+    {
+      "name": "generate_true_180_second_mp4",
+      "status": "passed",
+      "seconds": 0.641
+    },
+    {
+      "name": "ffprobe_source_and_prepare_decision_fixture",
+      "status": "passed",
+      "seconds": 0.031
+    },
+    {
+      "name": "real_pipeline_plan_and_ffmpeg_render",
+      "status": "passed",
+      "seconds": 73.297
+    },
+    {
+      "name": "decode_validate_mp4_audio_srt_and_plan",
+      "status": "passed",
+      "seconds": 0.094
+    },
+    {
+      "name": "second_full_pipeline_run_for_cache",
+      "status": "passed",
+      "seconds": 1.203
+    },
+    {
+      "name": "invalidate_corrupted_subtitles_and_rerender",
+      "status": "passed",
+      "seconds": 8.594
+    },
+    {
+      "name": "ffmpeg_finishing_zoom_music_and_edited_captions",
+      "status": "passed",
+      "seconds": 1.453
+    },
+    {
+      "name": "real_studio_http_source_plan_mp4_srt_and_range",
+      "status": "passed",
+      "seconds": 0.234
+    }
+  ],
+  "real_ai_e2e_steps": [
+    {
+      "name": "genuine_production_analysis_to_final_mp4",
+      "status": "failed",
+      "seconds": 1472.328,
+      "share_of_production_pct": 100.04
+    }
+  ],
+  "real_production": {
+    "elapsed_seconds": 1471.735,
+    "stage_order": [
+      {
+        "stage": "pipeline",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 1471.136,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 99.96
+      },
+      {
+        "stage": "prepare",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 0.272,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 0.02
+      },
+      {
+        "stage": "transcribe",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 20.305,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 1.38
+      },
+      {
+        "stage": "scenes",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 559.747,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 38.03
+      },
+      {
+        "stage": "shot_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 1.484,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 0.1
+      },
+      {
+        "stage": "media_perception",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 6.125,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 0.42
+      },
+      {
+        "stage": "scene_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 550.469,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 37.4
+      },
+      {
+        "stage": "semantic_boundary",
+        "invocations": 84,
+        "completed_invocations": 84,
+        "seconds": 487.579,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 33.13
+      },
+      {
+        "stage": "analysis",
+        "invocations": 0,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "analyze",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 743.43,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 50.51
+      },
+      {
+        "stage": "scene_analysis",
+        "invocations": 33,
+        "completed_invocations": 33,
+        "seconds": 513.188,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 34.87
+      },
+      {
+        "stage": "scene_recovery",
+        "invocations": 0,
+        "completed_invocations": 0,
+        "seconds": null,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": null
+      },
+      {
+        "stage": "story_refinement",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 146.765,
+        "exceptions": 1,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 9.97
+      },
+      {
+        "stage": "condense",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 146.646,
+        "exceptions": 1,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 9.96
+      }
+    ],
+    "slowest_inclusive_stages": [
+      {
+        "stage": "pipeline",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 1471.136,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 99.96
+      },
+      {
+        "stage": "analyze",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 743.43,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 50.51
+      },
+      {
+        "stage": "scenes",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 559.747,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 38.03
+      },
+      {
+        "stage": "scene_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 550.469,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 37.4
+      },
+      {
+        "stage": "scene_analysis",
+        "invocations": 33,
+        "completed_invocations": 33,
+        "seconds": 513.188,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 34.87
+      },
+      {
+        "stage": "semantic_boundary",
+        "invocations": 84,
+        "completed_invocations": 84,
+        "seconds": 487.579,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 33.13
+      },
+      {
+        "stage": "story_refinement",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 146.765,
+        "exceptions": 1,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 9.97
+      },
+      {
+        "stage": "condense",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 146.646,
+        "exceptions": 1,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 9.96
+      },
+      {
+        "stage": "transcribe",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 20.305,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 1.38
+      },
+      {
+        "stage": "media_perception",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 6.125,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 0.42
+      },
+      {
+        "stage": "shot_detection",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 1.484,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 0.1
+      },
+      {
+        "stage": "prepare",
+        "invocations": 1,
+        "completed_invocations": 1,
+        "seconds": 0.272,
+        "exceptions": 0,
+        "unfinished_invocations": 0,
+        "share_of_real_run_pct": 0.02
+      }
+    ],
+    "slowest_detailed_stage": {
+      "stage": "scene_analysis",
+      "invocations": 33,
+      "completed_invocations": 33,
+      "seconds": 513.188,
+      "exceptions": 0,
+      "unfinished_invocations": 0,
+      "share_of_real_run_pct": 34.87
+    },
+    "measurement": "inclusive_nested_stage_seconds_not_additive"
+  },
+  "model_inference": {
+    "requests": 159,
+    "responses": 159,
+    "errors": 0,
+    "sum_response_seconds": 792.516,
+    "average_response_seconds": 4.984,
+    "median_response_seconds": 5.031,
+    "max_response_seconds": 6.235,
+    "measurement_note": "Sum of model request durations; not an independent wall-clock phase."
+  },
+  "model_performance": {
+    "schema_version": 2,
+    "available": true,
+    "requests": 237,
+    "pending": 0,
+    "startup": [
+      {
+        "model": "visual4b",
+        "status": "ok",
+        "seconds": 5.063,
+        "cpu": false
+      },
+      {
+        "model": "visual4b",
+        "status": "ok",
+        "seconds": 3.531,
+        "cpu": false
+      }
+    ],
+    "by_model": [
+      {
+        "model": "deepseek_flash",
+        "requests": 78,
+        "completed": 78,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 78,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 413537,
+        "prompt_tokens": 142216,
+        "completion_tokens": 7618,
+        "total_tokens": 149834,
+        "prompt_token_reported_calls": 78,
+        "completion_token_reported_calls": 78,
+        "token_reported_calls": 78,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 1823.282,
+        "avg_completion_tokens_per_call": 97.667,
+        "avg_total_tokens_per_measured_call": 1920.949,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 78,
+        "sum_request_seconds": 144.622,
+        "avg_seconds_per_completed_call": 1.854,
+        "latency_p50_s": 1.848,
+        "latency_p90_s": 2.222,
+        "latency_p95_s": 2.275,
+        "max_latency_s": 2.4523,
+        "prefill_p50_ms": null,
+        "decode_p50_ms": null,
+        "prefill_samples": 0,
+        "decode_samples": 0,
+        "prefill_tokens_per_second": null,
+        "generation_tokens_per_second": null,
+        "generation_measured_tokens": 0,
+        "generation_measured_seconds": 0.0,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded."
+      },
+      {
+        "model": "visual4b",
+        "requests": 159,
+        "completed": 159,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 247,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 417329,
+        "prompt_tokens": 262224,
+        "completion_tokens": 41576,
+        "total_tokens": 303800,
+        "prompt_token_reported_calls": 159,
+        "completion_token_reported_calls": 159,
+        "token_reported_calls": 159,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 1649.208,
+        "avg_completion_tokens_per_call": 261.484,
+        "avg_total_tokens_per_measured_call": 1910.692,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 159,
+        "sum_request_seconds": 792.297,
+        "avg_seconds_per_completed_call": 4.983,
+        "latency_p50_s": 5.022,
+        "latency_p90_s": 5.627,
+        "latency_p95_s": 5.824,
+        "max_latency_s": 6.2289,
+        "prefill_p50_ms": 2172.253,
+        "decode_p50_ms": 3110.938,
+        "prefill_samples": 159,
+        "decode_samples": 159,
+        "prefill_tokens_per_second": 922.776,
+        "generation_tokens_per_second": 85.191,
+        "generation_measured_tokens": 41576,
+        "generation_measured_seconds": 488.031,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded."
+      }
+    ],
+    "by_model_and_stage": [
+      {
+        "model": "deepseek_flash",
+        "requests": 50,
+        "completed": 50,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 50,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 326305,
+        "prompt_tokens": 105192,
+        "completion_tokens": 5297,
+        "total_tokens": 110489,
+        "prompt_token_reported_calls": 50,
+        "completion_token_reported_calls": 50,
+        "token_reported_calls": 50,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 2103.84,
+        "avg_completion_tokens_per_call": 105.94,
+        "avg_total_tokens_per_measured_call": 2209.78,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 50,
+        "sum_request_seconds": 95.127,
+        "avg_seconds_per_completed_call": 1.903,
+        "latency_p50_s": 1.919,
+        "latency_p90_s": 2.149,
+        "latency_p95_s": 2.275,
+        "max_latency_s": 2.4523,
+        "prefill_p50_ms": null,
+        "decode_p50_ms": null,
+        "prefill_samples": 0,
+        "decode_samples": 0,
+        "prefill_tokens_per_second": null,
+        "generation_tokens_per_second": null,
+        "generation_measured_tokens": 0,
+        "generation_measured_seconds": 0.0,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded.",
+        "stage": "choose_units"
+      },
+      {
+        "model": "deepseek_flash",
+        "requests": 18,
+        "completed": 18,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 18,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 25848,
+        "prompt_tokens": 15732,
+        "completion_tokens": 558,
+        "total_tokens": 16290,
+        "prompt_token_reported_calls": 18,
+        "completion_token_reported_calls": 18,
+        "token_reported_calls": 18,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 874.0,
+        "avg_completion_tokens_per_call": 31.0,
+        "avg_total_tokens_per_measured_call": 905.0,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 18,
+        "sum_request_seconds": 28.629,
+        "avg_seconds_per_completed_call": 1.59,
+        "latency_p50_s": 1.547,
+        "latency_p90_s": 1.85,
+        "latency_p95_s": 2.048,
+        "max_latency_s": 2.0479,
+        "prefill_p50_ms": null,
+        "decode_p50_ms": null,
+        "prefill_samples": 0,
+        "decode_samples": 0,
+        "prefill_tokens_per_second": null,
+        "generation_tokens_per_second": null,
+        "generation_measured_tokens": 0,
+        "generation_measured_seconds": 0.0,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded.",
+        "stage": "credit_classifier"
+      },
+      {
+        "model": "deepseek_flash",
+        "requests": 10,
+        "completed": 10,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 10,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 61384,
+        "prompt_tokens": 21292,
+        "completion_tokens": 1763,
+        "total_tokens": 23055,
+        "prompt_token_reported_calls": 10,
+        "completion_token_reported_calls": 10,
+        "token_reported_calls": 10,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 2129.2,
+        "avg_completion_tokens_per_call": 176.3,
+        "avg_total_tokens_per_measured_call": 2305.5,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 10,
+        "sum_request_seconds": 20.866,
+        "avg_seconds_per_completed_call": 2.087,
+        "latency_p50_s": 2.049,
+        "latency_p90_s": 2.25,
+        "latency_p95_s": 2.326,
+        "max_latency_s": 2.326,
+        "prefill_p50_ms": null,
+        "decode_p50_ms": null,
+        "prefill_samples": 0,
+        "decode_samples": 0,
+        "prefill_tokens_per_second": null,
+        "generation_tokens_per_second": null,
+        "generation_measured_tokens": 0,
+        "generation_measured_seconds": 0.0,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded.",
+        "stage": "verify_omissions"
+      },
+      {
+        "model": "visual4b",
+        "requests": 63,
+        "completed": 63,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 139,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 167144,
+        "prompt_tokens": 126723,
+        "completion_tokens": 18907,
+        "total_tokens": 145630,
+        "prompt_token_reported_calls": 63,
+        "completion_token_reported_calls": 63,
+        "token_reported_calls": 63,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 2011.476,
+        "avg_completion_tokens_per_call": 300.111,
+        "avg_total_tokens_per_measured_call": 2311.587,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 63,
+        "sum_request_seconds": 305.584,
+        "avg_seconds_per_completed_call": 4.851,
+        "latency_p50_s": 4.821,
+        "latency_p90_s": 5.622,
+        "latency_p95_s": 5.625,
+        "max_latency_s": 6.2289,
+        "prefill_p50_ms": 1315.568,
+        "decode_p50_ms": 3426.996,
+        "prefill_samples": 63,
+        "decode_samples": 63,
+        "prefill_tokens_per_second": 1556.467,
+        "generation_tokens_per_second": 87.663,
+        "generation_measured_tokens": 18907,
+        "generation_measured_seconds": 215.678,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded.",
+        "stage": "scene_analysis"
+      },
+      {
+        "model": "visual4b",
+        "requests": 96,
+        "completed": 96,
+        "pending": 0,
+        "failed": 0,
+        "image_pages": 108,
+        "thinking_requests": 0,
+        "cpu_requests": 0,
+        "prompt_chars": 250185,
+        "prompt_tokens": 135501,
+        "completion_tokens": 22669,
+        "total_tokens": 158170,
+        "prompt_token_reported_calls": 96,
+        "completion_token_reported_calls": 96,
+        "token_reported_calls": 96,
+        "unknown_token_calls": 0,
+        "avg_prompt_tokens_per_call": 1411.469,
+        "avg_completion_tokens_per_call": 236.135,
+        "avg_total_tokens_per_measured_call": 1647.604,
+        "reasoning_tokens": 0,
+        "reasoning_reported_calls": 0,
+        "finish_length_calls": 0,
+        "completed_timed_calls": 96,
+        "sum_request_seconds": 486.714,
+        "avg_seconds_per_completed_call": 5.07,
+        "latency_p50_s": 5.023,
+        "latency_p90_s": 5.82,
+        "latency_p95_s": 5.824,
+        "max_latency_s": 6.0288,
+        "prefill_p50_ms": 2190.684,
+        "decode_p50_ms": 2801.443,
+        "prefill_samples": 96,
+        "decode_samples": 96,
+        "prefill_tokens_per_second": 668.311,
+        "generation_tokens_per_second": 83.234,
+        "generation_measured_tokens": 22669,
+        "generation_measured_seconds": 272.353,
+        "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded.",
+        "stage": "semantic_boundary"
+      }
+    ],
+    "overall_local_models": {
+      "model": "all_local_models",
+      "requests": 237,
+      "completed": 237,
+      "pending": 0,
+      "failed": 0,
+      "image_pages": 325,
+      "thinking_requests": 0,
+      "cpu_requests": 0,
+      "prompt_chars": 830866,
+      "prompt_tokens": 404440,
+      "completion_tokens": 49194,
+      "total_tokens": 453634,
+      "prompt_token_reported_calls": 237,
+      "completion_token_reported_calls": 237,
+      "token_reported_calls": 237,
+      "unknown_token_calls": 0,
+      "avg_prompt_tokens_per_call": 1706.498,
+      "avg_completion_tokens_per_call": 207.57,
+      "avg_total_tokens_per_measured_call": 1914.068,
+      "reasoning_tokens": 0,
+      "reasoning_reported_calls": 0,
+      "finish_length_calls": 0,
+      "completed_timed_calls": 237,
+      "sum_request_seconds": 936.919,
+      "avg_seconds_per_completed_call": 3.953,
+      "latency_p50_s": 4.622,
+      "latency_p90_s": 5.623,
+      "latency_p95_s": 5.82,
+      "max_latency_s": 6.2289,
+      "prefill_p50_ms": 2172.253,
+      "decode_p50_ms": 3110.938,
+      "prefill_samples": 159,
+      "decode_samples": 159,
+      "prefill_tokens_per_second": 922.776,
+      "generation_tokens_per_second": 85.191,
+      "generation_measured_tokens": 41576,
+      "generation_measured_seconds": 488.031,
+      "measurement_note": "Latency averages include only completed calls. Token averages use calls whose provider reported usage. Decode throughput uses llama.cpp predicted_n/predicted_ms (or completion tokens when predicted_n is missing). Pending/unknown calls are excluded."
+    },
+    "note": "Measured response usage only. Pending or missing usage stays unknown; prefill/decode timing is optional and not equal to HTTP latency."
+  },
+  "token_usage_totals": {
+    "available": true,
+    "deepseek_estimated_cost_usd": {
+      "off_peak": 0.0218389,
+      "peak": 0.0436779,
+      "missing_usage_calls": 0,
+      "incomplete_context_breakdown_input_tokens": 0,
+      "price_reference": "deepseek-flash-2026-09-10",
+      "note": "Partial estimate: provider usage only. Pending and missing-usage requests cannot be priced. DeepSeek context-cache hits are billed. KADR full-response-cache hits incur no API request."
+    },
+    "by_provider": {
+      "local": {
+        "calls": 159,
+        "unknown_calls": 0,
+        "prompt_tokens": 262224,
+        "completion_tokens": 41576,
+        "total_tokens": 303800
+      },
+      "deepseek": {
+        "calls": 78,
+        "unknown_calls": 0,
+        "prompt_tokens": 142216,
+        "completion_tokens": 7618,
+        "total_tokens": 149834,
+        "api_context_cache_hit_tokens": 27648,
+        "api_context_cache_miss_tokens": 114568,
+        "api_context_cache_reported_calls": 78
+      }
+    },
+    "total_reported_tokens": 453634,
+    "unknown_calls": 0,
+    "note": "Whole-run provider ledger. Includes local and DeepSeek if used. Unknown calls and pending requests are NOT estimated. Do not add these totals to the local profiler totals."
+  },
+  "production_invocations": [
+    {
+      "status": "failed",
+      "elapsed_seconds": 1471.1369,
+      "stages": [
+        {
+          "stage": "analysis",
+          "seconds": 1470.4233
+        }
+      ],
+      "parts": 0,
+      "cached_parts": 0,
+      "run_number": 1
+    }
+  ],
+  "bottlenecks": {
+    "slowest_verification_check": {
+      "name": "real_model_3min",
+      "status": "FAIL",
+      "seconds": 1472.636,
+      "share_of_test_pct": 84.06
+    },
+    "slowest_detailed_production_stage": {
+      "stage": "scene_analysis",
+      "invocations": 33,
+      "completed_invocations": 33,
+      "seconds": 513.188,
+      "exceptions": 0,
+      "unfinished_invocations": 0,
+      "share_of_real_run_pct": 34.87
+    }
+  },
+  "missing_timing_checks": [
+    "safe_ai_diagnostics"
+  ]
+}
