@@ -9,6 +9,7 @@ import copy
 import json
 import math
 import threading
+import traceback
 import uuid
 from pathlib import Path
 
@@ -155,6 +156,20 @@ def render_finishing_part(manager, job_id: str, original: dict, profile: dict,
                        finishing={"subtitles": visual_style, "video": profile["video"]})
 
 
+def _save_render_error(target: Path):
+    """Keep detailed FFmpeg/IO failure context *locally*, never in API output.
+
+    Existing HTTP errors are deliberately generic to avoid leaking absolute
+    paths or secrets. The local log is not part of the public status payload.
+    """
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "render-error.log").write_text(
+            traceback.format_exc(), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def run_export(manager, job_id: str, part_indices: list[int], profile: dict, target: Path,
                status_file: Path, preview: tuple[int, float, float] | None = None):
     def update(**values):
@@ -182,11 +197,13 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
             update(status="completed", progress=1.0, files=files,
                    message="Части пересобраны" if not preview else "Предпросмотр готов")
     except FileNotFoundError:
+        _save_render_error(target)
         update(status="failed", progress=0.0,
                error="Выбранный музыкальный файл не найден. Выберите другой трек.")
     except Exception:
+        _save_render_error(target)
         # Do not expose FFmpeg stderr containing absolute private filesystem paths.
-        update(status="failed", progress=0.0, error="Не удалось создать видео. Проверьте локальный журнал рендера.")
+        update(status="failed", progress=0.0, error="Не удалось создать видео. Подробности в локальном render-error.log.")
 
 
 def _registered_export(identifier: str, manager, job_id: str, part_indices: list[int],
