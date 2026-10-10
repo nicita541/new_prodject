@@ -218,6 +218,36 @@ class SceneRefinementTests(unittest.TestCase):
         self.assertEqual(refine.call_args.args[0][0]['id'], original['id'])
         self.assertNotIn('chunk_refinements', result)
 
+    def test_source_unit_preserves_fractional_pts_without_rounding_outside_chunk(self):
+        from app.story import _ranges
+        units = [{'id': 'u000', 'start': 40.1234567, 'end': 80.1234567}]
+        assert _ranges(units, {'u000'}, set(), EMPTY) == [
+            {'start': 40.1234567, 'end': 80.1234567}]
+
+    def test_legacy_6_decimal_edges_snap_only_microsecond_noise(self):
+        original = parent()
+        edges = [0.0, 40.1234567, 80.1234567, 90.0]
+        original['end'] = edges[-1]
+        original['analysis_chunks'] = [
+            {'id': f'scene_0000_chunk_{i:03d}', 'parent_scene_id': 'scene_0000',
+             'start': edges[i], 'end': edges[i + 1]}
+            for i in range(3)]
+        def old_checkpoint_rounding(children, *args):
+            return [refined(c, selected_ranges=[
+                {'start': round(c['start'], 6), 'end': round(c['end'], 6)}])
+                for c in children]
+        result, _ = self.run_refinement(original, old_checkpoint_rounding)
+        self.assertEqual(result['selected_ranges'], [{'start': 0.0, 'end': 90.0}])
+        self.assertEqual(result['unit_selection_version'], 1)
+
+    def test_real_cross_chunk_selection_is_rejected_not_silently_clipped(self):
+        def crossed(children, *args):
+            values = [refined(c) for c in children]
+            values[0]['selected_ranges'] = [{'start': 0, 'end': 40.25}]
+            return values
+        with self.assertRaisesRegex(ValueError, 'child=event_0000_chunk_000'):
+            self.run_refinement(parent(), crossed)
+
     def test_invalid_chunk_partition_is_rejected_before_refinement(self):
         original = parent()
         original['analysis_chunks'][1]['start'] = 41
