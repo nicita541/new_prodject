@@ -23,11 +23,13 @@ def record(job_dir: Path, provider: str, model: str, response: dict):
     numbers = {key: value for key in FIELDS
                if (value := usage.get(key)) is not None
                and type(value) is int and value >= 0}
-    reported = bool(numbers)
-    if not numbers:
-        numbers = {}
-    if "total_tokens" not in numbers:
-        numbers["total_tokens"] = numbers.get("prompt_tokens", 0) + numbers.get("completion_tokens", 0)
+    # A provider returning only prompt_tokens has *not* reported the
+    # completion/total. Counting the prompt alone as "total" silently
+    # understates consumption. Mark the whole call as unmeasured instead.
+    reported = ("total_tokens" in numbers or
+                ("prompt_tokens" in numbers and "completion_tokens" in numbers))
+    if "total_tokens" not in numbers and reported:
+        numbers["total_tokens"] = numbers["prompt_tokens"] + numbers["completion_tokens"]
     entry = {"provider": provider, "model": model,
              "timestamp": datetime.now(timezone.utc).isoformat(),
              "usage_reported": reported, **numbers}
