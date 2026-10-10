@@ -136,3 +136,22 @@ def test_4b_always_local_only_story_model_routes_to_trial(tmp_path):
         assert isinstance(story, TrialStoryVision)
         assert story.local is None
     assert STORY_MODEL != VLM_MODEL
+
+
+
+def test_public_report_contains_only_flash_trial_counters(tmp_path):
+    from scripts.export_safe_ai_diagnostics import summarize
+    job = tmp_path / "real_model_3min" / "real-job"
+    remote = DummyRemote(job, lambda: False)
+    private = "SECRET_ANIME_CHARACTER_AND_MODEL_PROMPT"
+    with make_trial(job, remote) as router:
+        router.query(private)
+        router.query(private)
+    public = summarize(tmp_path)
+    result = public["flash_story_pilot"]
+    assert result["available"]
+    assert result["reserved_paid_attempts"] == 1
+    assert result["local_story_fallbacks"] == 1
+    assert private not in json.dumps(public)
+    private_record = json.loads((job / "deepseek-story-pilot.json").read_text("utf-8"))
+    assert private_record["reserved"][0] not in json.dumps(public)

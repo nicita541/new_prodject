@@ -430,6 +430,20 @@ def summarize(test_dir):
         if stage:
             progress_counts[stage] += 1
         recent.append({"stage": stage, "progress": numeric(item.get("progress"))})
+    trial = json_file(job / "deepseek-story-pilot.json")
+    trial = trial if isinstance(trial, dict) else {}
+    reservations = trial.get("reserved")
+    # Only counts, never source-bearing request hashes or text.
+    result["flash_story_pilot"] = {
+        "available": trial.get("profile") == "local4b-deepseek-flash-story-pilot-v1",
+        "reserved_paid_attempts": (len(reservations) if isinstance(reservations, list)
+                                   and len(reservations) <= 8 else None),
+        "local_story_fallbacks": (trial.get("fallbacks") if
+                                  type(trial.get("fallbacks")) is int and
+                                  0 <= trial["fallbacks"] <= 1_000_000 else None),
+        "max_paid_attempts": 8,
+        "note": "HTTP attempt cap, not a guaranteed USD spending cap.",
+    }
     result["model_performance"] = model_perf_summary(job)
     result["token_usage_totals"] = token_ledger_summary(job)
     result["optimization"] = {"semantic_boundary_triage": boundary_triage,
