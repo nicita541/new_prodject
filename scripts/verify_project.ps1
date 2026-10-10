@@ -1,4 +1,4 @@
-param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [string]$PythonExe)
+param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
 
 if (@($Quick, $Full, $Video) | Where-Object { $_ } | Select-Object -Skip 1) {
     throw 'Choose only one mode: -Quick, -Full, or -Video.'
@@ -33,7 +33,11 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
     $errFile = Join-Path $logsDir ($Name + ".err.txt")
     Write-Host ("RUN: " + $Name)
     try {
-        $process = Start-Process -FilePath $Exe -ArgumentList $Arguments -WorkingDirectory $Working -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $safeArgs = @($Arguments | ForEach-Object {
+            if ($_ -match '"') { throw "Unescaped quote in test argument" }
+            if ($_ -match '\\s') { '"' + $_ + '"' } else { $_ }
+        })
+        $process = Start-Process -FilePath $Exe -ArgumentList $safeArgs -WorkingDirectory $Working -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         $elapsed = 0
         while (-not $process.WaitForExit(3000)) {
             $elapsed += 3
@@ -157,10 +161,10 @@ if ($python) {
         } else {
             Add-Check "python_tests" "SKIP" 0 "Video mode requires portable FFmpeg and FFprobe inside this worktree"
         }
-    } elseif ($Full) {
-        Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests") $root 7200
     } else {
-        Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests/test_music.py", "tests/test_media.py", "tests/test_api.py", "tests/test_jobs.py") $root 3600
+        # Double-click defaults to ALL tests, not the historical 4-file subset.
+        # -Full stays as an explicit alias for the same comprehensive mode.
+        Run-Check "python_tests" $python @("-m", "pytest", "-q", "tests") $root 7200
     }
 } else {
     Add-Check "python_compile" "SKIP" 0 "Python unavailable"
@@ -184,6 +188,42 @@ if (Test-Path -LiteralPath $ffprobe) {
     Run-Check "ffprobe" $ffprobe @("-version") $root 30
 } else { Add-Check "ffprobe" "SKIP" 0 "portable FFprobe missing" }
 
+# The 180-second end-to-end test is a real decode/plan/FFmpeg/subtitle/music/
+# cache/corruption-recovery/finishing/HTTP delivery run. It has its own
+# output folder INSIDE this verification run and is not run in -Quick mode.
+$e2eDir = Join-Path $localDir "full_pipeline_3min"
+if (-not $Quick) {
+    if (-not $python) {
+        Add-Check "full_pipeline_3min" "SKIP" 0 "Python unavailable"
+    } elseif (-not (Test-Path -LiteralPath $ffmpeg) -or -not (Test-Path -LiteralPath $ffprobe)) {
+        Add-Check "full_pipeline_3min" "SKIP" 0 "Portable FFmpeg and FFprobe required"
+    } else {
+        New-Item -ItemType Directory -Force -Path $e2eDir | Out-Null
+        Run-Check "full_pipeline_3min" $python @(
+            "scripts/full_pipeline_3min.py", "--mode", "offline", "--directory", $e2eDir
+        ) $root 3600
+    }
+}
+
+# Real ASR/VLM must NEVER be silently replaced by the synthetic fixture.
+# Run it additionally when the user explicitly supplies a 180s story video.
+if ($RealTranscript -and -not $RealSource) {
+    Add-Check "real_model_3min" "FAIL" 1 "-RealTranscript requires -RealSource"
+} elseif ($RealSource) {
+    if ($Quick) {
+        Add-Check "real_model_3min" "SKIP" 0 "Real-model E2E cannot run in -Quick mode"
+    } elseif (-not $python -or -not (Test-Path -LiteralPath $ffmpeg) -or -not (Test-Path -LiteralPath $ffprobe)) {
+        Add-Check "real_model_3min" "SKIP" 0 "Real-model E2E requires Python, FFmpeg, FFprobe"
+    } else {
+        $realDir = Join-Path $localDir "real_model_3min"
+        New-Item -ItemType Directory -Force -Path $realDir | Out-Null
+        $realArgs = @("scripts/full_pipeline_3min.py", "--mode", "real",
+                      "--directory", $realDir, "--source", $RealSource)
+        if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
+        Run-Check "real_model_3min" $python $realArgs $root 7200
+    }
+}
+
 $failed = @($script:checks | Where-Object { $_.status -in @("FAIL", "TIMEOUT") }).Count
 $skipped = @($script:checks | Where-Object { $_.status -eq "SKIP" }).Count
 $passed = @($script:checks | Where-Object { $_.status -eq "PASS" }).Count
@@ -193,7 +233,8 @@ $summary = [pscustomobject]@{
     timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
     branch = $branch
     commit = $commit
-    mode = if ($Quick) { "quick" } elseif ($Video) { "video" } elseif ($Full) { "full" } else { "standard" }
+    mode = if ($Quick) { "quick" } elseif ($Video) { "video" } else { "full" }
+    real_model_scope = if ($RealSource) { "requested" } else { "not_run_no_real_video" }
     overall = $overall
     passed = $passed
     failed = $failed
@@ -206,11 +247,38 @@ $summary = [pscustomobject]@{
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $localDir "checks.json") -Encoding UTF8
 
+# Extract only allowlisted, non-private E2E facts; never publish raw video,
+# transcript, full paths, source metadata, model prompts or actual job content.
+$e2eOverview = @()
+foreach ($kind in @("full_pipeline_3min", "real_model_3min")) {
+    $folder = if ($kind -eq "full_pipeline_3min") { $e2eDir } else { Join-Path $localDir "real_model_3min" }
+    $reportFile = Join-Path $folder "report.json"
+    if (-not (Test-Path -LiteralPath $reportFile)) { continue }
+    try {
+        $details = Get-Content -LiteralPath $reportFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $e2eOverview += [pscustomobject]@{
+            check = $kind
+            status = $details.status
+            analysis_mode = $details.analysis_mode
+            duration_seconds = $details.duration_seconds
+            cache_all_parts_reused = [bool]$details.cache.all_parts_reused
+            cache_corrupt_srt_forced_rerender = [bool]$details.cache.corrupt_srt_forced_rerender
+            passed_steps = @($details.checks | Where-Object { $_.status -eq "passed" }).Count
+            failed_steps = @($details.checks | Where-Object { $_.status -eq "failed" }).Count
+            stages = @($details.checks | ForEach-Object {
+                [pscustomobject]@{ name = $_.name; status = $_.status; seconds = $_.seconds }
+            })
+        }
+    } catch {
+        Write-Warning ("Could not summarize " + $kind + ": " + $_.Exception.Message)
+    }
+}
 # Publish allowlisted files only: summary and a truncated, redacted log tail.
 $uploadDir = Join-Path $localDir "sanitized"
 $uploadLogs = Join-Path $uploadDir "logs"
 New-Item -ItemType Directory -Force -Path $uploadLogs | Out-Null
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $uploadDir "checks.json") -Encoding UTF8
+$e2eOverview | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $uploadDir "e2e_overview.json") -Encoding UTF8
 foreach ($check in $script:checks) {
     foreach ($stream in @("out", "err")) {
         $src = Join-Path $logsDir ($check.name + "." + $stream + ".txt")
@@ -226,7 +294,7 @@ foreach ($check in $script:checks) {
     }
 }
 $nl = [Environment]::NewLine
-$md = @("# Local verification report", "", "- Run: $runId", "- Logs: $logsDir", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Video) {'video'} elseif ($Full) {'full'} else {'standard'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
+$md = @("# Local verification report", "", "- Run: $runId", "- Logs: $logsDir", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Video) {'video'} else {'full'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "- AI analysis: $(if ($RealSource) {'requested, see real_model_3min'} else {'NOT TESTED; provide -RealSource to test Whisper/VLM'})", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8
