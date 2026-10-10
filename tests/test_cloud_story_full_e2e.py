@@ -51,7 +51,8 @@ def test_real_e2e_accepts_cloud_story_only_when_explicit_and_checks_paid_resume(
 def test_paid_trial_cap_and_local_response_cache_are_independent():
     router = source("app/flash_story_trial.py")
     assert "MAX_PAID_ATTEMPTS = 8" in router
-    assert 'if len(self._state["reserved"]) >= MAX_PAID_ATTEMPTS:' in router
+    assert 'if len(self._state["reserved"]) >= self.max_attempts:' in router
+    assert 'self.max_attempts = BUDGETED_MAX_PAID_ATTEMPTS if self.budgeted else MAX_PAID_ATTEMPTS' in router
     assert 'self._state["local_cache_hits"] += 1' in router
     assert 'if not dispatched:' in router
     assert 'self._reserve(body)' in router
