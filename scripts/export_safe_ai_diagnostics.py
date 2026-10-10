@@ -155,12 +155,26 @@ def summarize(test_dir):
         "median_seconds": round(median(elapsed), 4) if elapsed else None,
         "max_seconds": max(elapsed, default=None), "last_20": list(latest)}
     actions, durations_by_stage, errors_by_stage = Counter(), defaultdict(list), Counter()
+    boundary_triage = None
+    scene_inference_pages = {"requests": 0, "image_pages": 0, "context_image_pages": 0}
     last = deque(maxlen=30)
     for item in json_lines(job / "diagnostics" / "pipeline" / "timeline.jsonl"):
         stage, action, error = name(item.get("stage")), name(item.get("action")), name(item.get("error_type"))
         seconds = numeric(item.get("elapsed_seconds"))
         if stage:
             actions[stage] += 1
+            if stage == "semantic_boundary" and action == "triage":
+                # Numeric-only statistics: report VLM calls avoided without
+                # exposing decision descriptions, transcript or model prompts.
+                boundary_triage = {field: numeric(item.get(field)) for field in
+                    ("candidates", "ambiguous", "selected", "deferred", "high_signal",
+                     "interval_seconds", "weak_interval_seconds")}
+            if stage == "scene_analysis" and action == "request":
+                scene_inference_pages["requests"] += 1
+                for field in ("image_pages", "context_image_pages"):
+                    count = numeric(item.get(field))
+                    if count is not None and 0 <= count <= 100:
+                        scene_inference_pages[field] += int(count)
             if action == "end" and seconds is not None and seconds >= 0:
                 durations_by_stage[stage].append(seconds)
             if error or action in ("exception", "warning", "response_rejected", "verification_unresolved"):
@@ -178,6 +192,8 @@ def summarize(test_dir):
         if stage:
             progress_counts[stage] += 1
         recent.append({"stage": stage, "progress": numeric(item.get("progress"))})
+    result["optimization"] = {"semantic_boundary_triage": boundary_triage,
+                              "visual_context_payload": scene_inference_pages}
     result["progress"] = {"events_by_stage": dict(sorted(progress_counts.items())),
                           "last_20": list(recent)}
     return result

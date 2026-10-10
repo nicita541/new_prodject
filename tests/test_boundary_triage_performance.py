@@ -27,6 +27,26 @@ class BoundaryTriagingTests(unittest.TestCase):
         self.assertLessEqual(len(selected), 120)
         self.assertEqual(len(rows), 1800)
 
+    def test_sparse_camera_cuts_and_dense_action_evidence(self):
+        # 180s: noisy camera proposals no longer consume a full VLM check
+        # every 1.5 seconds. A physical-action or dialogue proof stays dense.
+        noisy = [candidate(i * .25, distance=.05) for i in range(720)]
+        chosen = _select_boundary_verifications(noisy)
+        self.assertLessEqual(len(chosen), 60)
+        self.assertEqual(len(noisy), 720)
+        high = [candidate(4.1, state=True), candidate(5.7, state=True),
+                candidate(7.2, speech=True)]
+        chosen = _select_boundary_verifications([*noisy, *high])
+        self.assertTrue({4.1, 5.7, 7.2}.issubset(chosen))
+
+    def test_visual_location_change_keeps_dense_review_without_dialogue(self):
+        # Silent hard relocation may matter without ASR or a state probe.
+        chosen = _select_boundary_verifications(
+            [candidate(.2, distance=.5), candidate(1.7, distance=.5),
+             candidate(2.9, distance=.05)])
+        self.assertIn(.2, chosen)
+        self.assertIn(1.7, chosen)
+
     def test_audio_dialogue_boundary_preferred_over_camera_only(self):
         chosen = _select_boundary_verifications([candidate(12.1), candidate(12.4, speech=True)])
         self.assertEqual(chosen, {12.4})

@@ -111,6 +111,36 @@ class SemanticPipelineTests(unittest.TestCase):
         self.assertTrue(any(20 <= f['time'] < 24 for b in action for f in b['frames']))
         self.assertTrue(all(len(b['frames']) <= 2 for b in boards if b['role']=='context_only'))
 
+    def test_interior_chunks_do_not_repeat_unrelated_neighbor_image_pages(self):
+        # Adjacent source scenes still provide before/after proof at the
+        # boundary. Interior technical chunks must not repeatedly send the
+        # same outside-scene frames to local VLM.
+        shots = [{'id': 'before', 'start': 0, 'end': 4, 'location': 'room'},
+                 {'id': 'action', 'start': 4, 'end': 28, 'location': 'street'},
+                 {'id': 'after', 'start': 28, 'end': 32, 'location': 'car'}]
+        scenes = detect_semantic_scenes(shots, EMPTY, 32)
+        vision = FakeVision()
+        events = self.analyze(scenes, shots, vision)
+        target_id = scenes[1]['id']
+        results = []
+        for prompt, images in vision.requests:
+            data = json.loads(prompt.rsplit('\n', 1)[-1])
+            if data['CURRENT SCENE']['scene_id'] != target_id:
+                continue
+            results.append((data, images))
+        self.assertGreaterEqual(len(results), 3)
+        first, last = results[0], results[-1]
+        self.assertIn('PREVIOUS CONTEXT ONLY', first[0]['image_order'])
+        self.assertIn('NEXT CONTEXT ONLY', last[0]['image_order'])
+        for payload, pages in results[1:-1]:
+            self.assertTrue(all(role == 'CURRENT' for role in payload['image_order']))
+            self.assertIsInstance(pages, Path)
+            self.assertEqual(payload['PREVIOUS SCENE']['role'], 'context_only')
+            self.assertEqual(payload['NEXT SCENE']['role'], 'context_only')
+        self.assertEqual(len(events), 3)
+        self.assertEqual(events[1]['start'], 4)
+        self.assertEqual(events[1]['end'], 28)
+
     def test_visual_handover_splits_long_reply_at_word_edge(self):
         words = [{'start': i+.05, 'end': i+.9, 'text': f'w{i}'} for i in range(12)]
         transcript = {'words': words, 'segments': [{'start': 0, 'end': 12, 'text': 'long reply'}]}

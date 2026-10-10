@@ -13,6 +13,8 @@ from .bounded_storyboard import MAX_INFERENCE_FRAMES
 from .pipeline_diagnostics import Diagnostics
 from .story_review import candidate_units, validated_event, apply_unit_selection
 
+SCENE_CONTEXT_POLICY_VERSION = 2  # Only source-adjacent chunks need neighboring image pages.
+
 SCENE_PROMPT = '''Analyze CURRENT footage only. The CURRENT scene can have multiple technical chunks;
 chunk boundaries are not scene boundaries. First examine visual evidence, then imperfect Russian ASR.
 Distinguish chronological story from credits, music montage, recap and unrelated text.
@@ -284,7 +286,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         event_id = f'event_{index:04d}'
         checkpoint = visual_dir / f'{event_id}.json'
         saved = _read_optional_checkpoint(checkpoint)
-        semantic_cache = {'components': components,
+        semantic_cache = {'components': components, 'context_policy': SCENE_CONTEXT_POLICY_VERSION,
             'input_hash': hashlib.sha256(json.dumps({**base_identity, 'scene': scene,
                 'previous': scenes[index-1] if index else None,
                 'next': scenes[index+1] if index+1 < len(scenes) else None},
@@ -347,7 +349,14 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 image_order = ['CURRENT'] * len(images)
                 board.update(scene_id=scene['id'], chunk_id=chunk['id'], role='current', image=str(image))
                 scene_boards.append(board)
-                for neighbor, label in ((previous, 'PREVIOUS'), (following, 'NEXT')):
+                # Context is only physically adjacent to the first/last
+                # technical chunk. Interior chunks already carry their own
+                # CURRENT original frames plus textual scene context; sending
+                # two unrelated neighbor image pages for every one of them
+                # costs VLM tokens without stronger temporal evidence.
+                neighbor_edges = ((previous, 'PREVIOUS') if number == 0 else (None, 'PREVIOUS'),
+                                  (following, 'NEXT') if number == len(chunks)-1 else (None, 'NEXT'))
+                for neighbor, label in neighbor_edges:
                     if neighbor is None or not getattr(vision, 'supports_image_pages', False):
                         continue
                     a, b = ((max(neighbor['start'], neighbor['end']-2), neighbor['end']) if label == 'PREVIOUS'
@@ -374,6 +383,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                 diagnostics.event('scene_analysis', 'request', scene_id=scene['id'], chunk_id=chunk['id'],
                                   provider=type(vision).__name__, model=str(getattr(vision,'model','unknown')),
                                   source_start=start, source_end=end, units=len(units), frame_times=timestamps,
+                                  image_pages=len(images), context_image_pages=sum(role != 'CURRENT' for role in image_order),
                                   prompt_hash=hashlib.sha256(prompt.encode()).hexdigest())
                 from .scene_understanding import recover_chunk, recovery_trigger
                 try:

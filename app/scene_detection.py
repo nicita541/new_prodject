@@ -17,7 +17,7 @@ import re
 from .config import FFMPEG
 from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
 
-SCENE_DETECTOR_VERSION = 4
+SCENE_DETECTOR_VERSION = 5
 SCENE_GROUPING_VERSION = 4
 VISUAL_FEATURE_VERSION = 2
 DEFAULT_SETTINGS = {
@@ -396,6 +396,11 @@ def production_shots(shots, proposals, duration):
 # acquisition, NOT a minimum scene length: proven boundaries and brief
 # physical-action shots are never discarded.
 SEMANTIC_VLM_WINDOW_SECONDS = 1.5
+# Ordinary cut/angle hypotheses can be reviewed less frequently than evidence
+# of a dialogue break, physical state transition or dramatic visual relocation.
+# Every original candidate is still retained for the later scene inference.
+SEMANTIC_VLM_WEAK_WINDOW_SECONDS = 3.0
+
 
 
 def _boundary_check_priority(measured: dict, proposal: dict) -> tuple:
@@ -421,28 +426,56 @@ def _boundary_check_priority(measured: dict, proposal: dict) -> tuple:
     return (importance, state, background + whole)
 
 
-def _select_boundary_verifications(candidates: list[dict], window_seconds=SEMANTIC_VLM_WINDOW_SECONDS) -> set[float]:
-    """Return evidence-check timestamps; no timestamps or source cuts are lost.
+def _high_signal_boundary(row: dict) -> bool:
+    """Only measured changes justify the denser inference interval.
 
-    Each candidate contains time, measured and proposal. Obvious changes/same
-    scenes do not consume VLM slots. For ambiguous candidates in one short
-    window, prefer explicit physical/action/audio evidence over mere camera
-    motion; defer the rest as *uncertain* for parent-scene understanding.
+    Pure camera motion or an arbitrary optical cut is *not* evidence of a
+    location/state change. An ASR break, explicit state probe, fade/blackout or
+    large measured visual relocation still gets the original dense sampling.
     """
-    if not math.isfinite(window_seconds) or window_seconds <= 0:
+    measured, proposal = row['measured'], row['proposal']
+    origins = set(proposal.get('origins') or [])
+    if origins & {'state_probe', 'audio_discontinuity', 'black_frame', 'fade_black', 'black'}:
+        return True
+    if (measured.get('asr_continuity') or {}).get('dialogue_break'):
+        return True
+    background, whole = measured.get('background_distance'), measured.get('perceptual_distance')
+    return (type(background) in (int, float) and type(whole) in (int, float)
+            and math.isfinite(background) and math.isfinite(whole)
+            and background >= .3 and whole >= .3)
+
+
+def _select_boundary_verifications(candidates: list[dict], window_seconds=SEMANTIC_VLM_WINDOW_SECONDS,
+                                   weak_window_seconds=SEMANTIC_VLM_WEAK_WINDOW_SECONDS) -> set[float]:
+    """Sparse VLM checks for weak cuts, full checks for strong action evidence.
+
+    This only chooses *which* uncertain candidates merit expensive VLM calls.
+    All cuts and short physical actions remain in the source/evidence graph;
+    unreviewed candidates are explicitly unresolved, never falsely accepted.
+    """
+    if any(not math.isfinite(v) or v <= 0 for v in (window_seconds, weak_window_seconds)):
         raise ValueError('Invalid semantic boundary VLM window')
-    chosen = {}
+    strong, weak = {}, {}
     for row in candidates:
         if row['measured']['classification'] != 'ambiguous_boundary':
             continue
-        time = float(row['time'])
-        if not math.isfinite(time) or time < 0:
+        timestamp = float(row['time'])
+        if not math.isfinite(timestamp) or timestamp < 0:
             raise ValueError('Invalid source boundary time')
-        bucket = int(time / window_seconds)
-        priority = (*_boundary_check_priority(row['measured'], row['proposal']), -time)
-        if bucket not in chosen or priority > chosen[bucket][0]:
-            chosen[bucket] = (priority, round(time, 6))
-    return {time for _, time in chosen.values()}
+        important = _high_signal_boundary(row)
+        bucket_seconds = window_seconds if important else weak_window_seconds
+        slot = int(timestamp / bucket_seconds)
+        priority = (*_boundary_check_priority(row['measured'], row['proposal']), -timestamp)
+        target = strong if important else weak
+        if slot not in target or priority > target[slot][0]:
+            target[slot] = (priority, round(timestamp, 6))
+    selected = {value[1] for value in strong.values()}
+    # A strong transition already supplies local visual evidence; don't also
+    # send a neighbouring weak camera-cut hypothesis to the same model.
+    for _, timestamp in weak.values():
+        if not any(abs(timestamp - evidence) < window_seconds for evidence in selected):
+            selected.add(timestamp)
+    return selected
 
 
 def production_boundaries(source, source_shots, features, transcript, job_dir, vision, cancelled, config,
@@ -481,10 +514,13 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
         assessments.append({'time': current['start'], 'measured': measured, 'proposal': proposal,
                             'before': previous['start'], 'after': current['end']})
     selected = _select_boundary_verifications(assessments)
+    candidates = [row for row in assessments if row['measured']['classification'] == 'ambiguous_boundary']
     diagnostics.event('semantic_boundary', 'triage', candidates=len(assessments),
-                      ambiguous=sum(row['measured']['classification'] == 'ambiguous_boundary'
-                                    for row in assessments), selected=len(selected),
-                      interval_seconds=SEMANTIC_VLM_WINDOW_SECONDS)
+                      ambiguous=len(candidates), selected=len(selected),
+                      deferred=len(candidates) - len(selected),
+                      high_signal=sum(_high_signal_boundary(row) for row in candidates),
+                      interval_seconds=SEMANTIC_VLM_WINDOW_SECONDS,
+                      weak_interval_seconds=SEMANTIC_VLM_WEAK_WINDOW_SECONDS)
     for row in assessments:
         if cancelled():
             raise InterruptedError('Обработка отменена')
