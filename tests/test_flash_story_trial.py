@@ -205,13 +205,15 @@ def test_budgeted_flash_story_reconciles_actual_usage_and_exceeds_eight_calls(tm
 
     remote = MeteredRemote(tmp_path, lambda: False)
     with make_trial(tmp_path, remote, budgeted=True) as trial:
-        for n in range(12):
+        # The USD guard must still leave headroom for the NEXT worst-case
+        # reservation. Ten small paid calls fit; twelve need not fit.
+        for n in range(10):
             assert trial.query(f"cheap-request-{n}")["provider"] == "remote"
         assert trial.local is None
-        assert remote.calls == 12
+        assert remote.calls == 10
     record = json.loads((tmp_path / "deepseek-story-budgeted.json").read_text("utf-8"))
-    assert len(record["reserved"]) == 12
-    assert len(record["charged_peak_usd"]) == 12
+    assert len(record["reserved"]) == 10
+    assert len(record["charged_peak_usd"]) == 10
     assert 0 < sum(record["charged_peak_usd"].values()) < 0.05
     with make_trial(tmp_path, remote, budgeted=True) as restarted:
         # Persisted reservations prohibit an uncertain second payment, even
