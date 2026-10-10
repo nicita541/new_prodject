@@ -1,0 +1,45 @@
+﻿...................................................................... [  6%]
+....................................... [  9%]
+................................................................. [ 15%]
+........................................... [ 18%]
+.................................................................... [ 24%]
+....................................................... [ 29%]
+........................................................................................................................................ [ 41%]
+........................................................................ [ 47%]
+.............................................................. [ 52%]
+......................................................... [ 57%]
+......................................... [ 61%]
+................................................... [ 65%]
+........................................................................................................................ [ 76%]
+..................................... [ 79%]
+........................................F................................................................................ [ 90%]
+..................................................................................................... [ 98%]
+.............                                                      [100%]
+================================== FAILURES ===================================
+__________ test_studio_routes_serve_exact_ui_or_explicit_build_error __________
+
+    def test_studio_routes_serve_exact_ui_or_explicit_build_error():
+        dist = config.ROOT / "frontend" / "dist"
+        built = all((dist / filename).is_file() for filename in (
+            "studio-edition.html", "studio-live-bridge.js", "studio-edition.css", "studio-edition-app.js"))
+        for route in ("/", "/projects", "/studio-edition.html"):
+            response = client.get(route)
+            if built:
+                assert response.status_code == 200, (route, response.text[:120])
+                assert "text/html" in response.headers["content-type"]
+                assert "studio-live-bridge.js" in response.text
+>               assert "fc-workspace" in response.text
+E               assert 'fc-workspace' in '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-... hidden>\r\n<script src="/studio-live-bridge.js"></script><script src="/studio-edition-app.js"></script></body></html>'
+E                +  where '<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-... hidden>\r\n<script src="/studio-live-bridge.js"></script><script src="/studio-edition-app.js"></script></body></html>' = <Response [200 OK]>.text
+
+tests\test_server_routing.py:29: AssertionError
+============================== warnings summary ===============================
+tools\python\Lib\site-packages\fastapi\testclient.py:1
+  F:\new_prodject\tools\python\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_server_routing.py::test_studio_routes_serve_exact_ui_or_explicit_build_error
+1 failed, 1150 passed, 1 warning, 596 subtests passed in 136.67s (0:02:16)
+
