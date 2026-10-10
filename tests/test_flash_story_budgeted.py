@@ -148,14 +148,14 @@ def test_budgeted_profile_reports_aggregates_without_request_hashes(tmp_path):
     assert journal["reserved"][0] not in json_text
 
 
-def test_legacy_launcher_requires_confirmation_and_real_model_checks():
+def test_single_cloud_launcher_requires_full_real_model_checks():
     root = Path(__file__).resolve().parents[1]
-    bat = (root / "ТЕСТЫ" / "6_ПОЛНАЯ_ПРОВЕРКА_FLASH_БЮДЖЕТ.bat").read_text("utf-8")
+    bat = (root / "ТЕСТЫ" / "3_ПОЛНАЯ_ПРОВЕРКА_DEEPSEEK.bat").read_text("utf-8")
     ps = (root / "scripts" / "verify_project.ps1").read_text("utf-8")
     py = (root / "scripts" / "full_pipeline_3min.py").read_text("utf-8")
-    assert "-RequireRealModel -FlashBudgeted" in bat
-    assert '"!KADR_CONFIRM!"=="YES"' in bat
-    assert '"--local-provider", "local_flash_story_budgeted"' in ps
+    assert "-RequireRealModel -FlashStory" in bat
+    assert 'Type UNLIMITED to authorize paid DeepSeek requests' in ps
+    assert '"--local-provider", "local_flash_story"' in ps
     assert '"local_flash_story_budgeted"' in py
     assert "genuine_model_and_video_cache_resume" in py
     assert "$script:verificationBudgetSeconds = 2200" in ps
