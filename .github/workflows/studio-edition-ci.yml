@@ -127,6 +127,7 @@ jobs:
             tests/test_verification_report_contract.py \
             tests/test_stage_timings.py \
             tests/test_model_perf.py \
+            tests/test_token_performance_reports.py \
             tests/test_credit_fast_path.py \
             tests/test_prepare_real_test_video.py
 

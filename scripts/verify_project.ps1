@@ -27,7 +27,9 @@ $script:checks = @()
 # report push itself (which cannot know its own completion time before push).
 $script:verificationStarted = [System.Diagnostics.Stopwatch]::StartNew()
 # The complete real-AI acceptance (Python, React, offline E2E, ASR/VLM, render)
-# has one shared 30-minute deadline. No individual stage may reset this clock.
+# has one shared 2200-second (36m40s) deadline. No individual stage may
+# reset this clock; TIMEOUT remains FAIL and does not mean a successful render.
+$script:verificationBudgetSeconds = 2200
 $script:verificationDeadline = $null
 
 function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note, [double]$ElapsedSeconds = -1) {
@@ -44,7 +46,7 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
     if ($script:verificationDeadline) {
         $remaining = [int][Math]::Floor(($script:verificationDeadline - (Get-Date)).TotalSeconds)
         if ($remaining -le 0) {
-            Add-Check $Name "TIMEOUT" 124 "Shared 30-minute full-AI test budget exhausted" $stageTimer.Elapsed.TotalSeconds
+            Add-Check $Name "TIMEOUT" 124 "Shared 2200-second full-AI test budget exhausted" $stageTimer.Elapsed.TotalSeconds
             return
         }
         $effectiveTimeout = [Math]::Min($Timeout, $remaining)
@@ -215,8 +217,8 @@ if ($RequireRealModel -and -not $RealSource) {
 }
 if ($StartSeconds -lt 0) { throw "StartSeconds cannot be negative" }
 if ($RequireRealModel -or $RealSource) {
-    $script:verificationDeadline = (Get-Date).AddMinutes(30)
-    Write-Host "FULL AI TEST DEADLINE: 30 minutes for ALL stages combined; TIMEOUT is FAIL."
+    $script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)
+    Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
 }
 
 Write-Host ("Run: " + $runId)
@@ -336,7 +338,7 @@ if ($RequireRealModel -and $RealTranscript) {
             $realArgs = @("scripts/full_pipeline_3min.py", "--mode", "real",
                           "--directory", $realDir, "--source", $preparedSource)
             if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
-            Run-Check "real_model_3min" $python $realArgs $root 1800
+            Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds
         }
     }
 }

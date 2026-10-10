@@ -87,8 +87,120 @@ PERF_MODELS = frozenset(("visual4b", "story9b", "other"))
 PERF_STATUSES = frozenset(("ok", "failed", "cancelled", "retried", "fallback", "timeout"))
 
 
+def _model_statistics(rows, *, model, stage=None):
+    """Actual measured tokens and times, never estimates from char counts.
+
+    All per-call averages use only completed calls with the relevant metric.
+    Throughput uses llama.cpp decoded-token counts / measured decode seconds,
+    not output tokens divided by full HTTP wall-clock duration.
+    """
+    latencies, prefill, decode = [], [], []
+    generated_for_speed = decode_time = 0.0
+    prefill_for_speed = prefill_time = 0.0
+    prompt_sum = completion_sum = paired_sum = 0.0
+    prompt_calls = completion_calls = both_calls = 0
+    prompt_char_count = pages = reasoning_tokens = 0.0
+    reasoning_calls = length_calls = cpu_calls = thinking_calls = 0
+    finished = failures = 0
+    for start, end in rows:
+        prompt_char_count += start["prompt_chars"] or 0
+        pages += start["pages"] or 0
+        cpu_calls += int(start["cpu"])
+        thinking_calls += int(start["thinking"])
+        if end is None:
+            continue
+        finished += 1
+        failures += int(end["status"] not in ("ok", "retried"))
+        length_calls += int(end["finish_reason"] == "length")
+        value = end["seconds"]
+        if value is not None:
+            latencies.append(value)
+        prompt = end["prompt_tokens"]
+        completion = end["completion_tokens"]
+        if prompt is not None:
+            prompt_calls += 1
+            prompt_sum += prompt
+        if completion is not None:
+            completion_calls += 1
+            completion_sum += completion
+        if prompt is not None and completion is not None:
+            both_calls += 1
+            paired_sum += prompt + completion
+        if end["reasoning_tokens"] is not None:
+            reasoning_tokens += end["reasoning_tokens"]
+            reasoning_calls += 1
+        if end["prompt_ms"] is not None:
+            prefill.append(end["prompt_ms"])
+            if end["prompt_n"] is not None and end["prompt_ms"] > 0:
+                prefill_for_speed += end["prompt_n"]
+                prefill_time += end["prompt_ms"] / 1000
+        if end["predicted_ms"] is not None:
+            decode.append(end["predicted_ms"])
+            # Prefer provider timing token count, which can include internal
+            # reasoning tokens. Fall back to usage.completion_tokens only if
+            # provider-specific predicted_n was not exposed.
+            generated = end["predicted_n"]
+            if generated is None:
+                generated = completion
+            if generated is not None and end["predicted_ms"] > 0:
+                generated_for_speed += generated
+                decode_time += end["predicted_ms"] / 1000
+
+    def average(total, count):
+        return round(total / count, 3) if count else None
+
+    def pct(values, fraction):
+        if not values:
+            return None
+        ordered = sorted(values)
+        return round(ordered[min(len(ordered)-1, math.ceil(fraction * len(ordered))-1)], 3)
+
+    result = {
+        "model": model,
+        "requests": len(rows), "completed": finished, "pending": len(rows) - finished,
+        "failed": failures, "image_pages": int(pages),
+        "thinking_requests": thinking_calls, "cpu_requests": cpu_calls,
+        "prompt_chars": int(prompt_char_count),
+        "prompt_tokens": int(prompt_sum),
+        "completion_tokens": int(completion_sum),
+        "total_tokens": int(paired_sum),
+        "prompt_token_reported_calls": prompt_calls,
+        "completion_token_reported_calls": completion_calls,
+        "token_reported_calls": both_calls,
+        "unknown_token_calls": len(rows) - both_calls,
+        "avg_prompt_tokens_per_call": average(prompt_sum, prompt_calls),
+        "avg_completion_tokens_per_call": average(completion_sum, completion_calls),
+        "avg_total_tokens_per_measured_call": average(paired_sum, both_calls),
+        "reasoning_tokens": int(reasoning_tokens),
+        "reasoning_reported_calls": reasoning_calls,
+        "finish_length_calls": length_calls,
+        "completed_timed_calls": len(latencies),
+        "sum_request_seconds": round(sum(latencies), 3),
+        "avg_seconds_per_completed_call": average(sum(latencies), len(latencies)),
+        "latency_p50_s": pct(latencies, .50),
+        "latency_p90_s": pct(latencies, .90),
+        "latency_p95_s": pct(latencies, .95),
+        "max_latency_s": max(latencies, default=None),
+        "prefill_p50_ms": pct(prefill, .50),
+        "decode_p50_ms": pct(decode, .50),
+        "prefill_samples": len(prefill),
+        "decode_samples": len(decode),
+        "prefill_tokens_per_second": average(prefill_for_speed, prefill_time),
+        "generation_tokens_per_second": average(generated_for_speed, decode_time),
+        "generation_measured_tokens": int(generated_for_speed),
+        "generation_measured_seconds": round(decode_time, 3),
+        "measurement_note": "Latency averages include only completed calls. Token averages "
+                            "use calls whose provider reported usage. Decode throughput "
+                            "uses llama.cpp predicted_n/predicted_ms (or completion tokens "
+                            "when predicted_n is missing). Pending/unknown calls are excluded.",
+    }
+    if stage is not None:
+        result["stage"] = stage
+    return result
+
+
 def model_perf_summary(job):
-    """Strictly allowlisted profiling; no prompts/answers/errors/paths."""
+    """Strict model/stage whitelist; no prompt text, paths, or raw responses."""
     starts, ends, loads = {}, {}, []
     for row in json_lines(job / "model-performance.jsonl"):
         model, kind = row.get("model"), row.get("event")
@@ -96,8 +208,10 @@ def model_perf_summary(job):
             continue
         if kind == "startup":
             status = row.get("status")
-            loads.append({"model": model, "status": status if status in PERF_STATUSES else "failed",
-                          "seconds": numeric(row.get("seconds")), "cpu": row.get("cpu") is True})
+            loads.append({"model": model,
+                          "status": status if status in PERF_STATUSES else "failed",
+                          "seconds": numeric(row.get("seconds")),
+                          "cpu": row.get("cpu") is True})
             continue
         if kind not in ("request_start", "request_end"):
             continue
@@ -105,66 +219,102 @@ def model_perf_summary(job):
         if not isinstance(ident, str) or not re.fullmatch(r"[0-9a-f]{32}", ident) or stage not in PERF_STAGES:
             continue
         if kind == "request_start":
-            starts[ident] = {"model": model, "stage": stage, "pages": numeric(row.get("pages")),
-                             "prompt_chars": numeric(row.get("prompt_chars")),
-                             "thinking": row.get("thinking") is True, "cpu": row.get("cpu") is True}
+            starts[ident] = {
+                "model": model, "stage": stage,
+                "pages": numeric(row.get("pages")),
+                "prompt_chars": numeric(row.get("prompt_chars")),
+                "thinking": row.get("thinking") is True, "cpu": row.get("cpu") is True,
+            }
         else:
             status = row.get("status")
-            ends[ident] = {"model": model, "stage": stage,
-                           "status": status if status in PERF_STATUSES else "failed",
-                           **{field: numeric(row.get(field)) for field in
-                              ("seconds", "prompt_tokens", "completion_tokens", "reasoning_tokens",
-                               "prompt_ms", "predicted_ms")},
-                           "finish_reason": row.get("finish_reason") if row.get("finish_reason") in
-                              ("stop", "length", "tool_calls", "content_filter") else None}
-    groups = {}
+            ends[ident] = {
+                "model": model, "stage": stage,
+                "status": status if status in PERF_STATUSES else "failed",
+                **{field: numeric(row.get(field)) for field in (
+                    "seconds", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+                    "prompt_ms", "predicted_ms", "prompt_n", "predicted_n")},
+                "finish_reason": (row.get("finish_reason")
+                                  if row.get("finish_reason") in
+                                  ("stop", "length", "tool_calls", "content_filter") else None),
+            }
+
+    # A stray END record without START is not evidence of a complete request.
+    groups = defaultdict(list)
+    models = defaultdict(list)
+    all_rows = []
     for ident, start in starts.items():
-        key = (start["model"], start["stage"])
-        g = groups.setdefault(key, {"model": key[0], "stage": key[1], "requests": 0,
-            "completed": 0, "pending": 0, "failed": 0, "image_pages": 0,
-            "thinking_requests": 0, "cpu_requests": 0, "prompt_chars": 0,
-            "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
-            "reasoning_reported_calls": 0, "finish_length_calls": 0,
-            "token_reported_calls": 0,
-            "_latency": [], "_prefill": [], "_decode": []})
-        g["requests"] += 1
-        g["image_pages"] += int(start["pages"] or 0)
-        g["prompt_chars"] += int(start["prompt_chars"] or 0)
-        g["thinking_requests"] += int(start["thinking"])
-        g["cpu_requests"] += int(start["cpu"])
         end = ends.get(ident)
-        if end is None:
-            g["pending"] += 1
+        if end is not None and (end["model"], end["stage"]) != (start["model"], start["stage"]):
+            end = None
+        item = (start, end)
+        groups[(start["model"], start["stage"])].append(item)
+        models[start["model"]].append(item)
+        all_rows.append(item)
+
+    by_stage = [_model_statistics(items, model=model, stage=stage)
+                for (model, stage), items in sorted(groups.items())]
+    by_model = [_model_statistics(items, model=model)
+                for model, items in sorted(models.items())]
+    overall = _model_statistics(all_rows, model="all_local_models") if all_rows else None
+    return {
+        "schema_version": 2, "available": bool(starts or loads),
+        "requests": len(starts),
+        "pending": sum(item["pending"] for item in by_model),
+        "startup": loads[-60:],
+        "by_model": by_model,
+        "by_model_and_stage": by_stage,
+        "overall_local_models": overall,
+        "note": "Measured response usage only. Pending or missing usage stays unknown; "
+                "prefill/decode timing is optional and not equal to HTTP latency.",
+    }
+
+
+def token_ledger_summary(job):
+    """Independent provider-wide token accounting, for local AND DeepSeek.
+
+    The private token_usage ledger records actual HTTP responses (including
+    ones with invalid generated JSON). This total MUST NOT be added to the
+    model profiler's local-token subtotal: they overlap by design.
+    """
+    entries = {"local": {"calls": 0, "unknown_calls": 0,
+                         "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+               "deepseek": {"calls": 0, "unknown_calls": 0,
+                            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+    available = (job / "token-usage.jsonl").is_file()
+    def allowed_count(value):
+        return value if type(value) is int and 0 <= value <= 1_000_000_000 else None
+    for row in json_lines(job / "token-usage.jsonl"):
+        provider = row.get("provider")
+        if provider not in entries:
             continue
-        g["completed"] += 1
-        g["failed"] += int(end["status"] not in ("ok", "retried"))
-        g["finish_length_calls"] += int(end["finish_reason"] == "length")
-        if end["reasoning_tokens"] is not None:
-            g["reasoning_reported_calls"] += 1
-            g["reasoning_tokens"] += end["reasoning_tokens"]
-        if end["prompt_tokens"] is not None and end["completion_tokens"] is not None:
-            g["token_reported_calls"] += 1
-        for field in ("prompt_tokens", "completion_tokens"):
-            if end[field] is not None:
-                g[field] += end[field]
-        for field, dest in (("seconds", "_latency"), ("prompt_ms", "_prefill"), ("predicted_ms", "_decode")):
-            if end[field] is not None:
-                g[dest].append(end[field])
-    def pct(values, p):
-        values = sorted(values)
-        return round(values[min(len(values)-1, math.ceil(p*len(values))-1)], 3) if values else None
-    rows = []
-    for g in groups.values():
-        seconds, prefill, decode = g.pop("_latency"), g.pop("_prefill"), g.pop("_decode")
-        rows.append({**g, "latency_p50_s": pct(seconds, .5), "latency_p95_s": pct(seconds, .95),
-                     "max_latency_s": max(seconds, default=None),
-                     "prefill_p50_ms": pct(prefill, .5), "decode_p50_ms": pct(decode, .5),
-                     "prefill_samples": len(prefill), "decode_samples": len(decode)})
-    rows.sort(key=lambda g: (g["model"], g["stage"]))
-    return {"schema_version": 1, "available": bool(starts or loads),
-            "requests": len(starts), "pending": sum(g["pending"] for g in rows),
-            "startup": loads[-60:], "by_model_and_stage": rows,
-            "note": "Incomplete requests retain their START; provider prefill/decode timings may be unavailable."}
+        dest = entries[provider]
+        if row.get("usage_reported") is not True:
+            dest["unknown_calls"] += 1
+            continue
+        tokens = allowed_count(row.get("total_tokens"))
+        input_tokens = allowed_count(row.get("prompt_tokens"))
+        output_tokens = allowed_count(row.get("completion_tokens"))
+        if tokens is None and input_tokens is not None and output_tokens is not None:
+            tokens = input_tokens + output_tokens
+        if tokens is None:
+            dest["unknown_calls"] += 1
+            continue
+        dest["calls"] += 1
+        dest["total_tokens"] += tokens
+        if input_tokens is not None:
+            dest["prompt_tokens"] += input_tokens
+        if output_tokens is not None:
+            dest["completion_tokens"] += output_tokens
+    return {
+        "available": available,
+        "by_provider": entries,
+        "total_reported_tokens": (sum(v["total_tokens"] for v in entries.values())
+                                  if available else None),
+        "unknown_calls": sum(v["unknown_calls"] for v in entries.values()),
+        "note": "Whole-run provider ledger. Includes local and DeepSeek if used. "
+                "Unknown calls and pending requests are NOT estimated. "
+                "Do not add these totals to the local profiler totals.",
+    }
 
 
 def summarize(test_dir):
@@ -281,6 +431,7 @@ def summarize(test_dir):
             progress_counts[stage] += 1
         recent.append({"stage": stage, "progress": numeric(item.get("progress"))})
     result["model_performance"] = model_perf_summary(job)
+    result["token_usage_totals"] = token_ledger_summary(job)
     result["optimization"] = {"semantic_boundary_triage": boundary_triage,
                               "visual_context_payload": scene_inference_pages}
     result["progress"] = {"events_by_stage": dict(sorted(progress_counts.items())),

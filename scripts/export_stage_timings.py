@@ -17,7 +17,9 @@ import sys
 # Direct invocation by Windows BAT/PowerShell must resolve the project package.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.export_safe_ai_diagnostics import json_file, json_lines, name, numeric, model_perf_summary
+from scripts.export_safe_ai_diagnostics import (
+    json_file, json_lines, name, numeric, model_perf_summary, token_ledger_summary
+)
 
 # These names come from source code, never from a user-controlled log message.
 CHECKS = set("""
@@ -233,6 +235,7 @@ def summarize(test_dir):
         },
         "model_inference": model_request_timing(job),
         "model_performance": model_perf_summary(job),
+        "token_usage_totals": token_ledger_summary(job),
         "production_invocations": production_run_manifests(job),
         "bottlenecks": {
             "slowest_verification_check": bottleneck_check,
@@ -312,20 +315,67 @@ def markdown(data):
         f"median: {human(model['median_response_seconds'])}.",
     ])
     perf = data["model_performance"]
+    ledger = data["token_usage_totals"]
+
+    def measured(value, suffix=""):
+        return f"{value:,.2f}{suffix}" if value is not None else "not measured"
+
     parts.extend([
         "", "## 7. Local llama.cpp per-model and per-task profile", "",
-        "| Model | Task | Requests | Pending | p50 HTTP | p95 HTTP | Prompt tokens | Completion tokens | Reasoning tokens | Length stops | Prefill p50 | Decode p50 |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "### Total tokens used in this run (whole-run usage ledger)", "",
+        f"**All providers combined: {measured(ledger['total_reported_tokens'], ' tokens')}**.",
+        "These are actual provider-reported tokens for completed HTTP replies, "
+        "not a prediction of the unfinished calls. Do NOT add the separate "
+        "local-model breakdown again — it measures some of the same responses.",
+        "",
+        "| Provider | Counted responses | Input tokens | Output tokens | Total tokens | Unknown usage |",
+        "| --- | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for provider, entry in ledger["by_provider"].items():
+        parts.append(f"| {provider} | {entry['calls']} | {entry['prompt_tokens']} | "
+                     f"{entry['completion_tokens']} | {entry['total_tokens']} | "
+                     f"{entry['unknown_calls']} |")
+    parts.extend([
+        "", "### Average model cost: visual 4B versus story 9B", "",
+        "Average latency includes completed model requests only. Token averages "
+        "count ONLY calls with usage data. Generation speed uses measured "
+        "llama.cpp decode timing and token counts, not total network latency.",
+        "",
+        "| Model | Completed / requested | Tokens measured / missing | Input total | Output total | Measured total | Avg input / call | Avg output / call | Avg total / call | Avg time / completed call | Decode tokens/s | p95 latency |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for group in perf["by_model"]:
+        parts.append(
+            f"| {group['model']} | {group['completed']}/{group['requests']} | "
+            f"{group['token_reported_calls']}/{group['unknown_token_calls']} | "
+            f"{group['prompt_tokens']} | {group['completion_tokens']} | "
+            f"{group['total_tokens']} | {measured(group['avg_prompt_tokens_per_call'])} | "
+            f"{measured(group['avg_completion_tokens_per_call'])} | "
+            f"{measured(group['avg_total_tokens_per_measured_call'])} | "
+            f"{human(group['avg_seconds_per_completed_call'])} | "
+            f"{measured(group['generation_tokens_per_second'])} | "
+            f"{human(group['latency_p95_s'])} |")
+    parts.extend([
+        "", "### By task (choose_units, credit_classifier, scene_analysis, etc.)", "",
+        "| Model | Task | Calls (finished/pending) | Avg HTTP time | p95 HTTP | Avg input tok | Avg output tok | Decode tokens/s | Input tokens | Output tokens | Unknown tokens |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ])
     for group in perf["by_model_and_stage"]:
-        parts.append(f"| {group['model']} | {group['stage']} | {group['requests']} | "
-                     f"{group['pending']} | {human(group['latency_p50_s'])} | "
-                     f"{human(group['latency_p95_s'])} | {group['prompt_tokens']} | "
-                     f"{group['completion_tokens']} | {group['reasoning_tokens']} | "
-                     f"{group['finish_length_calls']} | "
-                     f"{str(group['prefill_p50_ms'])+' ms' if group['prefill_p50_ms'] is not None else 'not measured'} | "
-                     f"{str(group['decode_p50_ms'])+' ms' if group['decode_p50_ms'] is not None else 'not measured'} |")
-    parts.extend(["", "**llama.cpp startup attempts:**", ""])
+        parts.append(
+            f"| {group['model']} | {group['stage']} | "
+            f"{group['completed']}/{group['pending']} | "
+            f"{human(group['avg_seconds_per_completed_call'])} | "
+            f"{human(group['latency_p95_s'])} | "
+            f"{measured(group['avg_prompt_tokens_per_call'])} | "
+            f"{measured(group['avg_completion_tokens_per_call'])} | "
+            f"{measured(group['generation_tokens_per_second'])} | "
+            f"{group['prompt_tokens']} | {group['completion_tokens']} | "
+            f"{group['unknown_token_calls']} |")
+    parts.extend(["",
+        "The visual model corresponds to the configured Qwen visual GGUF "
+        "(normally 4B; a configured 3B would require a matching alias update). "
+        "The story model corresponds to the configured 9B GGUF.",
+        "", "**llama.cpp startup attempts:**", ""])
     for item in perf["startup"]:
         parts.append(f"- {item['model']} / {item['status']} / "
                      f"{'CPU' if item['cpu'] else 'GPU'}: {human(item['seconds'])}")
