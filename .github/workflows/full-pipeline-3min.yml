@@ -6,6 +6,7 @@ on:
     branches: ['codex/dramatic-montage']
     paths:
       - scripts/full_pipeline_3min.py
+      - scripts/prepare_real_test_video.py
       - app/run_logging.py
       - app/media.py
       - app/pipeline.py
@@ -44,6 +45,35 @@ jobs:
         timeout-minutes: 23
         run: |
           python scripts/full_pipeline_3min.py --mode offline --directory temp/ci-full-pipeline-3min
+      - name: Prove real FFmpeg can excerpt 180 seconds from a longer video
+        if: success()
+        timeout-minutes: 5
+        run: |
+          python - <<'PY'
+          import hashlib
+          import subprocess
+          from pathlib import Path
+          from app import config
+          from app.media_probe import probe_media
+          from scripts.prepare_real_test_video import prepare
+          config.setup_environment()
+          root = Path('temp/ci-full-pipeline-3min').resolve()
+          original = root / 'source-180s.mp4'
+          longer = root / 'source-190s.mp4'
+          subprocess.run([
+              str(config.FFMPEG), '-hide_banner', '-loglevel', 'error',
+              '-stream_loop', '1', '-i', str(original), '-t', '190',
+              '-map', '0:v:0', '-map', '0:a:0', '-c', 'copy',
+              '-y', str(longer)
+          ], check=True, timeout=60)
+          assert probe_media(longer)['duration'] > 189
+          old_hash = hashlib.sha256(longer.read_bytes()).hexdigest()
+          sample = prepare(longer, root / 'selected-180s', start_seconds=5.0)
+          assert sample.is_file()
+          assert 179.8 <= probe_media(sample)['duration'] <= 180.2
+          assert hashlib.sha256(longer.read_bytes()).hexdigest() == old_hash
+          print('Real 190s to 180s excerpt PASS; original unchanged')
+          PY
       - name: Assert machine-readable report is complete
         if: success()
         run: |
