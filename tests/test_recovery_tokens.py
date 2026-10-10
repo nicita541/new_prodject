@@ -121,6 +121,20 @@ def test_token_ledger_skips_malformed_rows_and_does_not_abort_inference(tmp_path
     token_usage.record(tmp_path / "nested", "local", "qwen", {"usage": {"total_tokens": 8}})
 
 
+def test_partial_provider_usage_is_unknown_not_false_total(tmp_path):
+    from app.token_usage import record, summary
+    record(tmp_path, "local", "qwen", {"usage":{"prompt_tokens": 481}})
+    usage = summary(tmp_path)
+    assert usage["all_tokens"] == 0
+    assert usage["unknown_calls"] == 1
+    record(tmp_path, "deepseek", "chat", {
+        "usage":{"prompt_tokens": 480, "completion_tokens": 20}})
+    usage = summary(tmp_path)
+    assert usage["all_tokens"] == 500
+    assert usage["unknown_calls"] == 1
+
+
+
 def test_corrupted_scene_cache_only_rebuilds_affected_chunk(tmp_path):
     from app.scene_analysis import _read_optional_checkpoint
     checkpoint = tmp_path / "event_0000_chunk_001.checkpoint.json"
