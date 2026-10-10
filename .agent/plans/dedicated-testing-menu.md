@@ -27,7 +27,7 @@ Model initialization and full local ASR/VLM are not available on GitHub runners 
 
 ## Progress
 - [x] Inspect current verification and publication path.
-- [ ] Add real-video selection/preparation.
-- [ ] Create and connect two launchers in `ТЕСТЫ/`.
-- [ ] Pass automated Linux and Windows verification.
+- [x] Add real-video selection/preparation with GUI picker and safe 180s FFmpeg extractor.
+- [x] Create and connect two launchers in `ТЕСТЫ/`, removing old root test BATs.
+- [ ] Pass automated Linux and Windows verification (checks running).
 - [ ] Have the user validate actual local models.

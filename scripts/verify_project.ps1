@@ -258,7 +258,7 @@ if ($RealTranscript -and -not $RealSource) {
         $realDir = Join-Path $localDir "real_model_3min"
         Run-Check "prepare_real_source" $python @(
             "scripts/prepare_real_test_video.py", "--source", $RealSource,
-            "--directory", $realInput, "--start-seconds", ([string]$StartSeconds)
+            "--directory", $realInput, "--start-seconds", $StartSeconds.ToString([System.Globalization.CultureInfo]::InvariantCulture)
         ) $root 2400
         $preparedOkay = @($script:checks | Where-Object {
             $_.name -eq "prepare_real_source" -and $_.status -eq "PASS"

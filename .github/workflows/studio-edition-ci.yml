@@ -121,7 +121,8 @@ jobs:
             tests/test_semantic_identity.py \
             tests/test_full_pipeline_harness.py \
             tests/test_run_logging.py \
-            tests/test_verification_report_contract.py
+            tests/test_verification_report_contract.py \
+            tests/test_prepare_real_test_video.py
 
   backend:
     name: Finishing API safety tests
