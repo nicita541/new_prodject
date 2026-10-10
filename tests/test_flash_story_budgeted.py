@@ -73,6 +73,10 @@ def test_budgeted_mode_requires_explicit_provider_and_preserves_8_call_mode(tmp_
     assert routing_profile()["after_limit"] == "local9b_fallback"
     profile = provider_identity("local_flash_story_budgeted")
     assert profile["after_limit"] == "local4b_conservative_fallback"
+    assert profile["framing"] == "flash_or_local4b"
+    assert profile["pacing"] == "flash_or_local4b"
+    from app.analysis import framing_provider
+    assert framing_provider("local_flash_story_budgeted") == "local_flash_story_budgeted"
     assert profile["estimated_peak_budget_usd"] == .05
     with patch("app.analysis.LocalVision", FastLocal):
         visual = vision_session(tmp_path, lambda: False, "local_flash_story_budgeted")

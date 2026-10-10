@@ -259,8 +259,7 @@ def finalize_editorial_selection(source, events, transcript, shots, probe, job_d
 
 
 def framing_provider(provider: str) -> str:
-    return 'local' if provider in ('deepseek_plan', 'local_flash_story', 'local_fast_story',
-                                  'local_flash_story_budgeted') else provider
+    return 'local' if provider in ('deepseek_plan', 'local_flash_story', 'local_fast_story') else provider
 
 
 def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
@@ -381,8 +380,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     # depends on the layout, so switching presets cannot repeat paid story work.
     from .pacing import PACING_VERSION
     from .endings import VERSION as ENDINGS_VERSION, RECOVERY_VERSION as ENDING_RECOVERY_VERSION
-    pacing_provider = 'local' if provider in ('local_flash_story', 'local_fast_story',
-                                              'local_flash_story_budgeted') else provider
+    pacing_provider = 'local' if provider in ('local_flash_story', 'local_fast_story') else provider
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import recovery_status
         if recovery_status()['halted']:

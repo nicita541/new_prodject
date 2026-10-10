@@ -65,8 +65,8 @@ def routing_profile(budgeted=False):
         "paid_http_attempt_limit": BUDGETED_MAX_PAID_ATTEMPTS if budgeted else MAX_PAID_ATTEMPTS,
         "estimated_peak_budget_usd": BUDGETED_ESTIMATED_PEAK_USD if budgeted else None,
         "after_limit": "local4b_conservative_fallback" if budgeted else "local9b_fallback",
-        "framing": "local9b",
-        "pacing": "local9b",
+        "framing": "flash_or_local4b" if budgeted else "local9b",
+        "pacing": "flash_or_local4b" if budgeted else "local9b",
     }
 
 
