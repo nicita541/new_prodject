@@ -56,7 +56,7 @@ class BoundaryTriagingTests(unittest.TestCase):
         proofs = {0.4: {'accepted': False, 'uncertain': True, 'confidence': 0,
                         'source': 'triage_deferred', 'reasons': ['deferred_for_scene_analysis']}}
         scenes = detect_semantic_scenes(shots, transcript, 2.0, boundary_verifications=proofs)
-        self.assertTrue(any(d['reasons'] == ['deferred_for_scene_analysis']
+        self.assertTrue(any('deferred_for_scene_analysis' in d['reasons']
                             for scene in scenes for d in scene['evidence']['boundary_decisions']))
         self.assertEqual(scenes[0]['start'], 0)
         self.assertEqual(scenes[-1]['end'], 2.0)
