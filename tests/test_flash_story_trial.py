@@ -176,3 +176,45 @@ def test_remote_cached_reply_can_be_reused_after_eight_paid_slots(tmp_path):
         assert router._state["local_cache_hits"] == 1
         assert router.query("fresh-story-nine")["provider"] == "local"
         assert remote.calls == MAX_PAID_ATTEMPTS
+
+
+def test_budgeted_flash_story_uses_peak_guard_and_4b_fallback(tmp_path):
+    # A missing usage receipt is treated as a worst-case billed request.
+    # The fallback MUST be 4B (without thinking), not the 9B model that
+    # caused the original real-180s test timeout.
+    remote = DummyRemote(tmp_path, lambda: False)
+    with make_trial(tmp_path, remote, budgeted=True) as trial:
+        assert trial.query("unknown-charge")["provider"] == "remote"
+        assert trial.query("another-request")["provider"] == "local"
+        assert trial.local.settings["model"] == VLM_MODEL
+        assert trial.local.settings["thinking"] is False
+        assert remote.calls == 1
+    record = json.loads((tmp_path / "deepseek-story-budgeted.json").read_text("utf-8"))
+    assert len(record["reserved"]) == 1
+    assert 0.04 < sum(record["charged_peak_usd"].values()) <= 0.05
+    assert record["fallbacks"] == 1
+
+
+def test_budgeted_flash_story_reconciles_actual_usage_and_exceeds_eight_calls(tmp_path):
+    class MeteredRemote(DummyRemote):
+        def network(self, body):
+            self.calls += 1
+            return {"provider": "remote", "usage": {
+                "prompt_tokens": 2200, "completion_tokens": 200,
+                "prompt_cache_hit_tokens": 200, "prompt_cache_miss_tokens": 2000}}
+
+    remote = MeteredRemote(tmp_path, lambda: False)
+    with make_trial(tmp_path, remote, budgeted=True) as trial:
+        for n in range(12):
+            assert trial.query(f"cheap-request-{n}")["provider"] == "remote"
+        assert trial.local is None
+        assert remote.calls == 12
+    record = json.loads((tmp_path / "deepseek-story-budgeted.json").read_text("utf-8"))
+    assert len(record["reserved"]) == 12
+    assert len(record["charged_peak_usd"]) == 12
+    assert 0 < sum(record["charged_peak_usd"].values()) < 0.05
+    with make_trial(tmp_path, remote, budgeted=True) as restarted:
+        # Persisted reservations prohibit an uncertain second payment, even
+        # when a remote response cache is missing for the same prompt.
+        assert restarted.query("cheap-request-0")["provider"] == "local"
+        assert restarted.local.settings["model"] == VLM_MODEL
