@@ -65,13 +65,19 @@ def test_published_logs_decode_utf8_to_preserve_russian_diagnostics():
     assert "Get-Content -LiteralPath $src -Tail 120 -Encoding UTF8" in script
 
 
-def test_user_friendly_test_folder_has_two_auto_publishing_launchers():
+def test_user_friendly_test_folder_has_three_distinct_auto_publishing_launchers():
     folder = ROOT / "ТЕСТЫ"
     technical = (folder / "1_ПРОВЕРКА_БЕЗ_ИИ.bat").read_text("utf-8")
     full = (folder / "2_ПОЛНАЯ_ПРОВЕРКА_С_ИИ.bat").read_text("utf-8")
+    cloud = (folder / "3_ПОЛНАЯ_ПРОВЕРКА_DEEPSEEK.bat").read_text("utf-8")
+    assert sorted(path.name for path in folder.glob("*.bat")) == [
+        "1_ПРОВЕРКА_БЕЗ_ИИ.bat",
+        "2_ПОЛНАЯ_ПРОВЕРКА_С_ИИ.bat",
+        "3_ПОЛНАЯ_ПРОВЕРКА_DEEPSEEK.bat",
+    ]
     assert not (ROOT / "ПРОВЕРИТЬ_ПРОЕКТ.bat").exists()
     assert not (ROOT / "test_full_pipeline_3min.bat").exists()
-    for bat in (technical, full):
+    for bat in (technical, full, cloud):
         assert "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass" in bat
         assert 'if not "%KADR_NONINTERACTIVE%"=="1" pause' in bat
         assert "exit /b %RESULT%" in bat
@@ -79,6 +85,8 @@ def test_user_friendly_test_folder_has_two_auto_publishing_launchers():
         assert "scripts\\verify_project.ps1" in bat
     assert "-RequireRealModel" not in technical
     assert "-RequireRealModel" in full
+    assert "-FlashStory" not in full
+    assert "-RequireRealModel -FlashStory" in cloud
 
 
 def test_required_real_model_cannot_silently_pass_or_publish_source_media():
@@ -152,17 +160,15 @@ def test_full_ai_auto_publishes_allowlisted_model_diagnostics_on_failure_too():
     assert 'if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }' in script
 
 
-def test_one_click_backfill_does_not_run_local_models_and_publishes_only_safe_json():
+def test_optional_log_backfill_remains_in_scripts_without_extra_launcher():
     ps = (ROOT / "scripts" / "publish_latest_ai_diagnostics.ps1").read_text("utf-8")
-    bat = (ROOT / "ТЕСТЫ" / "3_ОТПРАВИТЬ_ПОСЛЕДНИЕ_ЛОГИ_ИИ.bat").read_text("utf-8")
     assert 'scripts\\export_safe_ai_diagnostics.py' in ps
     assert 'ai_diagnostics.json' in ps
     assert 'refs/heads/test-reports' in ps
     assert '3 -and -not $published' in ps
     assert 'full_pipeline_3min.py' not in ps
     assert 'run_production_raw_quality.py' not in ps
-    assert 'publish_latest_ai_diagnostics.ps1' in bat
-    assert 'exit /b %RESULT%' in bat
+    assert not (ROOT / "ТЕСТЫ" / "3_ОТПРАВИТЬ_ПОСЛЕДНИЕ_ЛОГИ_ИИ.bat").exists()
 
 
 def test_full_verification_reports_every_step_duration_and_bottlenecks():
