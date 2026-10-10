@@ -219,3 +219,24 @@ jobs:
           if ($report.mode -ne 'quick') { throw 'Wrong quick-mode metadata' }
           if ($report.run_id -ne $latest.Name) { throw 'Report stored under wrong run' }
           if (-not (Test-Path $report.logs_dir)) { throw 'Execution logs missing' }
+      - name: Headless full-model BAT must report FAIL instead of running synthetic-only
+        shell: pwsh
+        run: |
+          $env:KADR_NONINTERACTIVE = '1'
+          $batch = Join-Path (Get-Location).Path 'ТЕСТЫ\2_ПОЛНАЯ_ПРОВЕРКА_С_ИИ.bat'
+          # -Quick keeps the CI probe inexpensive. The full wrapper must
+          # still enforce the missing real-source failure.
+          $process = Start-Process -FilePath $env:ComSpec -ArgumentList @(
+            '/d', '/c', ('"' + $batch + '" -Quick -NoUpload')
+          ) -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru
+          if ($process.ExitCode -eq 0) { throw 'Full AI BAT returned success with no real source' }
+          $folders = Get-ChildItem temp/verification-reports -Directory |
+            Sort-Object LastWriteTime -Descending
+          $latest = $folders | Select-Object -First 1
+          if (-not $latest) { throw 'Full-model report folder missing' }
+          $report = Get-Content (Join-Path $latest.FullName 'checks.json') -Raw | ConvertFrom-Json
+          $model = @($report.checks | Where-Object { $_.name -eq 'real_model_3min' })
+          if ($model.Count -ne 1 -or $model[0].status -ne 'FAIL') {
+            throw 'Full AI mode must never use the synthetic-only success path'
+          }
+          if ($report.run_profile -ne 'full_with_local_ai') { throw 'Wrong report mode' }
