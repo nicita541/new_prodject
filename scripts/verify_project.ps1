@@ -523,7 +523,8 @@ foreach ($check in $script:checks) {
     }
 }
 $nl = [Environment]::NewLine
-$md = @("# KADR verification report", "", "- Run: $runId", "- Logs: [LOCAL_ONLY]", "- Branch: $branch", "- Commit: $commit", "- Profile: $(if ($RequireRealModel -or $RealSource) {'FULL WITH LOCAL AI'} else {'TECHNICAL WITHOUT AI'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "- Real ASR/VLM: $(if ($RequireRealModel -or $RealSource) {'REQUIRED, see real_model_3min'} else {'NOT RUN (technical test)'})", "", "| Check | Result | Details |", "| --- | --- | --- |")
+$profileLabel = if ($FlashStory -or $FlashBudgeted) { 'FULL WITH LOCAL WHISPER/QWEN4B + DEEPSEEK FLASH STORY' } elseif ($RequireRealModel -or $RealSource) { 'FULL WITH LOCAL AI' } else { 'TECHNICAL WITHOUT AI' }
+$md = @("# KADR verification report", "", "- Run: $runId", "- Logs: [LOCAL_ONLY]", "- Branch: $branch", "- Commit: $commit", "- Profile: $profileLabel", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "- Real ASR/VLM: $(if ($RequireRealModel -or $RealSource) {'REQUIRED, see real_model_3min'} else {'NOT RUN (technical test)'})", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
 if ($RequireRealModel -or $RealSource) {
     $md += @("", "- AI diagnostics: ai_diagnostics.json (safe numeric and stage metadata)")
