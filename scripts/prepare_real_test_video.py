@@ -52,7 +52,8 @@ def prepare(source: Path, directory: Path, *, start_seconds: float = 0.0) -> Pat
         run_command([
             config.FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
             "-ss", str(start_seconds), "-i", str(source),
-            "-t", "180", "-map", "0:v:0", "-map", "0:a:0",
+            "-t", "180", "-map", "0:v:0",
+            "-map", f"0:a:{int(media.get('audio_stream', 0))}",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
             "-movflags", "+faststart", str(target)

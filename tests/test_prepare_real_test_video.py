@@ -55,6 +55,23 @@ def test_long_story_uses_ffmpeg_180_seconds_without_touching_original(qa_workspa
     assert (destination / "selected-source.txt").read_text("utf-8") == str(result)
 
 
+def test_russian_track_selected_when_source_has_multiple_audio_tracks(qa_workspace):
+    source = qa_workspace / "episode.mkv"
+    source.write_bytes(b"unaltered multiple-track episode")
+    directory = qa_workspace / "output"
+    def fake_render(args, _, timeout):
+        assert "-map" in args
+        assert "0:a:2" in args, "must use probe-selected Russian track"
+        Path(args[-1]).write_bytes(b"clip")
+    with patch("scripts.prepare_real_test_video.probe_media", side_effect=[
+        {"duration": 1380.0, "has_audio": True, "audio_stream": 2},
+        mock_media(180.0)
+    ]), patch("scripts.prepare_real_test_video.run_command", side_effect=fake_render):
+        result = prepare(source, directory)
+    assert result.exists()
+    assert source.read_bytes() == b"unaltered multiple-track episode"
+
+
 def test_missing_audio_and_short_inputs_fail_explicitly(qa_workspace):
     source = qa_workspace / "no-dialogue.mp4"
     source.write_bytes(b"source")
