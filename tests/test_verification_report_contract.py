@@ -130,7 +130,11 @@ def test_windows_launcher_rejects_false_green_e2e_artifacts():
     assert 'Join-Path (Join-Path $localDir $Name) "report.json"' in script
     assert 'if ($e2e.status -ne "passed")' in script
     assert '$acceptedSteps.Count -eq 0 -or $badSteps.Count -ne 0' in script
-    assert '$e2e.analysis_mode -ne "real_local_whisper_and_vision"' in script
+    assert '$expectedAnalysisMode = if ($FlashStory -or $FlashBudgeted)' in script
+    assert '"real_local_whisper_and_vision"' in script
+    assert '"real_local_whisper_and_paid_deepseek_story"' in script
+    assert 'if ($e2e.analysis_mode -ne $expectedAnalysisMode)' in script
+    assert '$e2e.real_resume.paid_requests_unchanged -ne $true' in script
     assert '$e2e.real_model_requests -gt 0' in script
     assert '$e2e.real_resume.model_requests_unchanged -ne $true' in script
     assert '$e2e.real_resume.all_render_parts_cached -ne $true' in script
