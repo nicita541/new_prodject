@@ -16,7 +16,7 @@ export function parseLibrarySnapshot(value: unknown): LibrarySnapshot {
         !(episode.source_id === null || typeof episode.source_id === 'string') || !object(episode.settings) ||
         !['portrait', 'cinema'].includes(String(episode.settings.layout)) ||
         !['classic', 'accent'].includes(String(episode.settings.caption_style)) ||
-        !['local', 'deepseek', 'hybrid', 'deepseek_plan'].includes(String(episode.settings.analysis_provider)) ||
+        !['local', 'deepseek', 'hybrid', 'deepseek_plan', 'local_flash_story'].includes(String(episode.settings.analysis_provider)) ||
         !Array.isArray(episode.jobs) || episode.jobs.some(job => !object(job) || typeof job.id !== 'string' ||
           typeof job.created_at !== 'string' || !statuses.has(String(job.status))))) {
     throw new Error('Сервер вернул некорректную структуру библиотеки.');

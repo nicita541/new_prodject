@@ -431,7 +431,7 @@ class JobManager:
 
     @staticmethod
     def _check_analysis_provider(provider: str) -> None:
-        if provider not in {"local", "deepseek", "hybrid", "deepseek_plan"}:
+        if provider not in {"local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story"}:
             raise ValueError("Неизвестный способ анализа")
         # Hybrid always has a local path; remote availability is evaluated
         # only when the pipeline actually needs an optional fallback.
@@ -587,7 +587,7 @@ class JobManager:
             source = read_json(self.job_dir(identifier) / "source.json")
             if not source or not contained(Path(source["path"]), self.root).is_file():
                 raise ValueError("Исходная серия больше недоступна")
-            if job.get('analysis_provider') in {'deepseek', 'deepseek_plan', 'hybrid'}:
+            if job.get('analysis_provider') in {'deepseek', 'deepseek_plan', 'hybrid', 'local_flash_story'}:
                 from .deepseek import begin_attempt
                 begin_attempt(self.job_dir(identifier))
             return self._start(job)

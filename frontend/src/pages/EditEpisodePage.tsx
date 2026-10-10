@@ -22,7 +22,7 @@ export function EditEpisodePage() {
   const [sourceId, setSourceId] = useState<string>('');
   const [layout, setLayout] = useState<'portrait' | 'cinema'>('cinema');
   const [captionStyle, setCaptionStyle] = useState<'classic' | 'accent'>('accent');
-  const [provider, setProvider] = useState<'local' | 'deepseek' | 'hybrid' | 'deepseek_plan'>('deepseek_plan');
+  const [provider, setProvider] = useState<'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story'>('deepseek_plan');
 
   // Job state
   const [isStarting, setIsStarting] = useState(false);
@@ -169,14 +169,17 @@ export function EditEpisodePage() {
               <div className="settings-group">
                 <div className="form-group">
                   <label className="form-label" htmlFor="analysis-provider">Сценарист (Нейросеть)</label>
-                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan')} disabled={isStarting}>
+                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story')} disabled={isStarting}>
                     <option value="deepseek_plan">DeepSeek · сюжет и план (Облако)</option>
+                    <option value="local_flash_story">Пробный: локальная 4B + DeepSeek Flash для сюжета (до 8 платных обращений)</option>
                     <option value="hybrid">Локально + DeepSeek API (Старый)</option>
                     <option value="local">На компьютере · без сети</option>
                   </select>
                 </div>
                 <p className="muted small" style={{ marginTop: '8px' }}>
-                  {provider === 'deepseek_plan' || provider === 'deepseek'
+                  {provider === 'local_flash_story'
+                    ? 'Пробный режим: Qwen 4B обрабатывает видеосцены локально, а сюжет и отдельные изображения отправляются в DeepSeek Flash. До 8 платных HTTP-попыток на серию, включая ошибки; затем локальная 9B. Это ограничение обращений, не суммы в долларах.'
+                    : provider === 'deepseek_plan' || provider === 'deepseek'
                     ? 'Следующий запуск: анализ с помощью DeepSeek.'
                     : provider === 'hybrid'
                     ? 'Следующий запуск: локальный анализ с проверками DeepSeek.'

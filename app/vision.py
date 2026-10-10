@@ -15,7 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
-from app.config import FFMPEG, LLAMA, ROOT, VLM_MODEL, VLM_PROJECTOR
+from app.config import FFMPEG, LLAMA, ROOT, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL
 from app.media_probe import run_process
 from app.story_review import candidate_units
 
@@ -199,6 +199,13 @@ def vision_session(job_dir: Path, cancelled, provider='local', **local_settings)
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import DeepSeekVision
         return DeepSeekVision(job_dir, cancelled)
+    if provider == 'local_flash_story':
+        from .flash_story_trial import TrialStoryVision
+        selected = Path(local_settings.get('model', VLM_MODEL))
+        if selected == STORY_MODEL:
+            return TrialStoryVision(job_dir, cancelled, local_factory=_analysis.LocalVision,
+                                    **local_settings)
+        return _analysis.LocalVision(job_dir, cancelled, **local_settings)
     if provider == 'hybrid':
         from .hybrid import HybridVision
         return HybridVision(job_dir, cancelled, _analysis.LocalVision(job_dir, cancelled, **local_settings))
