@@ -155,3 +155,22 @@ def test_public_report_contains_only_flash_trial_counters(tmp_path):
     assert private not in json.dumps(public)
     private_record = json.loads((job / "deepseek-story-pilot.json").read_text("utf-8"))
     assert private_record["reserved"][0] not in json.dumps(public)
+
+
+
+def test_remote_cached_reply_can_be_reused_after_eight_paid_slots(tmp_path):
+    class CachedRemote(DummyRemote):
+        def query(self, prompt, image=None, max_tokens=1200, schema=None):
+            if prompt == "previously-cached-answer":
+                return {"provider": "remote", "cached": True}
+            return super().query(prompt, image, max_tokens, schema)
+
+    remote = CachedRemote(tmp_path, lambda: False)
+    with make_trial(tmp_path, remote) as router:
+        for n in range(MAX_PAID_ATTEMPTS):
+            assert router.query(f"fresh-story-{n}")["provider"] == "remote"
+        assert router.query("previously-cached-answer")["cached"] is True
+        assert remote.calls == MAX_PAID_ATTEMPTS
+        assert router.local is None
+        assert router.query("fresh-story-nine")["provider"] == "local"
+        assert remote.calls == MAX_PAID_ATTEMPTS
