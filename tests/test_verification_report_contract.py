@@ -59,6 +59,11 @@ def test_full_pipeline_result_is_in_unified_report_and_sanitized_publication():
     assert 'if (-not $NoUpload)' in script
 
 
+def test_published_logs_decode_utf8_to_preserve_russian_diagnostics():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert "Get-Content -LiteralPath $src -Tail 120 -Encoding UTF8" in script
+
+
 def test_batch_wrapper_still_waits_for_humans_but_not_ci():
     bat = (ROOT / "ПРОВЕРИТЬ_ПРОЕКТ.bat").read_text("utf-8")
     assert 'powershell.exe -NoProfile -ExecutionPolicy Bypass' in bat

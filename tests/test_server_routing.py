@@ -26,7 +26,10 @@ def test_studio_routes_serve_exact_ui_or_explicit_build_error():
             assert response.status_code == 200, (route, response.text[:120])
             assert "text/html" in response.headers["content-type"]
             assert "studio-live-bridge.js" in response.text
-            assert "fc-workspace" in response.text
+            # This is the static HTML entrypoint. The finishing workspace
+            # is inserted dynamically by studio-edition-app.js, so it must
+            # not be required in the initial HTML source.
+            assert '<main id="main"' in response.text
             assert '<div id="root"></div>' not in response.text
         else:
             assert response.status_code == 503
@@ -59,6 +62,11 @@ def test_studio_routes_serve_exact_ui_or_explicit_build_error():
             assert response.status_code == 200, (asset, response.text[:100])
             assert mimetype in response.headers["content-type"]
             assert snippet in response.text
+            if asset == "/studio-edition-app.js":
+                # Prove that the shipped application contains the dynamic
+                # finishing workspace rather than checking the raw HTML.
+                # Browser smoke separately verifies runtime DOM insertion.
+                assert 'fc-workspace' in response.text
             assert response.headers["cache-control"] == "no-store"
     else:
         assert client.get("/studio-edition.css").status_code == 503

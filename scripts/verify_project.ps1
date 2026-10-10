@@ -286,7 +286,9 @@ foreach ($check in $script:checks) {
     foreach ($stream in @("out", "err")) {
         $src = Join-Path $logsDir ($check.name + "." + $stream + ".txt")
         if (-not (Test-Path -LiteralPath $src)) { continue }
-        $body = (Get-Content -LiteralPath $src -Tail 120 -ErrorAction SilentlyContinue | Out-String)
+        # Test runners emit UTF-8; PowerShell 5.1 otherwise reads these files
+        # in the Windows code page and mangles Russian stage messages.
+        $body = (Get-Content -LiteralPath $src -Tail 120 -Encoding UTF8 -ErrorAction SilentlyContinue | Out-String)
         if ($body.Length -gt 12000) { $body = $body.Substring($body.Length - 12000) }
         $body = $body -replace '(?i)(github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}', '[REDACTED_SECRET]'
         $body = $body -replace '(?i)(authorization\s*[:=]\s*bearer\s+)\S+', '$1[REDACTED]'
