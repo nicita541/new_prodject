@@ -19,7 +19,8 @@ def test_query_latency_tokens_model_stage_and_startup_are_allowlisted(tmp_path):
     client = LocalVision(tmp_path, lambda: False, model=STORY_MODEL, thinking=True)
     model_started(tmp_path, STORY_MODEL, 9.7, False, "ok")
 
-    def fake_inference(prompt, images, max_tokens, schema, trace):
+    def fake_inference(prompt, images, max_tokens, schema, trace, effective_thinking):
+        assert effective_thinking is True
         assert SECRET in prompt
         trace.response({"usage": {"prompt_tokens": 130, "completion_tokens": 42,
                                   "total_tokens": 172,

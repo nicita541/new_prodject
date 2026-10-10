@@ -13,12 +13,19 @@ from .config import ROOT, VLM_MODEL, VLM_PROJECTOR
 from .model_perf import purpose as inference_purpose
 
 def _profiled_query(vision, purpose, *args, **kwargs):
-    """Label a model operation without changing any provider API or prompts."""
+    """Keep full reasoning for plot decisions; skip it only for credit checks.
+
+    The provider must explicitly support the per-request setting. External
+    providers/test adapters keep their existing API. Mixed title/story clips
+    remain protected by the existing confidence and narrative safeguards.
+    """
+    if purpose == 'credit_classifier' and getattr(vision, 'supports_thinking_override', False):
+        kwargs['thinking_override'] = False
     with inference_purpose(purpose):
         return vision.query(*args, **kwargs)
 
 
-STORY_VERSION = 15
+STORY_VERSION = 16
 EDGE_VERSION = 13
 OMISSION_REASONS = {'redundant_exchange', 'repeated_information', 'waiting'}
 

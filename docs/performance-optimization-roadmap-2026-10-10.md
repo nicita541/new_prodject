@@ -182,3 +182,12 @@
 Instrumented real `LocalVision.query` attempts and llama.cpp model startup, with private append-only START/END records, 4B/9B model alias, purpose labels `semantic_boundary`, `scene_analysis`, `choose_units`, `verify_omissions`, thinking and CPU-fallback. The private log includes only numeric usage and timings when present (no user data or errors). Public `ai_diagnostics.json` and `stage_timings.md/json` expose per-model/per-purpose request counts, pending requests, p50/p95 HTTP latency, prompt/output/reasoning tokens when reported, completion finish_reason length counts, and optional prefill/decode. **Metrics are null when not reported.**
 
 The 180s technical E2E is automatically triggered by changes in model instrumentation. This does not replace a real 180s ASR+4B+9B acceptance on the user's machine. Next task after CI: compare story9b choose_units vs verify_omissions latencies using a full real test, then implement risk-based optimization only with benchmarked quality gates.
+
+
+### Волна II — первый узкий эксперимент: классификация титров без reasoning (2026-10-10)
+
+В тесте `20261010_111537_551dbe1a` Qwen9B на `credit_classifier` потратила 132.283 с (556 output-токенов; 122.778 с decode), на `choose_units` — 147.159 с (593 output-токена; 131.383 с decode). Скорость 9B около 4.5 выходных токена/с, загрузка лишь 12.125 с. Следовательно, простая проверка титров с `thinking=True` потенциально расходует дорогой reasoning-бюджет.
+
+Эксперимент: только для `credit_classifier` посылаем `chat_template_kwargs.enable_thinking=false` и не прибавляем 512 токенов reasoning к `max_tokens=130`; остальные `choose_units`/`verify_omissions` и safety gates остаются без изменений. Значение `LocalVision.thinking` самой сессии не меняем. Сторонние провайдеры не затронуты; версия кэша `STORY_VERSION` повышена для инвалидации старого решения. Не заявляем ускорение, пока локальный тест с настоящим 9B не покажет выходные токены, качество и время.
+
+**Приёмка:** 9B `credit_classifier` возвращает те же валидные bool/confidence, смешанные титры+сюжет не превращаются в `credit_montage`, запросы на сюжетные вырезки по-прежнему reasoning-enabled, FFmpeg E2E и регрессии зелёные. По результату — идти к A/B длины/think-budget `choose_units`, а не принудительно сокращать обоснования удалений.
