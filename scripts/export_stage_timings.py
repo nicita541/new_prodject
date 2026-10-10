@@ -144,6 +144,47 @@ def production_stage_timing(job, real_elapsed):
     ]
 
 
+def production_run_manifests(job):
+    """All persisted first-pass/resume render timings, not just the last run.
+
+    Per-run stage seconds are independent within one invocation; a second
+    cached run is shown separately, not silently substituted for the first.
+    """
+    entries = []
+    paths = list((job / "runs").glob("*.json"))[:100]
+    if not paths and (job / "timings.json").is_file():
+        paths = [job / "timings.json"]
+    for path in paths:
+        doc = json_file(path)
+        if not isinstance(doc, dict):
+            continue
+        stages = doc.get("stages_seconds")
+        if not isinstance(stages, dict):
+            stages = {}
+        allowed_stages = ("analysis", "planning", "part_context", "rendering")
+        stage_rows = [
+            {"stage": stage, "seconds": positive(stages.get(stage))}
+            for stage in allowed_stages if stage in stages
+        ]
+        parts = doc.get("parts")
+        parts = parts if isinstance(parts, list) else []
+        status = doc.get("status")
+        entries.append({
+            "_started": str(doc.get("started_at", ""))[:40],
+            "status": status if status in ("completed", "failed", "cancelled", "running") else None,
+            "elapsed_seconds": positive(doc.get("elapsed_seconds")),
+            "stages": stage_rows,
+            "parts": len(parts),
+            "cached_parts": sum(row.get("cached") is True for row in parts if isinstance(row, dict)),
+        })
+    entries.sort(key=lambda item: item["_started"])
+    entries = entries[-20:]
+    for index, item in enumerate(entries, 1):
+        item.pop("_started", None)
+        item["run_number"] = index
+    return entries
+
+
 def summarize(test_dir):
     test_dir = Path(test_dir)
     timing_file = test_dir / "timing_snapshot.local.json"
@@ -191,6 +232,7 @@ def summarize(test_dir):
             "measurement": "inclusive_nested_stage_seconds_not_additive",
         },
         "model_inference": model_request_timing(job),
+        "production_invocations": production_run_manifests(job),
         "bottlenecks": {
             "slowest_verification_check": bottleneck_check,
             "slowest_detailed_production_stage": slowest_leaf,
@@ -246,7 +288,21 @@ def markdown(data):
         "(e.g. pipeline contains scenes, and scenes contain semantic_boundary). "
         "Do not add their times or percentages. Stages terminated without an end event "
         "are marked unfinished and their actual execution time is NOT invented.",
-        "", "## 5. Model inference", ""
+        "", "## 5. Planning / rendering for each production invocation", "",
+        "| Run | Status | Overall | Analysis | Planning | Part context | Rendering | Parts cached |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for run in data["production_invocations"]:
+        by_stage = {item["stage"]: item["seconds"] for item in run["stages"]}
+        parts.append(f"| {run['run_number']} | {run['status'] or 'unknown'} | "
+                     f"{human(run['elapsed_seconds'])} | "
+                     f"{human(by_stage.get('analysis'))} | "
+                     f"{human(by_stage.get('planning'))} | "
+                     f"{human(by_stage.get('part_context'))} | "
+                     f"{human(by_stage.get('rendering'))} | "
+                     f"{run['cached_parts']}/{run['parts']} |")
+    parts.extend([
+        "", "## 6. Model inference", ""
     ])
     model = data["model_inference"]
     parts.extend([
@@ -258,7 +314,7 @@ def markdown(data):
     check = bottleneck["slowest_verification_check"]
     detail = bottleneck["slowest_detailed_production_stage"]
     parts.extend([
-        "", "## 6. Bottleneck candidates", "",
+        "", "## 7. Bottleneck candidates", "",
         f"Slowest verification step: **{check['name']} — {human(check['seconds'])}**." if check else "No per-check timing available.",
         f"Slowest detailed production stage: **{detail['stage']} — {human(detail['seconds'])}**." if detail else "No detailed production timing available.",
         "", "Only fixed internal check/stage names and numeric measurements are published.",

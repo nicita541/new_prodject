@@ -47,6 +47,18 @@ def test_complete_timing_safely_distinguishes_sequential_checks_and_nested_pipel
         {"stage": "pipeline", "action": "end", "elapsed_seconds": 400},
     ]), encoding="utf-8")
 
+    put(job / "runs/second.json", {
+        "started_at": "2026-10-10T09:10:00Z", "status": "completed",
+        "elapsed_seconds": 16, "stages_seconds": {"analysis": 3, "planning": 2,
+                                                   "part_context": 1, "rendering": 10},
+        "parts": [{"index": 1, "cached": True}]
+    })
+    put(job / "runs/first.json", {
+        "started_at": "2026-10-10T09:05:00Z", "status": "completed",
+        "elapsed_seconds": 400, "stages_seconds": {"analysis": 300, "planning": 30,
+                                                   "part_context": 5, "rendering": 65},
+        "parts": [{"index": 1, "cached": False}]
+    })
     output = tmp_path / "public/stage_timings.json"
     assert main(["--test-dir", str(run), "--output", str(output)]) == 0
     text = output.read_text("utf-8") + output.with_suffix(".md").read_text("utf-8")
@@ -62,6 +74,10 @@ def test_complete_timing_safely_distinguishes_sequential_checks_and_nested_pipel
     assert result["real_production"]["slowest_detailed_stage"]["seconds"] == 300
     assert result["bottlenecks"]["slowest_verification_check"]["name"] == "real_model_3min"
     assert result["model_inference"]["sum_response_seconds"] == 12
+    assert len(result["production_invocations"]) == 2
+    assert result["production_invocations"][0]["run_number"] == 1
+    assert result["production_invocations"][0]["stages"][3]["seconds"] == 65
+    assert result["production_invocations"][1]["cached_parts"] == 1
     assert "INCLUSIVE" in text
 
 

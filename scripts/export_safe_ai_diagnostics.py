@@ -32,6 +32,12 @@ start end cache_miss cache_hit request response_accepted response_rejected
 chunk_cache_miss chunk_cache_hit chunk_cache_saved suppressed accepted
 scene_created unresolved exception verification_unresolved semantic_identity
 result warning triage level_a level_b cache_saved cache_invalidated
+planning rendering framing completed part_context final_selection_adjudication
+ending_selection_adjudication story_structure_analysis dialogue_relations
+global_visual_verification selection_adjudication
+final_selection selection_verification continuity_verification
+editing music_processing media_render preparation scene_segmentation
+quality_planning video_export audio_mix frame_sampling
 genuine_production_analysis_to_final_mp4 genuine_model_and_video_cache_resume
 """.split())
 
