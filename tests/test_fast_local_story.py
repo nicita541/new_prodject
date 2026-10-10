@@ -44,7 +44,7 @@ def test_fast_provider_is_explicit_and_cannot_become_silent_default(tmp_path):
 
 def test_fast_real_mode_retains_two_model_and_video_passes():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "full_pipeline_3min.py").read_text("utf-8")
-    assert '"--local-provider", choices=("local", "local_fast_story", "local_flash_story")' in script
+    assert '"--local-provider", choices=("local", "local_fast_story", "local_flash_story", "local_flash_story_budgeted")' in script
     assert script.count("production_run(inp, job, render=True, analysis_provider=local_provider)") == 2
     assert "genuine_model_and_video_cache_resume" in script
     assert "model_requests_unchanged" in script

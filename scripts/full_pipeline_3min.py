@@ -306,7 +306,7 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
         transcript_arg.relative_to(ROOT.resolve())
         entry["transcript"] = str(transcript_arg)
     atomic_json(inp / "input.json", entry)
-    if local_provider == "local_flash_story":
+    if local_provider in ("local_flash_story", "local_flash_story_budgeted"):
         report["analysis_mode"] = ("real_local_whisper_and_paid_deepseek_story"
                                    if not transcript_arg else "provided_asr_and_paid_deepseek_story")
     else:
@@ -324,7 +324,8 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
     from app.media_probe import load_json
     first_outputs = {name: sha(job / "output" / name) for name in outcome["outputs"]}
     first_calls = outcome["actual_model_requests"]
-    paid_journal = job / "deepseek-story-pilot.json"
+    paid_journal = job / ("deepseek-story-budgeted.json" if local_provider == "local_flash_story_budgeted"
+                          else "deepseek-story-pilot.json")
     paid_before_resume = (len(load_json(paid_journal).get("reserved", []))
                           if paid_journal.is_file() else 0)
     # A completed real-model run must be resumable with no additional model
@@ -358,7 +359,7 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("offline", "real"), default="offline")
-    parser.add_argument("--local-provider", choices=("local", "local_fast_story", "local_flash_story"), default="local",
+    parser.add_argument("--local-provider", choices=("local", "local_fast_story", "local_flash_story", "local_flash_story_budgeted"), default="local",
                         help="Real only: opt-in local-only 4B story selection comparison")
     parser.add_argument("--source", type=Path, help="Real mode: existing 180s video inside project")
     parser.add_argument("--transcript", type=Path, help="Real mode: optional ordinary ASR JSON inside project")

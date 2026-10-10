@@ -73,7 +73,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import DeepSeekVision
         paged = bool(getattr(DeepSeekVision, 'supports_image_pages', False))
-    elif provider == 'local_flash_story':
+    elif provider in ('local_flash_story', 'local_flash_story_budgeted'):
         from .flash_story_trial import TrialStoryVision
         paged = bool(getattr(TrialStoryVision, 'supports_image_pages', False))
     elif provider == 'hybrid':
@@ -102,7 +102,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
 def analysis_provider(job_dir: Path) -> str:
     settings = job_dir / 'analysis-settings.json'
     provider = load_json(settings).get('provider', 'local') if settings.is_file() else 'local'
-    if provider not in ('local', 'deepseek', 'hybrid', 'deepseek_plan', 'local_flash_story', 'local_fast_story'):
+    if provider not in ('local', 'deepseek', 'hybrid', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted'):
         raise ValueError('Неизвестный способ анализа')
     return provider
 
@@ -259,7 +259,8 @@ def finalize_editorial_selection(source, events, transcript, shots, probe, job_d
 
 
 def framing_provider(provider: str) -> str:
-    return 'local' if provider in ('deepseek_plan', 'local_flash_story', 'local_fast_story') else provider
+    return 'local' if provider in ('deepseek_plan', 'local_flash_story', 'local_fast_story',
+                                  'local_flash_story_budgeted') else provider
 
 
 def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
@@ -380,7 +381,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     # depends on the layout, so switching presets cannot repeat paid story work.
     from .pacing import PACING_VERSION
     from .endings import VERSION as ENDINGS_VERSION, RECOVERY_VERSION as ENDING_RECOVERY_VERSION
-    pacing_provider = 'local' if provider in ('local_flash_story', 'local_fast_story') else provider
+    pacing_provider = 'local' if provider in ('local_flash_story', 'local_fast_story',
+                                              'local_flash_story_budgeted') else provider
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import recovery_status
         if recovery_status()['halted']:

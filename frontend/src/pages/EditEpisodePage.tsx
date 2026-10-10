@@ -22,7 +22,7 @@ export function EditEpisodePage() {
   const [sourceId, setSourceId] = useState<string>('');
   const [layout, setLayout] = useState<'portrait' | 'cinema'>('cinema');
   const [captionStyle, setCaptionStyle] = useState<'classic' | 'accent'>('accent');
-  const [provider, setProvider] = useState<'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story'>('deepseek_plan');
+  const [provider, setProvider] = useState<'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story' | 'local_flash_story_budgeted'>('deepseek_plan');
 
   // Job state
   const [isStarting, setIsStarting] = useState(false);
@@ -169,16 +169,19 @@ export function EditEpisodePage() {
               <div className="settings-group">
                 <div className="form-group">
                   <label className="form-label" htmlFor="analysis-provider">Сценарист (Нейросеть)</label>
-                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story')} disabled={isStarting}>
+                  <select id="analysis-provider" className="form-select" value={provider} onChange={e => setProvider(e.target.value as 'local' | 'deepseek' | 'hybrid' | 'deepseek_plan' | 'local_flash_story' | 'local_fast_story' | 'local_flash_story_budgeted')} disabled={isStarting}>
                     <option value="deepseek_plan">DeepSeek · сюжет и план (Облако)</option>
                     <option value="local_flash_story">Пробный: локальная 4B + DeepSeek Flash для сюжета (до 8 платных обращений)</option>
+                    <option value="local_flash_story_budgeted">Эксперимент: Flash с бюджетом ~$0,05 + 4B при лимите</option>
                     <option value="hybrid">Локально + DeepSeek API (Старый)</option>
                     <option value="local">На компьютере · без сети</option>
                     <option value="local_fast_story">Эксперимент: быстрый локальный сюжет Qwen 4B (без DeepSeek)</option>
                   </select>
                 </div>
                 <p className="muted small" style={{ marginTop: '8px' }}>
-                  {provider === 'local_flash_story'
+                  {provider === 'local_flash_story_budgeted'
+                    ? 'Расширенный платный эксперимент: до 96 попыток DeepSeek Flash с оценочным пиковым бюджетом $0,05; после него локальная 4B, а не медленная 9B. Денежный предохранитель не гарантирует точную сумму фактических списаний. Кадры и текст передаются DeepSeek.'
+                    : provider === 'local_flash_story'
                     ? 'Пробный режим: Qwen 4B обрабатывает видеосцены локально, а сюжет и отдельные изображения отправляются в DeepSeek Flash. До 8 платных HTTP-попыток на серию, включая ошибки; затем локальная 9B. Это ограничение обращений, не суммы в долларах.'
                     : provider === 'deepseek_plan' || provider === 'deepseek'
                     ? 'Следующий запуск: анализ с помощью DeepSeek.'

@@ -29,7 +29,7 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
     from app.vision import LocalVision
     from app.flash_story_trial import TrialStoryVision
     from app.editorial import DEFAULT_PROFILE, DRAMATIC_PROFILE
-    if analysis_provider not in ("local", "local_fast_story", "local_flash_story"):
+    if analysis_provider not in ("local", "local_fast_story", "local_flash_story", "local_flash_story_budgeted"):
         raise ValueError("Raw quality observer supports genuine local 4B or explicit Flash-story pilot only")
     fixture, job = workspace(fixture), workspace(job)
     manifest = load_json(fixture/'input.json')
@@ -81,14 +81,15 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
                 recorder = RecordedVision(vision, job/'actual-model')
                 initial = recorder.initial_calls
                 cloud = False
-            elif analysis_provider == "local_flash_story" and isinstance(vision, TrialStoryVision):
+            elif analysis_provider in ("local_flash_story", "local_flash_story_budgeted") and isinstance(vision, TrialStoryVision):
                 # Cloud story requests are metered and journaled by TrialStoryVision.
                 # Local visual 4B and final 9B still use the genuine raw recorder.
                 # Never copy cloud prompts/images/responses into the public report.
                 recorder = vision
                 cloud = True
                 def dispatched():
-                    path = job / "deepseek-story-pilot.json"
+                    path = job / ("deepseek-story-budgeted.json" if analysis_provider == "local_flash_story_budgeted"
+                                  else "deepseek-story-pilot.json")
                     if not path.is_file():
                         return 0
                     state = load_json(path)

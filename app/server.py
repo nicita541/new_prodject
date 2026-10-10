@@ -86,7 +86,7 @@ class UploadLimitMiddleware:
 class CreateJob(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str
-    analysis_provider: Literal["local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story"] = "local"
+    analysis_provider: Literal["local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story", "local_flash_story_budgeted"] = "local"
     layout: Literal["portrait", "cinema"] = "portrait"
     caption_style: Literal["classic", "accent"] = "classic"
 

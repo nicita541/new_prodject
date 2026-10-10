@@ -1,13 +1,14 @@
-param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [switch]$FastLocalStory, [switch]$FlashStory, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
+param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [switch]$FastLocalStory, [switch]$FlashStory, [switch]$FlashBudgeted, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
 
 if (@($Quick, $Full, $Video) | Where-Object { $_ } | Select-Object -Skip 1) {
     throw 'Choose only one mode: -Quick, -Full, or -Video.'
 }
 
-if (($FastLocalStory -or $FlashStory) -and -not $RequireRealModel) {
+if (($FastLocalStory -or $FlashStory -or $FlashBudgeted) -and -not $RequireRealModel) {
     throw 'Experimental story modes require -RequireRealModel for a full 180s production acceptance.'
 }
-if ($FastLocalStory -and $FlashStory) {
+if (($FastLocalStory -and $FlashStory) -or ($FastLocalStory -and $FlashBudgeted) -or
+    ($FlashStory -and $FlashBudgeted)) {
     throw 'Choose only one experimental story provider.'
 }
 $ErrorActionPreference = "Stop"
@@ -227,6 +228,7 @@ if ($RequireRealModel -or $RealSource) {
     Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
     if ($FastLocalStory) { Write-Host "EXPERIMENTAL: 4B local story selection, no DeepSeek API; strict quality gate stays enabled." }
     if ($FlashStory) { Write-Host "PAID EXPERIMENT: local visual 4B and DeepSeek Flash story; maximum 8 new HTTP attempts per job. Some source frames are sent to DeepSeek. Strict quality gate stays enabled." }
+    if ($FlashBudgeted) { Write-Host "BUDGETED PAID EXPERIMENT: <=96 DeepSeek HTTP attempts with estimated peak USD 0.05 guard; conservative local4B fallback, never hidden local9B story; some frames leave your PC." }
 }
 
 Write-Host ("Run: " + $runId)
@@ -312,7 +314,7 @@ if (-not $Quick) {
 # Never spend hours waiting for 9B fallbacks because the optional DeepSeek
 # API key was missing. This is a strictly OFFLINE settings check: no billing,
 # no server connection, no key text in GitHub diagnostics.
-if ($FlashStory -and $python) {
+if (($FlashStory -or $FlashBudgeted) -and $python) {
     Run-Check "deepseek_key_preflight" $python @("-c",
         "import sys; from app.deepseek import public_status; sys.exit(0 if public_status().get('configured') is True else 2)"
     ) $root 25
@@ -334,7 +336,7 @@ if ($RequireRealModel -and $RealTranscript) {
         Add-Check "real_model_3min" "FAIL" 1 "Real-model test requires Python, FFmpeg and FFprobe"
     } elseif (-not (Test-Path -LiteralPath $RealSource -PathType Leaf)) {
         Add-Check "real_model_3min" "FAIL" 1 "The selected real video file is unavailable"
-    } elseif ($FlashStory -and @($script:checks | Where-Object {
+    } elseif (($FlashStory -or $FlashBudgeted) -and @($script:checks | Where-Object {
         $_.name -eq "deepseek_key_preflight" -and $_.status -eq "PASS"
     }).Count -ne 1) {
         Add-Check "real_model_3min" "FAIL" 1 "DeepSeek key is not configured; paid pilot was not started"
@@ -360,6 +362,7 @@ if ($RequireRealModel -and $RealTranscript) {
             if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
             if ($FastLocalStory) { $realArgs += @("--local-provider", "local_fast_story") }
             if ($FlashStory) { $realArgs += @("--local-provider", "local_flash_story") }
+            if ($FlashBudgeted) { $realArgs += @("--local-provider", "local_flash_story_budgeted") }
             Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds
         }
     }
@@ -431,6 +434,7 @@ $summary = [pscustomobject]@{
 }
 if ($FastLocalStory) { $summary.run_profile = "full_with_experimental_local_4b_story" }
 if ($FlashStory) { $summary.run_profile = "full_with_limited_deepseek_flash_story" }
+if ($FlashBudgeted) { $summary.run_profile = "full_with_budgeted_deepseek_flash_story" }
 # A test may remove temporary files while running; recreate output folders
 # before writing reports so a successful test run never fails on a missing dir.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null

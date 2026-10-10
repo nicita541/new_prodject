@@ -16,21 +16,55 @@ import json
 from pathlib import Path
 import threading
 
-from .config import STORY_MODEL, STORY_PROJECTOR
+from .config import STORY_MODEL, STORY_PROJECTOR, VLM_MODEL, VLM_PROJECTOR
 from .jobs import atomic_json
 
 PROFILE = "local4b-deepseek-flash-story-pilot-v1"
 MAX_PAID_ATTEMPTS = 8
+BUDGETED_PROFILE = "local4b-deepseek-flash-story-budgeted-v1"
+BUDGETED_MAX_PAID_ATTEMPTS = 96
+BUDGETED_ESTIMATED_PEAK_USD = 0.05
+# DeepSeek Flash maximum advertised context: price a worst-case input as
+# uncached (131072 tokens), plus the exact requested max output allowance.
+# Successful responses settle against provider-reported usage. Interrupted
+# requests retain their conservative reserve. It is still an estimate, not
+# a guaranteed monetary cap or a replacement for provider-side limits.
+BUDGETED_WORST_INPUT_TOKENS = 131072
+PEAK_INPUT_USD_PER_MILLION = .30
+PEAK_OUTPUT_USD_PER_MILLION = 1.20
 
 
-def routing_profile():
+def _request_digest(body):
+    return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _peak_charge(raw):
+    usage = raw.get("usage") if isinstance(raw, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    if (type(prompt) is not int or type(completion) is not int or
+            prompt < 0 or completion < 0):
+        return None
+    hit, miss = usage.get("prompt_cache_hit_tokens"), usage.get("prompt_cache_miss_tokens")
+    if (type(hit) is not int or type(miss) is not int or
+            hit < 0 or miss < 0 or hit + miss != prompt):
+        hit, miss = 0, prompt
+    return round((hit * .006 + miss * PEAK_INPUT_USD_PER_MILLION +
+                  completion * PEAK_OUTPUT_USD_PER_MILLION) / 1_000_000, 9)
+
+
+
+def routing_profile(budgeted=False):
     from .deepseek import MODEL, PROFILE as REMOTE_PROFILE
     return {
-        "provider": "local_flash_story", "profile": PROFILE,
+        "provider": "local_flash_story_budgeted" if budgeted else "local_flash_story",
+        "profile": BUDGETED_PROFILE if budgeted else PROFILE,
         "early_visual_model": "local4b", "remote_story": MODEL,
         "remote_story_profile": REMOTE_PROFILE,
-        "paid_http_attempt_limit": MAX_PAID_ATTEMPTS,
-        "after_limit": "local9b_fallback",
+        "paid_http_attempt_limit": BUDGETED_MAX_PAID_ATTEMPTS if budgeted else MAX_PAID_ATTEMPTS,
+        "estimated_peak_budget_usd": BUDGETED_ESTIMATED_PEAK_USD if budgeted else None,
+        "after_limit": "local4b_conservative_fallback" if budgeted else "local9b_fallback",
         "framing": "local9b",
         "pacing": "local9b",
     }
@@ -39,36 +73,48 @@ def routing_profile():
 class TrialStoryVision:
     supports_image_pages = True
 
-    def __init__(self, job_dir, cancelled, *, local_factory=None, remote_factory=None, **local_settings):
+    def __init__(self, job_dir, cancelled, *, local_factory=None, remote_factory=None,
+                 budgeted=False, **local_settings):
         from .deepseek import DeepSeekVision
         from .vision import LocalVision
         self.job_dir = Path(job_dir)
         self.cancelled = cancelled
+        self.budgeted = bool(budgeted)
+        self.profile = BUDGETED_PROFILE if self.budgeted else PROFILE
+        self.max_attempts = BUDGETED_MAX_PAID_ATTEMPTS if self.budgeted else MAX_PAID_ATTEMPTS
         self.local_factory = local_factory or LocalVision
         self.remote_factory = remote_factory or DeepSeekVision
         self.local_settings = local_settings
         self.local = None
         self.remote = None
-        self.cache_profile = routing_profile()
+        self.cache_profile = routing_profile(self.budgeted)
         self.thinking = bool(local_settings.get('thinking', True))
         self.cpu_fallback = False
         self.model = STORY_MODEL
         self.projector = STORY_PROJECTOR
         self._guard = threading.RLock()
-        self.journal = self.job_dir / "deepseek-story-pilot.json"
-        self._state = {"profile": PROFILE, "reserved": [], "fallbacks": 0, "local_cache_hits": 0}
+        self.journal = self.job_dir / ("deepseek-story-budgeted.json" if self.budgeted
+                                       else "deepseek-story-pilot.json")
+        self._state = {"profile": self.profile, "reserved": [], "fallbacks": 0,
+                       "local_cache_hits": 0, "charged_peak_usd": {}}
         if self.journal.is_file():
             try:
                 loaded = json.loads(self.journal.read_text("utf-8"))
-                if (isinstance(loaded, dict) and loaded.get("profile") == PROFILE
+                if (isinstance(loaded, dict) and loaded.get("profile") == self.profile
                         and isinstance(loaded.get("reserved"), list)
-                        and len(loaded["reserved"]) <= MAX_PAID_ATTEMPTS
+                        and len(loaded["reserved"]) <= self.max_attempts
                         and all(isinstance(v, str) and len(v) == 64 for v in loaded["reserved"])):
                     self._state = loaded
                     if (type(self._state.get("local_cache_hits", 0)) is not int
                             or self._state.get("local_cache_hits", 0) < 0):
                         raise ValueError("Некорректный счётчик кэша DeepSeek")
                     self._state.setdefault("local_cache_hits", 0)
+                    charges = self._state.setdefault("charged_peak_usd", {})
+                    if not isinstance(charges, dict) or any(
+                        digest not in self._state["reserved"] or type(value) not in (float, int)
+                        or not 0 <= value <= 0.1 for digest, value in charges.items()
+                    ) or (self.budgeted and len(charges) != len(self._state["reserved"])):
+                        raise ValueError("Некорректная история стоимости запросов DeepSeek")
                 else:
                     raise ValueError("Некорректная история обращений DeepSeek")
             except (OSError, ValueError, TypeError):
@@ -80,7 +126,10 @@ class TrialStoryVision:
 
     def _local(self):
         if self.local is None:
-            self.local = self.local_factory(self.job_dir, self.cancelled, **self.local_settings)
+            settings = dict(self.local_settings)
+            if self.budgeted:
+                settings.update(model=VLM_MODEL, projector=VLM_PROJECTOR, thinking=False)
+            self.local = self.local_factory(self.job_dir, self.cancelled, **settings)
             self.local.__enter__()
         return self.local
 
@@ -111,15 +160,26 @@ class TrialStoryVision:
         if self.cancelled():
             raise InterruptedError("Обработка отменена")
         from .deepseek import BudgetExceeded
-        digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        digest = _request_digest(body)
         with self._guard:
             if digest in self._state["reserved"]:
                 raise BudgetExceeded("Повтор платного запроса после неизвестного исхода запрещён")
-            if len(self._state["reserved"]) >= MAX_PAID_ATTEMPTS:
+            if len(self._state["reserved"]) >= self.max_attempts:
                 raise BudgetExceeded("Лимит пробных обращений DeepSeek достигнут")
+            if self.budgeted:
+                max_tokens = body.get("max_tokens", 0) if isinstance(body, dict) else 0
+                if type(max_tokens) is not int or not 0 <= max_tokens <= 16384:
+                    raise BudgetExceeded("Недопустимый бюджет вывода DeepSeek")
+                reserved = round((BUDGETED_WORST_INPUT_TOKENS * PEAK_INPUT_USD_PER_MILLION +
+                                  max_tokens * PEAK_OUTPUT_USD_PER_MILLION) / 1_000_000, 9)
+                committed = sum(self._state["charged_peak_usd"].values())
+                if committed + reserved > BUDGETED_ESTIMATED_PEAK_USD:
+                    raise BudgetExceeded("Пробный оценочный бюджет DeepSeek исчерпан")
             # Persist before dispatch: an interrupted/failed HTTP call may
             # still have been billed, so it reserves a slot permanently.
             self._state["reserved"].append(digest)
+            if self.budgeted:
+                self._state["charged_peak_usd"][digest] = reserved
             atomic_json(self.journal, self._state)
 
     def query(self, prompt, image=None, max_tokens=1200, schema=None):
@@ -157,6 +217,15 @@ class TrialStoryVision:
                                      thinking=False, cpu=False) as trace:
                     raw = original(body)
                     trace.response(raw)
+                    if self.budgeted:
+                        measured = _peak_charge(raw)
+                        if measured is not None:
+                            with self._guard:
+                                digest = _request_digest(body)
+                                # A successful HTTP response may still fail JSON
+                                # verification; its tokens were already billed.
+                                self._state["charged_peak_usd"][digest] = measured
+                                atomic_json(self.journal, self._state)
                     return raw
 
             def one_dispatch(body):

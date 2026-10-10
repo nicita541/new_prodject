@@ -250,9 +250,9 @@ def provider_identity(provider: str):
     if provider == 'hybrid':
         from .hybrid import routing_profile
         return routing_profile()
-    if provider == 'local_flash_story':
+    if provider in ('local_flash_story', 'local_flash_story_budgeted'):
         from .flash_story_trial import routing_profile
-        return routing_profile()
+        return routing_profile(provider == 'local_flash_story_budgeted')
     if provider == 'deepseek_plan':
         return {'provider': provider, 'story_model': MODEL, 'story_profile': PROFILE,
                 'focus': 'local-qwen9-nonthinking', 'text_context_bytes': 64000}

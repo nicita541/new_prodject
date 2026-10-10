@@ -41,7 +41,7 @@ def test_real_e2e_accepts_cloud_story_only_when_explicit_and_checks_paid_resume(
     assert "genuine_production_analysis_to_final_mp4" in script
     assert "genuine_model_and_video_cache_resume" in script
     assert 'analysis_provider="local"' in runner
-    assert 'analysis_provider not in ("local", "local_fast_story", "local_flash_story")' in runner
+    assert 'analysis_provider not in ("local", "local_fast_story", "local_flash_story", "local_flash_story_budgeted")' in runner
     assert 'isinstance(vision, LocalVision)' in runner
     assert 'isinstance(vision, TrialStoryVision)' in runner
     assert "recorded=vision" not in runner  # no fake wrapper pretending to be LocalVision

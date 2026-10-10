@@ -207,11 +207,12 @@ def vision_session(job_dir: Path, cancelled, provider='local', **local_settings)
         if Path(settings.get('model', VLM_MODEL)) == STORY_MODEL:
             settings.update(model=VLM_MODEL, projector=VLM_PROJECTOR, thinking=False)
         return _analysis.LocalVision(job_dir, cancelled, **settings)
-    if provider == 'local_flash_story':
+    if provider in ('local_flash_story', 'local_flash_story_budgeted'):
         from .flash_story_trial import TrialStoryVision
         selected = Path(local_settings.get('model', VLM_MODEL))
         if selected == STORY_MODEL:
             return TrialStoryVision(job_dir, cancelled, local_factory=_analysis.LocalVision,
+                                    budgeted=(provider == 'local_flash_story_budgeted'),
                                     **local_settings)
         return _analysis.LocalVision(job_dir, cancelled, **local_settings)
     if provider == 'hybrid':

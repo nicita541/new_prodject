@@ -461,21 +461,32 @@ def summarize(test_dir):
         if stage:
             progress_counts[stage] += 1
         recent.append({"stage": stage, "progress": numeric(item.get("progress"))})
-    trial = json_file(job / "deepseek-story-pilot.json")
+    trial = json_file(job / "deepseek-story-budgeted.json")
+    budgeted = isinstance(trial, dict) and trial.get("profile") == "local4b-deepseek-flash-story-budgeted-v1"
+    if not budgeted:
+        trial = json_file(job / "deepseek-story-pilot.json")
     trial = trial if isinstance(trial, dict) else {}
     reservations = trial.get("reserved")
     # Only counts, never source-bearing request hashes or text.
     result["flash_story_pilot"] = {
-        "available": trial.get("profile") == "local4b-deepseek-flash-story-pilot-v1",
+        "available": trial.get("profile") in ("local4b-deepseek-flash-story-pilot-v1",
+                                           "local4b-deepseek-flash-story-budgeted-v1"),
+        "profile": "budgeted" if budgeted else "standard",
         "reserved_paid_attempts": (len(reservations) if isinstance(reservations, list)
-                                   and len(reservations) <= 8 else None),
+                                   and len(reservations) <= (96 if budgeted else 8) else None),
         "local_response_cache_hits": (trial.get("local_cache_hits") if
                                       type(trial.get("local_cache_hits")) is int and
                                       0 <= trial["local_cache_hits"] <= 1_000_000 else None),
         "local_story_fallbacks": (trial.get("fallbacks") if
                                   type(trial.get("fallbacks")) is int and
                                   0 <= trial["fallbacks"] <= 1_000_000 else None),
-        "max_paid_attempts": 8,
+        "max_paid_attempts": 96 if budgeted else 8,
+        "estimated_peak_budget_usd": 0.05 if budgeted else None,
+        "estimated_reserved_peak_usd": (round(sum(trial.get("charged_peak_usd", {}).values()), 7)
+                                        if budgeted and isinstance(trial.get("charged_peak_usd"), dict)
+                                        and all(type(v) in (int, float) and 0 <= v <= 0.1
+                                                for v in trial["charged_peak_usd"].values())
+                                        else None),
         "note": "HTTP attempt cap, not a guaranteed USD spending cap.",
     }
     result["model_performance"] = model_perf_summary(job)
