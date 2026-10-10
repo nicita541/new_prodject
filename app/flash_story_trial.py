@@ -1,13 +1,11 @@
-"""Explicit, limited DeepSeek Flash pilot for the STORY model only.
+"""Opt-in DeepSeek Flash story routing with no monetary or HTTP-call caps.
 
-The normal 4B frame/boundary analysis is always local. Unlike 'deepseek_plan',
-this pilot offloads only the former 9B story calls. At most 8 HTTP dispatches
-per job, including rejected JSON/retries/timeouts and process restarts. A
-remote failure falls back to the original local 9B model, without inventing a
-story decision or silently accepting invalid schema.
-
-This is a CALL cap, NOT a USD billing guarantee: images, long prompts and
-DeepSeek token rates affect actual charges. Never enable by default.
+Local Qwen4B handles early video/boundary analysis. DeepSeek handles story,
+pacing and framing; genuine API failures fall back to local nonthinking 4B.
+Every HTTP dispatch is recorded (including retries), and successful responses
+are cached. Legacy provider names and journal file paths remain compatible.
+No charge estimate is used to stop production. Enabling this profile sends
+selected frames and story text to the external paid API.
 """
 from __future__ import annotations
 
@@ -20,17 +18,8 @@ from .config import STORY_MODEL, STORY_PROJECTOR, VLM_MODEL, VLM_PROJECTOR
 from .jobs import atomic_json
 
 PROFILE = "local4b-deepseek-flash-story-pilot-v1"
-MAX_PAID_ATTEMPTS = 8
+# Historical name retained for safe resume of old test jobs, not a cap.
 BUDGETED_PROFILE = "local4b-deepseek-flash-story-budgeted-v1"
-BUDGETED_MAX_PAID_ATTEMPTS = 96
-BUDGETED_ESTIMATED_PEAK_USD = 0.05
-# Conservative *per-request budgeting assumption*, not DeepSeek's maximum
-# context window (the current model supports up to 1M input-context tokens).
-# Reserve 131072 uncached input tokens plus requested output allowance, then
-# reconcile when reported usage arrives. Images can change token usage, and
-# provider tariffs can change; this is an ESTIMATE, not an enforceable USD cap.
-# Interrupted requests retain the whole reservation.
-BUDGETED_WORST_INPUT_TOKENS = 131072
 PEAK_INPUT_USD_PER_MILLION = .30
 PEAK_OUTPUT_USD_PER_MILLION = 1.20
 
@@ -63,11 +52,11 @@ def routing_profile(budgeted=False):
         "profile": BUDGETED_PROFILE if budgeted else PROFILE,
         "early_visual_model": "local4b", "remote_story": MODEL,
         "remote_story_profile": REMOTE_PROFILE,
-        "paid_http_attempt_limit": BUDGETED_MAX_PAID_ATTEMPTS if budgeted else MAX_PAID_ATTEMPTS,
-        "estimated_peak_budget_usd": BUDGETED_ESTIMATED_PEAK_USD if budgeted else None,
-        "after_limit": "local4b_conservative_fallback" if budgeted else "local9b_fallback",
-        "framing": "flash_or_local4b" if budgeted else "local9b",
-        "pacing": "flash_or_local4b" if budgeted else "local9b",
+        "paid_http_attempt_limit": None,
+        "estimated_peak_budget_usd": None,
+        "on_remote_error": "local4b_conservative_fallback",
+        "framing": "flash_or_local4b",
+        "pacing": "flash_or_local4b",
     }
 
 
@@ -82,7 +71,6 @@ class TrialStoryVision:
         self.cancelled = cancelled
         self.budgeted = bool(budgeted)
         self.profile = BUDGETED_PROFILE if self.budgeted else PROFILE
-        self.max_attempts = BUDGETED_MAX_PAID_ATTEMPTS if self.budgeted else MAX_PAID_ATTEMPTS
         self.local_factory = local_factory or LocalVision
         self.remote_factory = remote_factory or DeepSeekVision
         self.local_settings = local_settings
@@ -103,7 +91,6 @@ class TrialStoryVision:
                 loaded = json.loads(self.journal.read_text("utf-8"))
                 if (isinstance(loaded, dict) and loaded.get("profile") == self.profile
                         and isinstance(loaded.get("reserved"), list)
-                        and len(loaded["reserved"]) <= self.max_attempts
                         and all(isinstance(v, str) and len(v) == 64 for v in loaded["reserved"])):
                     self._state = loaded
                     if (type(self._state.get("local_cache_hits", 0)) is not int
@@ -113,8 +100,8 @@ class TrialStoryVision:
                     charges = self._state.setdefault("charged_peak_usd", {})
                     if not isinstance(charges, dict) or any(
                         digest not in self._state["reserved"] or type(value) not in (float, int)
-                        or not 0 <= value <= 0.1 for digest, value in charges.items()
-                    ) or (self.budgeted and len(charges) != len(self._state["reserved"])):
+                        or not 0 <= value for digest, value in charges.items()
+                    ):
                         raise ValueError("Некорректная история стоимости запросов DeepSeek")
                 else:
                     raise ValueError("Некорректная история обращений DeepSeek")
@@ -128,8 +115,7 @@ class TrialStoryVision:
     def _local(self):
         if self.local is None:
             settings = dict(self.local_settings)
-            if self.budgeted:
-                settings.update(model=VLM_MODEL, projector=VLM_PROJECTOR, thinking=False)
+            settings.update(model=VLM_MODEL, projector=VLM_PROJECTOR, thinking=False)
             self.local = self.local_factory(self.job_dir, self.cancelled, **settings)
             self.local.__enter__()
         return self.local
@@ -158,38 +144,26 @@ class TrialStoryVision:
         return len(text.encode("utf-8")) + 512
 
     def _reserve(self, body):
+        """Account for every HTTP dispatch. Never gate on dollars or attempts.
+
+        Recording happens BEFORE dispatch, including failed/retried requests.
+        Request hashes are intentionally not unique: the provider may retry an
+        invalid answer, and the user has not requested a spending ceiling.
+        """
         if self.cancelled():
             raise InterruptedError("Обработка отменена")
-        from .deepseek import BudgetExceeded
         digest = _request_digest(body)
         with self._guard:
-            if digest in self._state["reserved"]:
-                raise BudgetExceeded("Повтор платного запроса после неизвестного исхода запрещён")
-            if len(self._state["reserved"]) >= self.max_attempts:
-                raise BudgetExceeded("Лимит пробных обращений DeepSeek достигнут")
-            if self.budgeted:
-                max_tokens = body.get("max_tokens", 0) if isinstance(body, dict) else 0
-                if type(max_tokens) is not int or not 0 <= max_tokens <= 16384:
-                    raise BudgetExceeded("Недопустимый бюджет вывода DeepSeek")
-                reserved = round((BUDGETED_WORST_INPUT_TOKENS * PEAK_INPUT_USD_PER_MILLION +
-                                  max_tokens * PEAK_OUTPUT_USD_PER_MILLION) / 1_000_000, 9)
-                committed = sum(self._state["charged_peak_usd"].values())
-                if committed + reserved > BUDGETED_ESTIMATED_PEAK_USD:
-                    raise BudgetExceeded("Пробный оценочный бюджет DeepSeek исчерпан")
-            # Persist before dispatch: an interrupted/failed HTTP call may
-            # still have been billed, so it reserves a slot permanently.
             self._state["reserved"].append(digest)
-            if self.budgeted:
-                self._state["charged_peak_usd"][digest] = reserved
             atomic_json(self.journal, self._state)
+
 
     def query(self, prompt, image=None, max_tokens=1200, schema=None):
         if self.cancelled():
             raise InterruptedError("Обработка отменена")
-        from .deepseek import BudgetExceeded, RemoteError, ResponseContractError
-        # DeepSeek may serve a FREE cached reply even after the trial HTTP
-        # allowance is exhausted. Actual paid dispatches remain guarded by
-        # the durable _reserve check; a cache miss falls back to local 9B.
+        from .deepseek import RemoteError, ResponseContractError, BudgetExceeded
+        # KADR's disk cache is free. A real DeepSeek API context-cache hit is
+        # cheaper, not free. Cache misses may dispatch without a local cap.
         try:
             remote = self._remote()
             original = remote._fetch
@@ -218,21 +192,18 @@ class TrialStoryVision:
                                      thinking=False, cpu=False) as trace:
                     raw = original(body)
                     trace.response(raw)
-                    if self.budgeted:
-                        measured = _peak_charge(raw)
-                        if measured is not None:
-                            with self._guard:
-                                digest = _request_digest(body)
-                                # A successful HTTP response may still fail JSON
-                                # verification; its tokens were already billed.
-                                self._state["charged_peak_usd"][digest] = measured
-                                atomic_json(self.journal, self._state)
+                    measured = _peak_charge(raw)
+                    if measured is not None:
+                        with self._guard:
+                            digest = _request_digest(body)
+                            # A reported response may still fail JSON verification.
+                            # This is diagnostics only; never blocks more requests.
+                            self._state["charged_peak_usd"][digest] = measured
+                            atomic_json(self.journal, self._state)
                     return raw
 
             def one_dispatch(body):
                 nonlocal dispatched
-                if dispatched:
-                    raise BudgetExceeded("Пробный режим не повторяет платный запрос")
                 self._reserve(body)
                 dispatched = True
                 return context.run(measured_dispatch, body)
