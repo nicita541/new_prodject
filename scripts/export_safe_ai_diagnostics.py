@@ -471,23 +471,22 @@ def summarize(test_dir):
     result["flash_story_pilot"] = {
         "available": trial.get("profile") in ("local4b-deepseek-flash-story-pilot-v1",
                                            "local4b-deepseek-flash-story-budgeted-v1"),
-        "profile": "budgeted" if budgeted else "standard",
-        "reserved_paid_attempts": (len(reservations) if isinstance(reservations, list)
-                                   and len(reservations) <= (96 if budgeted else 8) else None),
+        "profile": "legacy_unrestricted" if budgeted else "unrestricted",
+        "reserved_paid_attempts": (len(reservations) if isinstance(reservations, list) else None),
         "local_response_cache_hits": (trial.get("local_cache_hits") if
                                       type(trial.get("local_cache_hits")) is int and
-                                      0 <= trial["local_cache_hits"] <= 1_000_000 else None),
+                                      trial["local_cache_hits"] >= 0 else None),
         "local_story_fallbacks": (trial.get("fallbacks") if
                                   type(trial.get("fallbacks")) is int and
-                                  0 <= trial["fallbacks"] <= 1_000_000 else None),
-        "max_paid_attempts": 96 if budgeted else 8,
-        "estimated_peak_budget_usd": 0.05 if budgeted else None,
+                                  trial["fallbacks"] >= 0 else None),
+        "max_paid_attempts": None,
+        "estimated_peak_budget_usd": None,
         "estimated_reserved_peak_usd": (round(sum(trial.get("charged_peak_usd", {}).values()), 7)
-                                        if budgeted and isinstance(trial.get("charged_peak_usd"), dict)
-                                        and all(type(v) in (int, float) and 0 <= v <= 0.1
+                                        if isinstance(trial.get("charged_peak_usd"), dict)
+                                        and all(type(v) in (int, float) and 0 <= v
                                                 for v in trial["charged_peak_usd"].values())
                                         else None),
-        "note": "HTTP attempt cap, not a guaranteed USD spending cap.",
+        "note": "No application-level spending or HTTP attempt cap; estimate is telemetry only.",
     }
     result["model_performance"] = model_perf_summary(job)
     result["token_usage_totals"] = token_ledger_summary(job)
