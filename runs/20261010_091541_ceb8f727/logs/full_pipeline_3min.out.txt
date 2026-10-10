@@ -1,0 +1,39 @@
+﻿[PASS] generate_true_180_second_mp4
+[PASS] ffprobe_source_and_prepare_decision_fixture
+[first] planning 67% Собираем последовательность событий и целые реплики
+[first] planning 69% Контекст для заставки: часть 1 из 1
+[first] rendering 70% Background music:
+mode=один трек
+volume=15%
+active_tracks=1 (qa-tone.wav)
+fade_in=true
+fad
+[first] rendering 70% Создаём оставшиеся части: 1
+[first] rendering 99% Создана часть 1 из 1
+[first] completed 100% Готово: 1 частей. Проверьте сюжет и кадрирование в просмотре.
+[PASS] real_pipeline_plan_and_ffmpeg_render
+[PASS] decode_validate_mp4_audio_srt_and_plan
+[cached] rendering 70% Background music:
+mode=один трек
+volume=15%
+active_tracks=1 (qa-tone.wav)
+fade_in=true
+fad
+[cached] rendering 99% Проверены все части: 1
+[cached] completed 100% Готово: 1 частей. Проверьте сюжет и кадрирование в просмотре.
+[PASS] second_full_pipeline_run_for_cache
+[rebuild] rendering 70% Background music:
+mode=один трек
+volume=15%
+active_tracks=1 (qa-tone.wav)
+fade_in=true
+fad
+[rebuild] rendering 70% Создаём оставшиеся части: 1
+[rebuild] rendering 99% Создана часть 1 из 1
+[rebuild] completed 100% Готово: 1 частей. Проверьте сюжет и кадрирование в просмотре.
+[PASS] invalidate_corrupted_subtitles_and_rerender
+[PASS] ffmpeg_finishing_zoom_music_and_edited_captions
+[PASS] real_studio_http_source_plan_mp4_srt_and_range
+Machine-readable report: F:\new_prodject\temp\verification-reports\20261010_091541_ceb8f727\full_pipeline_3min\report.json
+Session logs: F:\new_prodject\logs\tests\20261010_091814_4872_3b149d3c
+
