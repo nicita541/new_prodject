@@ -140,6 +140,7 @@ def _merge_parent(parent, children, profile, transcript):
         # A fractional microsecond is not an actual change of source ownership.
         # Reject real crossing of child boundaries rather than silently
         # truncating dialogue, physical actions or the narrative bridge.
+        normalized_intervals = []
         for interval in intervals:
             a, b = float(interval['start']), float(interval['end'])
             if (not math.isfinite(a) or not math.isfinite(b) or a >= b
@@ -149,7 +150,15 @@ def _merge_parent(parent, children, profile, transcript):
                     'Сокращение технического фрагмента вышло за его исходные границы '
                     f'(child={child["id"]}, start_delta={start-a:.9f}, '
                     f'end_delta={b-end:.9f})')
-        selected.extend(_bounded(intervals, start, end))
+            # Snap both inward and outward 6-decimal rounding. Without the
+            # inward snap, a sub-microsecond gap survives between consecutive
+            # selected technical children and becomes a spurious jump-cut.
+            if abs(a - start) <= _SOURCE_BOUNDARY_EPSILON:
+                a = start
+            if abs(b - end) <= _SOURCE_BOUNDARY_EPSILON:
+                b = end
+            normalized_intervals.append({'start': a, 'end': b})
+        selected.extend(_bounded(normalized_intervals, start, end))
         verified.extend(verified_story_ranges(child))
         if child.get('protected_atmosphere_ranges') or child.get('protected_atmosphere_units'):
             child['selection_needs_adjudication'] = True
