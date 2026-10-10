@@ -87,8 +87,7 @@ db.finishing={ [episode]:{revision:0} };
 let inFlight=0,maxInFlight=0,captionRequests=0;
 win.fetch=async(input,opts={})=>{
   const route=String(input);
-  if(new RegExp('^/api/jobs/'+job+'/parts/[0-9]+/captions
-).test(route)){
+  if(route.startsWith('/api/jobs/'+job+'/parts/')&&route.endsWith('/captions')){
     inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);captionRequests++;
     await new Promise(resolve=>setTimeout(resolve,2));
     inFlight--;
