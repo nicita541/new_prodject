@@ -10,7 +10,7 @@ import time
 import uuid
 from pathlib import Path
 
-from .config import FFMPEG, FFPROBE
+from .config import FFMPEG, FFPROBE, ROOT
 from .subtitles import write_ass, write_srt
 from .planner import MAX_DURATION
 
@@ -55,7 +55,7 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
     if cancelled():
         raise InterruptedError("Обработка отменена")
     started = time.monotonic()
-    process_log = str(log.relative_to(__import__("app.config", fromlist=["ROOT"]).ROOT)) if log.is_relative_to(__import__("app.config", fromlist=["ROOT"]).ROOT) else log.name
+    process_log = str(log.relative_to(ROOT)) if log.is_relative_to(ROOT) else log.name
     tool = Path(argv[0]).name
     logging.getLogger("app.media").info(
         "External tool started: %s", tool,

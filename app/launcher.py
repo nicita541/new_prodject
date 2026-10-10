@@ -64,10 +64,11 @@ def main() -> None:
     from .config import setup_environment
     setup_environment()
     from .run_logging import configure_logging
+    from .config import ROOT
     import logging
     logs = configure_logging("studio")
     logger = logging.getLogger("app.launcher")
-    logger.info("Launcher check, logs=%s", logs.relative_to(__import__("app.config", fromlist=["ROOT"]).ROOT))
+    logger.info("Launcher check, logs=%s", logs.relative_to(ROOT))
     status = studio_status()
     logger.info("Studio port status: %s", status, extra={"action": "port_check", "status": status})
     if status == "current":

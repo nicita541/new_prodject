@@ -27,8 +27,9 @@ _LOCK = threading.RLock()
 _CURRENT = None
 _PID = None
 _SECRET = re.compile(
-    r"(?i)(?:Bearer\s+)[A-Za-z0-9_.~+/-]+|"
-    r"(?:sk-|github_pat_|gh[pousr]_)[A-Za-z0-9_.-]{8,}|"
+    r"(?i)(?:authorization\s*[:=]\s*(?:bearer|basic)\s+[^\s,;&]+|"
+    r"bearer\s+[^\s,;&]+|"
+    r"(?:sk-|github_pat_|gh[pousr]_)[A-Za-z0-9_.-]{8,})|"
     r"((?:api[_-]?key|access[_-]?token|password|secret|authorization)\s*[:=]\s*)"
     r"([^\s,;&]+)"
 )

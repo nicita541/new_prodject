@@ -1,6 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+if not exist "%~dp0logs" mkdir "%~dp0logs"
+echo [%date% %time%] KADR start.bat launched >> "%~dp0logs\startup.log"
 set "TEMP=%~dp0temp"
 set "TMP=%~dp0temp"
 set "PYTHONUTF8=1"
@@ -9,6 +11,7 @@ set "PYTHONPYCACHEPREFIX=%~dp0cache\pycache"
 if not exist "%~dp0tools\python\python.exe" (
   echo [ERROR] Portable Python is missing in tools\python.
   echo Run setup.bat once. No demo or separate Python environment is required.
+  echo [%date% %time%] ERROR: Portable Python missing >> "%~dp0logs\startup.log"
   pause
   exit /b 1
 )
@@ -77,6 +80,7 @@ echo Opening the real KADR Studio at http://127.0.0.1:8765
 "%~dp0tools\python\python.exe" -m app.launcher
 if errorlevel 1 (
   echo [ERROR] KADR Studio failed to start.
+  echo [%date% %time%] ERROR: KADR Studio launcher exited with error >> "%~dp0logs\startup.log"
   pause
   exit /b 1
 )
