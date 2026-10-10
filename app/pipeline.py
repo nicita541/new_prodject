@@ -477,6 +477,14 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         path = output_dir / name
         checkpoint = workdir / f"part_{part['index']:03}.json"
         saved = _validated_cached_render(path, checkpoint, fingerprint, part, workdir, cancelled)
+        import logging
+        logging.getLogger("app.pipeline").info(
+            "Render checkpoint: part=%s, cache=%s", part["index"],
+            "hit" if saved is not None else "miss",
+            extra={"job_id": job_dir.name, "stage": "rendering",
+                   "action": "render_cache_hit" if saved is not None else "render_cache_miss",
+                   "status": "cached" if saved is not None else "rerender",
+                   "code": part["index"]})
         if saved is not None:
             # The root plan is saved before rendering; on a cache hit it may
             # have no music_track even though the media contains the track.

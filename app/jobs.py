@@ -498,12 +498,19 @@ class JobManager:
             atomic_json(directory / "job.json", job)
             return job
         self.active = (job["id"], child)
+        LOGGER.info("Worker process launched", extra={"job_id": job["id"],
+                     "action": "worker_launched", "status": "running",
+                     "detail_log": f"data/jobs/{job['id']}/worker.log"})
         threading.Thread(target=self._watch, args=(job["id"], child), daemon=True).start()
         return self.get(job["id"])
 
     def _watch(self, identifier: str, child):
         try:
             code = child.wait()
+            LOGGER.log(logging.INFO if code == 0 else logging.ERROR,
+                       "Worker exited with code %s", code,
+                       extra={"job_id": identifier, "action": "worker_exit", "code": code,
+                              "detail_log": f"data/jobs/{identifier}/worker.log"})
             with self.mutex:
                 if self.closed or not self.active or self.active[1] is not child:
                     return
