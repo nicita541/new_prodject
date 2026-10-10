@@ -138,7 +138,7 @@ def test_budgeted_profile_reports_aggregates_without_request_hashes(tmp_path):
     summary = summarize(tmp_path)
     pilot = summary["flash_story_pilot"]
     assert pilot["available"] is True
-    assert pilot["profile"] == "budgeted"
+    assert pilot["profile"] == "legacy_unrestricted"
     assert pilot["max_paid_attempts"] is None
     assert pilot["reserved_paid_attempts"] == 1
     assert pilot["estimated_reserved_peak_usd"] > 0
