@@ -86,13 +86,19 @@
   // Eagerly resolve captions only for the *selected* completed job.
   // Never re-use episode-level cue text from a previous montage attempt.
   db.captionOverrides ||= {};
-  await Promise.all((db.plans[job.id]?.parts||[]).map(async part=>{
-    const key=job.id+':'+part.index;
-    if(!db.captionOverrides[key]){
+  // The prior Promise.all launched one request per part at once.
+  // Long jobs could saturate FastAPI's thread pool and freeze the Studio.
+  // Fetch at most four caption files concurrently, preserving already-loaded
+  // parts if a later request needs to be retried.
+  const pending=(db.plans[job.id]?.parts||[]).filter(part=>
+    !db.captionOverrides[job.id+':'+part.index]);
+  for(let offset=0;offset<pending.length;offset+=4){
+    await Promise.all(pending.slice(offset,offset+4).map(async part=>{
+      const key=job.id+':'+part.index;
       db.captionOverrides[key]=await get('/api/jobs/'+encodeURIComponent(job.id)+
         '/parts/'+encodeURIComponent(part.index)+'/captions');
-    }
-  }));
+    }));
+  }
  }
  async function request(method,path,body,db,ui){
   let options={method};
