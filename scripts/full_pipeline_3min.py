@@ -242,8 +242,11 @@ def run_offline(root: Path, report: dict) -> None:
 def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: Path | None) -> None:
     from scripts.run_production_raw_quality import run as production_run
     # This path does not patch any inference model or semantic stage.
-    source = source_arg.resolve() if source_arg else inspect_step(
-        report, "generate_true_180_second_mp4", lambda: generate_video(root))
+    # Actual content must have a storyline and speech; a synthetic test card
+    # cannot satisfy the source-grounded semantic quality gate.
+    if source_arg is None:
+        raise ValueError("Real-model mode requires --source with a 180s story video")
+    source = source_arg.resolve()
     source.relative_to(ROOT.resolve())
     actual = probe_media(source)
     assert 179.8 <= float(actual["duration"]) <= 180.2, "Real mode expects a 180s input"
@@ -265,6 +268,29 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
         raise RuntimeError("Production quality gate did not pass; see observed-outcome.json")
     assert outcome["actual_model_requests"] > 0, "Real mode made zero model requests"
     report["real_model_requests"] = outcome["actual_model_requests"]
+    from app.media_probe import load_json
+    first_outputs = {name: sha(job / "output" / name) for name in outcome["outputs"]}
+    first_calls = outcome["actual_model_requests"]
+    # A completed real-model run must be resumable with no additional model
+    # inference or FFmpeg encode when the source and settings are unchanged.
+    second = inspect_step(report, "genuine_model_and_video_cache_resume",
+                          lambda: production_run(inp, job, render=True))
+    if not second["complete"]:
+        raise RuntimeError("The resumed production quality gate is unresolved")
+    if second["actual_model_requests"] != first_calls:
+        raise AssertionError("Real model cache miss: new inference requests were made")
+    if not all(part["cached"] for part in load_json(job / "timings.json")["parts"]):
+        raise AssertionError("Real FFmpeg export cache did not reuse all parts")
+    for name, fingerprint in first_outputs.items():
+        if sha(job / "output" / name) != fingerprint:
+            raise AssertionError("Real export changed after cache hit: " + name)
+    report["real_resume"] = {"model_requests_unchanged": True,
+                             "all_render_parts_cached": True,
+                             "identical_output_hashes": True}
+    events = job / "observed-progress.jsonl"
+    if events.is_file():
+        report["pipeline_stages"] = [json.loads(row) for row in
+            events.read_text("utf-8").splitlines() if row.strip()][-500:]
     assert sha(source) == report["source"]["sha256"]
 
 

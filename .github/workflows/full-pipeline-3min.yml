@@ -65,6 +65,10 @@ jobs:
           retention-days: 14
           path: |
             temp/ci-full-pipeline-3min/report.json
+            temp/ci-full-pipeline-3min/source-180s.mp4
+            temp/ci-full-pipeline-3min/jobs/*/output/*.mp4
+            temp/ci-full-pipeline-3min/jobs/*/output/*.srt
+            temp/ci-full-pipeline-3min/jobs/*/finished/*.mp4
             temp/ci-full-pipeline-3min/jobs/*/e2e-progress.jsonl
             temp/ci-full-pipeline-3min/jobs/*/timings.json
             temp/ci-full-pipeline-3min/jobs/*/final_quality_gate.json
