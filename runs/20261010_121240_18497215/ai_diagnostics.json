@@ -1,0 +1,586 @@
+{
+  "available": true,
+  "checkpoint_counts": {
+    "scene_analysis": 20,
+    "story_refinement": 2,
+    "technical_chunks": 69,
+    "title_screen": 0
+  },
+  "model_performance": {
+    "available": true,
+    "by_model_and_stage": [
+      {
+        "completed": 2,
+        "completion_tokens": 1216.0,
+        "cpu_requests": 0,
+        "decode_p50_ms": 143689.007,
+        "decode_samples": 2,
+        "failed": 0,
+        "finish_length_calls": 0,
+        "image_pages": 3,
+        "latency_p50_s": 163.412,
+        "latency_p95_s": 170.067,
+        "max_latency_s": 170.0675,
+        "model": "story9b",
+        "pending": 1,
+        "prefill_p50_ms": 17568.861,
+        "prefill_samples": 2,
+        "prompt_chars": 14999,
+        "prompt_tokens": 4182.0,
+        "reasoning_reported_calls": 0,
+        "reasoning_tokens": 0,
+        "requests": 3,
+        "stage": "choose_units",
+        "thinking_requests": 3,
+        "token_reported_calls": 2
+      },
+      {
+        "completed": 72,
+        "completion_tokens": 19933.0,
+        "cpu_requests": 0,
+        "decode_p50_ms": 3170.588,
+        "decode_samples": 72,
+        "failed": 0,
+        "finish_length_calls": 0,
+        "image_pages": 112,
+        "latency_p50_s": 4.616,
+        "latency_p95_s": 5.424,
+        "max_latency_s": 5.6226,
+        "model": "visual4b",
+        "pending": 0,
+        "prefill_p50_ms": 1146.918,
+        "prefill_samples": 72,
+        "prompt_chars": 221363,
+        "prompt_tokens": 148245.0,
+        "reasoning_reported_calls": 0,
+        "reasoning_tokens": 0,
+        "requests": 72,
+        "stage": "scene_analysis",
+        "thinking_requests": 0,
+        "token_reported_calls": 72
+      },
+      {
+        "completed": 76,
+        "completion_tokens": 17837.0,
+        "cpu_requests": 0,
+        "decode_p50_ms": 2925.514,
+        "decode_samples": 76,
+        "failed": 0,
+        "finish_length_calls": 0,
+        "image_pages": 78,
+        "latency_p50_s": 3.816,
+        "latency_p95_s": 4.816,
+        "max_latency_s": 5.0193,
+        "model": "visual4b",
+        "pending": 0,
+        "prefill_p50_ms": 810.89,
+        "prefill_samples": 76,
+        "prompt_chars": 208159,
+        "prompt_tokens": 112644.0,
+        "reasoning_reported_calls": 0,
+        "reasoning_tokens": 0,
+        "requests": 76,
+        "stage": "semantic_boundary",
+        "thinking_requests": 0,
+        "token_reported_calls": 76
+      }
+    ],
+    "note": "Incomplete requests retain their START; provider prefill/decode timings may be unavailable.",
+    "pending": 1,
+    "requests": 151,
+    "schema_version": 1,
+    "startup": [
+      {
+        "cpu": false,
+        "model": "visual4b",
+        "seconds": 6.078,
+        "status": "ok"
+      },
+      {
+        "cpu": false,
+        "model": "visual4b",
+        "seconds": 3.547,
+        "status": "ok"
+      },
+      {
+        "cpu": false,
+        "model": "story9b",
+        "seconds": 12.625,
+        "status": "ok"
+      }
+    ]
+  },
+  "model_requests": {
+    "errors": {},
+    "last_20": [
+      {
+        "error_type": null,
+        "id": 132,
+        "seconds": 5.016,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 133,
+        "seconds": 5.437,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 134,
+        "seconds": 5.219,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 135,
+        "seconds": 4.61,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 136,
+        "seconds": 4.828,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 137,
+        "seconds": 4.828,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 138,
+        "seconds": 4.421,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 139,
+        "seconds": 4.625,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 140,
+        "seconds": 4.422,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 141,
+        "seconds": 5.219,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 142,
+        "seconds": 3.828,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 143,
+        "seconds": 4.422,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 144,
+        "seconds": 4.422,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 145,
+        "seconds": 4.422,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 146,
+        "seconds": 4.235,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 147,
+        "seconds": 4.625,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 148,
+        "seconds": 4.609,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 149,
+        "seconds": 163.406,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 150,
+        "seconds": 170.062,
+        "status": "ok"
+      },
+      {
+        "error_type": null,
+        "id": 151,
+        "seconds": null,
+        "status": "pending"
+      }
+    ],
+    "max_seconds": 170.062,
+    "median_seconds": 4.219,
+    "pending": 1,
+    "requests": 151,
+    "responses": 150
+  },
+  "optimization": {
+    "semantic_boundary_triage": {
+      "ambiguous": 336.0,
+      "candidates": 340.0,
+      "deferred": 262.0,
+      "high_signal": 150.0,
+      "interval_seconds": 1.5,
+      "selected": 74.0,
+      "weak_interval_seconds": 3.0
+    },
+    "visual_context_payload": {
+      "context_image_pages": 38,
+      "image_pages": 107,
+      "requests": 69
+    }
+  },
+  "production": {
+    "complete": null,
+    "elapsed_seconds": null,
+    "error_type": null,
+    "pipeline_code_stable": null
+  },
+  "progress": {
+    "events_by_stage": {
+      "analyze": 21,
+      "condense": 3,
+      "prepare": 1,
+      "scenes": 2,
+      "transcribe": 1
+    },
+    "last_20": [
+      {
+        "progress": 0.259,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.272,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.285,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.298,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.311,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.324,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.337,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.35,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.363,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.376,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.389,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.402,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.415,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.428,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.441,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.454,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.467,
+        "stage": "analyze"
+      },
+      {
+        "progress": 0.47,
+        "stage": "condense"
+      },
+      {
+        "progress": 0.4704,
+        "stage": "condense"
+      },
+      {
+        "progress": 0.4708,
+        "stage": "condense"
+      }
+    ]
+  },
+  "real_e2e": {
+    "duration_seconds": null,
+    "error_type": null,
+    "status": null,
+    "steps": []
+  },
+  "scene_durations": {
+    "below_1s": 0,
+    "below_2s": 1,
+    "count": 20,
+    "max_s": 28.216,
+    "median_s": 7.5033,
+    "min_s": 1.9599
+  },
+  "schema_version": 1,
+  "scope": "safe_numeric_and_status_metadata_only",
+  "semantic_scenes": 20,
+  "shots": 53,
+  "timeline": {
+    "duration_seconds_by_stage": {
+      "analyze": 800.0369,
+      "media_perception": 6.75,
+      "prepare": 0.2435,
+      "scene_analysis": 577.14,
+      "scene_detection": 357.891,
+      "scenes": 368.7148,
+      "semantic_boundary": 301.628,
+      "shot_detection": 2.468,
+      "transcribe": 28.9064
+    },
+    "events_by_stage": {
+      "analysis": 2,
+      "analyze": 2,
+      "condense": 1,
+      "media_perception": 2,
+      "pipeline": 1,
+      "prepare": 2,
+      "scene_analysis": 336,
+      "scene_detection": 23,
+      "scene_recovery": 6,
+      "scenes": 2,
+      "semantic_boundary": 563,
+      "shot_detection": 146,
+      "story_refinement": 2,
+      "transcribe": 2
+    },
+    "issues": [],
+    "last_30": [
+      {
+        "action": "response_accepted",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_saved",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "request",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "response_accepted",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_saved",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "end",
+        "error_type": null,
+        "seconds": 17.844,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "start",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "request",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "response_accepted",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_saved",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "request",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "response_accepted",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_saved",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "request",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "response_accepted",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_saved",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "request",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "response_accepted",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "chunk_cache_saved",
+        "error_type": null,
+        "seconds": null,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "end",
+        "error_type": null,
+        "seconds": 31.656,
+        "stage": "scene_analysis"
+      },
+      {
+        "action": "cache_miss",
+        "error_type": null,
+        "seconds": null,
+        "stage": "story_refinement"
+      },
+      {
+        "action": "start",
+        "error_type": null,
+        "seconds": null,
+        "stage": "story_refinement"
+      },
+      {
+        "action": "end",
+        "error_type": null,
+        "seconds": 800.0369,
+        "stage": "analyze"
+      },
+      {
+        "action": "start",
+        "error_type": null,
+        "seconds": null,
+        "stage": "condense"
+      }
+    ]
+  }
+}
