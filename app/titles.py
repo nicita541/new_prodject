@@ -208,7 +208,7 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
     if getattr(vision, 'cache_profile', None) is not None:
         models.append({'provider_profile': vision.cache_profile})
     identity = {'path':str(source),'size':source.stat().st_size,'mtime_ns':source.stat().st_mtime_ns} if source else None
-    for event in result:
+    for event_index, event in enumerate(result):
         if cancelled():
             raise InterruptedError('Обработка отменена')
         if event.get('credit_montage'):
@@ -241,7 +241,7 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
                     except (ValueError,TypeError,AttributeError):
                         pass
                 if raw is None:
-                    report('condense',.4893,'Поиск видимого заголовка в выбранном безречевом фрагменте')
+                    report('condense',.4893,f'Поиск титров: событие {event_index+1} из {len(result)}')
                     schema={'type':'object','properties':{'visible_production_title':{'type':'boolean'},
                         'confidence':{'type':'number','enum':[round(i/20,2) for i in range(21)]}},
                         'required':['visible_production_title','confidence'],'additionalProperties':False}
@@ -273,7 +273,7 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
                 raise InterruptedError('Обработка отменена')
             label = hashlib.sha256(json.dumps([event['id'],unit['id'],unit['start'],unit['end']]).encode()).hexdigest()[:24]
             image, checkpoint = directory/(label+'.jpg'), directory/(label+'.json')
-            report('condense',.4893,'Проверка титра по текущим исходным кадрам')
+            report('condense',.4893,f'Подтверждение титра: событие {event_index+1} из {len(result)}')
             try:
                 storyboard(source,unit['start'],unit['end'],shots,transcript,image,cancelled)
                 signature = hashlib.sha256(json.dumps({'version':TITLES_VERSION,'source':identity,'models':models,

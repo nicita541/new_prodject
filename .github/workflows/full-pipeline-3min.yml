@@ -10,6 +10,11 @@ on:
       - app/run_logging.py
       - app/media.py
       - app/pipeline.py
+      - app/scene_detection.py
+      - app/scene_analysis.py
+      - app/semantic_boundary.py
+      - app/titles.py
+      - scripts/verify_project.ps1
       - app/studio_render.py
       - app/server.py
       - .github/workflows/full-pipeline-3min.yml

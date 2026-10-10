@@ -42,6 +42,26 @@ class BoundaryTriagingTests(unittest.TestCase):
                            _boundary_check_priority(candidate(1)["measured"],
                                                     candidate(1)["proposal"]))
 
+    def test_deferred_proof_keeps_source_candidate_and_never_confirms_a_scene(self):
+        from app.scene_detection import detect_semantic_scenes
+        shots = [
+            {'id': 'a', 'start': 0, 'end': 0.4, 'location': 'room'},
+            {'id': 'b', 'start': 0.4, 'end': 0.7, 'location': 'street',
+             'state_transition': True},
+            {'id': 'c', 'start': 0.7, 'end': 2.0, 'location': 'street'}
+        ]
+        transcript = {'words': [], 'segments': []}
+        baseline = detect_semantic_scenes(shots, transcript, 2.0)
+        self.assertGreater(len(baseline), 1)
+        proofs = {0.4: {'accepted': False, 'uncertain': True, 'confidence': 0,
+                        'source': 'triage_deferred', 'reasons': ['deferred_for_scene_analysis']}}
+        scenes = detect_semantic_scenes(shots, transcript, 2.0, boundary_verifications=proofs)
+        self.assertTrue(any(d['reasons'] == ['deferred_for_scene_analysis']
+                            for scene in scenes for d in scene['evidence']['boundary_decisions']))
+        self.assertEqual(scenes[0]['start'], 0)
+        self.assertEqual(scenes[-1]['end'], 2.0)
+        self.assertTrue(any(scene['uncertain'] for scene in scenes))
+
 
 if __name__ == "__main__":
     unittest.main()
