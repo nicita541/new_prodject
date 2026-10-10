@@ -1,11 +1,14 @@
-param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [switch]$FastLocalStory, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
+param([switch]$Quick, [switch]$Full, [switch]$Video, [switch]$NoUpload, [switch]$RequireRealModel, [switch]$FastLocalStory, [switch]$FlashStory, [double]$StartSeconds = 0, [string]$PythonExe, [string]$RealSource, [string]$RealTranscript)
 
 if (@($Quick, $Full, $Video) | Where-Object { $_ } | Select-Object -Skip 1) {
     throw 'Choose only one mode: -Quick, -Full, or -Video.'
 }
 
-if ($FastLocalStory -and -not $RequireRealModel) {
-    throw '-FastLocalStory requires -RequireRealModel; only full real local ASR/VLM tests are accepted.'
+if (($FastLocalStory -or $FlashStory) -and -not $RequireRealModel) {
+    throw 'Experimental story modes require -RequireRealModel for a full 180s production acceptance.'
+}
+if ($FastLocalStory -and $FlashStory) {
+    throw 'Choose only one experimental story provider.'
 }
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -223,6 +226,7 @@ if ($RequireRealModel -or $RealSource) {
     $script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)
     Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
     if ($FastLocalStory) { Write-Host "EXPERIMENTAL: 4B local story selection, no DeepSeek API; strict quality gate stays enabled." }
+    if ($FlashStory) { Write-Host "PAID EXPERIMENT: local visual 4B and DeepSeek Flash story; maximum 8 new HTTP attempts per job. Some source frames are sent to DeepSeek. Strict quality gate stays enabled." }
 }
 
 Write-Host ("Run: " + $runId)
@@ -343,6 +347,7 @@ if ($RequireRealModel -and $RealTranscript) {
                           "--directory", $realDir, "--source", $preparedSource)
             if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
             if ($FastLocalStory) { $realArgs += @("--local-provider", "local_fast_story") }
+            if ($FlashStory) { $realArgs += @("--local-provider", "local_flash_story") }
             Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds
         }
     }
@@ -413,6 +418,7 @@ $summary = [pscustomobject]@{
     logs_dir = $logsDir
 }
 if ($FastLocalStory) { $summary.run_profile = "full_with_experimental_local_4b_story" }
+if ($FlashStory) { $summary.run_profile = "full_with_limited_deepseek_flash_story" }
 # A test may remove temporary files while running; recreate output folders
 # before writing reports so a successful test run never fails on a missing dir.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null

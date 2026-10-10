@@ -148,3 +148,54 @@ def test_console_summary_contains_model_averages_without_dialogue(tmp_path, caps
     assert "avg_latency_s=6.0" in printed
     assert "decode_tokens_per_s=20.0" in printed
     assert "PRIVATE_CANNOT_EXPORT_ME" not in printed
+
+
+
+def test_deepseek_cache_accounting_distinguishes_free_response_cache_from_billed_context(tmp_path):
+    from app.token_usage import record
+    job = tmp_path / "real_model_3min" / "real-job"
+    record(job, "deepseek", "deepseek-flash", {"usage": {
+        "prompt_tokens": 12000, "prompt_cache_hit_tokens": 10000,
+        "prompt_cache_miss_tokens": 2000, "completion_tokens": 2000,
+        "total_tokens": 14000}})
+    report = token_ledger_summary(job)
+    remote = report["by_provider"]["deepseek"]
+    assert remote["api_context_cache_hit_tokens"] == 10000
+    assert remote["api_context_cache_miss_tokens"] == 2000
+    assert remote["api_context_cache_reported_calls"] == 1
+    assert report["total_reported_tokens"] == 14000
+    cost = report["deepseek_estimated_cost_usd"]
+    # Official Sep 2026 DeepSeek Flash rates: cached inputs are discounted,
+    # not free; full-response cache hits never generate a token ledger row.
+    assert cost["off_peak"] == round((10000*.003+2000*.15+2000*.60)/1000000, 7)
+    assert cost["peak"] == round((10000*.006+2000*.30+2000*1.2)/1000000, 7)
+    md = markdown(summarize(tmp_path))
+    assert "API context-cache hit tokens" in md
+    assert "still billed" in md
+    assert "PRIVATE_CANNOT_EXPORT_ME" not in md
+
+
+def test_unknown_context_cache_breakdown_priced_as_miss_not_free(tmp_path):
+    job = tmp_path / "real_model_3min" / "real-job"
+    ledger(job, "deepseek", 15000, 300)
+    result = token_ledger_summary(job)
+    cost = result["deepseek_estimated_cost_usd"]
+    assert cost["incomplete_context_breakdown_input_tokens"] == 15000
+    assert cost["peak"] == round((15000*.30+300*1.20)/1000000, 7)
+    assert result["by_provider"]["deepseek"]["api_context_cache_hit_tokens"] == 0
+
+
+def test_kadr_response_cache_hits_are_not_api_ledger_entries(tmp_path):
+    # A saved final response is retrieved before HTTP and consumes zero new
+    # DeepSeek tokens. It must not be confused with provider prefix caching.
+    job = tmp_path / "real_model_3min" / "real-job"
+    job.mkdir(parents=True)
+    (job / "deepseek-story-pilot.json").write_text(json.dumps({
+        "profile":"local4b-deepseek-flash-story-pilot-v1",
+        "reserved": ["a"*64], "fallbacks":0, "local_cache_hits":5
+    }), encoding="utf-8")
+    safe = safe_summary(tmp_path)
+    assert safe["flash_story_pilot"]["local_response_cache_hits"] == 5
+    assert safe["flash_story_pilot"]["reserved_paid_attempts"] == 1
+    assert safe["token_usage_totals"]["available"] is False
+    assert safe["token_usage_totals"]["total_reported_tokens"] is None

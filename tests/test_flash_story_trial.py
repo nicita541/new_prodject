@@ -152,6 +152,7 @@ def test_public_report_contains_only_flash_trial_counters(tmp_path):
     assert result["available"]
     assert result["reserved_paid_attempts"] == 1
     assert result["local_story_fallbacks"] == 1
+    assert result["local_response_cache_hits"] == 0
     assert private not in json.dumps(public)
     private_record = json.loads((job / "deepseek-story-pilot.json").read_text("utf-8"))
     assert private_record["reserved"][0] not in json.dumps(public)
@@ -172,5 +173,6 @@ def test_remote_cached_reply_can_be_reused_after_eight_paid_slots(tmp_path):
         assert router.query("previously-cached-answer")["cached"] is True
         assert remote.calls == MAX_PAID_ATTEMPTS
         assert router.local is None
+        assert router._state["local_cache_hits"] == 1
         assert router.query("fresh-story-nine")["provider"] == "local"
         assert remote.calls == MAX_PAID_ATTEMPTS

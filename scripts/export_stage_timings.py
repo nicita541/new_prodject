@@ -335,8 +335,21 @@ def markdown(data):
         parts.append(f"| {provider} | {entry['calls']} | {entry['prompt_tokens']} | "
                      f"{entry['completion_tokens']} | {entry['total_tokens']} | "
                      f"{entry['unknown_calls']} |")
+    remote = ledger["by_provider"]["deepseek"]
+    costs = ledger["deepseek_estimated_cost_usd"]
     parts.extend([
-        "", "### Average model cost: visual 4B versus story 9B", "",
+        "", "### DeepSeek cache and API cost (reported usage only)", "",
+        f"- API context-cache hit tokens: **{remote['api_context_cache_hit_tokens']}**.",
+        f"- API context-cache miss tokens: **{remote['api_context_cache_miss_tokens']}**.",
+        f"- Replies with validated cache breakdown: **{remote['api_context_cache_reported_calls']}**.",
+        f"- Estimated USD off-peak: **{measured(costs['off_peak'])}**; "
+        f"peak: **{measured(costs['peak'])}**.",
+        f"- DeepSeek responses missing usage: **{costs['missing_usage_calls']}**.",
+        "Note: the cost estimate excludes pending and unknown responses and "
+        "is NOT a billing or balance guarantee.",
+        "KADR's full response cache costs $0; a DeepSeek context-cache hit is still billed.",
+        "",
+        "### Average model cost: visual 4B versus story 9B", "",
         "Average latency includes completed model requests only. Token averages "
         "count ONLY calls with usage data. Generation speed uses measured "
         "llama.cpp decode timing and token counts, not total network latency.",
@@ -410,6 +423,13 @@ def main(argv=None):
     print("SAFE_STAGE_TIMINGS_EXPORTED", flush=True)
     print("TOKENS_TOTAL reported=" + (str(total) if total is not None else "not_measured") +
           " unknown_usage_calls=" + str(ledger["unknown_calls"]), flush=True)
+    cost = ledger["deepseek_estimated_cost_usd"]
+    cache = ledger["by_provider"]["deepseek"]
+    print("DEEPSEEK_CACHE_CONTEXT hit_tokens=" + str(cache["api_context_cache_hit_tokens"]) +
+          " miss_tokens=" + str(cache["api_context_cache_miss_tokens"]) +
+          " estimated_offpeak_usd=" + str(cost["off_peak"]) +
+          " estimated_peak_usd=" + str(cost["peak"]) +
+          " missing_usage_calls=" + str(cost["missing_usage_calls"]), flush=True)
     for group in result["model_performance"]["by_model"]:
         def show(value):
             return str(value) if value is not None else "not_measured"

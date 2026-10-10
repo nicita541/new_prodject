@@ -44,7 +44,7 @@ def test_fast_provider_is_explicit_and_cannot_become_silent_default(tmp_path):
 
 def test_fast_real_mode_retains_two_model_and_video_passes():
     script = (Path(__file__).resolve().parents[1] / "scripts" / "full_pipeline_3min.py").read_text("utf-8")
-    assert '"--local-provider", choices=("local", "local_fast_story")' in script
+    assert '"--local-provider", choices=("local", "local_fast_story", "local_flash_story")' in script
     assert script.count("production_run(inp, job, render=True, analysis_provider=local_provider)") == 2
     assert "genuine_model_and_video_cache_resume" in script
     assert "model_requests_unchanged" in script
@@ -64,8 +64,8 @@ def test_fast_windows_launcher_reuses_strict_real_pipeline():
 
 def test_raw_observer_only_allows_explicit_fully_local_models(tmp_path):
     from scripts.run_production_raw_quality import run
-    with pytest.raises(ValueError, match="genuine local"):
-        run(tmp_path, tmp_path / "output", analysis_provider="local_flash_story")
+    import inspect
+    assert '"local_flash_story"' in inspect.getsource(run)
     with pytest.raises(ValueError, match="genuine local"):
         run(tmp_path, tmp_path / "output", analysis_provider="deepseek")
 

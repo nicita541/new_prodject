@@ -279,7 +279,10 @@ def token_ledger_summary(job):
     entries = {"local": {"calls": 0, "unknown_calls": 0,
                          "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                "deepseek": {"calls": 0, "unknown_calls": 0,
-                            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}}
+                            "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+                            "api_context_cache_hit_tokens": 0,
+                            "api_context_cache_miss_tokens": 0,
+                            "api_context_cache_reported_calls": 0}}
     available = (job / "token-usage.jsonl").is_file()
     def allowed_count(value):
         return value if type(value) is int and 0 <= value <= 1_000_000_000 else None
@@ -305,8 +308,36 @@ def token_ledger_summary(job):
             dest["prompt_tokens"] += input_tokens
         if output_tokens is not None:
             dest["completion_tokens"] += output_tokens
+        if provider == "deepseek":
+            cache_hit = allowed_count(row.get("prompt_cache_hit_tokens"))
+            cache_miss = allowed_count(row.get("prompt_cache_miss_tokens"))
+            if (input_tokens is not None and cache_hit is not None and
+                    cache_miss is not None and cache_hit + cache_miss == input_tokens):
+                dest["api_context_cache_hit_tokens"] += cache_hit
+                dest["api_context_cache_miss_tokens"] += cache_miss
+                dest["api_context_cache_reported_calls"] += 1
+    remote = entries["deepseek"]
+    hit = remote["api_context_cache_hit_tokens"]
+    miss = remote["api_context_cache_miss_tokens"]
+    # Conservative price estimate for reported replies only:
+    # unreported input cache proportions are charged at cache-MISS prices.
+    unknown_split = max(0, remote["prompt_tokens"] - hit - miss)
+    offpeak = (hit * .003 + (miss + unknown_split) * .15 +
+               remote["completion_tokens"] * .60) / 1_000_000
+    peak = (hit * .006 + (miss + unknown_split) * .30 +
+            remote["completion_tokens"] * 1.20) / 1_000_000
     return {
         "available": available,
+        "deepseek_estimated_cost_usd": {
+            "off_peak": round(offpeak, 7) if available else None,
+            "peak": round(peak, 7) if available else None,
+            "missing_usage_calls": remote["unknown_calls"],
+            "incomplete_context_breakdown_input_tokens": unknown_split,
+            "price_reference": "deepseek-flash-2026-09-10",
+            "note": "Partial estimate: provider usage only. Pending and missing-usage "
+                    "requests cannot be priced. DeepSeek context-cache hits are billed. "
+                    "KADR full-response-cache hits incur no API request.",
+        },
         "by_provider": entries,
         "total_reported_tokens": (sum(v["total_tokens"] for v in entries.values())
                                   if available else None),
@@ -438,6 +469,9 @@ def summarize(test_dir):
         "available": trial.get("profile") == "local4b-deepseek-flash-story-pilot-v1",
         "reserved_paid_attempts": (len(reservations) if isinstance(reservations, list)
                                    and len(reservations) <= 8 else None),
+        "local_response_cache_hits": (trial.get("local_cache_hits") if
+                                      type(trial.get("local_cache_hits")) is int and
+                                      0 <= trial["local_cache_hits"] <= 1_000_000 else None),
         "local_story_fallbacks": (trial.get("fallbacks") if
                                   type(trial.get("fallbacks")) is int and
                                   0 <= trial["fallbacks"] <= 1_000_000 else None),

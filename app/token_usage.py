@@ -14,13 +14,14 @@ from pathlib import Path
 
 _LOCK = threading.Lock()
 FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
+CACHE_FIELDS = ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
 
 
 def record(job_dir: Path, provider: str, model: str, response: dict):
     usage = response.get("usage") if isinstance(response, dict) else None
     if not isinstance(usage, dict):
         usage = {}
-    numbers = {key: value for key in FIELDS
+    numbers = {key: value for key in (*FIELDS, *CACHE_FIELDS)
                if (value := usage.get(key)) is not None
                and type(value) is int and value >= 0}
     # A provider returning only prompt_tokens has *not* reported the

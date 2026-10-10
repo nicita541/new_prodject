@@ -319,6 +319,9 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
     from app.media_probe import load_json
     first_outputs = {name: sha(job / "output" / name) for name in outcome["outputs"]}
     first_calls = outcome["actual_model_requests"]
+    paid_journal = job / "deepseek-story-pilot.json"
+    paid_before_resume = (len(load_json(paid_journal).get("reserved", []))
+                          if paid_journal.is_file() else 0)
     # A completed real-model run must be resumable with no additional model
     # inference or FFmpeg encode when the source and settings are unchanged.
     second = inspect_step(report, "genuine_model_and_video_cache_resume",
@@ -327,6 +330,10 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
         raise RuntimeError("The resumed production quality gate is unresolved")
     if second["actual_model_requests"] != first_calls:
         raise AssertionError("Real model cache miss: new inference requests were made")
+    paid_after_resume = (len(load_json(paid_journal).get("reserved", []))
+                         if paid_journal.is_file() else 0)
+    if paid_after_resume != paid_before_resume:
+        raise AssertionError("Cache-resume sent another paid DeepSeek request")
     if not all(part["cached"] for part in load_json(job / "timings.json")["parts"]):
         raise AssertionError("Real FFmpeg export cache did not reuse all parts")
     for name, fingerprint in first_outputs.items():
@@ -334,7 +341,8 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
             raise AssertionError("Real export changed after cache hit: " + name)
     report["real_resume"] = {"model_requests_unchanged": True,
                              "all_render_parts_cached": True,
-                             "identical_output_hashes": True}
+                             "identical_output_hashes": True,
+                             "paid_requests_unchanged": paid_after_resume == paid_before_resume}
     events = job / "observed-progress.jsonl"
     if events.is_file():
         report["pipeline_stages"] = [json.loads(row) for row in
@@ -345,7 +353,7 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("offline", "real"), default="offline")
-    parser.add_argument("--local-provider", choices=("local", "local_fast_story"), default="local",
+    parser.add_argument("--local-provider", choices=("local", "local_fast_story", "local_flash_story"), default="local",
                         help="Real only: opt-in local-only 4B story selection comparison")
     parser.add_argument("--source", type=Path, help="Real mode: existing 180s video inside project")
     parser.add_argument("--transcript", type=Path, help="Real mode: optional ordinary ASR JSON inside project")

@@ -27,9 +27,10 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
         analysis_provider="local"):
     import app.analysis as analysis_module
     from app.vision import LocalVision
+    from app.flash_story_trial import TrialStoryVision
     from app.editorial import DEFAULT_PROFILE, DRAMATIC_PROFILE
-    if analysis_provider not in ("local", "local_fast_story"):
-        raise ValueError("Raw quality observer supports genuine local providers only")
+    if analysis_provider not in ("local", "local_fast_story", "local_flash_story"):
+        raise ValueError("Raw quality observer supports genuine local 4B or explicit Flash-story pilot only")
     fixture, job = workspace(fixture), workspace(job)
     manifest = load_json(fixture/'input.json')
     if set(manifest) not in ({'source'}, {'source', 'transcript'}):
@@ -76,19 +77,37 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
     @contextmanager
     def observed_factory(*args, **kwargs):
         with real_factory(*args, **kwargs) as vision:
-            if not isinstance(vision, LocalVision):
-                raise TypeError('Raw quality requires the genuine local provider')
-            recorder=RecordedVision(vision, job/'actual-model')
-            public={'model':str(vision.model),'projector':str(vision.projector),
+            if isinstance(vision, LocalVision):
+                recorder = RecordedVision(vision, job/'actual-model')
+                initial = recorder.initial_calls
+                cloud = False
+            elif analysis_provider == "local_flash_story" and isinstance(vision, TrialStoryVision):
+                # Cloud story requests are metered and journaled by TrialStoryVision.
+                # Local visual 4B and final 9B still use the genuine raw recorder.
+                # Never copy cloud prompts/images/responses into the public report.
+                recorder = vision
+                cloud = True
+                def dispatched():
+                    path = job / "deepseek-story-pilot.json"
+                    if not path.is_file():
+                        return 0
+                    state = load_json(path)
+                    return len(state.get("reserved", [])) if isinstance(state, dict) else 0
+                initial = dispatched()
+            else:
+                raise TypeError('Raw quality requires genuine local inference or explicit Flash pilot')
+            public={'model':"deepseek-flash-pilot" if cloud else str(vision.model),
+                    'projector':"remote" if cloud else str(vision.projector),
                     'thinking':bool(getattr(vision,'thinking',False)),
-                    'initial_requests':recorder.initial_calls}
+                    'initial_requests':initial}
             sessions.append(public)
             atomic_json(job/'observed-sessions.json', sessions)
             try:
                 yield recorder
             finally:
-                public['new_requests']=recorder.calls-recorder.initial_calls
-                public['total_requests']=recorder.calls
+                current = dispatched() if cloud else recorder.calls
+                public['new_requests'] = current - initial
+                public['total_requests'] = current
                 atomic_json(job/'observed-sessions.json', sessions)
 
     report_path=job/'observed-progress.jsonl'

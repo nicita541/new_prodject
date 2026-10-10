@@ -56,7 +56,7 @@ class TrialStoryVision:
         self.projector = STORY_PROJECTOR
         self._guard = threading.RLock()
         self.journal = self.job_dir / "deepseek-story-pilot.json"
-        self._state = {"profile": PROFILE, "reserved": [], "fallbacks": 0}
+        self._state = {"profile": PROFILE, "reserved": [], "fallbacks": 0, "local_cache_hits": 0}
         if self.journal.is_file():
             try:
                 loaded = json.loads(self.journal.read_text("utf-8"))
@@ -65,6 +65,10 @@ class TrialStoryVision:
                         and len(loaded["reserved"]) <= MAX_PAID_ATTEMPTS
                         and all(isinstance(v, str) and len(v) == 64 for v in loaded["reserved"])):
                     self._state = loaded
+                    if (type(self._state.get("local_cache_hits", 0)) is not int
+                            or self._state.get("local_cache_hits", 0) < 0):
+                        raise ValueError("Некорректный счётчик кэша DeepSeek")
+                    self._state.setdefault("local_cache_hits", 0)
                 else:
                     raise ValueError("Некорректная история обращений DeepSeek")
             except (OSError, ValueError, TypeError):
@@ -164,7 +168,14 @@ class TrialStoryVision:
                 return context.run(measured_dispatch, body)
             remote._fetch = one_dispatch
             try:
-                return remote.query(prompt, image, max_tokens=max_tokens, schema=schema)
+                answer = remote.query(prompt, image, max_tokens=max_tokens, schema=schema)
+                if not dispatched:
+                    # The full response was served by KADR's local disk cache.
+                    # DeepSeek's discounted context-cache is NOT free.
+                    with self._guard:
+                        self._state["local_cache_hits"] += 1
+                        atomic_json(self.journal, self._state)
+                return answer
             finally:
                 remote._fetch = original
         except InterruptedError:
