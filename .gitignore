@@ -3,6 +3,7 @@ models/
 data/
 cache/
 temp/
+/logs/
 scratch/
 __pycache__/
 .pytest_cache/
