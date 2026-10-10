@@ -9,6 +9,7 @@ from pathlib import Path
 import urllib.error
 
 from .media_probe import atomic_json, load_json
+from .bounded_storyboard import MAX_INFERENCE_FRAMES
 from .pipeline_diagnostics import Diagnostics
 from .story_review import candidate_units, validated_event, apply_unit_selection
 
@@ -74,7 +75,7 @@ def merge_subframe_chunks(chunks, minimum_seconds=.125):
     return values
 
 
-def bounded_chunks(scene, transcript, shots, max_frames=18, *, frame_times=None):
+def bounded_chunks(scene, transcript, shots, max_frames=MAX_INFERENCE_FRAMES, *, frame_times=None):
     """Bound inference by actual frame demand; 18 readable frames reduce redundant story passes."""
     from .scene_detection import analysis_chunks
     from .vision import inference_samples
@@ -114,8 +115,8 @@ def bounded_chunks(scene, transcript, shots, max_frames=18, *, frame_times=None)
                     {**chunk, 'start': boundary, 'end': end},
                 ]
                 continue
-            # If a 13-frame view has ONLY a frame-empty 80 ms word boundary,
-            # keep one source-owned scene and deterministically sample 12 real
+            # If an over-limit view has ONLY a frame-empty word boundary,
+            # keep one source-owned scene and deterministically sample bounded real
             # positions instead of extracting nonexistent frames or replaying
             # 60 seconds of provider analysis.
             required = max(len(inference_samples(start,end,units,recovery=value))

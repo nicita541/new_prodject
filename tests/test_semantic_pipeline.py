@@ -265,10 +265,10 @@ class SemanticPipelineTests(unittest.TestCase):
             self.assertEqual(payload['frame_times'],[f['time'] for f in board['frames']])
             self.assertEqual([u['id'] for u in payload['units']],
                              [u['id'] for u in event['units'] if chunk['start'] <= u['start'] < u['end'] <= chunk['end']])
-            self.assertLessEqual(len(board['frames']),12)
+            self.assertLessEqual(len(board['frames']),18)
             self.assertEqual(board['pages'],[str(destination.resolve())])
             with Image.open(destination) as page:
-                self.assertLessEqual(page.height,816)
+                self.assertLessEqual(page.height,1224)
                 for index,frame in enumerate(board['frames']):
                     timestamp = frame['time']
                     self.assertTrue(chunk['start'] <= timestamp < chunk['end'])

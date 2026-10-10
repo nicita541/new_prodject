@@ -62,15 +62,24 @@ class BoundedStoryboardSourceTests(unittest.TestCase):
         self.assertTrue(board['context'])
         self.assertEqual(board['source']['sha256'], hashlib.sha256(self.source.read_bytes()).hexdigest())
 
-    def test_dense_half_second_sampling_has_exact_twelve_frame_hard_ceiling(self):
+    def test_dense_half_second_sampling_uses_shared_eighteen_frame_ceiling(self):
         values, board = self.build(end=6)
         self.assertEqual(values, [i/2 for i in range(12)])
         self.assertEqual(len(board['frames']), 12)
         self.assertEqual(len(board['pages']), 1)
         with Image.open(self.destination) as picture:
             self.assertEqual(picture.size, (960, 816))
+        # Real 18-frame CURRENT inference is permitted and retains source PTS.
+        timestamps = [i * 0.4 for i in range(18)]
+        values18, board18 = self.build(end=8, times=timestamps)
+        self.assertEqual(len(values18), 18)
+        self.assertEqual(len(board18['frames']), 18)
+        self.assertTrue(all(0 <= t < 8 for t in values18))
+        with Image.open(self.destination) as page:
+            self.assertEqual(page.size, (960, 1224))
+        # 19 requests must still fail before decode, without silent truncation.
         with self.assertRaises(ValueError):
-            self.build(end=6.01)
+            self.build(times=[i / 10 for i in range(19)])
 
     def test_off_grid_and_late_requests_disclose_actual_pts_without_borrowing(self):
         requests = [1.013, 1.95]
@@ -97,7 +106,7 @@ class BoundedStoryboardSourceTests(unittest.TestCase):
         self.assertEqual(values, [95/12])
 
     def test_limits_and_invalid_numeric_requests_fail_before_source_processing(self):
-        invalid = [{'times': [i/10 for i in range(13)]},
+        invalid = [{'times': [i/10 for i in range(19)]},
                    {'context': True, 'times': [0, .5, 1]}, {'times': []},
                    {'times': [0, 0]}, {'times': [True]}, {'times': [float('nan')]},
                    {'start': float('inf')}, {'end': False}, {'start': 2, 'end': 1},

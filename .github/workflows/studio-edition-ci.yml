@@ -93,6 +93,8 @@ jobs:
           python -m pytest -vv -x --timeout=180 --timeout-method=thread \
             tests/test_analysis.py \
             tests/test_semantic_pipeline.py \
+            tests/test_bounded_storyboard.py \
+            tests/test_bounded_frame_contract.py \
             tests/test_media.py \
             tests/test_music.py \
             tests/test_deepseek.py \

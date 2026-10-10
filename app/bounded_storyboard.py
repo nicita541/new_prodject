@@ -12,8 +12,12 @@ from PIL import Image, ImageDraw
 from .config import FFMPEG, FFPROBE, ROOT
 from .media_probe import atomic_json, run_process
 
-BOUNDED_STORYBOARD_VERSION = 1
-POLICY = {'max_frames': 12, 'context_frames': 2, 'sampling_interval': .5,
+BOUNDED_STORYBOARD_VERSION = 2
+# One shared capacity for chunk planner and the physical storyboard renderer.
+# Keeping separate 18/12 defaults caused real-model tests to abort with a
+# ValueError in scene 2 before issuing their next VLM request.
+MAX_INFERENCE_FRAMES = 18
+POLICY = {'max_frames': MAX_INFERENCE_FRAMES, 'context_frames': 2, 'sampling_interval': .5,
           'thumbnail_width': 320, 'thumbnail_height': 180, 'columns': 3, 'caption_height': 24}
 
 
