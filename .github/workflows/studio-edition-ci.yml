@@ -178,7 +178,7 @@ jobs:
       - name: Parse actual Windows verification scripts
         shell: pwsh
         run: |
-          foreach ($path in @('scripts/verify_project.ps1', 'scripts/test_full_pipeline_3min.ps1')) {
+          foreach ($path in @('scripts/verify_project.ps1', 'scripts/test_full_pipeline_3min.ps1', 'scripts/publish_latest_ai_diagnostics.ps1')) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile(

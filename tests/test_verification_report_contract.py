@@ -143,3 +143,16 @@ def test_full_ai_auto_publishes_allowlisted_model_diagnostics_on_failure_too():
     assert 'Copy-Item -LiteralPath $safeAiReport -Destination (Join-Path $uploadDir "ai_diagnostics.json") -Force' in script
     assert script.index('scripts/export_safe_ai_diagnostics.py') < script.index('$failed = @(')
     assert 'if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }' in script
+
+
+def test_one_click_backfill_does_not_run_local_models_and_publishes_only_safe_json():
+    ps = (ROOT / "scripts" / "publish_latest_ai_diagnostics.ps1").read_text("utf-8")
+    bat = (ROOT / "ТЕСТЫ" / "3_ОТПРАВИТЬ_ПОСЛЕДНИЕ_ЛОГИ_ИИ.bat").read_text("utf-8")
+    assert 'scripts\\export_safe_ai_diagnostics.py' in ps
+    assert 'ai_diagnostics.json' in ps
+    assert 'refs/heads/test-reports' in ps
+    assert '3 -and -not $published' in ps
+    assert 'full_pipeline_3min.py' not in ps
+    assert 'run_production_raw_quality.py' not in ps
+    assert 'publish_latest_ai_diagnostics.ps1' in bat
+    assert 'exit /b %RESULT%' in bat
