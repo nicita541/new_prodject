@@ -45,7 +45,8 @@ def test_default_verification_runs_full_python_suite_and_real_180s_video_pipelin
     assert 'Run-Check "real_model_3min" $python $realArgs' in script
     assert 'if ($RealTranscript -and -not $RealSource)' in script
     assert '"--mode", "real"' in script
-    assert 'real_model_scope = if ($RealSource)' in script
+    assert 'real_model_scope = if ($RequireRealModel -or $RealSource)' in script
+    assert 'run_profile = if ($RequireRealModel -or $RealSource)' in script
 
 
 def test_full_pipeline_result_is_in_unified_report_and_sanitized_publication():
