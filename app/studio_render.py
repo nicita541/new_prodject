@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 from contextlib import contextmanager
 import json
+import logging
 import math
 import threading
 import traceback
@@ -215,6 +216,9 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
     try:
         with _render_slot(cancelled):
             update(status="running", progress=0.01)
+            logging.getLogger("app.studio_render").info(
+                "Finishing started", extra={"job_id": job_id, "action": "finishing_start",
+                                         "status": "running"})
             plan = read_json(manager.job_dir(job_id) / "plan.json")
             if not isinstance(plan, dict):
                 raise ValueError("Монтажный план недоступен")
@@ -233,17 +237,29 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
                 files.append({"part_index": index, "name": rendered.name,
                               "duration": float(span[1] if span else part["duration"])})
                 update(progress=round((k + 1) / len(part_indices), 4))
+                logging.getLogger("app.studio_render").info(
+                    "Finishing part rendered: %s", index,
+                    extra={"job_id": job_id, "stage": "finishing", "action": "finishing_part",
+                           "progress": round((k + 1) / len(part_indices), 4)})
             if cancelled():
                 raise InterruptedError("Экспорт прерван при закрытии приложения")
             update(status="completed", progress=1.0, files=files,
                    message="Части пересобраны" if not preview else "Предпросмотр готов")
     except InterruptedError:
+        logging.getLogger("app.studio_render").warning("Finishing interrupted",
+            extra={"job_id": job_id, "action": "finishing_interrupted", "status": "interrupted"})
         update(status="interrupted", error="Экспорт прерван при закрытии приложения")
     except FileNotFoundError:
+        logging.getLogger("app.studio_render").exception("Finishing music file missing",
+            extra={"job_id": job_id, "action": "finishing_failed", "status": "failed"})
         _save_render_error(target)
         update(status="failed", progress=0.0,
                error="Выбранный музыкальный файл не найден. Выберите другой трек.")
     except Exception:
+        logging.getLogger("app.studio_render").exception(
+            "Finishing render failed",
+            extra={"job_id": job_id, "action": "finishing_failed", "status": "failed",
+                   "detail_log": str(target.relative_to(config.ROOT)) if target.is_relative_to(config.ROOT) else "job/finishing"})
         _save_render_error(target)
         # Do not expose FFmpeg stderr containing absolute private filesystem paths.
         update(status="failed", progress=0.0, error="Не удалось создать видео. Подробности в локальном render-error.log.")

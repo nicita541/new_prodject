@@ -256,6 +256,12 @@ def run_job(job_dir: Path, report, cancelled) -> list[str]:
             close_stage()
             active.update(stage=stage, started=time.perf_counter())
             diagnostics.event(stage, 'start', progress=progress, message=message)
+            import logging
+            logging.getLogger("app.pipeline").info(
+                "Stage started: %s", stage,
+                extra={"job_id": job_dir.name, "stage": stage, "action": "stage_start",
+                       "progress": round(float(progress), 4),
+                       "detail_log": str(diagnostics.path.relative_to(ROOT))})
         report(stage, progress, message)
 
     try:
@@ -270,6 +276,12 @@ def run_job(job_dir: Path, report, cancelled) -> list[str]:
         timings["error_type"] = type(error).__name__
         try:
             diagnostics.event(active['stage'] or 'pipeline', 'exception', error_type=type(error).__name__, error=str(error))
+            import logging
+            logging.getLogger("app.pipeline").exception(
+                "Pipeline crashed at stage %s", active['stage'] or 'pipeline',
+                extra={"job_id": job_dir.name, "stage": active['stage'] or 'pipeline',
+                       "action": "stage_failed", "status": "failed",
+                       "detail_log": str(diagnostics.path.relative_to(ROOT))})
         except OSError as diagnostic_error:
             error.add_note('Diagnostic write failed: '+str(diagnostic_error))
         raise
@@ -277,6 +289,12 @@ def run_job(job_dir: Path, report, cancelled) -> list[str]:
         try:
             close_stage()
             diagnostics.event('pipeline', 'end', status=timings['status'], elapsed_seconds=round(time.perf_counter()-started, 6))
+            import logging
+            logging.getLogger("app.pipeline").info(
+                "Pipeline finished: %s", timings["status"],
+                extra={"job_id": job_dir.name, "stage": active["stage"] or "pipeline",
+                       "action": "pipeline_end", "status": timings["status"],
+                       "elapsed_ms": round((time.perf_counter()-started)*1000, 2)})
             previous_run = json.loads((diagnostics.path/'run.json').read_text(encoding='utf-8'))
             diagnostics.write('run.json', {**previous_run, 'job_id': job_dir.name, 'status': timings['status']})
         except OSError:

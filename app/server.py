@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import mimetypes
 import os
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -288,12 +290,18 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application):
         config.setup_environment()
+        from .run_logging import configure_logging
+        configure_logging("studio")
+        logging.getLogger("app.server").info("Studio API startup",
+            extra={"action": "server_start", "status": "running"})
         application.state.manager = manager or JobManager()
         try:
             from .library import Library
             application.state.library = Library(application.state.manager)
             yield
         finally:
+            logging.getLogger("app.server").info("Studio API shutting down",
+                extra={"action": "server_stop"})
             application.state.manager.close()
     application = FastAPI(title="Аниме → шортсы", lifespan=lifespan,
                           docs_url=None, redoc_url=None, openapi_url=None)
@@ -330,7 +338,23 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             if request.headers.get("content-type", "").split(";", 1)[0].lower() not in {
                 "application/json", "multipart/form-data", ""}:
                 return JSONResponse({"detail": "Недопустимый формат запроса"}, 415)
-        response = await call_next(request)
+        started = time.perf_counter()
+        try:
+            response = await call_next(request)
+        except Exception:
+            logging.getLogger("app.server").exception("Unexpected HTTP failure",
+                extra={"action": "http_failure", "http_method": request.method,
+                       "http_route": "unhandled", "http_status": 500})
+            raise
+        if request.url.path.startswith("/api/") and request.url.path != "/api/diagnostics/client":
+            route = request.scope.get("route")
+            template = getattr(route, "path", "unmatched")
+            logging.getLogger("app.server").log(
+                logging.WARNING if response.status_code >= 400 else logging.INFO,
+                "HTTP %s %s -> %s", request.method, template, response.status_code,
+                extra={"action": "http_request", "http_method": request.method,
+                       "http_route": template, "http_status": response.status_code,
+                       "elapsed_ms": round((time.perf_counter()-started)*1000, 2)})
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
@@ -354,6 +378,24 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @application.exception_handler(ValueError)
     async def invalid_error(request: Request, error: ValueError):
         return JSONResponse({"detail": safe_message(error, get_manager(request))}, 400)
+
+    class BrowserDiagnostic(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        kind: Literal["ui_action", "ui_error", "unhandled_rejection"]
+        action: str = Field(default="", max_length=80)
+        message: str = Field(default="", max_length=500)
+        line: int = Field(default=0, ge=0, le=1000000)
+
+    @application.post("/api/diagnostics/client", status_code=204)
+    def client_diagnostics(body: BrowserDiagnostic):
+        # Browser sends only coarse action labels and exception summaries:
+        # never record input fields, request bodies, URL queries or credentials.
+        from .run_logging import scrub
+        logging.getLogger("app.browser").log(
+            logging.WARNING if body.kind != "ui_action" else logging.INFO,
+            "Browser %s: %s %s", body.kind, scrub(body.action), scrub(body.message),
+            extra={"action": body.kind, "stage": "browser", "code": body.line})
+        return None
 
     @application.get("/api/health")
     def health(request: Request):

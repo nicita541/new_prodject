@@ -63,7 +63,13 @@ def open_when_ready() -> None:
 def main() -> None:
     from .config import setup_environment
     setup_environment()
+    from .run_logging import configure_logging
+    import logging
+    logs = configure_logging("studio")
+    logger = logging.getLogger("app.launcher")
+    logger.info("Launcher check, logs=%s", logs.relative_to(__import__("app.config", fromlist=["ROOT"]).ROOT))
     status = studio_status()
+    logger.info("Studio port status: %s", status, extra={"action": "port_check", "status": status})
     if status == "current":
         print("Reusing current KADR Studio on port 8765.", flush=True)
         webbrowser.open(studio_url())
@@ -80,6 +86,8 @@ def main() -> None:
             "Select-Object OwningProcess",
             flush=True,
         )
+        logger.error("Port occupied by another process; refusing to open an unrelated server",
+                     extra={"action": "startup_refused", "status": "occupied"})
         raise SystemExit(2)
     print("Starting current KADR Studio on port 8765.", flush=True)
     threading.Thread(target=open_when_ready, daemon=True).start()
