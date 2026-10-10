@@ -127,8 +127,16 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                     throw "missing or unsuccessful E2E stages"
                 }
                 if ($Name -eq "real_model_3min") {
-                    if ($e2e.analysis_mode -ne "real_local_whisper_and_vision") {
-                        throw "real ASR and vision were not both exercised"
+                    # Paid Flash story still uses genuine local Whisper and
+                    # Qwen4B perception. Verify the declared production route
+                    # rather than rejecting its honest, distinct mode label.
+                    $expectedAnalysisMode = if ($FlashStory -or $FlashBudgeted) {
+                        "real_local_whisper_and_paid_deepseek_story"
+                    } else {
+                        "real_local_whisper_and_vision"
+                    }
+                    if ($e2e.analysis_mode -ne $expectedAnalysisMode) {
+                        throw "unexpected real ASR/VLM provider or missing real inference"
                     }
                     if (-not ($e2e.real_model_requests -gt 0)) {
                         throw "no confirmed local model requests"
@@ -137,6 +145,10 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                         $e2e.real_resume.all_render_parts_cached -ne $true -or
                         $e2e.real_resume.identical_output_hashes -ne $true) {
                         throw "real-model resume and export check incomplete"
+                    }
+                    if (($FlashStory -or $FlashBudgeted) -and
+                        $e2e.real_resume.paid_requests_unchanged -ne $true) {
+                        throw "paid story cache-resume check incomplete"
                     }
                 }
             } catch {
