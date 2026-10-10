@@ -6,6 +6,11 @@ on:
     branches: ['codex/dramatic-montage']
     paths:
       - scripts/full_pipeline_3min.py
+      - app/run_logging.py
+      - app/media.py
+      - app/pipeline.py
+      - app/studio_render.py
+      - app/server.py
       - .github/workflows/full-pipeline-3min.yml
   schedule:
     - cron: '15 4 * * 6'
@@ -54,7 +59,10 @@ jobs:
           assert log_dir.is_dir()
           events=list(log_dir.glob('events-*.jsonl'))
           assert events and any('check_passed' in p.read_text('utf-8') for p in events)
-          assert (Path('logs')/'LATEST.txt').exists()
+          latest=Path('logs')/'LATEST.txt'
+          assert latest.exists()
+          actual=Path(latest.read_text('utf-8').strip())
+          assert actual.is_dir(), latest.read_text('utf-8')
           assert report['cache']['all_parts_reused']
           assert report['cache']['corrupt_srt_forced_rerender']
           assert report['finished_preview']['sha256']
