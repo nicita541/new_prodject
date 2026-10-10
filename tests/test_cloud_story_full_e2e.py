@@ -23,6 +23,9 @@ def test_paid_story_launcher_requires_explicit_confirmation_and_real_production(
     assert '$script:verificationBudgetSeconds = 2200' in ps
     assert 'Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds' in ps
     assert 'full_with_limited_deepseek_flash_story' in ps
+    assert 'Run-Check "deepseek_key_preflight"' in ps
+    assert 'public_status' in ps
+    assert 'DeepSeek key is not configured; paid pilot was not started' in ps
     normal_launcher = source("ТЕСТЫ/2_ПОЛНАЯ_ПРОВЕРКА_С_ИИ.bat")
     assert "-FlashStory" not in normal_launcher
 
@@ -31,6 +34,7 @@ def test_real_e2e_accepts_cloud_story_only_when_explicit_and_checks_paid_resume(
     script = source("scripts/full_pipeline_3min.py")
     runner = source("scripts/run_production_raw_quality.py")
     assert '"local_flash_story"' in script
+    assert "real_local_whisper_and_paid_deepseek_story" in script
     assert 'local_provider: str = "local"' in script
     assert "paid_before_resume" in script and "paid_after_resume" in script
     assert "Cache-resume sent another paid DeepSeek request" in script

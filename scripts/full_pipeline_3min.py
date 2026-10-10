@@ -306,7 +306,12 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
         transcript_arg.relative_to(ROOT.resolve())
         entry["transcript"] = str(transcript_arg)
     atomic_json(inp / "input.json", entry)
-    report["analysis_mode"] = "real_local_whisper_and_vision" if not transcript_arg else "provided_asr_and_real_local_vision"
+    if local_provider == "local_flash_story":
+        report["analysis_mode"] = ("real_local_whisper_and_paid_deepseek_story"
+                                   if not transcript_arg else "provided_asr_and_paid_deepseek_story")
+    else:
+        report["analysis_mode"] = ("real_local_whisper_and_vision"
+                                   if not transcript_arg else "provided_asr_and_real_local_vision")
     report["actual_local_provider"] = local_provider
     report["source"] = {"path": str(source), "sha256": sha(source)}
     job = root / "real-job"

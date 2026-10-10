@@ -309,6 +309,14 @@ if (-not $Quick) {
     }
 }
 
+# Never spend hours waiting for 9B fallbacks because the optional DeepSeek
+# API key was missing. This is a strictly OFFLINE settings check: no billing,
+# no server connection, no key text in GitHub diagnostics.
+if ($FlashStory -and $python) {
+    Run-Check "deepseek_key_preflight" $python @("-c",
+        "import sys; from app.deepseek import public_status; sys.exit(0 if public_status().get('configured') is True else 2)"
+    ) $root 25
+}
 # Real ASR/VLM is never simulated by the technical fixture. Missing input
 # or models are a FAIL when this mode is requested; the report still uploads.
 if ($RequireRealModel -and $RealTranscript) {
@@ -326,6 +334,10 @@ if ($RequireRealModel -and $RealTranscript) {
         Add-Check "real_model_3min" "FAIL" 1 "Real-model test requires Python, FFmpeg and FFprobe"
     } elseif (-not (Test-Path -LiteralPath $RealSource -PathType Leaf)) {
         Add-Check "real_model_3min" "FAIL" 1 "The selected real video file is unavailable"
+    } elseif ($FlashStory -and @($script:checks | Where-Object {
+        $_.name -eq "deepseek_key_preflight" -and $_.status -eq "PASS"
+    }).Count -ne 1) {
+        Add-Check "real_model_3min" "FAIL" 1 "DeepSeek key is not configured; paid pilot was not started"
     } else {
         # A long original is NEVER modified. A 180s excerpt is created inside
         # the private report folder, and its path is excluded from publication.
