@@ -83,7 +83,7 @@ class _JsonlHandler(logging.Handler):
             }
             for key in ("job_id", "stage", "action", "elapsed_ms", "status", "run_id",
                         "http_method", "http_route", "http_status", "trace_id",
-                        "detail_log", "progress", "filename", "code"):
+                        "detail_log", "progress", "tool_name", "code"):
                 if hasattr(record, key):
                     value = getattr(record, key)
                     if isinstance(value, (str, int, float, bool)) or value is None:

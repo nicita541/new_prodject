@@ -59,7 +59,7 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
     tool = Path(argv[0]).name
     logging.getLogger("app.media").info(
         "External tool started: %s", tool,
-        extra={"action": "process_start", "stage": "media", "filename": tool,
+        extra={"action": "process_start", "stage": "media", "tool_name": tool,
                "detail_log": process_log})
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with log.open("wb") as stderr:
@@ -79,7 +79,7 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
         except BaseException:
             logging.getLogger("app.media").exception(
                 "External tool cancelled/failed: %s", tool,
-                extra={"action": "process_interrupted", "stage": "media", "filename": tool,
+                extra={"action": "process_interrupted", "stage": "media", "tool_name": tool,
                        "elapsed_ms": round((time.monotonic()-started)*1000, 2),
                        "detail_log": process_log})
             process.terminate()
@@ -92,7 +92,7 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
     if process.returncode:
         logging.getLogger("app.media").error(
             "External tool exited with code %s: %s", process.returncode, tool,
-            extra={"action": "process_failed", "stage": "media", "filename": tool,
+            extra={"action": "process_failed", "stage": "media", "tool_name": tool,
                    "code": process.returncode, "detail_log": process_log,
                    "elapsed_ms": round((time.monotonic()-started)*1000, 2)})
         with log.open("rb") as handle:
@@ -101,7 +101,7 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
         raise RuntimeError(f"{Path(argv[0]).name}: {error.strip()}")
     logging.getLogger("app.media").info(
         "External tool completed: %s", tool,
-        extra={"action": "process_done", "stage": "media", "filename": tool,
+        extra={"action": "process_done", "stage": "media", "tool_name": tool,
                "detail_log": process_log,
                "elapsed_ms": round((time.monotonic()-started)*1000, 2)})
     return output.decode("utf-8", "replace")
