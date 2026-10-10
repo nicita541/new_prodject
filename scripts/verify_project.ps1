@@ -18,7 +18,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $root "temp"), (Join-Path $
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmss") + "_" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $localDir = Join-Path $root ("temp\verification-reports\" + $runId)
 $logsDir = Join-Path (Join-Path $root 'logs\tests') $runId
-New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+# Reports and execution logs use different isolated directories. Both must
+# exist before tests start, not just logs: checks.json is written at the end.
+New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
 $script:checks = @()
 
 function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note) {
@@ -199,6 +201,9 @@ $summary = [pscustomobject]@{
     checks = $script:checks
     logs_dir = $logsDir
 }
+# A test may remove temporary files while running; recreate output folders
+# before writing reports so a successful test run never fails on a missing dir.
+New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $localDir "checks.json") -Encoding UTF8
 
 # Publish allowlisted files only: summary and a truncated, redacted log tail.

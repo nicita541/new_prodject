@@ -120,7 +120,8 @@ jobs:
             tests/test_semantic_boundary.py \
             tests/test_semantic_identity.py \
             tests/test_full_pipeline_harness.py \
-            tests/test_run_logging.py
+            tests/test_run_logging.py \
+            tests/test_verification_report_contract.py
 
   backend:
     name: Finishing API safety tests
