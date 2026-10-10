@@ -6,6 +6,7 @@ plan, completion status or registered output files.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 import math
 import threading
@@ -23,10 +24,41 @@ _RENDER_SEMAPHORE = threading.Semaphore(1)
 # running exports must become interrupted, not remain spinning forever.
 _TASKS_LOCK = threading.Lock()
 _ACTIVE_TASKS: set[str] = set()
+_ACTIVE_THREADS = {}
+_ACTIVE_CANCEL = {}
+_ACTIVE_OWNERS = {}
 # One FFmpeg worker is allowed to render at a time. Keep no more than two
 # additional waiting requests; unlimited daemon threads exhaust local memory.
 MAX_PENDING_FINISHING_TASKS = 3
 
+
+
+@contextmanager
+def _render_slot(cancelled):
+    while True:
+        if cancelled():
+            raise InterruptedError("Экспорт прерван при закрытии приложения")
+        if _RENDER_SEMAPHORE.acquire(timeout=0.2):
+            break
+    try:
+        yield
+    finally:
+        _RENDER_SEMAPHORE.release()
+
+
+def stop_finishing_tasks(manager, timeout=12.0):
+    """Cancel own queued/running renders; never join under manager.mutex."""
+    import time
+    with _TASKS_LOCK:
+        targets = [(thread, _ACTIVE_CANCEL[key]) for key, thread in list(_ACTIVE_THREADS.items())
+                   if _ACTIVE_OWNERS.get(key) is manager]
+    for _, flag in targets:
+        flag.set()
+    deadline = time.monotonic() + max(0.0, timeout)
+    for thread, _ in targets:
+        if thread is not threading.current_thread():
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+    return all(not thread.is_alive() for thread, _ in targets)
 
 
 def slice_part(part: dict, start: float, duration: float) -> dict:
@@ -139,7 +171,8 @@ def _music(profile: dict, index: int, total: int, part: dict) -> dict | None:
 
 
 def render_finishing_part(manager, job_id: str, original: dict, profile: dict,
-                          output: Path, work: Path, preview: tuple[float, float] | None = None) -> Path:
+                          output: Path, work: Path, preview: tuple[float, float] | None = None,
+                          cancelled=lambda: False) -> Path:
     source = _source(manager, job_id)
     part = _effective_part(manager, job_id, original, profile)
     if preview:
@@ -150,9 +183,11 @@ def render_finishing_part(manager, job_id: str, original: dict, profile: dict,
     total = 100
     music = _music(profile, part["index"], total, part)
     work.mkdir(parents=True, exist_ok=True)
+    if cancelled():
+        raise InterruptedError("Экспорт прерван при закрытии приложения")
     probed = _probe(source, work)
     return render_part(source, part, probed, output, work, "libx264",
-                       background_music=music,
+                       cancelled=cancelled, background_music=music,
                        finishing={"subtitles": visual_style, "video": profile["video"]})
 
 
@@ -171,13 +206,14 @@ def _save_render_error(target: Path):
 
 
 def run_export(manager, job_id: str, part_indices: list[int], profile: dict, target: Path,
-               status_file: Path, preview: tuple[int, float, float] | None = None):
+               status_file: Path, preview: tuple[int, float, float] | None = None,
+               cancelled=lambda: False):
     def update(**values):
         state = read_json(status_file, {}) or {}
         state.update(values)
         atomic_json(status_file, state)
     try:
-        with _RENDER_SEMAPHORE:
+        with _render_slot(cancelled):
             update(status="running", progress=0.01)
             plan = read_json(manager.job_dir(job_id) / "plan.json")
             if not isinstance(plan, dict):
@@ -187,15 +223,22 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
                 raise ValueError("Некорректные номера частей")
             files = []
             for k, index in enumerate(part_indices):
+                if cancelled():
+                    raise InterruptedError("Экспорт прерван при закрытии приложения")
                 part = parts[index]
                 span = (preview[1], preview[2]) if preview else None
                 rendered = render_finishing_part(manager, job_id, part, profile,
-                                                 target / "output", target / f"work_{index}", span)
+                                                 target / "output", target / f"work_{index}", span,
+                                                 cancelled=cancelled)
                 files.append({"part_index": index, "name": rendered.name,
                               "duration": float(span[1] if span else part["duration"])})
                 update(progress=round((k + 1) / len(part_indices), 4))
+            if cancelled():
+                raise InterruptedError("Экспорт прерван при закрытии приложения")
             update(status="completed", progress=1.0, files=files,
                    message="Части пересобраны" if not preview else "Предпросмотр готов")
+    except InterruptedError:
+        update(status="interrupted", error="Экспорт прерван при закрытии приложения")
     except FileNotFoundError:
         _save_render_error(target)
         update(status="failed", progress=0.0,
@@ -208,9 +251,11 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
 
 def _registered_export(identifier: str, manager, job_id: str, part_indices: list[int],
                        profile: dict, target: Path, status_file: Path,
-                       preview: tuple[int, float, float] | None):
+                       preview: tuple[int, float, float] | None,
+                       stop_flag: threading.Event):
     try:
-        run_export(manager, job_id, part_indices, profile, target, status_file, preview)
+        run_export(manager, job_id, part_indices, profile, target, status_file, preview,
+                   cancelled=stop_flag.is_set)
     finally:
         # The job's source, plan and output must not be removed while a
         # preview/export is still using them.
@@ -222,6 +267,9 @@ def _registered_export(identifier: str, manager, job_id: str, part_indices: list
                 manager.finishing_tasks.pop(job_id, None)
         with _TASKS_LOCK:
             _ACTIVE_TASKS.discard(identifier)
+            _ACTIVE_THREADS.pop(identifier, None)
+            _ACTIVE_CANCEL.pop(identifier, None)
+            _ACTIVE_OWNERS.pop(identifier, None)
 
 
 def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
@@ -258,12 +306,16 @@ def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
                     registry.unlink(missing_ok=True)
                 status_file.unlink(missing_ok=True)
                 raise
+            stop_flag = threading.Event()
             worker = threading.Thread(target=_registered_export,
                                       args=(identifier, manager, job_id, part_indices, profile,
-                                            base, status_file, preview),
+                                            base, status_file, preview, stop_flag),
                                       daemon=True, name="finishing-" + identifier)
             manager.finishing_tasks[job_id] = manager.finishing_tasks.get(job_id, 0) + 1
             _ACTIVE_TASKS.add(identifier)
+            _ACTIVE_THREADS[identifier] = worker
+            _ACTIVE_CANCEL[identifier] = stop_flag
+            _ACTIVE_OWNERS[identifier] = manager
             try:
                 worker.start()
             except BaseException:
@@ -273,6 +325,9 @@ def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
                 else:
                     manager.finishing_tasks.pop(job_id, None)
                 _ACTIVE_TASKS.discard(identifier)
+                _ACTIVE_THREADS.pop(identifier, None)
+                _ACTIVE_CANCEL.pop(identifier, None)
+                _ACTIVE_OWNERS.pop(identifier, None)
                 atomic_json(status_file, {**status, "status": "failed",
                                           "error": "Не удалось запустить поток экспорта"})
                 raise

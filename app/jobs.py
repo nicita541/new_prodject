@@ -618,4 +618,12 @@ class JobManager:
                         finally:
                             self.active = None
             finally:
-                self.lock.close()
+                pass
+        # Finishing worker cleanup acquires manager.mutex, so join only
+        # after releasing the lock held above.
+        try:
+            from .studio_render import stop_finishing_tasks
+            if not stop_finishing_tasks(self, timeout=12):
+                LOGGER.warning("Не все экспорты завершились при закрытии")
+        finally:
+            self.lock.close()

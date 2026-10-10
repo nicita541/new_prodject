@@ -269,7 +269,7 @@ class StudioApiTests(unittest.TestCase):
 
     def test_export_is_non_destructive_and_files_are_individually_addressed(self):
         original = (self.directory / "output" / "part_001.mp4").read_bytes()
-        def fake_render(manager, job_id, part, profile, output, work, preview):
+        def fake_render(manager, job_id, part, profile, output, work, preview, **kwargs):
             output.mkdir(parents=True, exist_ok=True)
             path = output / ("part_%03d.mp4" % part["index"])
             path.write_bytes(b"new independent render")
@@ -310,7 +310,7 @@ class StudioApiTests(unittest.TestCase):
 
     def test_preview_is_isolated_and_validates_range(self):
         with patch("app.studio_render.render_finishing_part") as render:
-            def fake_render(manager, job_id, part, profile, output, work, preview):
+            def fake_render(manager, job_id, part, profile, output, work, preview, **kwargs):
                 output.mkdir(parents=True, exist_ok=True)
                 file = output / "part_001.mp4"
                 file.write_bytes(b"preview")
@@ -428,6 +428,30 @@ class StudioApiTests(unittest.TestCase):
                     break
                 time.sleep(0.01)
             self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
+
+    def test_close_requests_cancellation_and_drains_render_tasks(self):
+        import threading
+        from app.studio_render import submit_render
+        from app.finishing import FinishProfile
+        started = threading.Event()
+        def wait_until_cancelled(manager, job_id, indices, profile, base, status, preview, *, cancelled):
+            started.set()
+            while not cancelled():
+                if not started.wait(.02):
+                    continue
+                time.sleep(.02)
+            from app.jobs import atomic_json
+            atomic_json(status, {"preview_id": base.name, "source_job_id":job_id,
+                                 "status":"interrupted", "files":[], "progress":0})
+        with patch("app.studio_render.run_export", side_effect=wait_until_cancelled):
+            state = submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
+                                  preview=(1, 0, 1))
+            self.assertTrue(started.wait(2))
+            self.manager.close()
+            self.assertFalse(self.manager.finishing_tasks)
+            with patch("app.studio_render.task_status") as unused:
+                self.assertTrue((self.directory / "finishing" / "previews" /
+                                state["preview_id"] / "status.json").is_file())
 
     def test_task_status_never_marks_just_completed_preview_interrupted(self):
         from app.studio_render import task_status
