@@ -1,7 +1,19 @@
-# Montage test reports
+# KADR Studio — отчёты тестирования
 
-This branch stores sanitized reports uploaded by `scripts/verify_project.ps1` from the Windows client.
+Эта ветка `test-reports` хранит результаты, автоматически отправленные
+Windows-скриптом `scripts/verify_project.ps1` из папки
+`ТЕСТЫ` рабочего проекта. Актуальная рабочая ветка кода:
+`codex/dramatic-montage`.
 
-Reports are under `runs/<UTC timestamp>_<random ID>/`. Source videos, renders, credentials and raw logs must never be committed here.
+Отчёты находятся в папках `runs/<UTC_timestamp>_<id>/`; наиболее
+новые прогоны имеют большие UTC-метки в имени каталога.
+В каждом прогоне есть `README.md`, `checks.json` и, когда доступно,
+`e2e_overview.json`. Статус **TECHNICAL WITHOUT AI** не является
+проверкой ASR/VLM. Полный режим отмечается **FULL WITH LOCAL AI** и
+требует реального локального видео и реальных моделей.
 
-The active source branch is `fix/montage-stability`.
+**Не коммитить** сюда исходные видео, расшифровки, промпты, API-ключи,
+экспорты или необработанные логи локальных моделей. Сокращённые логи
+технических тестов проходят очистку, но могут сохранять отдельные
+некритичные диагностические данные. Полные логи остаются на ПК в
+`logs\tests\<run_id>`.
