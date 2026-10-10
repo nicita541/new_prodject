@@ -167,9 +167,11 @@ def _ranges(units: list[dict], keep: set[str], preserve: set[str], transcript: d
         # Speech clocks do not bound visual actions. A selected reply unit also
         # contains its setup/reaction; only an explicit source-unit decision
         # may remove it. The visual pacing pass reviews redundant long waits.
-        left, right = unit["start"], unit["end"]
-        left, right = round(left, 6), round(right, 6)
-        if right <= left:
+        # Keep the exact source-unit bounds. Rounding a PTS-derived end up
+        # by one microsecond can put it outside its technical child scene,
+        # which used to abort the entire 180s production after paid analysis.
+        left, right = float(unit["start"]), float(unit["end"])
+        if not math.isfinite(left) or not math.isfinite(right) or right <= left:
             raise ValueError("Выбранный фрагмент не имеет длительности")
         if selected and left <= selected[-1]["end"]:
             selected[-1]["end"] = max(selected[-1]["end"], right)
