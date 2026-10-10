@@ -192,9 +192,14 @@ jobs:
           $env:KADR_NONINTERACTIVE = '1'
           # Windows runner may intentionally have missing local dependencies.
           # Its smoke checks report generation, not whether Quick itself passes.
-          $PSNativeCommandUseErrorActionPreference = $false
-          & .\ПРОВЕРИТЬ_ПРОЕКТ.bat -Quick -NoUpload
-          $code = $LASTEXITCODE
+          # The BAT may exit 1 because this clean runner deliberately lacks
+          # the app's portable dependencies. Capture that expected result
+          # without GitHub's PowerShell native-command error promotion.
+          $batch = Join-Path (Get-Location).Path 'ПРОВЕРИТЬ_ПРОЕКТ.bat'
+          $process = Start-Process -FilePath $env:ComSpec -ArgumentList @(
+            '/d', '/c', ('"' + $batch + '" -Quick -NoUpload')
+          ) -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru
+          $code = $process.ExitCode
           if ($code -notin @(0, 1, 2)) { throw "Windows verification launcher failed: $code" }
           $latest = Get-ChildItem temp/verification-reports -Directory |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
