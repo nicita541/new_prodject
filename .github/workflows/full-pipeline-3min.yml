@@ -1,0 +1,69 @@
+name: KADR 3-minute full pipeline E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/dramatic-montage']
+    paths:
+      - scripts/full_pipeline_3min.py
+      - .github/workflows/full-pipeline-3min.yml
+  schedule:
+    - cron: '15 4 * * 6'
+
+permissions:
+  contents: read
+
+jobs:
+  three-minute-offline:
+    name: Real 180s video -> plan -> FFmpeg -> cache -> recovery -> finishing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install offline pipeline dependencies
+        run: python -m pip install -q fastapi uvicorn python-multipart pillow numpy opencv-python-headless pytest pytest-timeout httpx
+      - name: Link real ffmpeg and ffprobe into project tools
+        run: |
+          command -v ffmpeg
+          command -v ffprobe
+          mkdir -p tools/ffmpeg/bin temp cache data/jobs data/imports
+          ln -sf "$(command -v ffmpeg)" tools/ffmpeg/bin/ffmpeg.exe
+          ln -sf "$(command -v ffprobe)" tools/ffmpeg/bin/ffprobe.exe
+      - name: Generate actual 180s MP4, run production video pipeline 3 times, verify FFmpeg finishing
+        timeout-minutes: 23
+        run: |
+          python scripts/full_pipeline_3min.py --mode offline --directory temp/ci-full-pipeline-3min
+      - name: Assert machine-readable report is complete
+        if: success()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path('temp/ci-full-pipeline-3min/report.json').read_text('utf-8'))
+          assert report['duration_seconds'] == 180
+          assert report['status'] == 'passed'
+          assert report['analysis_mode'] == 'deterministic_semantic_fixture_NOT_ASR_OR_VLM'
+          assert report['cache']['all_parts_reused']
+          assert report['cache']['corrupt_srt_forced_rerender']
+          assert report['finished_preview']['sha256']
+          assert len(report['pipeline_stages']) > 0
+          assert all(row['status'] == 'passed' for row in report['checks'])
+          print('3-minute FFmpeg pipeline and recovery acceptance PASS')
+          PY
+      - name: Upload logs and reports even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-pipeline-3min-report
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            temp/ci-full-pipeline-3min/report.json
+            temp/ci-full-pipeline-3min/jobs/*/e2e-progress.jsonl
+            temp/ci-full-pipeline-3min/jobs/*/timings.json
+            temp/ci-full-pipeline-3min/jobs/*/final_quality_gate.json
+            temp/ci-full-pipeline-3min/jobs/*/diagnostics/summary.json
+            temp/ci-full-pipeline-3min/jobs/*/plan.json
