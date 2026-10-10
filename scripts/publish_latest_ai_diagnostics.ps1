@@ -39,7 +39,15 @@ $diagnostics = Join-Path $run.FullName "ai_diagnostics.json"
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $diagnostics)) {
     throw "Safe diagnostics export failed."
 }
-Write-Host ("Prepared safe AI diagnostics for run " + $run.Name)
+# The timing report uses the same strict allowlist. Old runs retain their
+# already-measured nested stage durations; absent check durations stay unknown.
+$timings = Join-Path $run.FullName "stage_timings.json"
+& $python (Join-Path $root "scripts\export_stage_timings.py") "--test-dir" $run.FullName "--output" $timings
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $timings) -or
+    -not (Test-Path -LiteralPath (Join-Path $run.FullName "stage_timings.md"))) {
+    throw "Safe stage timing export failed."
+}
+Write-Host ("Prepared safe AI diagnostics and stage timings for run " + $run.Name)
 
 $published = $false
 for ($attempt = 1; $attempt -le 3 -and -not $published; $attempt++) {
@@ -57,8 +65,10 @@ for ($attempt = 1; $attempt -le 3 -and -not $published; $attempt++) {
         $target = Join-Path (Join-Path $publisher "runs") $run.Name
         New-Item -ItemType Directory -Path $target -Force | Out-Null
         Copy-Item -LiteralPath $diagnostics -Destination (Join-Path $target "ai_diagnostics.json") -Force
-        $relative = "runs/" + $run.Name + "/ai_diagnostics.json"
-        & $git.Source -C $publisher add -- $relative
+        Copy-Item -LiteralPath $timings -Destination (Join-Path $target "stage_timings.json") -Force
+        Copy-Item -LiteralPath ([System.IO.Path]::ChangeExtension($timings, ".md")) -Destination (Join-Path $target "stage_timings.md") -Force
+        $relative = "runs/" + $run.Name
+        & $git.Source -C $publisher add -- ($relative + "/ai_diagnostics.json") ($relative + "/stage_timings.json") ($relative + "/stage_timings.md")
         & $git.Source -C $publisher diff --cached --quiet
         if ($LASTEXITCODE -eq 0) {
             Write-Host "The safe AI diagnostics are already published."

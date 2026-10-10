@@ -125,6 +125,7 @@ jobs:
             tests/test_full_pipeline_harness.py \
             tests/test_run_logging.py \
             tests/test_verification_report_contract.py \
+            tests/test_stage_timings.py \
             tests/test_prepare_real_test_video.py
 
   backend:

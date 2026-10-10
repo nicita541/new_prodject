@@ -156,3 +156,27 @@ def test_one_click_backfill_does_not_run_local_models_and_publishes_only_safe_js
     assert 'run_production_raw_quality.py' not in ps
     assert 'publish_latest_ai_diagnostics.ps1' in bat
     assert 'exit /b %RESULT%' in bat
+
+
+def test_full_verification_reports_every_step_duration_and_bottlenecks():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert '$script:verificationStarted = [System.Diagnostics.Stopwatch]::StartNew()' in script
+    assert '$stageTimer = [System.Diagnostics.Stopwatch]::StartNew()' in script
+    assert '$stageTimer.Elapsed.TotalSeconds' in script
+    assert 'elapsed_seconds = $measured' in script
+    assert 'scripts/export_stage_timings.py' in script
+    assert 'timing_snapshot.local.json' in script
+    assert 'Join-Path $uploadDir $timingFile' in script
+    assert '@("stage_timings.json", "stage_timings.md")' in script
+    assert 'Add-Check "stage_timings" "FAIL"' in script
+    assert script.index('scripts/export_stage_timings.py') < script.index('$failed = @(')
+
+
+def test_backfill_generates_both_timing_files_without_replaying_models():
+    script = (ROOT / "scripts" / "publish_latest_ai_diagnostics.ps1").read_text("utf-8")
+    assert "scripts\\export_stage_timings.py" in script
+    assert 'stage_timings.json' in script
+    assert 'stage_timings.md' in script
+    assert 'ai_diagnostics.json' in script
+    assert 'full_pipeline_3min.py' not in script
+    assert 'run_production_raw_quality.py' not in script

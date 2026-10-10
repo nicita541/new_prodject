@@ -22,23 +22,29 @@ $logsDir = Join-Path (Join-Path $root 'logs\tests') $runId
 # exist before tests start, not just logs: checks.json is written at the end.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
 $script:checks = @()
+# A monotonic timer measures process durations independently of progress text.
+# Overall time includes setup and media selection but excludes the later
+# report push itself (which cannot know its own completion time before push).
+$script:verificationStarted = [System.Diagnostics.Stopwatch]::StartNew()
 # The complete real-AI acceptance (Python, React, offline E2E, ASR/VLM, render)
 # has one shared 30-minute deadline. No individual stage may reset this clock.
 $script:verificationDeadline = $null
 
-function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note) {
-    $script:checks += [pscustomobject]@{ name = $Name; status = $Status; exit_code = $ExitCode; note = $Note }
+function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note, [double]$ElapsedSeconds = -1) {
+    $measured = if ($ElapsedSeconds -ge 0) { [Math]::Round($ElapsedSeconds, 3) } else { $null }
+    $script:checks += [pscustomobject]@{ name = $Name; status = $Status; exit_code = $ExitCode; note = $Note; elapsed_seconds = $measured }
     Write-Host ("[{0}] {1} {2}" -f $Status, $Name, $Note)
 }
 
 function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Working = $root, [int]$Timeout = 1200) {
+    $stageTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $outFile = Join-Path $logsDir ($Name + ".out.txt")
     $errFile = Join-Path $logsDir ($Name + ".err.txt")
     $effectiveTimeout = $Timeout
     if ($script:verificationDeadline) {
         $remaining = [int][Math]::Floor(($script:verificationDeadline - (Get-Date)).TotalSeconds)
         if ($remaining -le 0) {
-            Add-Check $Name "TIMEOUT" 124 "Shared 30-minute full-AI test budget exhausted"
+            Add-Check $Name "TIMEOUT" 124 "Shared 30-minute full-AI test budget exhausted" $stageTimer.Elapsed.TotalSeconds
             return
         }
         $effectiveTimeout = [Math]::Min($Timeout, $remaining)
@@ -63,7 +69,7 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                 if ($IsWindows -or $env:OS -eq 'Windows_NT') {
                     & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
                 } else { try { $process.Kill() } catch { } }
-                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $effectiveTimeout + " seconds; inspect local diagnostics")
+                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $effectiveTimeout + " seconds; inspect local diagnostics") $stageTimer.Elapsed.TotalSeconds
                 return
             }
         }
@@ -131,12 +137,12 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                 $note = "E2E artifact validation failed; inspect local report.json"
             }
         }
-        if ($code -eq 0) { Add-Check $Name "PASS" $code $note }
-        else { Add-Check $Name "FAIL" $code $note }
+        if ($code -eq 0) { Add-Check $Name "PASS" $code $note $stageTimer.Elapsed.TotalSeconds }
+        else { Add-Check $Name "FAIL" $code $note $stageTimer.Elapsed.TotalSeconds }
         $process.Dispose()
     } catch {
         Set-Content -LiteralPath $errFile -Value $_.Exception.Message -Encoding UTF8
-        Add-Check $Name "FAIL" 1 "could not start"
+        Add-Check $Name "FAIL" 1 "could not start" $stageTimer.Elapsed.TotalSeconds
     }
 }
 
@@ -354,6 +360,31 @@ if ($RequireRealModel -or $RealSource) {
     }
 }
 
+# Produce a second, safe report covering every test-check and nested
+# production stage. Write an interim local-only timing snapshot BEFORE the
+# final checks.json, so the exporter has true per-process wall-clock timings.
+# This runs for both AI and technical test profiles, even after FAIL/TIMEOUT.
+$stageTimingPath = Join-Path $localDir "stage_timings.json"
+$timingSnapshot = [pscustomobject]@{
+    elapsed_seconds = [Math]::Round($script:verificationStarted.Elapsed.TotalSeconds, 3)
+    checks = $script:checks
+}
+$timingSnapshot | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $localDir "timing_snapshot.local.json") -Encoding UTF8
+if ($python) {
+    try {
+        & $python "scripts/export_stage_timings.py" "--test-dir" $localDir "--output" $stageTimingPath
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stageTimingPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath (Join-Path $localDir "stage_timings.md") -PathType Leaf)) {
+            throw "stage timing export unavailable"
+        }
+        Add-Check "stage_timings" "PASS" 0 "full timing breakdown generated"
+    } catch {
+        Add-Check "stage_timings" "FAIL" 1 "stage timing export failed"
+    }
+} else {
+    Add-Check "stage_timings" "SKIP" 0 "Python unavailable"
+}
+
 $failed = @($script:checks | Where-Object { $_.status -in @("FAIL", "TIMEOUT") }).Count
 $skipped = @($script:checks | Where-Object { $_.status -eq "SKIP" }).Count
 $passed = @($script:checks | Where-Object { $_.status -eq "PASS" }).Count
@@ -361,6 +392,7 @@ $overall = if ($failed -gt 0) { "FAIL" } elseif ($skipped -gt 0) { "INCOMPLETE" 
 $summary = [pscustomobject]@{
     run_id = $runId
     timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
+    elapsed_seconds = [Math]::Round($script:verificationStarted.Elapsed.TotalSeconds, 3)
     branch = $branch
     commit = $commit
     mode = if ($Quick) { "quick" } elseif ($Video) { "video" } else { "full" }
@@ -414,6 +446,14 @@ $publicSummary = $summary | ConvertTo-Json -Depth 8 | ConvertFrom-Json
 $publicSummary.logs_dir = "[LOCAL_ONLY]"
 $publicSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $uploadDir "checks.json") -Encoding UTF8
 $e2eOverview | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $uploadDir "e2e_overview.json") -Encoding UTF8
+# Both files are GENERATED from a strict internal stage/check name allowlist.
+# Publishing raw timeline.jsonl would leak episode contents, so never do so.
+foreach ($timingFile in @("stage_timings.json", "stage_timings.md")) {
+    $sourceTiming = Join-Path $localDir $timingFile
+    if (Test-Path -LiteralPath $sourceTiming -PathType Leaf) {
+        Copy-Item -LiteralPath $sourceTiming -Destination (Join-Path $uploadDir $timingFile) -Force
+    }
+}
 # ONLY the extractor output is publishable. Do not copy the private job folder.
 $safeAiReport = Join-Path $localDir "ai_diagnostics.json"
 if (Test-Path -LiteralPath $safeAiReport -PathType Leaf) {
@@ -446,6 +486,7 @@ foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status)
 if ($RequireRealModel -or $RealSource) {
     $md += @("", "- AI diagnostics: ai_diagnostics.json (safe numeric and stage metadata)")
 }
+$md += @("", "- Stage timings: stage_timings.md and stage_timings.json (safe wall-clock and nested breakdown)")
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8
 (($md -join $nl) -replace '\[LOCAL_ONLY\]', $logsDir) | Set-Content -LiteralPath (Join-Path $localDir "summary.md") -Encoding UTF8
