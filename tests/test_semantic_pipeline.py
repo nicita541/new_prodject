@@ -59,7 +59,7 @@ class SemanticPipelineTests(unittest.TestCase):
         times = [start, max(start, end-.05)] if context else inference_samples(start,end,units,recovery=recovery)
         if sample_limit is not None and len(times) > sample_limit:
             times = [times[round(i*(len(times)-1)/(sample_limit-1))] for i in range(sample_limit)]
-        assert len(times) <= (2 if context else 12)
+        assert len(times) <= (2 if context else 18)
         frames = [{'index':i+1, 'time':time,
                    'unit_ids':[u['id'] for u in units if u['start'] <= time < u['end']],
                    'reasons':['context_only' if context else 'recovery_source_sample' if recovery else 'source_unit_sample']}

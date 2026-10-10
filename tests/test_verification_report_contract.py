@@ -105,7 +105,7 @@ def test_required_full_ai_cannot_bypass_actual_asr_using_supplied_transcript():
 def test_reports_do_not_publish_raw_real_model_or_selected_video_logs():
     script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
     assert 'if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }' in script
-    assert 'Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; inspect local diagnostics")' in script
+    assert 'Add-Check $Name "TIMEOUT" 124 ("exceeded " + $effectiveTimeout + " seconds; inspect local diagnostics")' in script
     assert '$publicSummary.logs_dir = "[LOCAL_ONLY]"' in script
 
 

@@ -164,7 +164,7 @@ def test_frame_empty_80ms_pause_keeps_speech_and_caps_sampled_frames(tmp_path, m
     assert len(inference_samples(0, 3.84, units, recovery=True)) == 13
     # A variable-rate file can start showing frames only at 100ms.
     frames = [.1 + i * .04 for i in range(90)]
-    parts = bounded_chunks(scene, transcript, [], frame_times=frames)
+    parts = bounded_chunks(scene, transcript, [], max_frames=12, frame_times=frames)
     assert len(parts) == 1
     assert parts[0]["sampling_limit"] == 12
     assert (parts[0]["start"], parts[0]["end"]) == (0, 3.84)
