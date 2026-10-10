@@ -110,6 +110,13 @@ def configure_logging(kind: str = "studio") -> Path:
             return _CURRENT
         folder = _session_dir(kind)
         os.environ["KADR_LOG_DIR"] = str(folder)
+        try:
+            (ROOT / "logs" / "LATEST.txt").write_text(
+                str(folder.relative_to(ROOT)).replace("\\", "/") + "\n",
+                encoding="utf-8")
+        except OSError:
+            # A read-only index must not prevent collecting actual session logs.
+            pass
         folder.joinpath("README.txt").write_text(
             "KADR Studio diagnostic session (local only)\n"
             "events-*.jsonl : ordered structured events, search by job_id, stage, level\n"
