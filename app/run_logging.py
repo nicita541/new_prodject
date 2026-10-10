@@ -35,11 +35,11 @@ _SECRET = re.compile(
 _MAX_MESSAGE = 1200
 
 
-def scrub(value) -> str:
+def scrub(value, limit: int = _MAX_MESSAGE) -> str:
     value = str(value)
     def replace(match):
         return (match.group(1) + "[REDACTED]") if match.group(1) else "[REDACTED]"
-    return _SECRET.sub(replace, value)[:_MAX_MESSAGE]
+    return _SECRET.sub(replace, value)[:limit]
 
 
 def _session_dir(kind: str) -> Path:
@@ -65,7 +65,7 @@ class _SafeFormatter(logging.Formatter):
         message = scrub(record.getMessage())
         if record.exc_info:
             details = "".join(traceback.format_exception(*record.exc_info))
-            message += "\n" + scrub(details)
+            message += "\n" + scrub(details, 12000)
         return message
 
 
@@ -90,7 +90,7 @@ class _JsonlHandler(logging.Handler):
                         event[key] = scrub(value) if isinstance(value, str) else value
             if record.exc_info:
                 event["exception_type"] = record.exc_info[0].__name__
-                event["traceback"] = scrub("".join(traceback.format_exception(*record.exc_info)))
+                event["traceback"] = scrub("".join(traceback.format_exception(*record.exc_info)), 12000)
             self.file.write(json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n")
         except Exception:
             self.handleError(record)
@@ -131,8 +131,11 @@ def configure_logging(kind: str = "studio") -> Path:
         logger.addHandler(json_handler)
         readable = logging.FileHandler(folder / f"readable-{os.getpid()}.log",
                                        encoding="utf-8")
-        readable.setFormatter(logging.Formatter(
-            "%(asctime)sZ [%(levelname)s] %(name)s: %(message)s"))
+        formatter = logging.Formatter(
+            "%(asctime)sZ [%(levelname)s] %(name)s: %(message)s")
+        import time
+        formatter.converter = time.gmtime
+        readable.setFormatter(formatter)
         # Scrub final output too, including exceptions logged by other modules.
         readable.addFilter(_ScrubFilter())
         logger.addHandler(readable)
@@ -149,7 +152,7 @@ class _ScrubFilter(logging.Filter):
         if record.exc_info:
             # The JSON handler retains the redacted formatted traceback;
             # prevent FileHandler from appending raw exception arguments.
-            record.exc_text = scrub("".join(traceback.format_exception(*record.exc_info)))
+            record.exc_text = scrub("".join(traceback.format_exception(*record.exc_info)), 12000)
             record.exc_info = None
         return True
 

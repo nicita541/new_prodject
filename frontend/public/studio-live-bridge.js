@@ -174,5 +174,37 @@
   }
   return result;
  }
+ // Lightweight client diagnostics. No form content, filenames, query
+ // strings, credentials, request payloads or input values are recorded.
+ let lastError='',lastErrorAt=0;
+ function sendDiagnostic(kind,action='',message='',line=0){
+   try{
+     const body=JSON.stringify({kind,action:String(action).slice(0,80),
+       message:String(message).slice(0,500),line:Number(line)||0});
+     fetch('/api/diagnostics/client',{method:'POST',credentials:'same-origin',
+       headers:{'content-type':'application/json'},body,keepalive:true})
+       .catch(()=>{});
+   }catch(_ignore){}
+ }
+ document.addEventListener('click',event=>{
+   const el=event.target?.closest?.('[data-action]');
+   if(!el)return;
+   const action=String(el.dataset.action||'').slice(0,50);
+   const screen=String(el.dataset.screen||'').slice(0,25);
+   if(!/^[a-z0-9_-]{1,50}$/i.test(action))return;
+   sendDiagnostic('ui_action',screen?'click:'+action+':'+screen:'click:'+action);
+ },true);
+ window.addEventListener('error',event=>{
+   const label=String(event.message||'Browser JavaScript error');
+   const now=Date.now();
+   if(label===lastError&&now-lastErrorAt<3000)return;
+   lastError=label;lastErrorAt=now;
+   sendDiagnostic('ui_error','runtime',label,event.lineno||0);
+ });
+ window.addEventListener('unhandledrejection',event=>{
+   const reason=event.reason;
+   sendDiagnostic('unhandled_rejection','promise',
+     String(reason?.message||'Unhandled promise rejection'));
+ });
  window.KadrBridge={get,refresh,loadSelected,request};
 })();

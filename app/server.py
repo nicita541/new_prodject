@@ -36,6 +36,14 @@ ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
 MULTIPART_OVERHEAD = 64 * 1024
 
 
+class BrowserDiagnostic(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["ui_action", "ui_error", "unhandled_rejection"]
+    action: str = Field(default="", max_length=80)
+    message: str = Field(default="", max_length=500)
+    line: int = Field(default=0, ge=0, le=1000000)
+
+
 class UploadTooLarge(HTTPException):
     def __init__(self):
         super().__init__(413, "Серия слишком большая (предел 20 ГБ)")
@@ -378,13 +386,6 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @application.exception_handler(ValueError)
     async def invalid_error(request: Request, error: ValueError):
         return JSONResponse({"detail": safe_message(error, get_manager(request))}, 400)
-
-    class BrowserDiagnostic(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-        kind: Literal["ui_action", "ui_error", "unhandled_rejection"]
-        action: str = Field(default="", max_length=80)
-        message: str = Field(default="", max_length=500)
-        line: int = Field(default=0, ge=0, le=1000000)
 
     @application.post("/api/diagnostics/client", status_code=204)
     def client_diagnostics(body: BrowserDiagnostic):

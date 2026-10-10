@@ -17,7 +17,7 @@ New-Item -ItemType Directory -Force -Path (Join-Path $root "temp"), (Join-Path $
 
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmss") + "_" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
 $localDir = Join-Path $root ("temp\verification-reports\" + $runId)
-$logsDir = Join-Path $localDir "logs"
+$logsDir = Join-Path $root ("logs\\tests\\" + $runId)
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
 $script:checks = @()
 
@@ -197,6 +197,7 @@ $summary = [pscustomobject]@{
     failed = $failed
     skipped = $skipped
     checks = $script:checks
+    logs_dir = $logsDir
 }
 $summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $localDir "checks.json") -Encoding UTF8
 
@@ -220,7 +221,7 @@ foreach ($check in $script:checks) {
     }
 }
 $nl = [Environment]::NewLine
-$md = @("# Local verification report", "", "- Run: $runId", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Video) {'video'} elseif ($Full) {'full'} else {'standard'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
+$md = @("# Local verification report", "", "- Run: $runId", "- Logs: $logsDir", "- Branch: $branch", "- Commit: $commit", "- Mode: $(if ($Quick) {'quick'} elseif ($Video) {'video'} elseif ($Full) {'full'} else {'standard'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8

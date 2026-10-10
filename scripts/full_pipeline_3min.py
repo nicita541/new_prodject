@@ -12,6 +12,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import logging
 import json
 import sys
 import time
@@ -37,16 +38,23 @@ def sha(path: Path) -> str:
 
 def inspect_step(report: dict, name: str, function):
     begun = time.monotonic()
+    logging.getLogger("app.e2e").info("Verification step started: %s", name,
+        extra={"action": "check_start", "stage": name})
     try:
         result = function()
     except BaseException as error:
         report["checks"].append({"name": name, "status": "failed",
                                  "seconds": round(time.monotonic() - begun, 3),
                                  "error_type": type(error).__name__, "error": str(error)})
+        logging.getLogger("app.e2e").exception("Verification step failed: %s", name,
+            extra={"action": "check_failed", "stage": name, "status": "failed"})
         print(f"[FAIL] {name}: {type(error).__name__}: {error}", flush=True)
         raise
     report["checks"].append({"name": name, "status": "passed",
                              "seconds": round(time.monotonic() - begun, 3)})
+    logging.getLogger("app.e2e").info("Verification step succeeded: %s", name,
+        extra={"action": "check_passed", "stage": name, "status": "passed",
+               "elapsed_ms": round((time.monotonic() - begun) * 1000, 2)})
     print(f"[PASS] {name}", flush=True)
     return result
 
@@ -102,6 +110,8 @@ def write_progress(job: Path, report: dict, phase: str):
         with progress.open("a", encoding="utf-8") as out:
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
         report["pipeline_stages"].append(row)
+        logging.getLogger("app.e2e").info("Pipeline stage %s/%s: %.1f%%", phase, stage, percent*100,
+            extra={"action": "pipeline_progress", "stage": stage, "progress": round(percent,4)})
         print(f"[{phase}] {stage} {percent:.0%} {message[:90]}", flush=True)
     return record
 
@@ -348,10 +358,13 @@ def main(argv=None) -> int:
     except ValueError:
         parser.error("--directory must be inside project/temp")
     directory.mkdir(parents=True, exist_ok=True)
+    from app.run_logging import configure_logging
+    log_dir = configure_logging("tests")
     report = {"mode": args.mode, "duration_seconds": 180, "status": "running",
               "checks": [], "pipeline_stages": [],
               "started_utc": datetime.now(timezone.utc).isoformat(),
-              "report_path": str(directory / "report.json")}
+              "report_path": str(directory / "report.json"),
+              "logs_dir": str(log_dir)}
     try:
         if args.mode == "offline":
             run_offline(directory, report)
@@ -363,12 +376,17 @@ def main(argv=None) -> int:
         report["status"] = "failed"
         report["error_type"] = type(error).__name__
         report["error"] = str(error)
+        logging.getLogger("app.e2e").exception("Complete E2E run failed",
+            extra={"action":"e2e_failed", "status":"failed"})
         print(f"[FAIL] full pipeline: {type(error).__name__}: {error}", flush=True)
         return_code = 1
     finally:
         report["finished_utc"] = datetime.now(timezone.utc).isoformat()
         atomic_json(directory / "report.json", report)
+        logging.getLogger("app.e2e").info("Complete E2E status=%s report=%s", report["status"], directory / "report.json",
+            extra={"action": "e2e_finished", "status": report["status"]})
         print("Machine-readable report: " + str(directory / "report.json"), flush=True)
+        print("Session logs: " + str(log_dir), flush=True)
     return return_code
 
 
