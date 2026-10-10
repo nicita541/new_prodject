@@ -64,8 +64,31 @@ def test_published_logs_decode_utf8_to_preserve_russian_diagnostics():
     assert "Get-Content -LiteralPath $src -Tail 120 -Encoding UTF8" in script
 
 
-def test_batch_wrapper_still_waits_for_humans_but_not_ci():
-    bat = (ROOT / "ПРОВЕРИТЬ_ПРОЕКТ.bat").read_text("utf-8")
-    assert 'powershell.exe -NoProfile -ExecutionPolicy Bypass' in bat
-    assert 'if not "%KADR_NONINTERACTIVE%"=="1" pause' in bat
-    assert "exit /b %RESULT%" in bat
+def test_user_friendly_test_folder_has_two_auto_publishing_launchers():
+    folder = ROOT / "ТЕСТЫ"
+    technical = (folder / "1_ПРОВЕРКА_БЕЗ_ИИ.bat").read_text("utf-8")
+    full = (folder / "2_ПОЛНАЯ_ПРОВЕРКА_С_ИИ.bat").read_text("utf-8")
+    assert not (ROOT / "ПРОВЕРИТЬ_ПРОЕКТ.bat").exists()
+    assert not (ROOT / "test_full_pipeline_3min.bat").exists()
+    for bat in (technical, full):
+        assert "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass" in bat
+        assert 'if not "%KADR_NONINTERACTIVE%"=="1" pause' in bat
+        assert "exit /b %RESULT%" in bat
+        assert "-NoUpload" not in bat
+        assert "scripts\\verify_project.ps1" in bat
+    assert "-RequireRealModel" not in technical
+    assert "-RequireRealModel" in full
+
+
+def test_required_real_model_cannot_silently_pass_or_publish_source_media():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert "[switch]$RequireRealModel" in script
+    assert "System.Windows.Forms.OpenFileDialog" in script
+    assert 'Add-Check "real_model_3min" "FAIL"' in script
+    assert 'Run-Check "prepare_real_source"' in script
+    assert 'Run-Check "real_model_3min" $python $realArgs' in script
+    assert 'run_profile = if ($RequireRealModel -or $RealSource)' in script
+    assert 'HEAD:refs/heads/test-reports' in script
+    assert '$publicSummary.logs_dir = "[LOCAL_ONLY]"' in script
+    assert '"[SELECTED_VIDEO]"' not in script
+    assert "'[SELECTED_VIDEO]'" in script

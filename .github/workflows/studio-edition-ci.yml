@@ -195,11 +195,16 @@ jobs:
           # The BAT may exit 1 because this clean runner deliberately lacks
           # the app's portable dependencies. Capture that expected result
           # without GitHub's PowerShell native-command error promotion.
-          $batch = Join-Path (Get-Location).Path 'ПРОВЕРИТЬ_ПРОЕКТ.bat'
+          $batch = Join-Path (Get-Location).Path 'ТЕСТЫ\1_ПРОВЕРКА_БЕЗ_ИИ.bat'
           $process = Start-Process -FilePath $env:ComSpec -ArgumentList @(
             '/d', '/c', ('"' + $batch + '" -Quick -NoUpload')
           ) -WorkingDirectory (Get-Location).Path -NoNewWindow -Wait -PassThru
           $code = $process.ExitCode
+          $fullBatch = Join-Path (Get-Location).Path 'ТЕСТЫ\2_ПОЛНАЯ_ПРОВЕРКА_С_ИИ.bat'
+          if (-not (Test-Path $fullBatch)) { throw 'Real-model test BAT missing' }
+          if (-not ((Get-Content -Raw -Encoding UTF8 $fullBatch).Contains('-RequireRealModel'))) {
+            throw 'Full BAT may silently run without real ASR/VLM'
+          }
           if ($code -notin @(0, 1, 2)) { throw "Windows verification launcher failed: $code" }
           $latest = Get-ChildItem temp/verification-reports -Directory |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
