@@ -74,8 +74,8 @@ def merge_subframe_chunks(chunks, minimum_seconds=.125):
     return values
 
 
-def bounded_chunks(scene, transcript, shots, max_frames=12, *, frame_times=None):
-    """Bound inference by actual frame demand, preserving semantic ownership."""
+def bounded_chunks(scene, transcript, shots, max_frames=18, *, frame_times=None):
+    """Bound inference by actual frame demand; 18 readable frames reduce redundant story passes."""
     from .scene_detection import analysis_chunks
     from .vision import inference_samples
     pending = merge_subframe_chunks(analysis_chunks(scene, transcript))

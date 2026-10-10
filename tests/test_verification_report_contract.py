@@ -107,3 +107,12 @@ def test_reports_do_not_publish_raw_real_model_or_selected_video_logs():
     assert 'if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }' in script
     assert 'Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; inspect local diagnostics")' in script
     assert '$publicSummary.logs_dir = "[LOCAL_ONLY]"' in script
+
+
+def test_real_ai_run_has_one_30_minute_budget_across_all_checks():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert '$script:verificationDeadline = (Get-Date).AddMinutes(30)' in script
+    assert '$remaining = [int][Math]::Floor(($script:verificationDeadline - (Get-Date)).TotalSeconds)' in script
+    assert '$effectiveTimeout = [Math]::Min($Timeout, $remaining)' in script
+    assert 'Run-Check "real_model_3min" $python $realArgs $root 1800' in script
+    assert '21600' not in script

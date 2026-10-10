@@ -22,6 +22,9 @@ $logsDir = Join-Path (Join-Path $root 'logs\tests') $runId
 # exist before tests start, not just logs: checks.json is written at the end.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
 $script:checks = @()
+# The complete real-AI acceptance (Python, React, offline E2E, ASR/VLM, render)
+# has one shared 30-minute deadline. No individual stage may reset this clock.
+$script:verificationDeadline = $null
 
 function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note) {
     $script:checks += [pscustomobject]@{ name = $Name; status = $Status; exit_code = $ExitCode; note = $Note }
@@ -31,7 +34,16 @@ function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note
 function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$Working = $root, [int]$Timeout = 1200) {
     $outFile = Join-Path $logsDir ($Name + ".out.txt")
     $errFile = Join-Path $logsDir ($Name + ".err.txt")
-    Write-Host ("RUN: " + $Name)
+    $effectiveTimeout = $Timeout
+    if ($script:verificationDeadline) {
+        $remaining = [int][Math]::Floor(($script:verificationDeadline - (Get-Date)).TotalSeconds)
+        if ($remaining -le 0) {
+            Add-Check $Name "TIMEOUT" 124 "Shared 30-minute full-AI test budget exhausted"
+            return
+        }
+        $effectiveTimeout = [Math]::Min($Timeout, $remaining)
+    }
+    Write-Host ("RUN: " + $Name + " (limit " + $effectiveTimeout + "s)")
     try {
         $safeArgs = @($Arguments | ForEach-Object {
             if ($_ -match '"') { throw "Unescaped quote in test argument" }
@@ -43,15 +55,15 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
             $elapsed += 3
             if (($elapsed % 15) -eq 0) {
                 $bytes = if (Test-Path -LiteralPath $outFile) { (Get-Item $outFile).Length } else { 0 }
-                Write-Host ("[{0}] {1}s elapsed, stdout={2} bytes (limit {3}s)" -f $Name,$elapsed,$bytes,$Timeout)
+                Write-Host ("[{0}] {1}s elapsed, stdout={2} bytes (limit {3}s)" -f $Name,$elapsed,$bytes,$effectiveTimeout)
             }
-            if ($elapsed -ge $Timeout) {
+            if ($elapsed -ge $effectiveTimeout) {
                 # On Windows kill the entire child process tree, not just npm
                 # or pytest parent; otherwise detached workers survive forever.
                 if ($IsWindows -or $env:OS -eq 'Windows_NT') {
                     & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
                 } else { try { $process.Kill() } catch { } }
-                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; inspect local diagnostics")
+                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $effectiveTimeout + " seconds; inspect local diagnostics")
                 return
             }
         }
@@ -157,6 +169,10 @@ if ($RequireRealModel -and -not $RealSource) {
     }
 }
 if ($StartSeconds -lt 0) { throw "StartSeconds cannot be negative" }
+if ($RequireRealModel -or $RealSource) {
+    $script:verificationDeadline = (Get-Date).AddMinutes(30)
+    Write-Host "FULL AI TEST DEADLINE: 30 minutes for ALL stages combined; TIMEOUT is FAIL."
+}
 
 Write-Host ("Run: " + $runId)
 Write-Host ("Branch: " + $branch)
@@ -275,7 +291,7 @@ if ($RequireRealModel -and $RealTranscript) {
             $realArgs = @("scripts/full_pipeline_3min.py", "--mode", "real",
                           "--directory", $realDir, "--source", $preparedSource)
             if ($RealTranscript) { $realArgs += @("--transcript", $RealTranscript) }
-            Run-Check "real_model_3min" $python $realArgs $root 21600
+            Run-Check "real_model_3min" $python $realArgs $root 1800
         }
     }
 }

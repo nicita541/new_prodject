@@ -133,7 +133,7 @@ class SemanticPipelineTests(unittest.TestCase):
     def test_dense_action_chunks_fit_image_provider_without_becoming_scenes(self):
         shots = [{'id':f's{i}', 'start':i*.5, 'end':(i+1)*.5, 'location':'same'} for i in range(180)]
         scene = detect_semantic_scenes(shots, EMPTY, 90)[0]
-        chunks = bounded_chunks(scene, EMPTY, shots)
+        chunks = bounded_chunks(scene, EMPTY, shots, max_frames=12)
         self.assertGreater(len(chunks), 3)
         self.assertEqual(chunks[0]['start'], 0)
         self.assertEqual(chunks[-1]['end'], 90)
@@ -160,7 +160,7 @@ class SemanticPipelineTests(unittest.TestCase):
                 units = candidate_units(start, end, transcript, [], annotated=True, max_unit_seconds=4)
                 self.assertEqual(len(inference_samples(start, end, units)), 12)
                 self.assertEqual(len(inference_samples(start, end, units, recovery=True)), 13)
-                chunks = bounded_chunks(scene, transcript, [])
+                chunks = bounded_chunks(scene, transcript, [], max_frames=12)
                 self.assertEqual([(c['start'], c['end']) for c in chunks],
                                  [(start, speech_start), (speech_start, end)])
                 self.assertEqual({c['parent_scene_id'] for c in chunks}, {scene['id']})
@@ -176,7 +176,7 @@ class SemanticPipelineTests(unittest.TestCase):
         transcript = {'segments': [{'start': 0, 'end': 9, 'text': 'Слово'}],
                       'words': [{'start': 0, 'end': 9, 'text': 'Слово'}]}
         with self.assertRaisesRegex(ValueError, 'Indivisible source unit'):
-            bounded_chunks(scene, transcript, [])
+            bounded_chunks(scene, transcript, [], max_frames=12)
 
     def test_frame_empty_scene_keeps_its_interval_without_borrowing_a_picture(self):
         scenes = [{'id': 'before', 'start': 0, 'end': .04},

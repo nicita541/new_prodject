@@ -17,8 +17,8 @@ import re
 from .config import FFMPEG
 from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
 
-SCENE_DETECTOR_VERSION = 3
-SCENE_GROUPING_VERSION = 3
+SCENE_DETECTOR_VERSION = 4
+SCENE_GROUPING_VERSION = 4
 VISUAL_FEATURE_VERSION = 2
 DEFAULT_SETTINGS = {
     'visual_change_threshold': .62,
@@ -272,6 +272,12 @@ def detect_semantic_scenes(shots: list[dict], transcript: dict, duration: float,
         if proof and not proof.get('uncertain', True) and proof.get('confidence', 0) >= .88:
             cut, confidence = bool(proof['accepted']), proof['confidence']
             reasons.extend(proof['reasons'])
+        elif proof and proof.get('source') == 'triage_deferred':
+            # Keep short actions and camera cuts as original source segments,
+            # but don't promote a boundary we explicitly could not verify to
+            # a semantic scene. Parent-scene inference still sees the frames.
+            uncertain, confidence = True, .45
+            reasons.append('deferred_for_scene_analysis')
         elif location_change:
             cut, confidence = True, .97
             reasons.append('location_change')
@@ -381,6 +387,64 @@ def production_shots(shots, proposals, duration):
     return result
 
 
+
+# Ambiguous shot proposals are not semantic scenes. Checking every optical-flow
+# / fade / suppressed-cut proposal with a large VLM can produce hundreds of
+# inferences on a three-minute source. Preserve every original proposal for
+# unit/storyboard analysis, but prioritize one *uncertain semantic boundary*
+# per 1.5 seconds for full visual verification. This is a rate of evidence
+# acquisition, NOT a minimum scene length: proven boundaries and brief
+# physical-action shots are never discarded.
+SEMANTIC_VLM_WINDOW_SECONDS = 1.5
+
+
+def _boundary_check_priority(measured: dict, proposal: dict) -> tuple:
+    """Highest-information unresolved boundary wins a nearby VLM slot.
+
+    Verified state/action probes are prioritized over noisy optical cuts. This
+    function does not invent a story transition or certify any boundary.
+    """
+    origins = set(proposal.get('origins') or [])
+    scores = proposal.get('scores') or {}
+    def score(key):
+        value = scores.get(key, 0)
+        return float(value) if type(value) in (int, float) and math.isfinite(value) else 0.0
+    state = 4 if 'state_probe' in origins else 0
+    state += 2 if origins & {'motion_change', 'audio_discontinuity', 'black_frame'} else 0
+    state += 1 if origins & {'motion', 'audio', 'fade', 'black'} else 0
+    speech = measured.get('asr_continuity') or {}
+    importance = state + (3 if speech.get('dialogue_break') else 0)
+    background = measured.get('background_distance') or 0
+    whole = measured.get('perceptual_distance') or 0
+    importance += min(2, max(0, background)) + min(2, max(0, whole))
+    importance += max(score('motion'), score('motion_score'), score('audio'), score('fade'))
+    return (importance, state, background + whole)
+
+
+def _select_boundary_verifications(candidates: list[dict], window_seconds=SEMANTIC_VLM_WINDOW_SECONDS) -> set[float]:
+    """Return evidence-check timestamps; no timestamps or source cuts are lost.
+
+    Each candidate contains time, measured and proposal. Obvious changes/same
+    scenes do not consume VLM slots. For ambiguous candidates in one short
+    window, prefer explicit physical/action/audio evidence over mere camera
+    motion; defer the rest as *uncertain* for parent-scene understanding.
+    """
+    if not math.isfinite(window_seconds) or window_seconds <= 0:
+        raise ValueError('Invalid semantic boundary VLM window')
+    chosen = {}
+    for row in candidates:
+        if row['measured']['classification'] != 'ambiguous_boundary':
+            continue
+        time = float(row['time'])
+        if not math.isfinite(time) or time < 0:
+            raise ValueError('Invalid source boundary time')
+        bucket = int(time / window_seconds)
+        priority = (*_boundary_check_priority(row['measured'], row['proposal']), -time)
+        if bucket not in chosen or priority > chosen[bucket][0]:
+            chosen[bucket] = (priority, round(time, 6))
+    return {time for _, time in chosen.values()}
+
+
 def production_boundaries(source, source_shots, features, transcript, job_dir, vision, cancelled, config,
                           audio_features=None):
     from .semantic_boundary import classify_boundary, embedding_distance, verify_boundary
@@ -388,6 +452,7 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
     intervals = _candidate_segments(source_shots)
     proofs = {}
     diagnostics = Diagnostics(job_dir)
+    assessments = []
     for index in range(1, len(intervals)):
         if cancelled():
             raise InterruptedError('Обработка отменена')
@@ -413,7 +478,19 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
                    'speech': any(row.get('speech',False) for row in audio_near),
                    'rms_dbfs': [row.get('dbfs') for row in audio_near],
                    'spectral_centroid': [row.get('spectral_centroid') for row in audio_near]})
-        diagnostics.event('semantic_boundary', 'level_a', source_time=current['start'],
+        assessments.append({'time': current['start'], 'measured': measured, 'proposal': proposal,
+                            'before': previous['start'], 'after': current['end']})
+    selected = _select_boundary_verifications(assessments)
+    diagnostics.event('semantic_boundary', 'triage', candidates=len(assessments),
+                      ambiguous=sum(row['measured']['classification'] == 'ambiguous_boundary'
+                                    for row in assessments), selected=len(selected),
+                      interval_seconds=SEMANTIC_VLM_WINDOW_SECONDS)
+    for row in assessments:
+        if cancelled():
+            raise InterruptedError('Обработка отменена')
+        measured, proposal = row['measured'], row['proposal']
+        current_time = row['time']
+        diagnostics.event('semantic_boundary', 'level_a', source_time=current_time,
                           source_candidate=proposal.get('id'), **measured)
         classification = measured['classification']
         if classification != 'ambiguous_boundary':
@@ -424,8 +501,14 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
             proof = {'accepted': False, 'confidence': 0, 'uncertain': True,
                      'source': 'semantic_boundary_unavailable', 'level_a': measured,
                      'reasons': ['semantic_boundary_verification_required']}
+        elif round(current_time, 6) not in selected:
+            # Retain the candidate, including its exact source time and
+            # physical-action evidence. No unreviewed boundary is confirmed.
+            proof = {'accepted': False, 'confidence': 0, 'uncertain': True,
+                     'source': 'triage_deferred', 'level_a': measured,
+                     'reasons': ['deferred_for_scene_analysis']}
         else:
-            proof = verify_boundary(source, current['start'], previous['start'], current['end'], transcript,
+            proof = verify_boundary(source, current_time, row['before'], row['after'], transcript,
                                     measured, job_dir, vision, cancelled)
             trusted = not proof.get('uncertain', True) and proof.get('confidence', 0) >= .88
             physical = any(proof.get(key) for key in ('physical_transition', 'character_state_changed', 'object_state_changed'))
@@ -434,8 +517,8 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
                                 ['verified_location_change'] if proof.get('location_changed') else ['verified_same_scene']) if trusted else ['semantic_boundary_unresolved']
             proof['uncertain'] = not trusted
             proof['narrative_bridge_candidate'] = trusted and physical
-        proofs[round(current['start'],6)] = proof
-        diagnostics.append('boundary_decisions.jsonl', {'source_time': current['start'],
+        proofs[round(current_time,6)] = proof
+        diagnostics.append('boundary_decisions.jsonl', {'source_time': current_time,
                            'candidate_id': proposal.get('id'), 'decision': proof})
     return proofs
 
