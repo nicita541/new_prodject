@@ -13,10 +13,10 @@ def source(path):
 
 
 def test_paid_story_launcher_requires_explicit_confirmation_and_real_production():
-    launcher = source("ТЕСТЫ/5_ПОЛНАЯ_ПРОВЕРКА_DEEPSEEK_FLASH.bat")
+    launcher = source("ТЕСТЫ/3_ПОЛНАЯ_ПРОВЕРКА_DEEPSEEK.bat")
     ps = source("scripts/verify_project.ps1")
-    assert "setlocal EnableDelayedExpansion" in launcher
-    assert 'if /I not "!KADR_CONFIRM!"=="YES"' in launcher
+    assert "setlocal" in launcher
+    assert 'Type UNLIMITED to authorize paid DeepSeek requests' in ps
     assert "-RequireRealModel -FlashStory" in launcher
     assert '$FlashStory' in ps
     assert 'if ($FlashStory) { $realArgs += @("--local-provider", "local_flash_story") }' in ps
