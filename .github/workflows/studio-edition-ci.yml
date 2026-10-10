@@ -118,7 +118,8 @@ jobs:
             tests/test_question_context.py \
             tests/test_retention_allocation.py \
             tests/test_semantic_boundary.py \
-            tests/test_semantic_identity.py
+            tests/test_semantic_identity.py \
+            tests/test_full_pipeline_harness.py
 
   backend:
     name: Finishing API safety tests
