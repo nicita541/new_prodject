@@ -26,6 +26,8 @@ _LOCK = threading.Lock()
 def model_alias(model):
     from .config import STORY_MODEL, VLM_MODEL
     candidate = Path(model)
+    if str(model) == "deepseek-flash":
+        return "deepseek_flash"
     return "story9b" if candidate == STORY_MODEL else (
         "visual4b" if candidate == VLM_MODEL else "other")
 

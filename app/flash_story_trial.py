@@ -127,13 +127,39 @@ class TrialStoryVision:
                 remote = self._remote()
                 original = remote._fetch
                 dispatched = False
+                from contextvars import copy_context
+                from .model_perf import measure_request
+                context = copy_context()
+
+                def measured_dispatch(body):
+                    messages = body.get("messages") if isinstance(body, dict) else []
+                    text_size, pages = 0, 0
+                    for message in messages if isinstance(messages, list) else []:
+                        content = message.get("content") if isinstance(message, dict) else None
+                        if isinstance(content, str):
+                            text_size += len(content)
+                        elif isinstance(content, list):
+                            for part in content:
+                                if not isinstance(part, dict):
+                                    continue
+                                if part.get("type") == "text":
+                                    text_size += len(part.get("text", ""))
+                                elif part.get("type") == "image_url":
+                                    pages += 1
+                    with measure_request(self.job_dir, "deepseek-flash", pages=pages,
+                                         prompt_chars=text_size, max_tokens=body.get("max_tokens", 0),
+                                         thinking=False, cpu=False) as trace:
+                        raw = original(body)
+                        trace.response(raw)
+                        return raw
+
                 def one_dispatch(body):
                     nonlocal dispatched
                     if dispatched:
                         raise BudgetExceeded("Пробный режим не повторяет платный запрос")
                     self._reserve(body)
                     dispatched = True
-                    return original(body)
+                    return context.run(measured_dispatch, body)
                 remote._fetch = one_dispatch
                 try:
                     return remote.query(prompt, image, max_tokens=max_tokens, schema=schema)

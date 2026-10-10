@@ -83,7 +83,7 @@ def json_lines(path):
 PERF_STAGES = frozenset(("general", "semantic_boundary", "scene_analysis", "story_refinement",
     "choose_units", "verify_omissions", "credit_classifier", "global_story",
     "global_visual", "source_roles", "titles", "framing", "pacing"))
-PERF_MODELS = frozenset(("visual4b", "story9b", "other"))
+PERF_MODELS = frozenset(("visual4b", "story9b", "deepseek_flash", "other"))
 PERF_STATUSES = frozenset(("ok", "failed", "cancelled", "retried", "fallback", "timeout"))
 
 
