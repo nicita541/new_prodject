@@ -50,17 +50,24 @@ class RecordedVision:
     def __getattr__(self,name):
         return getattr(self.vision,name)
 
-    def query(self,prompt,image=None,max_tokens=1200,schema=None):
+    def query(self,prompt,image=None,max_tokens=1200,schema=None, *, thinking_override=None):
+        # The production acceptance recorder must transparently forward
+        # per-request reasoning mode; otherwise the 9B no-thinking shortcut
+        # works in unit tests but fails under the real-model full BAT.
+        if thinking_override is not None and type(thinking_override) is not bool:
+            raise ValueError('Invalid thinking override')
+        effective_thinking = self.vision.thinking if thinking_override is None else thinking_override
         self.calls += 1
         images = image if isinstance(image,(list,tuple)) else [image] if image is not None else []
         record = {'request':self.calls,'prompt':prompt,'schema':schema,'max_tokens':max_tokens,
                   'model':str(self.vision.model),'projector':str(self.vision.projector),
-                  'thinking':bool(getattr(self.vision,'thinking',False)),
+                  'thinking':bool(effective_thinking),
                   'images':[{'path':str(path),'sha256':sha256(path)} for path in images]}
         atomic_json(self.directory/f'request-{self.calls:03d}.json',record)
         started = time.monotonic()
         try:
-            result = self.vision.query(prompt,image,max_tokens=max_tokens,schema=schema)
+            overrides = {} if thinking_override is None else {'thinking_override': thinking_override}
+            result = self.vision.query(prompt,image,max_tokens=max_tokens,schema=schema, **overrides)
         except BaseException as error:
             atomic_json(self.directory/f'response-{self.calls:03d}.json',{
                 'elapsed_seconds':time.monotonic()-started,'error_type':type(error).__name__,'error':str(error)})

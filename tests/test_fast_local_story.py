@@ -68,3 +68,29 @@ def test_raw_observer_only_allows_explicit_fully_local_models(tmp_path):
         run(tmp_path, tmp_path / "output", analysis_provider="local_flash_story")
     with pytest.raises(ValueError, match="genuine local"):
         run(tmp_path, tmp_path / "output", analysis_provider="deepseek")
+
+
+
+def test_real_model_recorder_preserves_per_request_thinking_override(tmp_path):
+    # The real 180s launcher wraps LocalVision, unlike ordinary unit tests.
+    # The wrapper must not silently strip or reject the nonthinking flag.
+    from app.story import _profiled_query
+    from app.vision import LocalVision
+    from scripts.run_raw_video_quality import RecordedVision
+
+    local = LocalVision(tmp_path, lambda: False, model=STORY_MODEL, thinking=True)
+    with patch("scripts.run_raw_video_quality.workspace", lambda value: Path(value).resolve()):
+        recorded = RecordedVision(local, tmp_path / "actual-model")
+        with patch.object(local, "query", return_value={"decisions": []}) as query:
+            result = _profiled_query(recorded, "verify_omissions", "check source",
+                                     max_tokens=360, schema={"type": "object"})
+        assert result == {"decisions": []}
+        assert query.call_args.kwargs["thinking_override"] is False
+        assert local.thinking is True
+        request = json.loads((tmp_path / "actual-model" / "request-001.json").read_text("utf-8"))
+        assert request["thinking"] is False
+        with patch.object(local, "query", return_value={"keep": []}) as query:
+            _profiled_query(recorded, "choose_units", "choose", max_tokens=650)
+            assert "thinking_override" not in query.call_args.kwargs
+        second = json.loads((tmp_path / "actual-model" / "request-002.json").read_text("utf-8"))
+        assert second["thinking"] is True
