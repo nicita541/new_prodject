@@ -51,11 +51,10 @@ def test_fast_real_mode_retains_two_model_and_video_passes():
     assert 'if not outcome["complete"]:' in script
 
 
-def test_fast_windows_launcher_reuses_strict_real_pipeline():
+def test_fast_internal_provider_retains_strict_pipeline_without_extra_launcher():
     root = Path(__file__).resolve().parents[1]
-    bat = (root / "ТЕСТЫ" / "4_ПОЛНАЯ_ПРОВЕРКА_БЫСТРАЯ_4B.bat").read_text("utf-8")
     ps = (root / "scripts" / "verify_project.ps1").read_text("utf-8")
-    assert "-RequireRealModel -FastLocalStory" in bat
+    assert not (root / "ТЕСТЫ" / "4_ПОЛНАЯ_ПРОВЕРКА_БЫСТРАЯ_4B.bat").exists()
     assert 'if ($FastLocalStory) { $realArgs += @("--local-provider", "local_fast_story") }' in ps
     assert '$script:verificationBudgetSeconds = 2200' in ps
     assert 'Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds' in ps
