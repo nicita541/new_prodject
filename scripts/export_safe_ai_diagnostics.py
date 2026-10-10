@@ -59,9 +59,12 @@ def summarize(test_dir):
     outcome = json_file(job / "observed-outcome.json")
     report = report if isinstance(report, dict) else {}
     outcome = outcome if isinstance(outcome, dict) else {}
+    raw_steps = report.get("checks")
+    if not isinstance(raw_steps, list):
+        raw_steps = []
     steps = [{"name": name(item.get("name")), "status": name(item.get("status")),
               "error_type": name(item.get("error_type")), "seconds": numeric(item.get("seconds"))}
-             for item in report.get("checks", [])[:100] if isinstance(item, dict)]
+             for item in raw_steps[:100] if isinstance(item, dict)]
     result = {
         "schema_version": 1,
         "scope": "safe_numeric_and_status_metadata_only",

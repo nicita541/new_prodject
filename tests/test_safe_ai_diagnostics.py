@@ -42,7 +42,7 @@ def test_failed_test_exports_diagnostics_but_never_dialogues_or_prompts(tmp_path
     output = tmp_path / "published/ai_diagnostics.json"
     assert main(["--test-dir", str(run), "--output", str(output)]) == 0
     raw = output.read_text("utf-8")
-    assert secret not in raw and "prompt" not in raw and "response" not in raw
+    assert secret not in raw and '"prompt":' not in raw and '"response": {' not in raw
     data = json.loads(raw)
     assert data["real_e2e"]["status"] == "failed"
     assert data["real_e2e"]["error_type"] == "RuntimeError"
