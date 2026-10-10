@@ -164,8 +164,8 @@ Write-Host ("Commit: " + $commit)
 Write-Host ("Mode: " + $(if ($Quick) { "quick (no 180s E2E)" } elseif ($Video) { "video + 180s E2E" } else { "FULL: all Python/React checks + 180s E2E" }))
 if ($RequireRealModel -or $RealSource) { Write-Host "FULL ACCEPTANCE: 180s real local ASR/VLM run required in addition to technical E2E." }
 else { Write-Host "TECHNICAL ONLY: local ASR/VLM will not run (clearly marked in report)." }
-if ($branch -ne "fix/montage-stability") {
-    Write-Warning "Results belong to the checked-out commit above. Suggested branch: fix/montage-stability."
+if ($branch -notin @("codex/dramatic-montage", "fix/montage-stability")) {
+    Write-Warning "Tests are running on branch '$branch', not codex/dramatic-montage. Report will record the actual commit."
 }
 
 if ($python) {

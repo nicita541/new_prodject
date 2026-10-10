@@ -24,6 +24,7 @@ def prepare(source: Path, directory: Path, *, start_seconds: float = 0.0) -> Pat
         raise ValueError("Choose a readable video file")
     if not directory.is_relative_to((ROOT / "temp").resolve()):
         raise ValueError("Temporary test material must stay under project/temp")
+    start_seconds = float(start_seconds)
     if start_seconds < 0 or not (float("-inf") < start_seconds < float("inf")):
         raise ValueError("Start time must be a finite, non-negative number")
 
