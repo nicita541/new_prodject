@@ -134,3 +134,12 @@ def test_windows_launcher_rejects_false_green_e2e_artifacts():
     assert '$e2e.real_resume.identical_output_hashes -ne $true' in script
     assert '$code = 1' in script
     assert 'E2E artifact validation failed; inspect local report.json' in script
+
+
+def test_full_ai_auto_publishes_allowlisted_model_diagnostics_on_failure_too():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert 'scripts/export_safe_ai_diagnostics.py' in script
+    assert 'Join-Path $localDir "ai_diagnostics.json"' in script
+    assert 'Copy-Item -LiteralPath $safeAiReport -Destination (Join-Path $uploadDir "ai_diagnostics.json") -Force' in script
+    assert script.index('scripts/export_safe_ai_diagnostics.py') < script.index('$failed = @(')
+    assert 'if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }' in script

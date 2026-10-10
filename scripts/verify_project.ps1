@@ -335,6 +335,25 @@ if ($RequireRealModel -and $RealTranscript) {
     }
 }
 
+# Produce safe structural AI diagnostics after PASS, FAIL or TIMEOUT, before
+# calculating the overall result. Never copy a model's raw logs to GitHub.
+if ($RequireRealModel -or $RealSource) {
+    $safeAiReport = Join-Path $localDir "ai_diagnostics.json"
+    if ($python) {
+        try {
+            & $python "scripts/export_safe_ai_diagnostics.py" "--test-dir" $localDir "--output" $safeAiReport
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $safeAiReport -PathType Leaf)) {
+                throw "safe diagnostic extraction unavailable"
+            }
+            Add-Check "safe_ai_diagnostics" "PASS" 0 "allowlisted AI metadata generated"
+        } catch {
+            Add-Check "safe_ai_diagnostics" "FAIL" 1 "safe AI diagnostics generation failed"
+        }
+    } else {
+        Add-Check "safe_ai_diagnostics" "SKIP" 0 "Python missing"
+    }
+}
+
 $failed = @($script:checks | Where-Object { $_.status -in @("FAIL", "TIMEOUT") }).Count
 $skipped = @($script:checks | Where-Object { $_.status -eq "SKIP" }).Count
 $passed = @($script:checks | Where-Object { $_.status -eq "PASS" }).Count
@@ -395,6 +414,11 @@ $publicSummary = $summary | ConvertTo-Json -Depth 8 | ConvertFrom-Json
 $publicSummary.logs_dir = "[LOCAL_ONLY]"
 $publicSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $uploadDir "checks.json") -Encoding UTF8
 $e2eOverview | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $uploadDir "e2e_overview.json") -Encoding UTF8
+# ONLY the extractor output is publishable. Do not copy the private job folder.
+$safeAiReport = Join-Path $localDir "ai_diagnostics.json"
+if (Test-Path -LiteralPath $safeAiReport -PathType Leaf) {
+    Copy-Item -LiteralPath $safeAiReport -Destination (Join-Path $uploadDir "ai_diagnostics.json") -Force
+}
 foreach ($check in $script:checks) {
     # Real ASR/VLM may print episode dialogue, frame descriptions and prompts.
     # Publish only status, error type and approved stage names for this mode;
@@ -419,6 +443,9 @@ foreach ($check in $script:checks) {
 $nl = [Environment]::NewLine
 $md = @("# KADR verification report", "", "- Run: $runId", "- Logs: [LOCAL_ONLY]", "- Branch: $branch", "- Commit: $commit", "- Profile: $(if ($RequireRealModel -or $RealSource) {'FULL WITH LOCAL AI'} else {'TECHNICAL WITHOUT AI'})", "- Result: $overall (passed $passed; failed $failed; skipped $skipped)", "- Real ASR/VLM: $(if ($RequireRealModel -or $RealSource) {'REQUIRED, see real_model_3min'} else {'NOT RUN (technical test)'})", "", "| Check | Result | Details |", "| --- | --- | --- |")
 foreach ($check in $script:checks) { $md += "| $($check.name) | $($check.status) | $($check.note) |" }
+if ($RequireRealModel -or $RealSource) {
+    $md += @("", "- AI diagnostics: ai_diagnostics.json (safe numeric and stage metadata)")
+}
 $md += @("", "Raw, unredacted logs remain on the user's computer.")
 ($md -join $nl) | Set-Content -LiteralPath (Join-Path $uploadDir "README.md") -Encoding UTF8
 (($md -join $nl) -replace '\[LOCAL_ONLY\]', $logsDir) | Set-Content -LiteralPath (Join-Path $localDir "summary.md") -Encoding UTF8
