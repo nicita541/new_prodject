@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import subprocess
@@ -54,6 +55,12 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
     if cancelled():
         raise InterruptedError("Обработка отменена")
     started = time.monotonic()
+    process_log = str(log.relative_to(__import__("app.config", fromlist=["ROOT"]).ROOT)) if log.is_relative_to(__import__("app.config", fromlist=["ROOT"]).ROOT) else log.name
+    tool = Path(argv[0]).name
+    logging.getLogger("app.media").info(
+        "External tool started: %s", tool,
+        extra={"action": "process_start", "stage": "media", "filename": tool,
+               "detail_log": process_log})
     flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     with log.open("wb") as stderr:
         process = subprocess.Popen([str(a) for a in argv], cwd=str(cwd), stdout=subprocess.PIPE,
@@ -70,6 +77,11 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
                 except subprocess.TimeoutExpired:
                     pass
         except BaseException:
+            logging.getLogger("app.media").exception(
+                "External tool cancelled/failed: %s", tool,
+                extra={"action": "process_interrupted", "stage": "media", "filename": tool,
+                       "elapsed_ms": round((time.monotonic()-started)*1000, 2),
+                       "detail_log": process_log})
             process.terminate()
             try:
                 process.communicate(timeout=3)
@@ -78,10 +90,20 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
                 process.communicate()
             raise
     if process.returncode:
+        logging.getLogger("app.media").error(
+            "External tool exited with code %s: %s", process.returncode, tool,
+            extra={"action": "process_failed", "stage": "media", "filename": tool,
+                   "code": process.returncode, "detail_log": process_log,
+                   "elapsed_ms": round((time.monotonic()-started)*1000, 2)})
         with log.open("rb") as handle:
             handle.seek(max(0, log.stat().st_size - 6000))
             error = handle.read().decode("utf-8", "replace")
         raise RuntimeError(f"{Path(argv[0]).name}: {error.strip()}")
+    logging.getLogger("app.media").info(
+        "External tool completed: %s", tool,
+        extra={"action": "process_done", "stage": "media", "filename": tool,
+               "detail_log": process_log,
+               "elapsed_ms": round((time.monotonic()-started)*1000, 2)})
     return output.decode("utf-8", "replace")
 
 

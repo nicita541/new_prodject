@@ -49,6 +49,11 @@ jobs:
           assert report['duration_seconds'] == 180
           assert report['status'] == 'passed'
           assert report['analysis_mode'] == 'deterministic_semantic_fixture_NOT_ASR_OR_VLM'
+          from pathlib import Path
+          log_dir=Path(report['logs_dir'])
+          assert log_dir.is_dir()
+          events=list(log_dir.glob('events-*.jsonl'))
+          assert events and any('check_passed' in p.read_text('utf-8') for p in events)
           assert report['cache']['all_parts_reused']
           assert report['cache']['corrupt_srt_forced_rerender']
           assert report['finished_preview']['sha256']
@@ -67,6 +72,9 @@ jobs:
           retention-days: 14
           path: |
             temp/ci-full-pipeline-3min/report.json
+            logs/tests/**/events-*.jsonl
+            logs/tests/**/readable-*.log
+            logs/tests/**/session.json
             temp/ci-full-pipeline-3min/source-180s.mp4
             temp/ci-full-pipeline-3min/data/jobs/*/output/*.mp4
             temp/ci-full-pipeline-3min/data/jobs/*/output/*.srt
