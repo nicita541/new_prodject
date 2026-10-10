@@ -24,11 +24,12 @@ MAX_PAID_ATTEMPTS = 8
 BUDGETED_PROFILE = "local4b-deepseek-flash-story-budgeted-v1"
 BUDGETED_MAX_PAID_ATTEMPTS = 96
 BUDGETED_ESTIMATED_PEAK_USD = 0.05
-# DeepSeek Flash maximum advertised context: price a worst-case input as
-# uncached (131072 tokens), plus the exact requested max output allowance.
-# Successful responses settle against provider-reported usage. Interrupted
-# requests retain their conservative reserve. It is still an estimate, not
-# a guaranteed monetary cap or a replacement for provider-side limits.
+# Conservative *per-request budgeting assumption*, not DeepSeek's maximum
+# context window (the current model supports up to 1M input-context tokens).
+# Reserve 131072 uncached input tokens plus requested output allowance, then
+# reconcile when reported usage arrives. Images can change token usage, and
+# provider tariffs can change; this is an ESTIMATE, not an enforceable USD cap.
+# Interrupted requests retain the whole reservation.
 BUDGETED_WORST_INPUT_TOKENS = 131072
 PEAK_INPUT_USD_PER_MILLION = .30
 PEAK_OUTPUT_USD_PER_MILLION = 1.20
