@@ -35,7 +35,7 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
     try {
         $safeArgs = @($Arguments | ForEach-Object {
             if ($_ -match '"') { throw "Unescaped quote in test argument" }
-            if ($_ -match '\\s') { '"' + $_ + '"' } else { $_ }
+            if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
         })
         $process = Start-Process -FilePath $Exe -ArgumentList $safeArgs -WorkingDirectory $Working -PassThru -NoNewWindow -RedirectStandardOutput $outFile -RedirectStandardError $errFile
         $elapsed = 0
@@ -131,6 +131,9 @@ $ffprobe = Join-Path $root "tools\ffmpeg\bin\ffprobe.exe"
 Write-Host ("Run: " + $runId)
 Write-Host ("Branch: " + $branch)
 Write-Host ("Commit: " + $commit)
+Write-Host ("Mode: " + $(if ($Quick) { "quick (no 180s E2E)" } elseif ($Video) { "video + 180s E2E" } else { "FULL: all Python/React checks + 180s E2E" }))
+if ($RealSource) { Write-Host "Real-model 180s run requested in addition to offline video E2E." }
+else { Write-Host "Real ASR/VLM: NOT INCLUDED without -RealSource (separate acceptance)." }
 if ($branch -ne "fix/montage-stability") {
     Write-Warning "Results belong to the checked-out commit above. Suggested branch: fix/montage-stability."
 }
