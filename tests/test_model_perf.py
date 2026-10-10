@@ -25,8 +25,7 @@ def test_query_latency_tokens_model_stage_and_startup_are_allowlisted(tmp_path):
                                   "total_tokens": 172,
                                   "completion_tokens_details": {"reasoning_tokens": 19}},
                         "choices": [{"finish_reason": "length", "message": {"content": SECRET}}],
-                        "timings": {"prompt_ms": 850, "predicted_ms": 4200},
-                        "choices": [{"message": {"content": SECRET}}]})
+                        "timings": {"prompt_ms": 850, "predicted_ms": 4200}})
         return {"summary": SECRET}
 
     with patch.object(client, "_query_impl", side_effect=fake_inference):
