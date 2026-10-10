@@ -471,5 +471,30 @@ class StudioApiTests(unittest.TestCase):
                 _ACTIVE_TASKS.discard(live)
 
 
+    def test_failed_preview_writes_private_diagnostic_without_leaking_absolute_paths(self):
+        private_details = "FFmpeg failure at C:/private/source/anime.mkv"
+        with patch("app.studio_render.render_finishing_part",
+                   side_effect=RuntimeError(private_details)):
+            response = self.client.post(
+                "/api/jobs/" + self.job_id + "/previews",
+                json={"part_index": 1, "from": 0, "duration": 2})
+            self.assertEqual(response.status_code, 202, response.text)
+            preview_id = response.json()["preview_id"]
+            state = None
+            for _ in range(120):
+                state = self.client.get(
+                    "/api/jobs/" + self.job_id + "/previews/" + preview_id).json()
+                if state["status"] not in {"queued", "running"}:
+                    break
+                time.sleep(0.01)
+        self.assertEqual(state["status"], "failed", state)
+        self.assertNotIn("C:/private", json.dumps(state))
+        private_log = (self.directory / "finishing" / "previews" /
+                       preview_id / "render-error.log")
+        self.assertIn(private_details, private_log.read_text("utf-8"))
+        self.assertEqual((self.directory / "output" / "part_001.mp4").read_bytes(),
+                         b"existing precious mp4")
+
+
 if __name__ == "__main__":
     unittest.main()
