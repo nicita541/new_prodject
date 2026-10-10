@@ -6,7 +6,7 @@ import pytest
 
 from app.config import STORY_MODEL, VLM_MODEL
 from app.deepseek import BudgetExceeded, RemoteError, provider_identity
-from app.flash_story_trial import MAX_PAID_ATTEMPTS, PROFILE, TrialStoryVision
+from app.flash_story_trial import PROFILE, TrialStoryVision
 from app.vision import vision_session
 
 
@@ -63,37 +63,34 @@ def make_trial(tmp_path, remote, **kwargs):
                             thinking=True, **kwargs)
 
 
-def test_first_eight_dispatches_remote_then_fallback_to_local(tmp_path):
+def test_no_artificial_http_call_cap_for_remote_story(tmp_path):
     remote = DummyRemote(tmp_path, lambda: False)
     with make_trial(tmp_path, remote) as router:
-        for n in range(MAX_PAID_ATTEMPTS):
+        for n in range(110):
             assert router.query(f"story-{n}")["provider"] == "remote"
-        assert remote.calls == 8
-        assert router.local is None   # No costly Qwen9B startup on successful remote.
-        assert router.query("story-8")["provider"] == "local"
-        assert router.local.entered is True
-        assert router.local.settings["thinking"] is True
+        assert remote.calls == 110
+        assert router.local is None
     data = json.loads((tmp_path / "deepseek-story-pilot.json").read_text("utf-8"))
-    assert len(data["reserved"]) == 8
-    assert data["fallbacks"] == 1
-    assert remote.calls == 8
+    assert len(data["reserved"]) == 110
+    assert data["fallbacks"] == 0
+    assert remote.calls == 110
 
 
-def test_persisted_reservations_block_duplicate_billing_after_restart(tmp_path):
+def test_persisted_usage_count_does_not_block_valid_requests_after_restart(tmp_path):
     remote = DummyRemote(tmp_path, lambda: False)
     with make_trial(tmp_path, remote) as router:
         assert router.query("same-source", image=None)["provider"] == "remote"
     with make_trial(tmp_path, remote) as restarted:
-        assert restarted.query("same-source")["provider"] == "local"
+        assert restarted.query("same-source")["provider"] == "remote"
         assert restarted.query("new-source")["provider"] == "remote"
-    assert remote.calls == 2
+    assert remote.calls == 3
     data = json.loads((tmp_path / "deepseek-story-pilot.json").read_text("utf-8"))
-    assert len(data["reserved"]) == 2
+    assert len(data["reserved"]) == 3
     assert "same-source" not in json.dumps(data)
     assert "new-source" not in json.dumps(data)
 
 
-def test_remote_failure_or_retry_never_double_pays(tmp_path):
+def test_remote_failure_falls_back_but_retries_are_not_spend_limited(tmp_path):
     remote = DummyRemote(tmp_path, lambda: False, fail=True)
     with make_trial(tmp_path, remote) as router:
         assert router.query("private-anime-dialogue")["provider"] == "local"
@@ -102,10 +99,8 @@ def test_remote_failure_or_retry_never_double_pays(tmp_path):
     other_dir = tmp_path / "again"
     retrier = DummyRemote(other_dir, lambda: False, retry=True)
     with make_trial(other_dir, retrier) as router:
-        # The pilot treats a provider's attempted retry as uncertain and
-        # resumes with local Qwen9B. It cannot silently spend twice.
-        assert router.query("needs-json-retry")["provider"] == "local"
-    assert retrier.calls == 1
+        assert router.query("needs-json-retry")["provider"] == "remote"
+    assert retrier.calls == 2
 
 
 def test_cancelled_trial_never_sends_remote_request(tmp_path):
@@ -126,7 +121,7 @@ def test_corrupted_reservation_log_fails_closed(tmp_path):
 
 
 def test_4b_always_local_only_story_model_routes_to_trial(tmp_path):
-    assert provider_identity("local_flash_story")["paid_http_attempt_limit"] == 8
+    assert provider_identity("local_flash_story")["paid_http_attempt_limit"] is None
     assert provider_identity("local_flash_story")["remote_story"] == "deepseek-flash"
     with patch("app.analysis.LocalVision", DummyLocal):
         visual = vision_session(tmp_path, lambda: False, "local_flash_story")
@@ -159,7 +154,7 @@ def test_public_report_contains_only_flash_trial_counters(tmp_path):
 
 
 
-def test_remote_cached_reply_can_be_reused_after_eight_paid_slots(tmp_path):
+def test_free_cached_reply_is_reused_without_call_limit(tmp_path):
     class CachedRemote(DummyRemote):
         def query(self, prompt, image=None, max_tokens=1200, schema=None):
             if prompt == "previously-cached-answer":
@@ -168,34 +163,31 @@ def test_remote_cached_reply_can_be_reused_after_eight_paid_slots(tmp_path):
 
     remote = CachedRemote(tmp_path, lambda: False)
     with make_trial(tmp_path, remote) as router:
-        for n in range(MAX_PAID_ATTEMPTS):
+        for n in range(12):
             assert router.query(f"fresh-story-{n}")["provider"] == "remote"
         assert router.query("previously-cached-answer")["cached"] is True
-        assert remote.calls == MAX_PAID_ATTEMPTS
+        assert remote.calls == 12
         assert router.local is None
         assert router._state["local_cache_hits"] == 1
-        assert router.query("fresh-story-nine")["provider"] == "local"
-        assert remote.calls == MAX_PAID_ATTEMPTS
+        assert router.query("fresh-story-thirteen")["provider"] == "remote"
+        assert remote.calls == 13
 
 
-def test_budgeted_flash_story_uses_peak_guard_and_4b_fallback(tmp_path):
-    # A missing usage receipt is treated as a worst-case billed request.
-    # The fallback MUST be 4B (without thinking), not the 9B model that
-    # caused the original real-180s test timeout.
+def test_legacy_budgeted_mode_has_no_spending_guard(tmp_path):
+    # Unreported usage must not exhaust a synthetic budget.
     remote = DummyRemote(tmp_path, lambda: False)
     with make_trial(tmp_path, remote, budgeted=True) as trial:
         assert trial.query("unknown-charge")["provider"] == "remote"
-        assert trial.query("another-request")["provider"] == "local"
-        assert trial.local.settings["model"] == VLM_MODEL
-        assert trial.local.settings["thinking"] is False
-        assert remote.calls == 1
+        assert trial.query("another-request")["provider"] == "remote"
+        assert trial.local is None
+        assert remote.calls == 2
     record = json.loads((tmp_path / "deepseek-story-budgeted.json").read_text("utf-8"))
-    assert len(record["reserved"]) == 1
-    assert 0.04 < sum(record["charged_peak_usd"].values()) <= 0.05
-    assert record["fallbacks"] == 1
+    assert len(record["reserved"]) == 2
+    assert record["charged_peak_usd"] == {}
+    assert record["fallbacks"] == 0
 
 
-def test_budgeted_flash_story_reconciles_actual_usage_and_exceeds_eight_calls(tmp_path):
+def test_flash_story_records_usage_but_never_uses_it_as_an_api_cap(tmp_path):
     class MeteredRemote(DummyRemote):
         def network(self, body):
             self.calls += 1
@@ -205,18 +197,16 @@ def test_budgeted_flash_story_reconciles_actual_usage_and_exceeds_eight_calls(tm
 
     remote = MeteredRemote(tmp_path, lambda: False)
     with make_trial(tmp_path, remote, budgeted=True) as trial:
-        # The USD guard must still leave headroom for the NEXT worst-case
-        # reservation. Ten small paid calls fit; twelve need not fit.
-        for n in range(10):
+        # Even more than 96 unique prompts are not blocked.
+        for n in range(105):
             assert trial.query(f"cheap-request-{n}")["provider"] == "remote"
         assert trial.local is None
-        assert remote.calls == 10
+        assert remote.calls == 105
     record = json.loads((tmp_path / "deepseek-story-budgeted.json").read_text("utf-8"))
-    assert len(record["reserved"]) == 10
-    assert len(record["charged_peak_usd"]) == 10
-    assert 0 < sum(record["charged_peak_usd"].values()) < 0.05
+    assert len(record["reserved"]) == 105
+    assert len(record["charged_peak_usd"]) == 105
+    assert sum(record["charged_peak_usd"].values()) > 0
     with make_trial(tmp_path, remote, budgeted=True) as restarted:
-        # Persisted reservations prohibit an uncertain second payment, even
-        # when a remote response cache is missing for the same prompt.
-        assert restarted.query("cheap-request-0")["provider"] == "local"
-        assert restarted.local.settings["model"] == VLM_MODEL
+        # A missing full-response cache may require another paid request.
+        assert restarted.query("cheap-request-0")["provider"] == "remote"
+        assert restarted.local is None
