@@ -77,5 +77,37 @@ assert.equal(ui.projectId,project,'Archived project must not remain selected');
 assert.equal(ui.episodeId,episode,'Archived project child must not remain selected');
 assert.equal(ui.jobId,job,'Active episode keeps its own job');
 
+// Loading a real 36-part montage must not launch 36 simultaneous HTTP
+// caption queries. Missing cache entries are fetched in bounded batches.
+status='completed';
+const originalFetch=win.fetch;
+const payloads=Array.from({length:36},(_,index)=>({index:index+1}));
+db.plans[job]={source:{duration:150},duration:150,parts:payloads};
+db.finishing={ [episode]:{revision:0} };
+let inFlight=0,maxInFlight=0,captionRequests=0;
+win.fetch=async(input,opts={})=>{
+  const route=String(input);
+  if(new RegExp('^/api/jobs/'+job+'/parts/[0-9]+/captions
+).test(route)){
+    inFlight++;maxInFlight=Math.max(maxInFlight,inFlight);captionRequests++;
+    await new Promise(resolve=>setTimeout(resolve,2));
+    inFlight--;
+    const partIndex=Number(route.split('/')[5]);
+    return {ok:true,headers:{get:()=> 'application/json'},json:async()=>({
+      job_id:job,part_index:partIndex,revision:0,cues:[],
+    })};
+  }
+  return originalFetch(input,opts);
+};
+await win.KadrBridge.refresh(db,ui);
+ui.jobId=job;
+await win.KadrBridge.loadSelected(db,ui);
+assert.equal(captionRequests,36,'All 36 parts must be resolved');
+assert(maxInFlight<=4,'Too many caption requests at once: '+maxInFlight);
+await win.KadrBridge.loadSelected(db,ui);
+assert.equal(captionRequests,36,'Cached captions must not be re-fetched');
+assert.equal(db.captionOverrides[job+':36'].part_index,36);
+win.fetch=originalFetch;
+
 win.close();
-console.log('Studio live bridge: optional API failure, real refresh and retry invalidation PASS');
+console.log('Studio live bridge: optional APIs, retries and 36-part bounded loading PASS');
