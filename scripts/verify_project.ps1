@@ -239,8 +239,8 @@ if ($RequireRealModel -or $RealSource) {
     $script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)
     Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
     if ($FastLocalStory) { Write-Host "EXPERIMENTAL: 4B local story selection, no DeepSeek API; strict quality gate stays enabled." }
-    if ($FlashStory) { Write-Host "PAID EXPERIMENT: local visual 4B and DeepSeek Flash story; maximum 8 new HTTP attempts per job. Some source frames are sent to DeepSeek. Strict quality gate stays enabled." }
-    if ($FlashBudgeted) { Write-Host "BUDGETED PAID EXPERIMENT: <=96 DeepSeek HTTP attempts with estimated peak USD 0.05 guard; conservative local4B fallback, never hidden local9B story; some frames leave your PC." }
+    if ($FlashStory) { Write-Host "PAID EXPERIMENT: local visual 4B and unlimited DeepSeek Flash story, pacing and framing. No local spending or request cap. Some frames are sent to DeepSeek. Strict quality gate stays enabled." }
+    if ($FlashBudgeted) { Write-Host "UNLIMITED DEEPSEEK: no artificial USD or request cap. Qwen4B stays local; local4B is used only if the API fails. Some frames leave your PC." }
 }
 
 Write-Host ("Run: " + $runId)
@@ -323,7 +323,7 @@ if (-not $Quick) {
     }
 }
 
-# Never spend hours waiting for 9B fallbacks because the optional DeepSeek
+# Verify an already-configured key before launching an opt-in DeepSeek
 # API key was missing. This is a strictly OFFLINE settings check: no billing,
 # no server connection, no key text in GitHub diagnostics.
 if (($FlashStory -or $FlashBudgeted) -and $python) {
@@ -445,8 +445,8 @@ $summary = [pscustomobject]@{
     logs_dir = $logsDir
 }
 if ($FastLocalStory) { $summary.run_profile = "full_with_experimental_local_4b_story" }
-if ($FlashStory) { $summary.run_profile = "full_with_limited_deepseek_flash_story" }
-if ($FlashBudgeted) { $summary.run_profile = "full_with_budgeted_deepseek_flash_story" }
+if ($FlashStory) { $summary.run_profile = "full_with_unlimited_deepseek_flash_story" }
+if ($FlashBudgeted) { $summary.run_profile = "full_with_unlimited_deepseek_flash_story_legacy_launcher" }
 # A test may remove temporary files while running; recreate output folders
 # before writing reports so a successful test run never fails on a missing dir.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
