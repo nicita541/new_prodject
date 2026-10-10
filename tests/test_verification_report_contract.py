@@ -116,3 +116,21 @@ def test_real_ai_run_has_one_30_minute_budget_across_all_checks():
     assert '$effectiveTimeout = [Math]::Min($Timeout, $remaining)' in script
     assert 'Run-Check "real_model_3min" $python $realArgs $root 1800' in script
     assert '21600' not in script
+
+
+def test_windows_launcher_rejects_false_green_e2e_artifacts():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    # Regression: one published run had real_model_3min PASS in checks.json
+    # but failed in e2e_overview.json after 540 seconds. The child exit code
+    # alone is insufficient on Windows.
+    assert 'if ($Name -in @("full_pipeline_3min", "real_model_3min"))' in script
+    assert 'Join-Path (Join-Path $localDir $Name) "report.json"' in script
+    assert 'if ($e2e.status -ne "passed")' in script
+    assert '$acceptedSteps.Count -eq 0 -or $badSteps.Count -ne 0' in script
+    assert '$e2e.analysis_mode -ne "real_local_whisper_and_vision"' in script
+    assert '$e2e.real_model_requests -gt 0' in script
+    assert '$e2e.real_resume.model_requests_unchanged -ne $true' in script
+    assert '$e2e.real_resume.all_render_parts_cached -ne $true' in script
+    assert '$e2e.real_resume.identical_output_hashes -ne $true' in script
+    assert '$code = 1' in script
+    assert 'E2E artifact validation failed; inspect local report.json' in script

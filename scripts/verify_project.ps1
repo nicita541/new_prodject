@@ -92,6 +92,45 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                 $note = "$($Matches[1]) warnings, 0 errors"
             }
         }
+        # Windows Start-Process can sometimes expose a stale/incorrect exit
+        # code for a child Python process. The authoritative E2E result is
+        # its own freshly written report.json inside THIS run directory.
+        # A missing/corrupt/failed artifact must never become a green report.
+        if ($Name -in @("full_pipeline_3min", "real_model_3min")) {
+            $e2eArtifact = Join-Path (Join-Path $localDir $Name) "report.json"
+            try {
+                if (-not (Test-Path -LiteralPath $e2eArtifact -PathType Leaf)) {
+                    throw "missing report.json"
+                }
+                $e2e = Get-Content -LiteralPath $e2eArtifact -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($e2e.status -ne "passed") {
+                    throw ("report status " + [string]$e2e.status)
+                }
+                $acceptedSteps = @($e2e.checks | Where-Object { $_.status -eq "passed" })
+                $badSteps = @($e2e.checks | Where-Object { $_.status -ne "passed" })
+                if ($acceptedSteps.Count -eq 0 -or $badSteps.Count -ne 0) {
+                    throw "missing or unsuccessful E2E stages"
+                }
+                if ($Name -eq "real_model_3min") {
+                    if ($e2e.analysis_mode -ne "real_local_whisper_and_vision") {
+                        throw "real ASR and vision were not both exercised"
+                    }
+                    if (-not ($e2e.real_model_requests -gt 0)) {
+                        throw "no confirmed local model requests"
+                    }
+                    if ($e2e.real_resume.model_requests_unchanged -ne $true -or
+                        $e2e.real_resume.all_render_parts_cached -ne $true -or
+                        $e2e.real_resume.identical_output_hashes -ne $true) {
+                        throw "real-model resume and export check incomplete"
+                    }
+                }
+            } catch {
+                $code = 1
+                # Don't print local report contents, model prompts, source
+                # dialogue or arbitrary exception paths into public checks.
+                $note = "E2E artifact validation failed; inspect local report.json"
+            }
+        }
         if ($code -eq 0) { Add-Check $Name "PASS" $code $note }
         else { Add-Check $Name "FAIL" $code $note }
         $process.Dispose()
