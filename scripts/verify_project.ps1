@@ -51,7 +51,7 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                 if ($IsWindows -or $env:OS -eq 'Windows_NT') {
                     & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null
                 } else { try { $process.Kill() } catch { } }
-                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; last stdout in " + $outFile)
+                Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; inspect local diagnostics")
                 return
             }
         }
@@ -240,7 +240,11 @@ if (-not $Quick) {
 
 # Real ASR/VLM is never simulated by the technical fixture. Missing input
 # or models are a FAIL when this mode is requested; the report still uploads.
-if ($RealTranscript -and -not $RealSource) {
+if ($RequireRealModel -and $RealTranscript) {
+    # The FULL AI launcher must exercise actual ASR, not accept an injected
+    # transcript that silently skips Whisper/speech recognition.
+    Add-Check "real_model_3min" "FAIL" 1 "Full AI acceptance forbids -RealTranscript; real ASR is mandatory"
+} elseif ($RealTranscript -and -not $RealSource) {
     Add-Check "real_model_3min" "FAIL" 1 "-RealTranscript requires -RealSource"
 } elseif ($RequireRealModel -and -not $RealSource) {
     Add-Check "real_model_3min" "FAIL" 1 $realSelectionError
@@ -337,6 +341,10 @@ $publicSummary.logs_dir = "[LOCAL_ONLY]"
 $publicSummary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $uploadDir "checks.json") -Encoding UTF8
 $e2eOverview | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $uploadDir "e2e_overview.json") -Encoding UTF8
 foreach ($check in $script:checks) {
+    # Real ASR/VLM may print episode dialogue, frame descriptions and prompts.
+    # Publish only status, error type and approved stage names for this mode;
+    # leave its raw output, including excerpts, on the local computer.
+    if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }
     foreach ($stream in @("out", "err")) {
         $src = Join-Path $logsDir ($check.name + "." + $stream + ".txt")
         if (-not (Test-Path -LiteralPath $src)) { continue }

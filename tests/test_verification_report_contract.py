@@ -93,3 +93,17 @@ def test_required_real_model_cannot_silently_pass_or_publish_source_media():
     assert '$publicSummary.logs_dir = "[LOCAL_ONLY]"' in script
     assert '"[SELECTED_VIDEO]"' not in script
     assert "'[SELECTED_VIDEO]'" in script
+
+
+def test_required_full_ai_cannot_bypass_actual_asr_using_supplied_transcript():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert 'if ($RequireRealModel -and $RealTranscript)' in script
+    assert 'Full AI acceptance forbids -RealTranscript' in script
+    assert 'Add-Check "real_model_3min" "FAIL"' in script
+
+
+def test_reports_do_not_publish_raw_real_model_or_selected_video_logs():
+    script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
+    assert 'if ($check.name -in @("prepare_real_source", "real_model_3min")) { continue }' in script
+    assert 'Add-Check $Name "TIMEOUT" 124 ("exceeded " + $Timeout + " seconds; inspect local diagnostics")' in script
+    assert '$publicSummary.logs_dir = "[LOCAL_ONLY]"' in script
