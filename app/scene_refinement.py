@@ -8,7 +8,12 @@ from pathlib import Path
 
 from .source_roles import merge_ranges, verified_story_ranges
 
-SCENE_REFINEMENT_VERSION = 2
+SCENE_REFINEMENT_VERSION = 3
+
+# The old story source-unit picker rounded PTS to 6 decimal places, so a
+# selected edge may differ from its owning technical chunk by at most 0.5us.
+# Snap only that representation noise; substantial overruns remain errors.
+_SOURCE_BOUNDARY_EPSILON = 1e-6
 
 _LARGE_FIELDS = ('analysis_chunks', 'chunk_analyses', 'chunk_refinements', 'scene_evidence', 'units')
 _PROOF_FIELDS = ('story_omission_review', 'verified_current_story_ranges', 'omitted_story_units',
@@ -131,8 +136,19 @@ def _merge_parent(parent, children, profile, transcript):
             child.update(minimal_semantic_context(child, child.get('units', []), transcript))
             child.update(analysis_unresolved=True, selection_needs_adjudication=True)
         intervals = child.get('selected_ranges', [])
-        if any(float(r['start']) < start or float(r['end']) > end for r in intervals):
-            raise ValueError('Сокращение технического фрагмента вышло за его исходные границы')
+        # Earlier story checkpoints sometimes contain 6-decimal rounded PTS.
+        # A fractional microsecond is not an actual change of source ownership.
+        # Reject real crossing of child boundaries rather than silently
+        # truncating dialogue, physical actions or the narrative bridge.
+        for interval in intervals:
+            a, b = float(interval['start']), float(interval['end'])
+            if (not math.isfinite(a) or not math.isfinite(b) or a >= b
+                    or a < start - _SOURCE_BOUNDARY_EPSILON
+                    or b > end + _SOURCE_BOUNDARY_EPSILON):
+                raise ValueError(
+                    'Сокращение технического фрагмента вышло за его исходные границы '
+                    f'(child={child["id"]}, start_delta={start-a:.9f}, '
+                    f'end_delta={b-end:.9f})')
         selected.extend(_bounded(intervals, start, end))
         verified.extend(verified_story_ranges(child))
         if child.get('protected_atmosphere_ranges') or child.get('protected_atmosphere_units'):
