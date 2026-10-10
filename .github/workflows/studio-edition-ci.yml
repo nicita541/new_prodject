@@ -117,7 +117,7 @@ jobs:
             tests/test_speech_context.py \
             tests/test_question_context.py \
             tests/test_retention_allocation.py \
-            tests/test_semantic_boundary.py
+            tests/test_semantic_boundary.py \
             tests/test_boundary_triage_performance.py \
             tests/test_semantic_identity.py \
             tests/test_full_pipeline_harness.py \
