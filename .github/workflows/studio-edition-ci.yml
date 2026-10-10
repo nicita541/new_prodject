@@ -189,6 +189,10 @@ jobs:
         run: |
           # Exercise the same BAT as user, but quick mode to avoid paid AI
           # or 180s rendering in this *smoke*. Full video is run in separate CI.
+          $env:KADR_NONINTERACTIVE = '1'
+          # Windows runner may intentionally have missing local dependencies.
+          # Its smoke checks report generation, not whether Quick itself passes.
+          $PSNativeCommandUseErrorActionPreference = $false
           & .\ПРОВЕРИТЬ_ПРОЕКТ.bat -Quick -NoUpload
           $code = $LASTEXITCODE
           if ($code -notin @(0, 1, 2)) { throw "Windows verification launcher failed: $code" }

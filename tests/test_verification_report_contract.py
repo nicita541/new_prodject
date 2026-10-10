@@ -57,3 +57,10 @@ def test_full_pipeline_result_is_in_unified_report_and_sanitized_publication():
     assert '"HEAD:refs/heads/test-reports"' in script
     assert '-NoUpload' not in script  # actual option is the switch name without hyphen
     assert 'if (-not $NoUpload)' in script
+
+
+def test_batch_wrapper_still_waits_for_humans_but_not_ci():
+    bat = (ROOT / "ПРОВЕРИТЬ_ПРОЕКТ.bat").read_text("utf-8")
+    assert 'powershell.exe -NoProfile -ExecutionPolicy Bypass' in bat
+    assert 'if not "%KADR_NONINTERACTIVE%"=="1" pause' in bat
+    assert "exit /b %RESULT%" in bat

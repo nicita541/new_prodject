@@ -6,5 +6,5 @@ set "RESULT=%ERRORLEVEL%"
 echo.
 echo Tests finished. Exit code: %RESULT%.
 echo Reports: temp\verification-reports
-pause
+if not "%KADR_NONINTERACTIVE%"=="1" pause
 exit /b %RESULT%
