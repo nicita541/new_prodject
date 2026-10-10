@@ -1,0 +1,71 @@
+﻿[
+    {
+        "check":  "full_pipeline_3min",
+        "status":  "passed",
+        "analysis_mode":  "deterministic_semantic_fixture_NOT_ASR_OR_VLM",
+        "duration_seconds":  180,
+        "cache_all_parts_reused":  true,
+        "cache_corrupt_srt_forced_rerender":  true,
+        "passed_steps":  8,
+        "failed_steps":  0,
+        "stages":  [
+                       {
+                           "name":  "generate_true_180_second_mp4",
+                           "status":  "passed",
+                           "seconds":  0.625
+                       },
+                       {
+                           "name":  "ffprobe_source_and_prepare_decision_fixture",
+                           "status":  "passed",
+                           "seconds":  0.031
+                       },
+                       {
+                           "name":  "real_pipeline_plan_and_ffmpeg_render",
+                           "status":  "passed",
+                           "seconds":  121.031
+                       },
+                       {
+                           "name":  "decode_validate_mp4_audio_srt_and_plan",
+                           "status":  "passed",
+                           "seconds":  0.094
+                       },
+                       {
+                           "name":  "second_full_pipeline_run_for_cache",
+                           "status":  "passed",
+                           "seconds":  1.344
+                       },
+                       {
+                           "name":  "invalidate_corrupted_subtitles_and_rerender",
+                           "status":  "passed",
+                           "seconds":  8.594
+                       },
+                       {
+                           "name":  "ffmpeg_finishing_zoom_music_and_edited_captions",
+                           "status":  "passed",
+                           "seconds":  1.438
+                       },
+                       {
+                           "name":  "real_studio_http_source_plan_mp4_srt_and_range",
+                           "status":  "passed",
+                           "seconds":  0.234
+                       }
+                   ]
+    },
+    {
+        "check":  "real_model_3min",
+        "status":  "failed",
+        "analysis_mode":  "real_local_whisper_and_vision",
+        "duration_seconds":  180,
+        "cache_all_parts_reused":  false,
+        "cache_corrupt_srt_forced_rerender":  false,
+        "passed_steps":  0,
+        "failed_steps":  1,
+        "stages":  [
+                       {
+                           "name":  "genuine_production_analysis_to_final_mp4",
+                           "status":  "failed",
+                           "seconds":  540.609
+                       }
+                   ]
+    }
+]
