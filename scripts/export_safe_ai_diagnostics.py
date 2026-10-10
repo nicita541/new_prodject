@@ -103,9 +103,11 @@ def summarize(test_dir):
         rows = json_file(job / file)
         result[key] = len(rows) if isinstance(rows, list) else None
     result["checkpoint_counts"] = {
-        "scene_analysis": sum(1 for _ in (job / "scene_analysis").glob("*.json")),
+        "scene_analysis": sum(1 for _ in (job / "visual").glob("event_[0-9][0-9][0-9][0-9].json")),
+        "technical_chunks": sum(1 for _ in (job / "visual").glob("event_*_chunk_*.checkpoint.json")),
         "story_refinement": sum(1 for _ in (job / "story_refinement").glob("*.json")),
-        "title_screen": sum(1 for _ in (job / "title_units").glob("screen_*.json"))
+        "title_screen": sum(1 for _ in (job / "title_units").glob("screen_*.json")
+                            if not _.name.endswith(".storyboard.json"))
     }
     scenes = json_file(job / "scenes.json")
     durations = []
