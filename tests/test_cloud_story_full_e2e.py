@@ -22,7 +22,7 @@ def test_paid_story_launcher_requires_explicit_confirmation_and_real_production(
     assert 'if ($FlashStory) { $realArgs += @("--local-provider", "local_flash_story") }' in ps
     assert '$script:verificationBudgetSeconds = 2200' in ps
     assert 'Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds' in ps
-    assert 'full_with_limited_deepseek_flash_story' in ps
+    assert 'full_with_unlimited_deepseek_flash_story' in ps
     assert 'Run-Check "deepseek_key_preflight"' in ps
     assert 'public_status' in ps
     assert 'DeepSeek key is not configured; paid pilot was not started' in ps
@@ -48,11 +48,11 @@ def test_real_e2e_accepts_cloud_story_only_when_explicit_and_checks_paid_resume(
     assert "public['new_requests'] = current - initial" in runner
 
 
-def test_paid_trial_cap_and_local_response_cache_are_independent():
+def test_paid_story_is_unrestricted_and_cached_responses_remain_free():
     router = source("app/flash_story_trial.py")
-    assert "MAX_PAID_ATTEMPTS = 8" in router
-    assert 'if len(self._state["reserved"]) >= self.max_attempts:' in router
-    assert 'self.max_attempts = BUDGETED_MAX_PAID_ATTEMPTS if self.budgeted else MAX_PAID_ATTEMPTS' in router
+    assert "MAX_PAID_ATTEMPTS" not in router
+    assert "BUDGETED_ESTIMATED_PEAK_USD" not in router
+    assert 'self._state["reserved"].append(digest)' in router
     assert 'self._state["local_cache_hits"] += 1' in router
     assert 'if not dispatched:' in router
     assert 'self._reserve(body)' in router
