@@ -12,10 +12,32 @@ import re
 from statistics import median
 
 SAFE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+# A regex alone is insufficient: an arbitrary dialogue word or sensitive
+# marker may be a syntactically valid identifier. Only internal vocabulary
+# may cross from the user's computer into a potentially public report branch.
+ALLOWED = set("""
+running passed failed incomplete skipped timeout cancelled ok error invalid pending
+RuntimeError ValueError TypeError KeyError IndexError AssertionError TimeoutError
+OSError FileNotFoundError PermissionError InterruptedError ImportError
+AttributeError MemoryError NameError ZeroDivisionError OverflowError
+ConnectionError HTTPError URLError JSONDecodeError CalledProcessError
+UnicodeDecodeError EOFError SystemExit KeyboardInterrupt
+pipeline prepare transcribe scenes shot_detection scene_detection semantic_boundary
+media_perception scene_analysis scene_recovery story_refinement analyze analysis
+condense render export finishing planner plan global_story selection_gate
+final_quality quality_gate title_detection title_screen source_roles
+subtitles audio speech_scene detection story_review scene_understanding
+visual_verification selection pacing preview caching startup verify
+start end cache_miss cache_hit request response_accepted response_rejected
+chunk_cache_miss chunk_cache_hit chunk_cache_saved suppressed accepted
+scene_created unresolved exception verification_unresolved semantic_identity
+result warning triage level_a level_b cache_saved cache_invalidated
+genuine_production_analysis_to_final_mp4 genuine_model_and_video_cache_resume
+""".split())
 
 
 def name(value):
-    return value if isinstance(value, str) and SAFE_NAME.fullmatch(value) else None
+    return value if isinstance(value, str) and SAFE_NAME.fullmatch(value) and value in ALLOWED else None
 
 
 def numeric(value):
