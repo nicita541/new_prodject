@@ -57,3 +57,13 @@ def test_paid_trial_cap_and_local_response_cache_are_independent():
     assert 'if not dispatched:' in router
     assert 'self._reserve(body)' in router
     assert 'return self._local().query' in router
+
+
+def test_paid_flash_e2e_artifact_mode_is_accepted_not_false_failed():
+    ps = source("scripts/verify_project.ps1")
+    assert '$expectedAnalysisMode = if ($FlashStory -or $FlashBudgeted)' in ps
+    assert '"real_local_whisper_and_paid_deepseek_story"' in ps
+    assert 'if ($e2e.analysis_mode -ne $expectedAnalysisMode)' in ps
+    assert '$e2e.real_resume.paid_requests_unchanged -ne $true' in ps
+    script = source("scripts/full_pipeline_3min.py")
+    assert '"paid_requests_unchanged": paid_after_resume == paid_before_resume' in script
