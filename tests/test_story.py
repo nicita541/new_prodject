@@ -9,7 +9,8 @@ from PIL import Image
 
 from app.config import TEMP
 from app.story import (_credit_decision, refine_story, clean_credit_continuations,
-                       preserve_dialogue_in_credits, verify_omissions, _valid_cache)
+                       preserve_dialogue_in_credits, verify_omissions, _valid_cache,
+                       _unit_for_frame_time)
 from app.planner import build_plan
 
 
@@ -140,6 +141,17 @@ def fake_storyboard(source, start, end, shots, transcript, destination, cancelle
 
 
 class StoryRefinementTests(unittest.TestCase):
+    def test_frame_timestamp_rounded_to_chunk_end_retains_correct_source_owner(self):
+        units = [{'id': 'u000', 'start': 0.0, 'end': 40.1234567},
+                 {'id': 'u001', 'start': 40.1234567, 'end': 80.1234567}]
+        self.assertEqual(_unit_for_frame_time(units, 40.123456), 'u000')
+        self.assertEqual(_unit_for_frame_time(units, 40.123457), 'u001')
+        self.assertEqual(_unit_for_frame_time(units, 80.123457), 'u001')
+        with self.assertRaisesRegex(ValueError, 'ни одному исходному фрагменту'):
+            _unit_for_frame_time(units, 80.125)
+        with self.assertRaises(ValueError):
+            _unit_for_frame_time(units, float('nan'))
+
     def test_omission_review_restores_new_wakeup_action_and_plan_cache_roundtrip(self):
         directory,events,transcript=fixture()
         raw=decision(['u000','u002','u003'])
