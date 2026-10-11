@@ -365,6 +365,27 @@ class JobManager:
             self.pending_states.pop(identifier, None)
             return {"id": identifier, "deleted": True}
 
+    @staticmethod
+    def _has_resumable_work(directory: Path) -> bool:
+        """Protect recoverable hours of media/AI work from bulk pruning.
+
+        Users can explicitly delete any stopped job. The automated/bulk prune
+        must not silently discard checkpoints or already rendered Shorts from
+        failed, interrupted or cancelled jobs.
+        """
+        for name in ("audio.wav", "transcript.json", "shots.json", "scenes.json",
+                     "events.json", "story-events.json", "analysis-final.json", "plan.json"):
+            if (directory / name).is_file():
+                return True
+        for folder, pattern in (("visual", "*.checkpoint.json"),
+                                ("visual", "event_*.json"),
+                                ("story_refinement", "*.json"),
+                                ("render", "part_*.json"),
+                                ("output", "part_*.mp4")):
+            if any((directory / folder).glob(pattern)):
+                return True
+        return False
+
     def prune_jobs(self, max_jobs: int = 50, max_age_days: int | None = 30) -> dict:
         # Validate before inspecting or deleting user exports. Negative values
         # would otherwise silently select every completed job for deletion.
@@ -386,6 +407,11 @@ class JobManager:
                     continue
                 data = read_json(path)
                 if not data or data.get("status") not in TERMINAL:
+                    continue
+                if (data.get("status") in {"failed", "interrupted", "cancelled"}
+                        and self._has_resumable_work(path.parent)):
+                    # Retain checkpoints so retry() can continue this exact
+                    # job ID without redoing expensive paid/model analysis.
                     continue
                 created_at = data.get("created_at") or ""
                 mtime = path.stat().st_mtime
