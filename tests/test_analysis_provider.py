@@ -1,13 +1,40 @@
 import json
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from app.analysis import analysis_context_limit, framing_provider, global_story_review, vision_session
+from app.analysis import (analysis_context_limit, framing_provider, global_story_review, vision_session,
+                          _model_files_for_provider, _visual_checkpoint_signature)
 from app.config import TEMP
 from app.deepseek import DeepSeekVision, RemoteError, provider_identity
 
 
 class AnalysisProviderTests(unittest.TestCase):
+    def test_deepseek_story_needs_local_visual_4b_but_not_story_9b(self):
+        from app.config import VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
+        for provider in ('local_flash_story', 'local_flash_story_budgeted', 'deepseek'):
+            self.assertEqual(_model_files_for_provider(provider), (VLM_MODEL, VLM_PROJECTOR))
+        for provider in ('local', 'local_fast_story', 'deepseek_plan'):
+            self.assertEqual(_model_files_for_provider(provider),
+                             (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR))
+
+    def test_existing_visual_cache_keeps_legacy_signature_only_when_well_formed(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            original = 'a' * 64
+            changed_story = 'b' * 64
+            self.assertEqual(_visual_checkpoint_signature(directory, changed_story), changed_story)
+            cache = directory / 'visual' / 'event_0000.json'
+            cache.parent.mkdir(parents=True)
+            cache.write_text(json.dumps({'signature': original}), encoding='utf-8')
+            self.assertEqual(_visual_checkpoint_signature(directory, changed_story), original)
+            for value in ('a' * 63, '../../wrong-cache', 'a' * 63 + 'g', 123, None):
+                cache.write_text(json.dumps({'signature': value}), encoding='utf-8')
+                self.assertEqual(_visual_checkpoint_signature(directory, changed_story), changed_story)
+            cache.write_text('not json', encoding='utf-8')
+            self.assertEqual(_visual_checkpoint_signature(directory, changed_story), changed_story)
+
     def test_cloud_plan_sessions_use_cloud_and_focus_uses_local(self):
         cancelled = lambda: False
         with patch('app.deepseek.DeepSeekVision') as cloud, patch('app.analysis.LocalVision') as local:
