@@ -42,7 +42,7 @@ class AnalysisProviderTests(unittest.TestCase):
             self.assertIsNone(_recoverable_checkpoint(checkpoint))
             checkpoint.write_text('{"signature":', encoding='utf-8')
             self.assertIsNone(_recoverable_checkpoint(checkpoint))
-            checkpoint.write_bytes(b'\\xff\\xfe invalid utf-8')
+            checkpoint.write_bytes(bytes((255, 254)))
             self.assertIsNone(_recoverable_checkpoint(checkpoint))
             checkpoint.write_text('[]', encoding='utf-8')
             self.assertIsNone(_recoverable_checkpoint(checkpoint))
