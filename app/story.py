@@ -180,6 +180,28 @@ def _ranges(units: list[dict], keep: set[str], preserve: set[str], transcript: d
     return selected
 
 
+def _unit_for_frame_time(units: list[dict], time: float) -> str:
+    """Attribute an actual storyboard frame to the CURRENT source unit.
+
+    Storyboards store frame timestamps to six decimals while the source-unit
+    PTS retains full precision. A frame one fraction of a microsecond from
+    the outer boundary is still that source unit, not an unknown story event.
+    Never assign a frame across a real uncovered gap.
+    """
+    value = float(time)
+    if not math.isfinite(value):
+        raise ValueError("В кадре отсутствует корректная исходная временная метка")
+    for unit in units:
+        if unit['start'] <= value < unit['end']:
+            return unit['id']
+    epsilon = 1e-6
+    for unit in units:
+        if (abs(value - unit['start']) <= epsilon
+                or abs(value - unit['end']) <= epsilon):
+            return unit['id']
+    raise ValueError("Видеокадр не принадлежит ни одному исходному фрагменту CURRENT")
+
+
 def _credit_decision(raw: dict) -> bool:
     if (not isinstance(raw, dict) or not isinstance(raw.get("credit_montage"), bool)
             or not isinstance(raw.get("continuous_narrative"), bool)):
@@ -373,9 +395,10 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
         if not event.get("credit_montage"):
             known = {unit["id"] for unit in units}
             use_images = collage.is_file()
-            frame_map = [{'frame':i+1, 'source':t,
-                          'unit':next(u['id'] for u in units if u['start'] <= t < u['end'])}
-                         for i,t in enumerate(frame_times or storyboard_times(event['start'],event['end'],shots,transcript))]
+            frame_map = [{'frame': i + 1, 'source': t,
+                          'unit': _unit_for_frame_time(units, t)}
+                         for i, t in enumerate(frame_times or storyboard_times(
+                             event['start'], event['end'], shots, transcript))]
             empty_hold_guidance = ('Omit neutral empty waiting/scenery only when the actual next scene conveys the needed context.'
                                    if editorial_profile['remove_empty_holds'] else
                                    'The editorial profile disables empty-hold removal: preserve neutral waiting and scenery even when plot-neutral.')
