@@ -149,14 +149,32 @@ class SemanticIdentityTests(unittest.TestCase):
         atomic_json(destination.with_suffix('.storyboard.json'), {'start': start, 'end': end, 'frames': frames})
         return [f['time'] for f in frames]
 
-    def analyze(self, vision, transcript=EMPTY):
+    def analyze(self, vision, transcript=EMPTY, signature='unchanged-parent-signature'):
         shots = [{'id': 'shot_0', 'start': 0, 'end': 10, 'location': 'room'}]
         scenes = scene_detection.detect_semantic_scenes(shots, transcript, 10)
         from tests.test_semantic_pipeline import SemanticPipelineTests
         with patch('app.vision.storyboard', side_effect=self.fake_board), \
              patch('app.vision.inference_storyboard',side_effect=SemanticPipelineTests.fake_inference_board):
             return scene_analysis.analyze_scenes(self.directory/'source.mp4', scenes, transcript, shots,
-                self.directory, vision, 'unchanged-parent-signature', lambda *a: None, lambda: False)
+                self.directory, vision, signature, lambda *a: None, lambda: False)
+
+    def test_story_only_changes_reuse_prior_fully_validated_visual_results(self):
+        from app.analysis import _visual_checkpoint_signature
+        vision = SceneVision()
+        first_signature = 'a' * 64
+        fresh_story_signature = 'b' * 64
+        first = self.analyze(vision, signature=first_signature)
+        sent = len(vision.requests)
+        self.assertGreater(sent, 0)
+        recovered = _visual_checkpoint_signature(self.directory, fresh_story_signature)
+        self.assertEqual(recovered, first_signature)
+        second = self.analyze(vision, signature=recovered)
+        self.assertEqual(first, second)
+        self.assertEqual(len(vision.requests), sent)
+        # The intrinsic per-scene semantic identity still rejects changed
+        # transcripts, providers, or source images (other tests below).
+        self.analyze(vision, signature=fresh_story_signature)
+        self.assertGreater(len(vision.requests), sent)
 
     def test_scene_cache_reuses_then_invalidates_runtime_prompt_without_version_bump(self):
         vision = SceneVision()
