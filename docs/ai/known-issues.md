@@ -13,6 +13,7 @@ For each issue record:
 Remove entries when resolved; Git/issues retain the history.
 
 ## Quality acceptance still pending
+Genuine fresh120/180s local benchmarks both timed out around3600s at story condensation without a render. The user requires roughly30min for180s; these attempts fail that target. ASR takes about27–29s, while sequential9B requests and technical chunk fanout dominate. Future benchmark default is1800s; no quality gate was weakened. See docs/audit/performance-results.md and findings.md. A successful single Gemini packet is not full-series quality or speed acceptance.
 The test episode now has a whole-frame/accent export with DeepSeek story/plan. User review exposed exact-ASR-end clipping, omitted replies in retained story scenes, and an opening tail in a mixed event. Speech handles/restoration and explicit confirmed exclusions fix these observed cases; the opening tail required manual verification of source frames. Long silent commute/office material and some closing/title material can still be retained when automatic classification is uncertain. Use the source timeline to compare kept and removed footage. Technical success does not establish editorial acceptance. See docs/quality-audit.md and .agent/plans/ready-studio.md.
 
 ## Small ASR errors remain possible
@@ -27,10 +28,8 @@ Resolved in ADR-0018 via general `_is_dub_or_title_narration` filter: fandub stu
 ## Scene threshold has limited calibration
 Threshold 0.20 detects two transitions missed at 0.24 in six checked source windows. Ordinary motion reached 0.199887 in the same experiment; broad precision/recall is unmeasured. Periodic focus samples mitigate held crops but do not establish universal shot accuracy.
 
-## API accounting is an estimate at verified prices
-DeepSeek balance is a last-checked snapshot; other clients can spend the account. The displayed accumulated cost uses peak input/output rates without discounts. Unknown billing after cancellation/network failure retains the reservation and blocks further paid calls. Choosing local remains available. There is no extra total spending ceiling by default, per the user's instruction.
-
-The user removed the USD 0.10 attempt cap. Provider balance observations now refresh independently and show account scope/staleness; the documented API does not provide per-key invoice usage. Increased funds invalidate observed-decrease attribution. Explicit uncertain-billing recovery keeps its reserved cost and blocks replay.
+## Historical API accounting is retired
+Runtime no longer maintains balance observations or money ledgers and does not impose an attempt spending ceiling. Historical accounting files remain on disk for reference. Actual provider charges must be checked in the DeepSeek account; successful-response caching avoids repeating completed requests.
 
 ## Original MKV playback depends on browser codecs
 The timeline streams the original file without transcoding it. A browser may reject an MKV or an unsupported source codec even though FFmpeg can export it. Ready Shorts use MP4/H.264/AAC. Original-source comparison in that case requires a compatible local player; the source remains available in the project.

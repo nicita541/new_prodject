@@ -1,4 +1,8 @@
-"""Explicit, at most three framing samples; balance preflight, no paid retries."""
+"""Explicit one-to-three framing samples; connection check and normal bounded retries.
+
+The direct adapter may retry each paid request up to twice. --cache-only forbids
+network access. Runtime does not perform monetary balance preflight.
+"""
 import argparse
 import json
 from pathlib import Path

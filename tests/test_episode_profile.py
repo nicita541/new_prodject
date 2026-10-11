@@ -373,7 +373,7 @@ class EpisodeProfileMechanismTests(unittest.TestCase):
 class CachedSourceCalibrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        path = ROOT/'scratch/stage3-profile/calibrate_episode_profile.py'
+        path = ROOT/'scripts/calibrate_episode_profile.py'
         clips = ROOT/'scratch/raw_video_quality/calibration/clips'
         if not path.is_file() or not (clips/'root_review.json').is_file():
             raise unittest.SkipTest('Optional cached source calibration artifacts are unavailable')

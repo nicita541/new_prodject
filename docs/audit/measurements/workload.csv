@@ -1,0 +1,3 @@
+﻿attempt,shots,semantic_scenes,semantic_parent_events_checkpoint,analysis_technical_chunks_checkpoint,story_refinement_work_items_announced,story_refinement_last_item_announced_not_completed,source_video_frames,perception_samples,storyboard_records,storyboard_unique_source_times,storyboard_page_slots,planned_parts,planned_cuts,planned_output_seconds,scope
+120s-fresh,35,12,12,52,52,26,2878.0,631,87,1235,101,,,,current_job_checkpoints_not_per_phase_compute_delta
+180s-fresh,51,21,21,77,77,23,4316.0,938,138,1921,158,,,,current_job_checkpoints_not_per_phase_compute_delta

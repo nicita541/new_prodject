@@ -126,7 +126,7 @@ def _run_identity(job_dir: Path) -> dict:
     from .analysis import ANALYSIS_VERSION, analysis_provider, derived_story_identity
     from .editorial import load_profile
     from .pacing import PACING_VERSION
-    from .deepseek import provider_identity
+    from .analysis import provider_identity
     from .config import ASR_MODEL, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
     provider = analysis_provider(job_dir)
     profile = load_profile(job_dir)

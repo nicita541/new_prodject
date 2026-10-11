@@ -40,6 +40,7 @@ def main() -> int:
         logger.info("Pipeline progress: %s %.1f%% %s", stage, value * 100, message,
                     extra={"job_id": directory.name, "stage": stage,
                            "progress": round(value, 4), "action": "progress"})
+    from app.antigravity_exchange import AnalysisPending
     try:
         logger.info("Worker started", extra={"job_id": directory.name, "action": "job_start"})
         from app.pipeline import run_job
@@ -55,6 +56,12 @@ def main() -> int:
              message="Шортсы готовы", error=None)
         logger.info("Worker completed", extra={"job_id": directory.name, "action": "job_complete",
                                                 "status": "completed"})
+        return 0
+    except AnalysisPending as pending:
+        save(status="waiting_analysis", stage="waiting_analysis", error=None,
+             message=str(pending), cancel_requested=False)
+        logger.info("Manual analysis pending", extra={"job_id": directory.name,
+                    "action": "manual_analysis_wait", "status": "waiting_analysis"})
         return 0
     except InterruptedError:
         logger.warning("Worker cancelled", extra={"job_id": directory.name, "action": "job_cancel",

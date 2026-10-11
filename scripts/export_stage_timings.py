@@ -115,9 +115,34 @@ def model_request_timing(job):
     }
 
 
-def production_stage_timing(job, real_elapsed):
+def first_production_timeline(job):
+    """Select the first pipeline invocation from an append-only job timeline.
+
+    The observer outcome describes the *last* invocation after cache resume.
+    It cannot be a denominator for stages from the first invocation. Old
+    timelines without run IDs are bounded by consecutive pipeline STARTs.
+    """
+    events = list(json_lines(job / "diagnostics" / "pipeline" / "timeline.jsonl"))
+    starts = [index for index, row in enumerate(events)
+              if row.get("stage") == "pipeline" and row.get("action") == "start"]
+    if not starts:
+        return events, None, False
+    first = starts[0]
+    stop = starts[1] if len(starts) > 1 else len(events)
+    selected = events[first:stop]
+    run_id = events[first].get("run_id")
+    if isinstance(run_id, str) and run_id:
+        selected = [row for row in selected if row.get("run_id") == run_id]
+    elapsed = next((positive(row.get("elapsed_seconds")) for row in reversed(selected)
+                    if row.get("stage") == "pipeline" and row.get("action") == "end"), None)
+    return selected, elapsed, True
+
+
+def production_stage_timing(job, real_elapsed, *, events=None):
     groups = {}
-    for event in json_lines(job / "diagnostics" / "pipeline" / "timeline.jsonl"):
+    if events is None:
+        events, _, _ = first_production_timeline(job)
+    for event in events:
         stage = name(event.get("stage"))
         if not stage:
             continue
@@ -201,12 +226,15 @@ def summarize(test_dir):
     real_steps, _ = steps_from(real, allowed=STEPS)
     outcome = json_file(test_dir / "real_model_3min" / "real-job" / "observed-outcome.json")
     outcome = outcome if isinstance(outcome, dict) else {}
-    real_elapsed = positive(outcome.get("elapsed_seconds"))
+    job = test_dir / "real_model_3min" / "real-job"
+    timeline, timeline_elapsed, has_pipeline_start = first_production_timeline(job)
+    # Missing END after termination is unknown, not the subsequent resume time.
+    real_elapsed = (timeline_elapsed if has_pipeline_start
+                    else positive(outcome.get("elapsed_seconds")))
     for step in real_steps:
         step["share_of_production_pct"] = percent(step["seconds"], real_elapsed)
 
-    job = test_dir / "real_model_3min" / "real-job"
-    stages = production_stage_timing(job, real_elapsed)
+    stages = production_stage_timing(job, real_elapsed, events=timeline)
     # These stages may be nested: pipeline > scenes > semantic_boundary.
     # The individual percentage may be useful but summing them is invalid.
     stage_rows = sorted(stages, key=lambda row: row["seconds"] or 0, reverse=True)
@@ -227,6 +255,7 @@ def summarize(test_dir):
         "offline_180s_e2e_steps": offline_steps,
         "real_ai_e2e_steps": real_steps,
         "real_production": {
+            "invocation_scope": "first_pipeline_invocation" if has_pipeline_start else "legacy_unidentified",
             "elapsed_seconds": real_elapsed,
             "stage_order": stages,
             "slowest_inclusive_stages": stage_rows[:12],
@@ -277,7 +306,7 @@ def markdown(data):
         for step in data[key]:
             parts.append(f"| {step['name']} | {step['status'] or 'unknown'} | {human(step['seconds'])} |")
     parts.extend([
-        "", "## 4. Real production stages in first-seen order", "",
+        "", "## 4. First production invocation: stages in first-seen order", "",
         "| Stage | Completed calls | Unfinished | Inclusive time | % of production |",
         "| --- | ---: | ---: | ---: | ---: |",
     ])
@@ -291,7 +320,8 @@ def markdown(data):
         "**Important:** production stage durations are INCLUSIVE and can overlap "
         "(e.g. pipeline contains scenes, and scenes contain semantic_boundary). "
         "Do not add their times or percentages. Stages terminated without an end event "
-        "are marked unfinished and their actual execution time is NOT invented.",
+        "are marked unfinished and their actual execution time is NOT invented. "
+        "This table isolates the first invocation; cache resumes are listed separately below.",
         "", "## 5. Planning / rendering for each production invocation", "",
         "| Run | Status | Overall | Analysis | Planning | Part context | Rendering | Parts cached |",
         "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |",

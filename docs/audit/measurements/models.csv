@@ -1,0 +1,10 @@
+﻿attempt,model,stage,requests,completed,pending,failed,sum_request_seconds,latency_p50_s,latency_p95_s,prompt_tokens,completion_tokens,unknown_token_calls,image_pages,cpu_requests,thinking_requests,finish_length_calls,prefill_tokens_per_second,generation_tokens_per_second
+120s-fresh,story9b,choose_units,26,26,0,1,2698.876,104.997,115.634,54204,15755,1,26,0,26,0,388.263,6.308
+120s-fresh,story9b,verify_omissions,1,1,0,0,30.128,30.128,30.128,2288,146,0,1,0,0,0,382.478,6.102
+120s-fresh,visual4b,scene_analysis,54,54,0,0,243.738,4.419,5.419,111055,15584,0,76,0,0,0,2339.702,82.66
+120s-fresh,visual4b,semantic_boundary,57,57,0,0,221.919,4.016,4.421,83134,13894,0,60,0,0,0,2387.939,77.222
+180s-fresh,story9b,choose_units,23,23,0,1,2273.493,97.653,104.266,46922,13757,1,23,0,23,0,408.981,6.678
+180s-fresh,story9b,credit_classifier,2,2,0,0,16.904,8.04,8.863,1198,84,0,2,0,0,0,296.508,6.702
+180s-fresh,story9b,verify_omissions,1,1,0,0,52.23,52.23,52.23,2311,311,0,1,0,0,0,415.667,6.68
+180s-fresh,visual4b,scene_analysis,79,79,0,0,340.808,4.22,5.222,162185,22360,0,121,0,0,0,2353.508,85.645
+180s-fresh,visual4b,semantic_boundary,86,86,0,0,328.167,3.818,4.422,125541,20710,0,90,0,0,0,2421.349,78.19

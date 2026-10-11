@@ -19,9 +19,7 @@ spec.loader.exec_module(dialogue)
 
 
 def load_structure():
-    path = ROOT/'app/story_structure_pass.py'
-    if not path.is_file():
-        path = ROOT/'scratch/stage4-structure/app/story_structure_pass.py'
+    path = HERE/'app/story_structure_pass.py'
     module_spec = importlib.util.spec_from_file_location('dialogue_compat_structure', path)
     module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(module)

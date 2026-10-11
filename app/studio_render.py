@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import copy
 from contextlib import contextmanager
-import json
 import logging
-import math
 import threading
 import traceback
 import uuid
@@ -294,7 +292,7 @@ def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
     # lock ensures even two managers in one process respect the same queue cap.
     # Keep lock ordering consistent with _registered_export: manager, then tasks.
     with manager.mutex:
-        if manager.closed:
+        if manager.closed or manager.shutdown_requested:
             raise RuntimeError("Приложение завершает работу")
         if manager.busy():
             raise RuntimeError("Нельзя запускать повторный экспорт во время обработки серии")

@@ -26,6 +26,11 @@ from .config import ROOT
 _LOCK = threading.RLock()
 _CURRENT = None
 _PID = None
+_HANDLERS = ()
+_QUOTED_SECRET = re.compile(
+    r'''(?i)((?:["']?)(?:api[_-]?key|access[_-]?token|password|secret|authorization)'''
+    r'''(?:["']?)\s*[:=]\s*)(["'])((?:\\.|(?!\2)[^\\])*)\2''', re.DOTALL
+)
 _SECRET = re.compile(
     r"(?i)(?:authorization\s*[:=]\s*(?:bearer|basic)\s+[^\s,;&]+|"
     r"bearer\s+[^\s,;&]+|"
@@ -38,6 +43,10 @@ _MAX_MESSAGE = 1200
 
 def scrub(value, limit: int = _MAX_MESSAGE) -> str:
     value = str(value)
+    # Errors may contain JSON or repr(dict), including values with spaces.
+    # Redact complete quoted values before the bare token patterns below.
+    value = _QUOTED_SECRET.sub(
+        lambda match: match.group(1) + match.group(2) + "[REDACTED]" + match.group(2), value)
     def replace(match):
         return (match.group(1) + "[REDACTED]") if match.group(1) else "[REDACTED]"
     return _SECRET.sub(replace, value)[:limit]
@@ -104,12 +113,25 @@ class _JsonlHandler(logging.Handler):
 
 
 def configure_logging(kind: str = "studio") -> Path:
-    """Idempotent per process; subprocesses share the folder, not file handles."""
-    global _CURRENT, _PID
+    """Idempotent while handles stay open; recover after external dictConfig."""
+    global _CURRENT, _PID, _HANDLERS
     with _LOCK:
-        if _CURRENT is not None and _PID == os.getpid():
+        logger = logging.getLogger("app")
+        same_process = _CURRENT is not None and _PID == os.getpid()
+        def ready(handler):
+            stream = getattr(handler, "file", getattr(handler, "stream", None))
+            return (handler in logger.handlers and not getattr(handler, "_closed", False)
+                    and stream is not None and not stream.closed)
+        if same_process and len(_HANDLERS) == 2 and all(ready(h) for h in _HANDLERS):
             return _CURRENT
-        folder = _session_dir(kind)
+        # Uvicorn's dictConfig closes existing handlers even when it leaves
+        # the app logger enabled. Replace our own handles, append to the SAME
+        # session, and preserve unrelated logger handlers and previous events.
+        for handler in _HANDLERS:
+            logger.removeHandler(handler)
+            handler.close()
+        _HANDLERS = ()
+        folder = _CURRENT if same_process and _CURRENT.is_dir() else _session_dir(kind)
         os.environ["KADR_LOG_DIR"] = str(folder)
         try:
             (ROOT / "logs" / "LATEST.txt").write_text(
@@ -133,7 +155,7 @@ def configure_logging(kind: str = "studio") -> Path:
                 "kind": kind, "created_by_pid": os.getpid(),
                 "logs_relative": str(folder.relative_to(ROOT)).replace("\\", "/")
             }, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger = logging.getLogger("app")
+        logger.disabled = False
         logger.setLevel(logging.INFO)
         json_handler = _JsonlHandler(folder / f"events-{os.getpid()}.jsonl")
         logger.addHandler(json_handler)
@@ -147,8 +169,10 @@ def configure_logging(kind: str = "studio") -> Path:
         # Scrub final output too, including exceptions logged by other modules.
         readable.addFilter(_ScrubFilter())
         logger.addHandler(readable)
-        _CURRENT, _PID = folder, os.getpid()
-        logger.info("Session initialized", extra={"action": "session_start", "run_id": folder.name})
+        _CURRENT, _PID, _HANDLERS = folder, os.getpid(), (json_handler, readable)
+        logger.info("Session logging restored" if same_process else "Session initialized",
+                    extra={"action": "logging_restored" if same_process else "session_start",
+                           "run_id": folder.name})
         return folder
 
 

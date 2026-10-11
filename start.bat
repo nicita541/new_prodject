@@ -5,8 +5,12 @@ if not exist "%~dp0logs" mkdir "%~dp0logs"
 echo [%date% %time%] KADR start.bat launched >> "%~dp0logs\startup.log"
 set "TEMP=%~dp0temp"
 set "TMP=%~dp0temp"
+set "TMPDIR=%~dp0temp"
+set "npm_config_cache=%~dp0cache\npm"
 set "PYTHONUTF8=1"
 set "PYTHONPYCACHEPREFIX=%~dp0cache\pycache"
+if not exist "%TEMP%" mkdir "%TEMP%"
+if exist "%~dp0tools\node\node.exe" if exist "%~dp0tools\node\node_modules\npm\bin\npm-cli.js" set "PATH=%~dp0scripts;%~dp0tools\node;%PATH%"
 
 if not exist "%~dp0tools\python\python.exe" (
   echo [ERROR] Portable Python is missing in tools\python.
@@ -41,7 +45,7 @@ if not exist "%~dp0frontend\node_modules" (
 )
 where npm.cmd >nul 2>&1
 if errorlevel 1 (
-  echo [ERROR] npm.cmd is not available. Install Node.js LTS or run setup.bat to check requirements.
+  echo [ERROR] npm.cmd is not available. Provide portable Node/npm in tools\node or an existing npm on PATH.
   pause
   exit /b 1
 )
@@ -77,6 +81,8 @@ if not exist "%~dp0frontend\dist\studio-edition-app.js" (
 
 :launch
 echo Opening the real KADR Studio at http://127.0.0.1:8765
+echo Keep this window open. Press Ctrl+C to stop KADR, or run the stop launcher when idle.
+echo Diagnostic sessions: logs\LATEST.txt and logs\studio. Startup: logs\startup.log.
 "%~dp0tools\python\python.exe" -m app.launcher
 if errorlevel 1 (
   echo [ERROR] KADR Studio failed to start.

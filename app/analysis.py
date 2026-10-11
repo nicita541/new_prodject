@@ -35,7 +35,7 @@ from app.media_probe import (
 # Re-exports from app.vision
 from app.vision import (
     LocalVision,
-    vision_session,
+    vision_session as _native_vision_session,
     storyboard_times,
     storyboard,
 )
@@ -50,6 +50,24 @@ from app.story_review import (
     apply_global_selection,
     global_story_review,
 )
+
+
+def vision_session(job_dir, cancelled, provider='local', **settings):
+    if provider == 'antigravity_manual':
+        if Path(settings.get('model', VLM_MODEL)) == STORY_MODEL:
+            from .antigravity_exchange import ManualVision
+            return ManualVision(job_dir, cancelled, **settings)
+        return _native_vision_session(job_dir, cancelled, 'local', **settings)
+    return _native_vision_session(job_dir, cancelled, provider, **settings)
+
+
+def provider_identity(provider):
+    if provider == 'antigravity_manual':
+        from .antigravity_exchange import PROFILE
+        return dict(PROFILE)
+    from .deepseek import provider_identity as native_identity
+    return native_identity(provider)
+
 
 ANALYSIS_VERSION = 16
 GLOBAL_STORY_VERSION = 9
@@ -79,11 +97,11 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
     elif provider == 'hybrid':
         from .hybrid import HybridVision
         paged = bool(getattr(HybridVision, 'supports_image_pages', False))
-    elif provider in ('local', 'local_fast_story'):
+    elif provider in ('local', 'local_fast_story', 'antigravity_manual'):
         paged = bool(getattr(LocalVision, 'supports_image_pages', False))
     else:
         raise ValueError('Неизвестный способ анализа')
-    return {'visual': analysis_key, 'semantic_components': semantic_identity(), 'story': STORY_VERSION, 'edge': EDGE_VERSION,
+    return {**({'manual_transport': provider_identity(provider)} if provider == 'antigravity_manual' else {}), 'visual': analysis_key, 'semantic_components': semantic_identity(), 'story': STORY_VERSION, 'edge': EDGE_VERSION,
             'scene_refinement': SCENE_REFINEMENT_VERSION,
             'scene_understanding': SCENE_UNDERSTANDING_VERSION,
             'episode_profile': EPISODE_PROFILE_VERSION,
@@ -102,7 +120,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
 def analysis_provider(job_dir: Path) -> str:
     settings = job_dir / 'analysis-settings.json'
     provider = load_json(settings).get('provider', 'local') if settings.is_file() else 'local'
-    if provider not in ('local', 'deepseek', 'hybrid', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted'):
+    if provider not in ('local', 'deepseek', 'hybrid', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted', 'antigravity_manual'):
         raise ValueError('Неизвестный способ анализа')
     return provider
 
@@ -269,7 +287,7 @@ def _model_files_for_provider(provider: str) -> tuple[Path, ...]:
     installed local 9B. Asking for STORY_MODEL.stat() made otherwise valid
     paid jobs fail before the first story request on machines without 9B.
     """
-    if provider in ('local_flash_story', 'local_flash_story_budgeted', 'deepseek'):
+    if provider in ('local_flash_story', 'local_flash_story_budgeted', 'deepseek', 'antigravity_manual'):
         return (VLM_MODEL, VLM_PROJECTOR)
     return (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)
 
@@ -321,8 +339,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     from .editing import load_options
     layout = load_options(job_dir)['layout']
     provider = analysis_provider(job_dir)
-    from .deepseek import provider_identity
-    provider_profile = provider_identity(provider)
+    # Early perception remains the exact local4B contract and cache namespace.
+    provider_profile = provider_identity('local' if provider == 'antigravity_manual' else provider)
     source = source.resolve()
     if not source.is_relative_to(ROOT):
         raise ValueError('Исходное видео должно находиться внутри папки проекта')

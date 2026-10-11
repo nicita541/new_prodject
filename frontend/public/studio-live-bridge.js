@@ -3,7 +3,8 @@
 (() => {
  'use strict';
  async function get(path,options={}){
-  const response=await fetch(path,{credentials:'same-origin',...options});
+  const {onResponse,...fetchOptions}=options;
+  const response=await fetch(path,{credentials:'same-origin',...fetchOptions});
   const type=response.headers.get('content-type')||'';
   const value=type.includes('json')?await response.json():{url:path};
   if(!response.ok){
@@ -14,6 +15,7 @@
    e.status=response.status;
    throw e;
   }
+  if(typeof onResponse==='function')onResponse(response.status);
   return value;
  }
  const date=value=>{
@@ -100,10 +102,12 @@
     }));
   }
  }
- async function request(method,path,body,db,ui){
-  let options={method};
+ async function request(method,path,body,db,ui,onResponse){
+  let options={method,onResponse};
   if(!['GET','HEAD'].includes(method)&&body!=null){
-    if(body.file instanceof File){
+    if(body.rawJsonFile instanceof File){
+      options.body=body.rawJsonFile;options.headers={'Content-Type':'application/json'};
+    }else if(body.file instanceof File){
       const form=new FormData();form.append('file',body.file);
       options.body=form;
     }else if(body instanceof FormData){
@@ -130,6 +134,12 @@
     }
   }
   const result=await get(path,options);
+  if(/^\/api\/jobs\/[^/]+\/previews(?:\/[^/]+)?$/.test(path)&&result.preview_id){
+    db.previews ||= {};db.previews[result.preview_id]=result;
+  }
+  if((/^\/api\/jobs\/[^/]+\/exports$/.test(path)||/^\/api\/exports\/[^/]+$/.test(path))&&result.export_id){
+    db.exports ||= {};db.exports[result.export_id]=result;
+  }
   if(method==='GET'){
     if(path==='/api/music')db.music={...db.music,...result};
     else if(path==='/api/health')db.health=result;

@@ -11,7 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 _BACKEND = ("app/server.py", "app/launcher.py", "app/studio_identity.py")
-_UI = ("frontend/dist/studio-edition.html", "frontend/dist/studio-live-bridge.js")
+_UI = ("frontend/dist/studio-edition.html", "frontend/dist/studio-live-bridge.js",
+       "frontend/dist/studio-edition-app.js", "frontend/dist/studio-edition.css")
 
 
 def _fingerprint(paths: tuple[str, ...]) -> str | None:
@@ -28,7 +29,13 @@ def _fingerprint(paths: tuple[str, ...]) -> str | None:
 
 
 def backend_fingerprint() -> str | None:
-    return _fingerprint(_BACKEND)
+    if not all((ROOT / name).is_file() for name in _BACKEND):
+        return None
+    # Jobs, workers and analysis modules are imported lazily. A changed one
+    # must invalidate reuse just like a changed HTTP entry point.
+    paths = tuple(sorted(path.relative_to(ROOT).as_posix()
+                         for path in (ROOT / 'app').glob('*.py')))
+    return _fingerprint(paths)
 
 
 def ui_fingerprint() -> str | None:

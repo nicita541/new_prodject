@@ -1,5 +1,6 @@
 """Guard the real Windows startup against accidental demo regressions."""
 from pathlib import Path
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,3 +32,94 @@ def test_development_proxy_matches_actual_backend_port():
 
 def test_no_synthetic_demo_is_shipped_as_startup_code():
     assert not (ROOT / "scripts" / "create_studio_demo.py").exists()
+
+
+def test_live_studio_labels_and_transport_match_real_data():
+    """Execute production render/transport functions with fake local media/API."""
+    node = ROOT / 'tools' / 'node' / 'node.exe'
+    if not node.exists():
+        import pytest
+        pytest.skip('Portable Node is unavailable')
+    script = r'''
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const source=fs.readFileSync('frontend/public/studio-edition-app.js','utf8');
+const elements=new Map();
+function element(id){if(!elements.has(id))elements.set(id,{
+ textContent:'',innerHTML:'',style:{},dataset:{},classList:{toggle(){}},listeners:{},
+ addEventListener(name,fn){(this.listeners[name] ||= []).push(fn)},
+ querySelector(){return null},setAttribute(name,value){this[name]=value},focus(){},paused:true,readyState:4,duration:1420,
+ play(){this.paused=false;this.emit('play');return Promise.resolve()},
+ pause(){this.paused=true;this.emit('pause')},
+ emit(name){for(const fn of this.listeners[name]||[])fn()},
+ });return elements.get(id)}
+const context=vm.createContext({console,URL,URLSearchParams,structuredClone,
+ performance,Intl,Date,setTimeout(){},clearTimeout(){},setInterval(){},clearInterval(){},
+ localStorage:{getItem(){return null},setItem(){}},
+ document:{getElementById:element,addEventListener(){},querySelector(){return null},querySelectorAll(){return []}},
+ window:{KadrBridge:{},addEventListener(){}},location:{search:''},navigator:{},Blob,File,FormData,TextEncoder,atob});
+const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,
+ setup(){ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';},
+ job(){return currentJob();},data(){return db},entries(){return ui.apiEntries}};})();`;
+vm.runInContext(source.split('// Live Studio Edition: preserve')[0]+expose,context);
+const app=context.window.audit;app.setup();
+assert(!app.renderReview().includes('Демо: встроенные ролики'));
+assert(app.renderReview().includes('Реальные видео'));
+assert(!app.renderProcessing().includes('Имитация сообщений'));
+assert(app.renderProcessing().includes('Сводка статуса'));
+const zero={local:{total_tokens:0,calls:0},deepseek:{total_tokens:0,calls:0},all_tokens:0,unknown_calls:0};
+assert.equal(app.tokenLabel(zero),'Нет сохранённых данных о токенах');
+assert(!app.renderProcessing().includes('Из фактических ответов API'));
+assert.equal(app.tokenLabel({...zero,unknown_calls:2}),'Статистика токенов не предоставлена · 2 ответов без статистики токенов');
+const reportedZero={...zero,local:{total_tokens:0,calls:1}};
+assert(app.tokenLabel(reportedZero).includes('Локально: 0'));
+assert(app.tokenLabel(reportedZero).includes('Всего: 0 токенов (1 запросов со статистикой)'));
+assert(app.tokenLabel(reportedZero).includes('DeepSeek: нет данных'));
+assert(app.tokenLabel({...reportedZero,unknown_calls:1}).includes('Известно: 0 токенов'));
+assert(!app.tokenLabel({...reportedZero,unknown_calls:1}).includes('Всего:'));
+
+assert(!app.renderProcessing().includes('stage_progress из'));
+assert(!app.renderApi().includes('в демо'));
+assert(!app.renderApi().includes('демонстрационную базу'));
+for(const [method,path] of app.routes)assert(!/balance|recovery|spending|reset-budget/.test(path),path);
+assert(app.exemplarRoute(['POST','/api/import']).unavailable);
+assert(app.exemplarRoute(['GET','/api/jobs/{id}/previews/{preview_id}']).unavailable);
+assert(app.exemplarRoute(['GET','/api/exports/{export_id}']).unavailable);
+app.data().previews={selected:{preview_id:'selected',source_job_id:'j1'},other:{preview_id:'other',source_job_id:'j2'}};
+assert.equal(app.exemplarRoute(['GET','/api/jobs/{id}/previews/{preview_id}']).path,'/api/jobs/j1/previews/selected');
+app.bindReview();
+const button=element('rvPlayButton'),video=element('reviewShortVideo');
+assert.equal(button.textContent,'▷ Смотреть');
+video.play();assert.equal(button.textContent,'Ⅱ Пауза');
+video.pause();assert.equal(button.textContent,'▷ Смотреть');
+video.play();video.paused=true;video.emit('ended');assert.equal(button.textContent,'▷ Смотреть');
+const calls=[];
+context.fetch=async(path,options)=>{
+ calls.push({path,options});
+ assert(!('onResponse' in options));
+ let value,status=200;
+ if(path.endsWith('/previews')){value={preview_id:'real-preview',source_job_id:'j1',status:'queued'};status=202}
+ else if(path.endsWith('/exports')){value={export_id:'real-export',status:'queued'};status=202}
+ else if(path==='/api/library')value={projects:[],episodes:[]};
+ else if(['/api/jobs','/api/sources'].includes(path))value=[];
+ else if(path==='/api/music')value={tracks:[]};
+ else if(path==='/api/health')value={ready:true};
+ else if(path==='/api/deepseek')value={configured:false};
+ else assert.fail('Unexpected mocked path: '+path);
+ return {ok:true,status,headers:{get(){return 'application/json'}},json:async()=>value};
+};
+vm.runInContext(fs.readFileSync('frontend/public/studio-live-bridge.js','utf8'),context);
+async function checkBridge(){
+ const db={projects:[],episodes:[],jobs:[]},ui={};let status;
+ await context.window.KadrBridge.request('POST','/api/jobs/j1/previews',{part_index:1},db,ui,v=>status=v);
+ assert.equal(status,202);assert.equal(db.previews['real-preview'].status,'queued');
+ await context.window.KadrBridge.request('POST','/api/jobs/j1/exports',{part_indices:[1]},db,ui,v=>status=v);
+ assert.equal(status,202);assert.equal(db.exports['real-export'].status,'queued');
+ await app.request('POST','/api/jobs/j1/previews',{part_index:1});
+ assert.equal(app.entries()[0].status,202);
+ console.log('PASS: live copy, task catalog, HTTP status and media play/pause/ended');
+}
+checkBridge().catch(error=>{console.error(error);process.exitCode=1});
+'''
+    result = subprocess.run([str(node), '-e', script], cwd=ROOT, capture_output=True,
+                            text=True, encoding='utf-8', timeout=20)
+    assert result.returncode == 0, result.stdout + result.stderr

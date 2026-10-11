@@ -44,6 +44,11 @@ class BrowserDiagnostic(BaseModel):
     line: int = Field(default=0, ge=0, le=1000000)
 
 
+class StudioShutdown(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    identity: dict[str, str | None]
+
+
 class UploadTooLarge(HTTPException):
     def __init__(self):
         super().__init__(413, "Серия слишком большая (предел 20 ГБ)")
@@ -86,9 +91,14 @@ class UploadLimitMiddleware:
 class CreateJob(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source_id: str
-    analysis_provider: Literal["local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story", "local_flash_story_budgeted"] = "local"
+    analysis_provider: Literal["local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story", "local_flash_story_budgeted", "antigravity_manual"] = "local"
     layout: Literal["portrait", "cinema"] = "portrait"
     caption_style: Literal["classic", "accent"] = "classic"
+
+
+class ManualAnalysisMode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: Literal["local", "antigravity_manual"]
 
 
 class RecoverDeepseek(BaseModel):
@@ -346,6 +356,9 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             if request.headers.get("content-type", "").split(";", 1)[0].lower() not in {
                 "application/json", "multipart/form-data", ""}:
                 return JSONResponse({"detail": "Недопустимый формат запроса"}, 415)
+            current = getattr(request.app.state, "manager", None)
+            if current is not None and current.shutdown_requested:
+                return JSONResponse({"detail": "Приложение завершает работу"}, 409)
         started = time.perf_counter()
         try:
             response = await call_next(request)
@@ -374,6 +387,31 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
 
     def get_manager(request: Request):
         return request.app.state.manager
+
+    @application.post("/api/studio/shutdown", status_code=202)
+    def shutdown_studio(request: Request, body: StudioShutdown):
+        if body.identity != server_identity():
+            raise HTTPException(409, "Запущен другой экземпляр KADR; остановка отклонена")
+        callback = getattr(request.app.state, "shutdown_callback", None)
+        if not callable(callback):
+            raise HTTPException(409, "Этот запуск не поддерживает остановку через API; используйте Ctrl+C")
+        current = get_manager(request)
+        with current.mutex:
+            if current.closed or current.shutdown_requested:
+                raise HTTPException(409, "Приложение завершает работу")
+            if current.active is not None or any(current.finishing_tasks.values()):
+                raise HTTPException(409, "Дождитесь завершения экспорта или отмените обработку в интерфейсе")
+            current.shutdown_requested = True
+            try:
+                callback()
+            except Exception:
+                current.shutdown_requested = False
+                logging.getLogger("app.server").exception("Studio shutdown callback failed",
+                    extra={"action": "shutdown_failed", "status": "failed"})
+                raise HTTPException(500, "Не удалось запросить остановку приложения") from None
+        logging.getLogger("app.server").info("Idle Studio shutdown requested",
+            extra={"action": "shutdown_requested", "status": "stopping"})
+        return {"status": "shutdown_requested"}
 
     @application.exception_handler(BusyError)
     async def busy_error(request: Request, error: BusyError):
@@ -579,6 +617,10 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @application.post("/api/jobs", status_code=201)
     def create_job(request: Request, body: CreateJob):
         state = config.readiness()
+        if body.analysis_provider == 'antigravity_manual':
+            missing = [name for name in state['missing'] if name not in {
+                'Qwen3.5-9B для сокращения истории', 'Визуальный проектор Qwen 9B'}]
+            state = {'missing': missing, 'ready': not missing}
         if not state["ready"]:
             raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
         current = get_manager(request)
@@ -618,6 +660,66 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         current.get(identifier)
         from .token_usage import summary
         return summary(current.job_dir(identifier))
+
+    @application.get('/api/jobs/{identifier}/antigravity')
+    def manual_analysis(request: Request, identifier: str):
+        current = get_manager(request)
+        current.get(identifier)
+        from .antigravity_exchange import snapshot
+        return snapshot(current.job_dir(identifier))
+
+    @application.post('/api/jobs/{identifier}/analysis-provider')
+    def manual_analysis_mode(request: Request, identifier: str, body: ManualAnalysisMode):
+        current = get_manager(request)
+        from .antigravity_exchange import preserve_provider_checkpoints
+        from .jobs import atomic_json, TERMINAL
+        with current.mutex:
+            current._assert_available()
+            job = current.get(identifier)
+            if job['status'] not in TERMINAL or job['status'] == 'completed':
+                raise BusyError('Сначала остановите обработку; готовое задание менять нельзя')
+            directory = current.job_dir(identifier)
+            old = job.get('analysis_provider', 'local')
+            preserve_provider_checkpoints(directory, old, body.provider)
+            settings = read_json(directory / 'analysis-settings.json', {})
+            atomic_json(directory / 'analysis-settings.json', {**settings, 'provider': body.provider})
+            job['analysis_provider'] = body.provider
+            atomic_json(directory / 'job.json', job)
+            return public_job(job, current)
+
+    @application.post('/api/jobs/{identifier}/antigravity/prepare')
+    def prepare_manual_analysis(request: Request, identifier: str):
+        current = get_manager(request)
+        if current.get(identifier).get('analysis_provider') != 'antigravity_manual':
+            raise ValueError('Выберите ручной режим Antigravity для этого задания')
+        return public_job(current.retry(identifier), current)
+
+    @application.post('/api/jobs/{identifier}/antigravity/open')
+    def open_manual_analysis(request: Request, identifier: str):
+        current = get_manager(request)
+        current.get(identifier)
+        directory = contained(current.job_dir(identifier) / 'antigravity', current.job_dir(identifier))
+        directory.mkdir(exist_ok=True)
+        if os.name == 'nt':
+            subprocess.Popen(['explorer.exe', str(directory)])
+        return {'opened': os.name == 'nt'}
+
+    @application.post('/api/jobs/{identifier}/antigravity/{packet_id}/import')
+    async def import_manual_analysis(request: Request, identifier: str, packet_id: str):
+        current = get_manager(request)
+        from .antigravity_exchange import import_result, MAX_RESULT_BYTES
+        # Read a bounded stream rather than buffering an arbitrary request.
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > MAX_RESULT_BYTES:
+                raise HTTPException(413, 'Результат больше 8 МБ')
+        with current.mutex:
+            current._assert_available()
+            job = current.get(identifier)
+            if job.get('analysis_provider') != 'antigravity_manual' or job['status'] == 'completed':
+                raise ValueError('Импорт доступен для остановленного ручного задания')
+            return import_result(current.job_dir(identifier), packet_id, bytes(body))
 
     @application.post("/api/jobs/{identifier}/cancel")
     def cancel(request: Request, identifier: str):
@@ -903,7 +1005,16 @@ app = create_app()
 def main():
     import uvicorn
     config.setup_environment()
-    uvicorn.run("app.server:app", host="127.0.0.1", port=8765, access_log=False)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8765, access_log=False))
+    # Uvicorn config replaces logging globally and closes the launcher's
+    # file handlers. Restore them before server startup can emit app events.
+    from .run_logging import configure_logging
+    configure_logging("studio")
+    app.state.shutdown_callback = lambda: setattr(server, "should_exit", True)
+    try:
+        server.run()
+    finally:
+        app.state.shutdown_callback = None
 
 
 if __name__ == "__main__":

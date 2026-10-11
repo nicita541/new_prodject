@@ -145,7 +145,7 @@ class Library:
                 raise ValueError('Это видео уже принадлежит другой серии')
             from .editing import validate_options
             options = validate_options(settings['layout'], settings['caption_style'])
-            if settings['analysis_provider'] not in {'local', 'hybrid', 'deepseek', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted'}:
+            if settings['analysis_provider'] not in {'local', 'hybrid', 'deepseek', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted', 'antigravity_manual'}:
                 raise ValueError('Неизвестный способ анализа')
             episode.update(source_id=source_id, settings={**options, 'analysis_provider': settings['analysis_provider']})
             self._save()

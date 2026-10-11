@@ -20,6 +20,7 @@ $env:TMP = $env:TEMP
 $env:TMPDIR = $env:TEMP
 $env:PYTHONPYCACHEPREFIX = Join-Path $root "cache\test-pycache"
 $env:PIP_CACHE_DIR = Join-Path $root "cache\test-pip"
+$env:npm_config_cache = Join-Path $root "cache\npm"
 New-Item -ItemType Directory -Force -Path (Join-Path $root "temp"), (Join-Path $root "cache") | Out-Null
 
 $runId = (Get-Date).ToUniversalTime().ToString("yyyyMMdd_HHmmss") + "_" + [Guid]::NewGuid().ToString("N").Substring(0, 8)
@@ -28,15 +29,16 @@ $logsDir = Join-Path (Join-Path $root 'logs\tests') $runId
 # Reports and execution logs use different isolated directories. Both must
 # exist before tests start, not just logs: checks.json is written at the end.
 New-Item -ItemType Directory -Force -Path $localDir, $logsDir -ErrorAction Stop | Out-Null
+$env:KADR_LOG_DIR = $logsDir
 $script:checks = @()
 # A monotonic timer measures process durations independently of progress text.
 # Overall time includes setup and media selection but excludes the later
 # report push itself (which cannot know its own completion time before push).
 $script:verificationStarted = [System.Diagnostics.Stopwatch]::StartNew()
 # The complete real-AI acceptance (Python, React, offline E2E, ASR/VLM, render)
-# has one shared 2200-second (36m40s) deadline. No individual stage may
+# has one shared 1800-second (30-minute) deadline. No individual stage may
 # reset this clock; TIMEOUT remains FAIL and does not mean a successful render.
-$script:verificationBudgetSeconds = 2200
+$script:verificationBudgetSeconds = 1800
 $script:verificationDeadline = $null
 
 function Add-Check([string]$Name, [string]$Status, [int]$ExitCode, [string]$Note, [double]$ElapsedSeconds = -1) {
@@ -53,7 +55,7 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
     if ($script:verificationDeadline) {
         $remaining = [int][Math]::Floor(($script:verificationDeadline - (Get-Date)).TotalSeconds)
         if ($remaining -le 0) {
-            Add-Check $Name "TIMEOUT" 124 "Shared 2200-second full-AI test budget exhausted" $stageTimer.Elapsed.TotalSeconds
+            Add-Check $Name "TIMEOUT" 124 "Shared 1800-second full-AI test budget exhausted" $stageTimer.Elapsed.TotalSeconds
             return
         }
         $effectiveTimeout = [Math]::Min($Timeout, $remaining)
@@ -201,6 +203,11 @@ if (-not (Test-Path -LiteralPath $python)) {
     $found = Get-Command python.exe -ErrorAction SilentlyContinue
     if ($found) { $python = $found.Source } else { $python = $null }
 }
+$portableNode = Join-Path $root 'tools\node\node.exe'
+$portableNpm = Join-Path $root 'tools\node\node_modules\npm\bin\npm-cli.js'
+if ((Test-Path -LiteralPath $portableNode) -and (Test-Path -LiteralPath $portableNpm)) {
+    $env:PATH = (Join-Path $root 'scripts') + ';' + (Join-Path $root 'tools\node') + ';' + $env:PATH
+}
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 $frontend = Join-Path $root "frontend"
 $ffmpeg = Join-Path $root "tools\ffmpeg\bin\ffmpeg.exe"
@@ -254,7 +261,7 @@ if ($FlashStory -or $FlashBudgeted) {
 }
 if ($RequireRealModel -or $RealSource) {
     $script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)
-    Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (36m40s) for ALL stages combined; TIMEOUT is FAIL.")
+    Write-Host ("FULL AI TEST DEADLINE: " + $script:verificationBudgetSeconds + " seconds (30min) for ALL stages combined; TIMEOUT is FAIL.")
     if ($FastLocalStory) { Write-Host "EXPERIMENTAL: 4B local story selection, no DeepSeek API; strict quality gate stays enabled." }
     if ($FlashStory) { Write-Host "PAID EXPERIMENT: local visual 4B and unlimited DeepSeek Flash story, pacing and framing. No local spending or request cap. Some frames are sent to DeepSeek. Strict quality gate stays enabled." }
     if ($FlashBudgeted) { Write-Host "UNLIMITED DEEPSEEK: no artificial USD or request cap. Qwen4B stays local; local4B is used only if the API fails. Some frames leave your PC." }
@@ -275,7 +282,7 @@ if ($python) {
     Run-Check "python_dependencies" $python @("-c", "__import__('fastapi');__import__('starlette');__import__('httpx');__import__('pytest');__import__('multipart');__import__('PIL')") $root 30
     $dependenciesReady = @($script:checks | Where-Object { $_.name -eq "python_dependencies" -and $_.status -eq "PASS" }).Count -eq 1
     if (-not $dependenciesReady) {
-        Add-Check "python_tests" "SKIP" 0 "Required Python packages missing; create .venv and install requirements"
+        Add-Check "python_tests" "SKIP" 0 "Required Python packages missing; run setup.bat to prepare tools/python"
     } elseif ($Quick) {
         # Strictly no FFmpeg renders, even if the video tools are installed.
         Run-Check "python_tests" $python @("-m", "pytest", "-q",

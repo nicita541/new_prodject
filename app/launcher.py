@@ -5,6 +5,7 @@ import json
 import socket
 import threading
 import time
+import urllib.error
 import urllib.request
 import webbrowser
 
@@ -52,12 +53,17 @@ def studio_url() -> str:
 
 
 def open_when_ready() -> None:
-    for _ in range(60):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
         if studio_available():
             webbrowser.open(studio_url())
             return
         time.sleep(0.5)
-    print("[ERROR] Studio is not ready after 30 seconds. Check server errors.", flush=True)
+    message = "Studio is not ready after 30 seconds. Check logs/LATEST.txt and server errors."
+    import logging
+    logging.getLogger("app.launcher").error(message,
+        extra={"action": "startup_timeout", "status": "timeout"})
+    print("[ERROR] " + message, flush=True)
 
 
 def main() -> None:
@@ -93,8 +99,79 @@ def main() -> None:
     print("Starting current KADR Studio on port 8765.", flush=True)
     threading.Thread(target=open_when_ready, daemon=True).start()
     from .server import main as serve
-    serve()
+    try:
+        serve()
+    except Exception:
+        logger.exception("Studio startup failed; inspect this diagnostic session",
+                         extra={"action": "startup_failed", "status": "failed"})
+        raise
+    except SystemExit as error:
+        if error.code not in (None, 0):
+            logger.exception("Studio server exited before a normal shutdown",
+                             extra={"action": "startup_failed", "status": "failed"})
+        raise
+
+
+def stop_studio() -> int:
+    """Request idle-only shutdown of the verified workspace; never kill a PID."""
+    from .config import setup_environment
+    from .run_logging import configure_logging, scrub
+    import logging
+    setup_environment()
+    configure_logging("studio")
+    logger = logging.getLogger("app.launcher")
+    status = studio_status()
+    if status == "missing":
+        print("KADR Studio is already stopped.", flush=True)
+        return 0
+    if status != "current":
+        print("[ERROR] Port 8765 belongs to another or outdated server. Stop it in its original console.",
+              flush=True)
+        return 2
+    request = urllib.request.Request(URL + "/api/studio/shutdown",
+        data=json.dumps({"identity": server_identity()}).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=5) as response:
+            if response.status != 202:
+                raise ValueError("Unexpected shutdown response")
+    except urllib.error.HTTPError as error:
+        detail = "Shutdown refused. Wait for processing/export to finish, or use its Cancel button."
+        try:
+            message = json.loads(error.read(4096)).get("detail")
+            if isinstance(message, str):
+                detail = scrub(message)
+        except (ValueError, AttributeError, OSError):
+            pass
+        logger.warning("Studio shutdown refused", extra={"action": "shutdown_refused", "status": error.code})
+        print("[ERROR] " + detail, flush=True)
+        return 2
+    except (OSError, ValueError):
+        logger.exception("Studio shutdown request failed", extra={"action": "shutdown_failed"})
+        print("[ERROR] Could not request shutdown. Check logs/LATEST.txt.", flush=True)
+        return 2
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if studio_status() != "current":
+            logger.info("Studio stopped", extra={"action": "shutdown_complete", "status": "stopped"})
+            print("KADR Studio stopped. Saved projects and outputs remain available.", flush=True)
+            return 0
+        time.sleep(0.25)
+    logger.error("Studio shutdown timed out", extra={"action": "shutdown_timeout", "status": "timeout"})
+    print("[ERROR] Server has not stopped after 15 seconds. Check logs or use Ctrl+C in its console.", flush=True)
+    return 2
+
+
+def cli() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(description="Start, reuse or stop this workspace's KADR Studio.")
+    parser.add_argument("--stop", action="store_true", help="Stop only the verified idle Studio server")
+    args = parser.parse_args()
+    if args.stop:
+        raise SystemExit(stop_studio())
+    main()
 
 
 if __name__ == "__main__":
-    main()
+    cli()

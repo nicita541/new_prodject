@@ -1,0 +1,3 @@
+﻿attempt,status,complete,input_seconds,pipeline_seconds,observer_seconds,benchmark_including_sampler_and_snapshot_seconds,latest_sample_elapsed_seconds_partial,rtf_pipeline,rtf_scope,seconds_per_input_minute,preparation_seconds_excluded
+120s-fresh,timeout,False,120.036583,3599.988103,3600.579,3601.285538,,29.9908,incomplete_attempt_not_full_processing_speed,1799.4455,7.048849
+180s-fresh,timeout,False,180.013167,3600.039025,3600.579,3601.23735,,19.9988,incomplete_attempt_not_full_processing_speed,1199.9252,10.401188

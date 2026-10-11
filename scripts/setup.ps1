@@ -3,11 +3,18 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 $env:TEMP = Join-Path $projectRoot 'temp'
 $env:TMP = $env:TEMP
+$env:TMPDIR = $env:TEMP
+$env:npm_config_cache = Join-Path $projectRoot 'cache\npm'
 $env:PYTHONUTF8 = '1'
 $env:PYTHONPYCACHEPREFIX = Join-Path $projectRoot 'cache\pycache'
 $env:PIP_CACHE_DIR = Join-Path $projectRoot 'cache\pip'
 New-Item -ItemType Directory -Force -Path $env:TEMP,(Join-Path $projectRoot 'cache\downloads'),(Join-Path $projectRoot 'tools') | Out-Null
 $projectPython = Join-Path $projectRoot 'tools\python\python.exe'
+$portableNode = Join-Path $projectRoot 'tools\node\node.exe'
+$portableNpm = Join-Path $projectRoot 'tools\node\node_modules\npm\bin\npm-cli.js'
+if ((Test-Path -LiteralPath $portableNode) -and (Test-Path -LiteralPath $portableNpm)) {
+    $env:PATH = (Join-Path $projectRoot 'scripts') + ';' + (Join-Path $projectRoot 'tools\node') + ';' + $env:PATH
+}
 if (-not (Test-Path -LiteralPath $projectPython)) {
     $archive = Join-Path $projectRoot 'cache\downloads\python.tar.gz'
     $partial = "$archive.partial"
@@ -22,7 +29,7 @@ if (-not (Test-Path -LiteralPath $projectPython)) {
 # A fresh checkout does not contain frontend/dist (it is gitignored).
 # Build React explicitly instead of silently falling back to the old UI.
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if (-not $npm) { throw 'Node.js / npm is required for the React UI. Install Node.js LTS and rerun setup.' }
+if (-not $npm) { throw 'Node.js / npm is required for the React UI. Provide portable Node/npm in tools/node or an existing npm on PATH.' }
 Push-Location -LiteralPath (Join-Path $projectRoot 'frontend')
 try {
     & $npm.Source ci --no-audit --no-fund

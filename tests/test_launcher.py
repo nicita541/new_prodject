@@ -46,6 +46,80 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(sleep.call_count, 2)
         browser.assert_called_once_with(launcher.studio_url())
 
+    def test_readiness_timeout_counts_time_spent_in_http_requests(self):
+        clock = [0.0]
+
+        def slow_probe():
+            clock[0] += 12
+            return False
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch.object(launcher, 'studio_available', side_effect=slow_probe) as probe, \
+                patch.object(launcher.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(launcher.time, 'sleep', side_effect=sleep), \
+                patch.object(launcher.webbrowser, 'open') as browser:
+            launcher.open_when_ready()
+        self.assertEqual(probe.call_count, 3)
+        browser.assert_not_called()
+
+    def test_server_startup_exception_is_written_to_session_logs(self):
+        with patch.object(launcher, 'studio_status', return_value='missing'), \
+                patch.object(launcher.threading, 'Thread'), \
+                patch('app.server.main', side_effect=RuntimeError('startup-test-error')), \
+                patch('logging.Logger.exception') as logged:
+            with self.assertRaisesRegex(RuntimeError, 'startup-test-error'):
+                launcher.main()
+        logged.assert_called_once()
+
+    def test_uvicorn_startup_exit_is_written_to_session_logs(self):
+        with patch.object(launcher, 'studio_status', return_value='missing'), \
+                patch.object(launcher.threading, 'Thread'), \
+                patch('app.server.main', side_effect=SystemExit(1)), \
+                patch('logging.Logger.exception') as logged:
+            with self.assertRaises(SystemExit):
+                launcher.main()
+        logged.assert_called_once()
+
+    def test_stop_of_missing_or_unrelated_server_never_sends_shutdown(self):
+        for status, result in [('missing', 0), ('occupied', 2)]:
+            with self.subTest(status=status), \
+                    patch.object(launcher, 'studio_status', return_value=status), \
+                    patch.object(launcher.urllib.request, 'build_opener') as opener:
+                self.assertEqual(launcher.stop_studio(), result)
+                opener.assert_not_called()
+
+    def test_stop_sends_exact_identity_and_waits_until_server_disappears(self):
+        with patch.object(launcher, 'studio_status', side_effect=['current', 'current', 'missing']), \
+                patch.object(launcher.urllib.request, 'build_opener') as factory, \
+                patch.object(launcher.time, 'sleep') as sleep:
+            factory.return_value.open.return_value.__enter__.return_value.status = 202
+            self.assertEqual(launcher.stop_studio(), 0)
+        request = factory.return_value.open.call_args.args[0]
+        self.assertEqual(request.method, 'POST')
+        self.assertEqual(request.full_url, launcher.URL + '/api/studio/shutdown')
+        self.assertEqual(json.loads(request.data), {'identity': server_identity()})
+        sleep.assert_called_once_with(0.25)
+
+    def test_stop_of_busy_server_preserves_work(self):
+        error = urllib.error.HTTPError(launcher.URL, 409, 'Busy', None,
+            io.BytesIO(b'{"detail":"Processing is active"}'))
+        with patch.object(launcher, 'studio_status', return_value='current'), \
+                patch.object(launcher.urllib.request, 'build_opener') as factory, \
+                patch.object(launcher.time, 'sleep') as sleep:
+            factory.return_value.open.side_effect = error
+            self.assertEqual(launcher.stop_studio(), 2)
+        sleep.assert_not_called()
+
+    def test_stop_reports_timeout_without_killing_processes(self):
+        with patch.object(launcher, 'studio_status', return_value='current'), \
+                patch.object(launcher.urllib.request, 'build_opener') as factory, \
+                patch.object(launcher.time, 'monotonic', side_effect=[0, 0, 15]), \
+                patch.object(launcher.time, 'sleep'):
+            factory.return_value.open.return_value.__enter__.return_value.status = 202
+            self.assertEqual(launcher.stop_studio(), 2)
+
     def test_http_identity_matching_current_workspace_is_accepted(self):
         payload = server_identity()
         self.assertIsNotNone(payload['backend'])

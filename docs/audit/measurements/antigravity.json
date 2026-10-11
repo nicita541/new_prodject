@@ -1,0 +1,32 @@
+{
+  "scope": "one identical real prompt/schema/image packet, not whole video",
+  "qwen9b_request_wall_seconds": 115.64,
+  "gemini_flash_high": {
+    "cli_wall_seconds": 90.241,
+    "envelope_seconds": 85.7272176,
+    "input_tokens": 32801,
+    "output_tokens": 11138,
+    "thinking_tokens": 10874,
+    "total_tokens": 43939,
+    "cache_read_tokens": 0,
+    "kept_units": 1,
+    "omitted_units": 2,
+    "native_cached_resume_seconds": 10.3474407
+  },
+  "gemini_flash_low": {
+    "cli_wall_seconds": 11.141,
+    "envelope_seconds": 5.2394935,
+    "input_tokens": 32328,
+    "output_tokens": 260,
+    "thinking_tokens": 0,
+    "total_tokens": 32588,
+    "cache_read_tokens": 0,
+    "kept_units": 2,
+    "omitted_units": 1,
+    "native_cached_resume_seconds": 6.8448037
+  },
+  "import_schema_source_unit_coverage": "passed both",
+  "repeated_4b_requests": 0,
+  "editorial_equivalence": "not established",
+  "thinking_is_subset_of_output": true
+}

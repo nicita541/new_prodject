@@ -13,13 +13,12 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Callable
 
 from app import config
 
-TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+TERMINAL = {"completed", "failed", "cancelled", "interrupted", "waiting_analysis"}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -223,6 +222,7 @@ class JobManager:
         self.finishing_tasks: dict[str, int] = {}
         self.pending_states = {}
         self.closed = False
+        self.shutdown_requested = False
         self.sources = read_json(self.data / "sources.json", {})
         try:
             self._recover()
@@ -457,11 +457,11 @@ class JobManager:
 
     @staticmethod
     def _check_analysis_provider(provider: str) -> None:
-        if provider not in {"local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story", "local_flash_story_budgeted"}:
+        if provider not in {"local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story", "local_flash_story_budgeted", "antigravity_manual"}:
             raise ValueError("Неизвестный способ анализа")
         # Hybrid always has a local path; remote availability is evaluated
         # only when the pipeline actually needs an optional fallback.
-        if provider in {"local", "hybrid", "local_fast_story"}:
+        if provider in {"local", "hybrid", "local_fast_story", "antigravity_manual"}:
             return
         try:
             from app.deepseek import public_status
@@ -500,7 +500,7 @@ class JobManager:
             return self._start(job)
 
     def _assert_available(self):
-        if self.closed:
+        if self.closed or self.shutdown_requested:
             raise BusyError("Приложение завершает работу")
         if self.active is not None:
             raise BusyError("Сейчас обрабатывается другая серия")
@@ -598,7 +598,7 @@ class JobManager:
         with self.mutex:
             self._assert_available()
             job = self.get(identifier)
-            if job["status"] not in {"failed", "interrupted", "cancelled"}:
+            if job["status"] not in {"failed", "interrupted", "cancelled", "waiting_analysis"}:
                 raise BusyError("Продолжить можно только отменённую или прерванную обработку")
             try:
                 self._check_analysis_provider(job.get("analysis_provider", "local"))
@@ -614,7 +614,7 @@ class JobManager:
             if not source or not contained(Path(source["path"]), self.root).is_file():
                 raise ValueError("Исходная серия больше недоступна")
             if job.get('analysis_provider') in {'deepseek', 'deepseek_plan', 'hybrid', 'local_flash_story',
-                                              'local_flash_story_budgeted'}:
+                                              'local_flash_story_budgeted', 'antigravity_manual'}:
                 from .deepseek import begin_attempt
                 begin_attempt(self.job_dir(identifier))
             return self._start(job)

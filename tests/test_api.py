@@ -63,14 +63,14 @@ class ApiTests(unittest.TestCase):
 
     def test_retired_balance_endpoints_do_not_read_or_refresh_money(self):
         state={'accounting_enabled':False}
-        with patch('app.provider_balance.refresh') as refresh, patch('app.provider_balance.status') as status:
+        with patch('app.deepseek._http') as remote, patch('app.deepseek.atomic_json') as write:
             self.assertEqual(self.client.get('/api/deepseek/balance').json(),state)
             denied=self.client.post('/api/deepseek/balance',headers={'Origin':'https://other.example'})
             self.assertEqual(denied.status_code,403)
-            refresh.assert_not_called()
+            remote.assert_not_called()
             self.assertEqual(self.client.post('/api/deepseek/balance').json(),state)
-            refresh.assert_not_called()
-            status.assert_not_called()
+            remote.assert_not_called()
+            write.assert_not_called()
             self.assertEqual(self.client.post('/api/deepseek/balance?job_id=missing').status_code,404)
 
     def test_trash_preserves_outputs_across_reload_and_parent_restore(self):

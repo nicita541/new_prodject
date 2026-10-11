@@ -1,5 +1,6 @@
 """End-to-end timing summaries: monotonic steps, nested stages, privacy and old-run fallback."""
 import json
+import pytest
 
 from scripts.export_stage_timings import summarize, main
 
@@ -92,3 +93,52 @@ def test_old_run_without_check_timings_never_invents_total_or_percentages(tmp_pa
     assert result["total"]["measurement"] == "unavailable_old_run"
     assert result["verification_checks"][0]["seconds"] is None
     assert result["verification_checks"][0]["share_of_test_pct"] is None
+
+
+@pytest.mark.parametrize("include_run_ids", [True, False])
+def test_first_pass_timeline_is_not_divided_by_or_added_to_cached_resume(tmp_path, include_run_ids):
+    job = tmp_path / "real_model_3min/real-job"
+    # The observer and latest timing snapshot are overwritten by cache resume.
+    put(job / "observed-outcome.json", {"elapsed_seconds": 20})
+    timeline = job / "diagnostics/pipeline/timeline.jsonl"
+    timeline.parent.mkdir(parents=True, exist_ok=True)
+    events = [
+        {"run_id": "fresh", "stage": "pipeline", "action": "start"},
+        {"run_id": "fresh", "stage": "scenes", "action": "start"},
+        {"run_id": "fresh", "stage": "scenes", "action": "end", "elapsed_seconds": 900},
+        {"run_id": "fresh", "stage": "pipeline", "action": "end", "elapsed_seconds": 1000},
+        {"run_id": "resume", "stage": "pipeline", "action": "start"},
+        {"run_id": "resume", "stage": "scenes", "action": "start"},
+        {"run_id": "resume", "stage": "scenes", "action": "end", "elapsed_seconds": .1},
+        {"run_id": "resume", "stage": "pipeline", "action": "end", "elapsed_seconds": 20},
+    ]
+    if not include_run_ids:
+        for event in events:
+            event.pop("run_id")
+    timeline.write_text("\n".join(json.dumps(row) for row in events), encoding="utf-8")
+    result = summarize(tmp_path)
+    production = result["real_production"]
+    assert production["elapsed_seconds"] == 1000
+    stages = {row["stage"]: row for row in production["stage_order"]}
+    assert stages["scenes"]["seconds"] == 900
+    assert stages["scenes"]["completed_invocations"] == 1
+    assert stages["scenes"]["share_of_real_run_pct"] == 90
+    assert stages["pipeline"]["seconds"] == 1000
+
+
+def test_interrupted_first_pass_does_not_borrow_elapsed_from_successful_resume(tmp_path):
+    job = tmp_path / "real_model_3min/real-job"
+    put(job / "observed-outcome.json", {"elapsed_seconds": 20})
+    timeline = job / "diagnostics/pipeline/timeline.jsonl"
+    timeline.parent.mkdir(parents=True, exist_ok=True)
+    timeline.write_text("\n".join(json.dumps(row) for row in [
+        {"run_id": "fresh", "stage": "pipeline", "action": "start"},
+        {"run_id": "fresh", "stage": "transcribe", "action": "start"},
+        {"run_id": "fresh", "stage": "transcribe", "action": "end", "elapsed_seconds": 50},
+        {"run_id": "resume", "stage": "pipeline", "action": "start"},
+        {"run_id": "resume", "stage": "pipeline", "action": "end", "elapsed_seconds": 20},
+    ]), encoding="utf-8")
+    production = summarize(tmp_path)["real_production"]
+    assert production["elapsed_seconds"] is None
+    assert all(row["share_of_real_run_pct"] is None for row in production["stage_order"])
+    assert production["stage_order"][0]["unfinished_invocations"] == 1
