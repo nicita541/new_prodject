@@ -158,4 +158,4 @@ def test_single_cloud_launcher_requires_full_real_model_checks():
     assert '"--local-provider", "local_flash_story"' in ps
     assert '"local_flash_story_budgeted"' in py
     assert "genuine_model_and_video_cache_resume" in py
-    assert "$script:verificationBudgetSeconds = 2200" in ps
+    assert "$script:verificationBudgetSeconds = 1800" in ps

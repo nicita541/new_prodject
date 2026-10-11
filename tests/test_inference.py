@@ -126,6 +126,19 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual([(entry["start"], entry["end"], entry["text"]) for entry in result["words"]],
                          [(0, .2, "Начало"), (.9, 1, "конец")])
 
+    def test_progress_streams_real_source_positions_before_complete_transcript(self):
+        observed = []
+        def stream():
+            yield segment(0, .3, 'Первый', [word(0, .3, 'Первый')])
+            observed.append(json.loads((self.root / 'asr-progress.json').read_text('utf-8')))
+            self.assertFalse(self.destination.exists())
+            yield segment(.4, .8, 'Второй', [word(.4, .8, 'Второй')])
+        self.factory.return_value = SimpleNamespace(transcribe=MagicMock(return_value=(stream(), None)))
+        inference.transcribe(self.audio, self.destination)
+        self.assertEqual(observed[0]['fraction'], .3)
+        complete = json.loads((self.root / 'asr-progress.json').read_text('utf-8'))
+        self.assertEqual((complete['phase'], complete['fraction']), ('completed', 1.0))
+
     def test_gpu_and_cpu_iteration_failure_publish_neither_complete_nor_partial_transcript(self):
         def failed_cpu():
             yield segment(0, .5, "Не завершено", [word(0, .5, "Нет")])

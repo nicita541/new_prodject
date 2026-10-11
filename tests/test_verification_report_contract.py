@@ -117,14 +117,14 @@ def test_reports_do_not_publish_raw_real_model_or_selected_video_logs():
     assert '$publicSummary.logs_dir = "[LOCAL_ONLY]"' in script
 
 
-def test_real_ai_run_has_one_2200_second_budget_across_all_checks():
+def test_real_ai_run_has_one_1800_second_budget_across_all_checks():
     script = (ROOT / "scripts" / "verify_project.ps1").read_text("utf-8")
-    assert '$script:verificationBudgetSeconds = 2200' in script
+    assert '$script:verificationBudgetSeconds = 1800' in script
     assert '$script:verificationDeadline = (Get-Date).AddSeconds($script:verificationBudgetSeconds)' in script
     assert '$remaining = [int][Math]::Floor(($script:verificationDeadline - (Get-Date)).TotalSeconds)' in script
     assert '$effectiveTimeout = [Math]::Min($Timeout, $remaining)' in script
     assert 'Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds' in script
-    assert 'Shared 2200-second full-AI test budget exhausted' in script
+    assert 'Shared 1800-second full-AI test budget exhausted' in script
     assert 'TIMEOUT is FAIL' in script
     assert '21600' not in script
 

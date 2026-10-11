@@ -2,7 +2,9 @@ param(
     [Parameter(Mandatory=$true)][string]$PacketDirectory,
     [string]$AgyExe,
     [string]$Model = 'gemini-3.8-flash-low',
-    [switch]$Smoke
+    [switch]$Smoke,
+    [string]$StopFile,
+    [ValidateRange(1,240)][int]$TimeLimitSeconds = 240
 )
 
 # Standalone direct scripting: invoked by the user, never by KADR.
@@ -71,15 +73,20 @@ $startInfo.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
 $startInfo.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
+$abortReason = $null
 try {
+    if ($StopFile -and (Test-Path -LiteralPath $StopFile)) { throw 'Job cancelled before CLI launch' }
     # Bypass PowerShell 5 native marshalling, which strips embedded quotes.
     $null = $process.Start()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit(240000)) {
-        $process.Kill()
-        $process.WaitForExit()
-        throw 'agy exceeded the outer 4-minute limit'
+    while (-not $process.WaitForExit(500)) {
+        if (($StopFile -and (Test-Path -LiteralPath $StopFile)) -or $started.Elapsed.TotalSeconds -ge $TimeLimitSeconds) {
+            $process.Kill()
+            $process.WaitForExit()
+            $abortReason = "agy cancelled or exceeded outer limit of $TimeLimitSeconds seconds"
+            break
+        }
     }
     $captured = $stdoutTask.GetAwaiter().GetResult()
     [IO.File]::WriteAllText((Join-Path $attempt 'agy.stderr.txt'), $stderrTask.GetAwaiter().GetResult(), (New-Object Text.UTF8Encoding($false)))
@@ -88,15 +95,20 @@ try {
     $process.Dispose()
 }
 $captured | Set-Content -LiteralPath (Join-Path $attempt $outputName) -Encoding UTF8
-@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model} |
+@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;abort_reason=$abortReason} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
+if ($abortReason) { throw "$abortReason; inspect $attempt" }
 if ($cliExit -ne 0) { throw "agy failed (exit $cliExit); inspect $attempt" }
 $result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($result.status -ne 'SUCCESS' -or $null -eq $result.structured_output) {
     throw "No successful structured result; do not import $attempt"
 }
 if ($Smoke -and $result.structured_output.ok -ne $true) { throw 'Smoke answer is not ok=true' }
-Copy-Item -LiteralPath (Join-Path $attempt $outputName) -Destination (Join-Path $packet $outputName) -Force
+$destination = Join-Path $packet $outputName
+$pending = $destination + '.pending'
+Copy-Item -LiteralPath (Join-Path $attempt $outputName) -Destination $pending -Force
+if (Test-Path -LiteralPath $destination) { [IO.File]::Replace($pending, $destination, [NullString]::Value) }
+else { [IO.File]::Move($pending, $destination) }
 Write-Host ('Result: ' + (Join-Path $packet $outputName))
 Write-Host ('CLI wall seconds: ' + [Math]::Round($started.Elapsed.TotalSeconds, 3))
 if ($result.usage) { $result.usage | ConvertTo-Json -Compress | Write-Host }

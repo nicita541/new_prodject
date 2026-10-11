@@ -56,7 +56,7 @@ def test_fast_internal_provider_retains_strict_pipeline_without_extra_launcher()
     ps = (root / "scripts" / "verify_project.ps1").read_text("utf-8")
     assert not (root / "ТЕСТЫ" / "4_ПОЛНАЯ_ПРОВЕРКА_БЫСТРАЯ_4B.bat").exists()
     assert 'if ($FastLocalStory) { $realArgs += @("--local-provider", "local_fast_story") }' in ps
-    assert '$script:verificationBudgetSeconds = 2200' in ps
+    assert '$script:verificationBudgetSeconds = 1800' in ps
     assert 'Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds' in ps
     assert "safe_ai_diagnostics" in ps and "stage_timings" in ps
 

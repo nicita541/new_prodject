@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import re
 import shutil
+import time
 import uuid
 
 from .config import STORY_MODEL, STORY_PROJECTOR
@@ -176,6 +177,10 @@ def snapshot(job_dir):
                 'status': state.get('status', 'waiting'), 'error': state.get('error'),
                 'images': len(request['images']), 'usage': read_json(path.parent / 'result.json', {}).get('usage')})
     return {'provider': PROVIDER, 'packets': packets,
+            'automation': read_json(Path(job_dir) / 'antigravity' / 'automation.json', {'enabled': False}),
+            'exchange': read_json(Path(job_dir) / 'antigravity' / 'exchange.json', {}),
+            'runner': read_json(Path(job_dir) / 'antigravity' / 'runner.json', {}),
+            'job_directory': str(Path(job_dir).resolve()),
             'note': 'Готов означает проверку schema. Смысловые связи проверяет конвейер после продолжения.'}
 
 
@@ -249,6 +254,38 @@ class ManualVision:
         # No tokenizer/model process is started for a manual exchange.
         return len(text.encode('utf-8'))
 
+    def _receive(self, directory, identifier):
+        """Wait for a user-run script's file; never invoke/control that script."""
+        root = directory.parent.parent
+        automation = read_json(root / 'automation.json', {})
+        if not automation.get('enabled'):
+            raise AnalysisPending('Ожидается ручной анализ Antigravity: пакет ' + identifier[:12])
+        atomic_json(root / 'exchange.json', {'status': 'waiting', 'packet': identifier, 'updated_at': now()})
+        deadline = time.monotonic() + 600
+        while True:
+            if self.cancelled():
+                raise InterruptedError('Обработка отменена')
+            outgoing = directory / 'agy-result.json'
+            if outgoing.exists():
+                if not outgoing.resolve().is_relative_to(directory.resolve()):
+                    raise AnalysisPending('Файл ответа находится вне пакета; требуется проверка')
+                try:
+                    with outgoing.open('rb') as stream:
+                        raw = stream.read(MAX_RESULT_BYTES + 1)
+                    import_result(self.job_dir, identifier, raw)
+                except (ValueError, OSError) as error:
+                    atomic_json(root / 'exchange.json', {'status': 'error', 'packet': identifier,
+                        'updated_at': now(), 'error': 'Файл ответа не прошёл проверку'})
+                    raise AnalysisPending('Ответ Antigravity отклонён; проверьте пакет ' + identifier[:12]) from error
+                atomic_json(root / 'exchange.json', {'status': 'ready', 'packet': identifier, 'updated_at': now()})
+                return read_json(directory / 'result.json')
+            runner = read_json(root / 'runner.json', {})
+            if runner.get('status') == 'error' and runner.get('packet') == identifier:
+                raise AnalysisPending('Отдельный сценарий agy завершился с ошибкой; проверьте cli-attempts')
+            if time.monotonic() >= deadline:
+                raise AnalysisPending('Ответ agy не появился за 10 минут. Запустите отдельный сценарий и продолжите задание')
+            time.sleep(.5)
+
     def query(self, prompt, image=None, max_tokens=1200, schema=None, *, thinking_override=None):
         if self.cancelled():
             raise InterruptedError('Обработка отменена')
@@ -278,9 +315,11 @@ class ManualVision:
                 '\n\nImage pages (read every file): ' + ', '.join(request['images']), encoding='utf-8')
             atomic_json(directory / 'state.json', {'status': 'waiting', 'updated_at': now(), 'error': None})
         result = read_json(directory / 'result.json')
+        if not result:
+            result = self._receive(directory, identifier)
         if result:
             if result.get('id') != identifier or result.get('answer_hash') != digest(result['answer']):
                 raise ValueError('Сохранённый ответ повреждён')
             validate_answer(result['answer'], request)
             return copy.deepcopy(result['answer'])
-        raise AnalysisPending('Ожидается ручной анализ Antigravity: пакет ' + identifier[:12])
+        raise AnalysisPending('Ожидается ответ Antigravity: пакет ' + identifier[:12])

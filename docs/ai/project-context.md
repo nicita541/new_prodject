@@ -23,6 +23,8 @@ Store only durable, non-obvious facts that help future engineering work.
 
 Do not use this file as a chat log or changelog.
 
+- Antigravity file automation is opt-in per stopped job. The user separately starts `scripts/run_antigravity_job.ps1`; KADR never launches agy. ManualVision validates atomically published results and continues in the same worker. The script's budget is separate from whole-pipeline runtime; Google consumer-plan compatibility of this complete workflow is not certified. UI progress uses `stage_progress` exclusively, with unknown fractions shown as activity rather than a fabricated percentage.
+
 - User-facing one-click entry is `1_Запустить_Кадр.bat` → `start.bat` → `app.launcher`. It starts a missing server, opens the page after readiness, and reuses an existing server. The UI explicitly defaults to DeepSeek-plan/cinema/accent; missing settings and legacy API callers preserve local/portrait/classic.
 - The main UI is Studio Edition (`frontend/public` → Vite `frontend/dist` → FastAPI); React and `/legacy` are secondary. `остановить_Кадр.bat` stops only the verified idle server and preserves data. Runtime identity includes all Python app modules and all four Studio assets. Start/setup/verification prefer workspace portable Node/npm and set temporary/npm cache paths under the workspace.
 - `finishing/` at workspace root contains persistent subtitle/profile/export state in addition to `data/`; include it in backups. The hierarchical component/storage map is in `docs/audit/README.md`.

@@ -208,9 +208,10 @@ def run_export(manager, job_id: str, part_indices: list[int], profile: dict, tar
                status_file: Path, preview: tuple[int, float, float] | None = None,
                cancelled=lambda: False):
     def update(**values):
-        state = read_json(status_file, {}) or {}
-        state.update(values)
-        atomic_json(status_file, state)
+        with _TASKS_LOCK:
+            state = read_json(status_file, {}) or {}
+            state.update(values)
+            atomic_json(status_file, state)
     try:
         with _render_slot(cancelled):
             update(status="running", progress=0.01)
@@ -364,7 +365,8 @@ def _locate_task(manager, identifier: str, job_id: str | None = None):
 
 def task_status(manager, identifier: str, job_id: str | None = None) -> dict:
     job_id, base = _locate_task(manager, identifier, job_id)
-    status = read_json(base / "status.json")
+    with _TASKS_LOCK:
+        status = read_json(base / "status.json")
     if not status:
         raise KeyError(identifier)
     if status.get("status") in {"queued", "running"}:

@@ -82,6 +82,16 @@ class JobProgressTests(unittest.TestCase):
         self.assertEqual((row['completed'],row['total'],row['fraction']), (2,4,.5))
         self.assertEqual(row['status'],'running')
 
+    def test_asr_source_fraction_is_bound_to_current_run_and_probe(self):
+        self.job['stage'] = 'transcribe'
+        self.write(self.directory/'probe.json', {'duration':120})
+        progress = {'run_id':'current', 'duration':120, 'fraction':.35, 'phase':'decode'}
+        self.write(self.directory/'asr-progress.json', progress)
+        self.assertEqual(self.result()['transcribe']['fraction'], .35)
+        for updates in ({'run_id':'old'}, {'duration':60}, {'fraction':float('nan')}, {'fraction':True}):
+            self.write(self.directory/'asr-progress.json', {**progress, **updates})
+            self.assertIsNone(self.result()['transcribe']['fraction'])
+
     def test_large_feature_map_counts_streamed_intervals_without_full_json_cache(self):
         features={str(i):{'embedding':[.42]*18000,'description':'escaped quote "+ brace }'} for i in range(5)}
         self.write(self.directory/'scene-features.json',features)

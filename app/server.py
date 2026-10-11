@@ -694,6 +694,23 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             raise ValueError('Выберите ручной режим Antigravity для этого задания')
         return public_job(current.retry(identifier), current)
 
+    @application.post('/api/jobs/{identifier}/antigravity/automation')
+    def automatic_file_reception(request: Request, identifier: str, enabled: bool):
+        current = get_manager(request)
+        from .jobs import atomic_json, TERMINAL
+        from .antigravity_exchange import snapshot
+        with current.mutex:
+            current._assert_available()
+            job = current.get(identifier)
+            if job.get('analysis_provider') != 'antigravity_manual':
+                raise ValueError('Выберите Antigravity для этого задания')
+            if job['status'] not in TERMINAL or job['status'] == 'completed':
+                raise BusyError('Настройку можно менять только у остановленного задания')
+            directory = current.job_dir(identifier)
+            root = contained(directory / 'antigravity', directory)
+            atomic_json(root / 'automation.json', {'enabled': enabled})
+            return snapshot(directory)
+
     @application.post('/api/jobs/{identifier}/antigravity/open')
     def open_manual_analysis(request: Request, identifier: str):
         current = get_manager(request)

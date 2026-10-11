@@ -42,6 +42,8 @@ def main() -> int:
                            "progress": round(value, 4), "action": "progress"})
     from app.antigravity_exchange import AnalysisPending
     try:
+        if read_json(directory / 'antigravity' / 'automation.json', {}).get('enabled'):
+            atomic_json(directory / 'antigravity' / 'exchange.json', {'status': 'preparing', 'updated_at': now()})
         logger.info("Worker started", extra={"job_id": directory.name, "action": "job_start"})
         from app.pipeline import run_job
         outputs = run_job(directory, report, cancelled)
@@ -58,7 +60,9 @@ def main() -> int:
                                                 "status": "completed"})
         return 0
     except AnalysisPending as pending:
-        save(status="waiting_analysis", stage="waiting_analysis", error=None,
+        stage = read_json(directory / 'job.json').get('stage', 'waiting_analysis') if read_json(
+            directory / 'antigravity/automation.json', {}).get('enabled') else 'waiting_analysis'
+        save(status="waiting_analysis", stage=stage, error=None,
              message=str(pending), cancel_requested=False)
         logger.info("Manual analysis pending", extra={"job_id": directory.name,
                     "action": "manual_analysis_wait", "status": "waiting_analysis"})

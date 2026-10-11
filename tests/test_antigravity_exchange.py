@@ -203,6 +203,24 @@ def test_worker_persists_waiting_state_without_marking_cancelled(tmp_path):
     assert job['error'] is None
 
 
+def test_automatic_pause_keeps_current_stage_for_checkmarks(tmp_path):
+    from app import config
+    from app.worker import main
+    import uuid
+    identifier = str(uuid.uuid4())
+    directory = tmp_path / identifier
+    directory.mkdir()
+    (directory / '.start').touch()
+    atomic_json(directory / 'job.json', {'id': identifier, 'status': 'running', 'stage':'condense', 'outputs': []})
+    atomic_json(directory / 'antigravity/automation.json', {'enabled':True})
+    with patch.object(config, 'JOBS', tmp_path), patch('sys.argv', ['worker', '--job', identifier]), \
+            patch('app.pipeline.run_job', side_effect=AnalysisPending('waiting for packet')):
+        assert main() == 0
+    job = json.loads((directory / 'job.json').read_text())
+    assert job['status'] == 'waiting_analysis'
+    assert job['stage'] == 'condense'
+
+
 def test_api_manual_import_mode_retry_and_busy_guards(tmp_path):
     source = tmp_path / 'source.mp4'
     source.write_bytes(b'media')
@@ -215,6 +233,8 @@ def test_api_manual_import_mode_retry_and_busy_guards(tmp_path):
         assert client.post(prefix + '/analysis-provider', json={'provider': PROVIDER}).status_code == 409
         manager.cancel(identifier)
         assert client.post(prefix + '/analysis-provider', json={'provider': PROVIDER}).status_code == 200
+        assert client.post(prefix + '/antigravity/automation?enabled=true').json()['automation']['enabled']
+        assert not client.post(prefix + '/antigravity/automation?enabled=false').json()['automation']['enabled']
         directory = manager.job_dir(identifier)
         packet = prepare(session(directory))
         accepted = client.post(prefix + '/antigravity/' + packet + '/import',
@@ -222,7 +242,61 @@ def test_api_manual_import_mode_retry_and_busy_guards(tmp_path):
         assert accepted.status_code == 200, accepted.text
         assert client.get(prefix + '/antigravity').json()['packets'][0]['status'] == 'ready'
         assert client.post(prefix + '/antigravity/prepare').status_code == 200
+        assert client.post(prefix + '/antigravity/automation?enabled=false').status_code == 409
         assert client.post(prefix + '/antigravity/' + packet + '/import', content=b'{}').status_code == 409
         manager.cancel(identifier)
         assert client.post(prefix + '/analysis-provider', json={'provider': 'local'}).status_code == 200
         assert manager.get(identifier)['analysis_provider'] == 'local'
+
+
+def test_automatic_file_exchange_multiple_queries_no_process_and_cache(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    def publish(_):
+        exchange = json.loads((tmp_path / 'antigravity/exchange.json').read_text())
+        packet_dir(tmp_path, exchange['packet']).joinpath('agy-result.json').write_bytes(envelope({'keep_units': ['u2']}))
+    with patch('app.antigravity_exchange.time.sleep', side_effect=publish), \
+            patch('subprocess.Popen', side_effect=AssertionError('KADR must never start CLI')):
+        for prompt in ('first scene', 'second scene'):
+            assert vision.query(prompt, tmp_path / 'evidence.jpg', schema=SCHEMA) == {'keep_units': ['u2']}
+    with patch('app.antigravity_exchange.time.sleep', side_effect=AssertionError('cached answer must not wait')):
+        assert vision.query('first scene', tmp_path / 'evidence.jpg', schema=SCHEMA) == {'keep_units': ['u2']}
+    assert [packet['status'] for packet in snapshot(tmp_path)['packets']] == ['ready', 'ready']
+
+
+def test_automatic_cancel_and_timeout_never_degrade(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    with patch('app.antigravity_exchange.time.sleep', side_effect=lambda _: setattr(vision, 'cancelled', lambda: True)):
+        with pytest.raises(InterruptedError) as caught:
+            vision.query('cancelled query', schema=SCHEMA)
+        assert not isinstance(caught.value, AnalysisPending)
+    vision.cancelled = lambda: False
+    with patch('app.antigravity_exchange.time.monotonic', side_effect=[0, 601]):
+        with pytest.raises(AnalysisPending, match='10 минут'):
+            vision.query('timed out query', schema=SCHEMA)
+    assert len(snapshot(tmp_path)['packets']) == 2
+
+
+def test_automatic_invalid_file_pauses_and_preserves_request(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    def invalid(_):
+        exchange = json.loads((tmp_path / 'antigravity/exchange.json').read_text())
+        packet_dir(tmp_path, exchange['packet']).joinpath('agy-result.json').write_bytes(envelope({'keep_units': ['invented']}))
+    with patch('app.antigravity_exchange.time.sleep', side_effect=invalid):
+        with pytest.raises(AnalysisPending, match='отклонён'):
+            vision.query('invalid query', schema=SCHEMA)
+    assert snapshot(tmp_path)['exchange']['status'] == 'error'
+    assert snapshot(tmp_path)['packets'][0]['status'] == 'error'
+
+
+def test_external_runner_failure_pauses_same_packet(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    def failure(_):
+        exchange = json.loads((tmp_path / 'antigravity/exchange.json').read_text())
+        atomic_json(tmp_path / 'antigravity/runner.json', {'status': 'error', 'packet': exchange['packet']})
+    with patch('app.antigravity_exchange.time.sleep', side_effect=failure):
+        with pytest.raises(AnalysisPending, match='с ошибкой'):
+            vision.query('failed CLI query', schema=SCHEMA)

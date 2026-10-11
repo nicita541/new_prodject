@@ -41,10 +41,15 @@ def _load_model(device):
     return WhisperModel(str(ASR_MODEL), **options)
 
 
-def _decode(model, samples, *, vad):
+def _decode(model, samples, *, vad, progress=None):
     segments, _ = model.transcribe(samples, language='ru', word_timestamps=True, vad_filter=vad,
                                    beam_size=5, condition_on_previous_text=False)
-    return list(segments)
+    result = []
+    for segment in segments:
+        result.append(segment)
+        if progress is not None:
+            progress(segment.end)
+    return result
 
 
 def _publish(destination: Path, result):
@@ -176,15 +181,33 @@ def transcribe(audio: Path, destination: Path) -> dict:
     duration = len(samples) / 16000.0
     started = time.monotonic()
     warning = None
+    progress_path = destination.parent / 'asr-progress.json'
+    try:
+        run_id = json.loads((destination.parent / 'diagnostics/pipeline/run.json').read_text('utf-8')).get('run_id')
+    except (OSError, ValueError, AttributeError):
+        run_id = None
+    def progress(seconds=0, phase='decode'):
+        # Source position, not elapsed-time prediction. Finish only after
+        # timestamp repair and the atomic transcript publication.
+        value = {'phase': phase, 'duration': duration,
+            'processed_seconds': max(0.0, min(duration, float(seconds))),
+            'fraction': 1.0 if phase == 'completed' else min(.99, max(0.0, seconds / max(duration, .001))),
+            'run_id': run_id}
+        try:
+            _publish(progress_path, value)
+        except OSError:
+            pass  # Optional presentation data must not abort recognition.
+    progress()
     try:
         model = _load_model('cuda')
-        segments = _decode(model, samples, vad=True)
+        segments = _decode(model, samples, vad=True, progress=progress)
         device = 'cuda'
     except RuntimeError as error:
         # No heuristic transcript fallback: CPU still uses the same actual model.
         warning = f'GPU ASR unavailable; CPU int8 used: {str(error)[:300]}'
+        progress(phase='cpu_retry')
         model = _load_model('cpu')
-        segments = _decode(model, samples, vad=True)
+        segments = _decode(model, samples, vad=True, progress=progress)
         device = 'cpu'
     result = {'language': 'ru', 'device': device, 'elapsed_seconds': round(time.monotonic() - started, 2),
               'warning': warning, 'words': [], 'segments': []}
@@ -199,9 +222,11 @@ def transcribe(audio: Path, destination: Path) -> dict:
             start, end = round(max(0.0, min(duration, word.start)), 3), round(max(0.0, min(duration, word.end)), 3)
             if end > start and word.word.strip():
                 result['words'].append({'start': start, 'end': end, 'text': word.word.strip(), 'probability': round(word.probability, 3)})
+    progress(duration, 'repair')
     result = _repair_with_cpu_fallback(samples, result, model, device, warning)
     result['elapsed_seconds'] = round(time.monotonic() - started, 2)
     _publish(destination, result)
+    progress(duration, 'completed')
     print(json.dumps({'device': result['device'], 'words': len(result['words']), 'elapsed_seconds': result['elapsed_seconds'], 'warning': result['warning']}, ensure_ascii=False), flush=True)
     return result
 

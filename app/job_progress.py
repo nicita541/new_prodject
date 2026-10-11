@@ -226,9 +226,21 @@ def stage_progress(job, directory):
             result[step] = {'status': 'completed', 'fraction': 1.0}
 
     current = result[stage]
-    current.update(status=status if status in ('failed', 'cancelled', 'interrupted') else 'running',
+    current.update(status=status if status in ('failed', 'cancelled', 'interrupted', 'waiting_analysis') else 'running',
                    fraction=None, phase=PHASES.get(job.get('stage'), PHASES.get(stage, '')))
-    if stage == 'scenes':
+    if stage == 'transcribe':
+        progress = _read(directory / 'asr-progress.json')
+        probe = _read(directory / 'probe.json')
+        if isinstance(progress, dict) and isinstance(probe, dict):
+            fraction, duration, expected = progress.get('fraction'), progress.get('duration'), probe.get('duration')
+            # Never display a previous attempt's partial ASR as current work.
+            if (run_id is not None and progress.get('run_id') == run_id and
+                    type(fraction) in (int, float) and math.isfinite(fraction) and 0 <= fraction <= 1 and
+                    type(duration) in (int, float) and type(expected) in (int, float) and
+                    math.isfinite(duration) and math.isfinite(expected) and abs(duration - expected) < .1):
+                current.update(fraction=fraction, phase='Проверка таймкодов речи' if progress.get('phase') == 'repair'
+                    else 'Распознавание по времени исходного аудио')
+    elif stage == 'scenes':
         feature_count = _feature_count(directory / 'scene-features.json')
         if type(feature_count) is int and feature_count > 1:
             # Exactly one feature row exists per interval; the detector checks

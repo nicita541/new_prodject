@@ -20,7 +20,7 @@ def test_paid_story_launcher_requires_explicit_confirmation_and_real_production(
     assert "-RequireRealModel -FlashStory" in launcher
     assert '$FlashStory' in ps
     assert 'if ($FlashStory) { $realArgs += @("--local-provider", "local_flash_story") }' in ps
-    assert '$script:verificationBudgetSeconds = 2200' in ps
+    assert '$script:verificationBudgetSeconds = 1800' in ps
     assert 'Run-Check "real_model_3min" $python $realArgs $root $script:verificationBudgetSeconds' in ps
     assert 'full_with_unlimited_deepseek_flash_story' in ps
     assert 'Run-Check "deepseek_key_preflight"' in ps
