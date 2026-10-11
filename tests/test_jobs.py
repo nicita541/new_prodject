@@ -356,7 +356,11 @@ class JobTests(unittest.TestCase):
         self.assertEqual(result["pruned_count"], 0)
         self.assertEqual(marker.read_bytes(), b"valuable export")
         self.manager.finishing_tasks.pop(job["id"])
-        self.assertEqual(self.manager.prune_jobs(max_jobs=0)["pruned_count"], 1)
+        # A stopped job with an exported MP4 is valuable resumable work.
+        # Finishing ownership may end, but bulk prune must still preserve it.
+        self.assertEqual(self.manager.prune_jobs(max_jobs=0)["pruned_count"], 0)
+        self.assertEqual(marker.read_bytes(), b"valuable export")
+        self.assertTrue(directory.is_dir())
 
     def test_job_deletion_and_prune_remove_only_matching_export_pointers(self):
         first = self.manager.create(self.source_id)
