@@ -262,6 +262,42 @@ def framing_provider(provider: str) -> str:
     return 'local' if provider in ('deepseek_plan', 'local_fast_story') else provider
 
 
+def _model_files_for_provider(provider: str) -> tuple[Path, ...]:
+    """Only local models actually used by this provider are mandatory.
+
+    DeepSeek story, pacing and framing require local visual 4B, not an
+    installed local 9B. Asking for STORY_MODEL.stat() made otherwise valid
+    paid jobs fail before the first story request on machines without 9B.
+    """
+    if provider in ('local_flash_story', 'local_flash_story_budgeted', 'deepseek'):
+        return (VLM_MODEL, VLM_PROJECTOR)
+    return (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)
+
+
+def _visual_checkpoint_signature(job_dir: Path, fresh_signature: str) -> str:
+    """Reuse already validated early-vision checkpoints after story-only edits.
+
+    The scene-analysis cache itself independently verifies its current
+    semantic_identity (including code, provider, original scene and ASR),
+    actual collage hashes, and per-scene input identity. The legacy global
+    signature additionally included every downstream story/planner component.
+    Reusing that global hash from the first visual checkpoint cannot bypass
+    scene validation, but can avoid redoing hundreds of local 4B requests
+    after an unrelated story/refinement fix.
+    """
+    saved_path = job_dir / 'visual' / 'event_0000.json'
+    if saved_path.is_file():
+        try:
+            saved = load_json(saved_path)
+            previous = saved.get('signature') if isinstance(saved, dict) else None
+            if (isinstance(previous, str) and len(previous) == 64
+                    and all(char in '0123456789abcdef' for char in previous)):
+                return previous
+        except (OSError, ValueError, TypeError):
+            pass
+    return fresh_signature
+
+
 def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     setup_environment()
     from .pipeline_diagnostics import Diagnostics
@@ -364,7 +400,7 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     diagnostics.summary(source_duration=probe['duration'], shots=len(shots), semantic_scenes=len(scenes))
     events_path = job_dir / 'events.json'
     model_identity = [{'path': str(path), 'size': path.stat().st_size, 'mtime_ns': path.stat().st_mtime_ns}
-                      for path in (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)]
+                      for path in _model_files_for_provider(provider)]
     from .semantic_identity import semantic_identity
     component_signatures = semantic_identity()
     diagnostics.event('analysis', 'semantic_identity', components=component_signatures)
@@ -394,8 +430,10 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     diagnostics.event('analysis', 'cache_miss', signature=focus_key)
     from .scene_analysis import analyze_scenes
     report('analyze', .22, 'Анализ смысловых сцен с соседним контекстом')
+    visual_signature = _visual_checkpoint_signature(job_dir, analysis_key)
     with inference_purpose("scene_analysis"), vision_session(job_dir, cancelled, provider) as vision:
-        events = analyze_scenes(source, scenes, transcript, shots, job_dir, vision, analysis_key, report, cancelled)
+        events = analyze_scenes(source, scenes, transcript, shots, job_dir, vision,
+                                visual_signature, report, cancelled)
     # Larger model decides story retention; release the visual model before
     # loading it. Framing uses a separate, non-thinking 9B session: short real
     # comparisons reproduced clipped faces with 4B and improved them with 9B.
