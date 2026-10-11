@@ -383,6 +383,32 @@ class JobTests(unittest.TestCase):
                 self.manager.delete_job(job["id"])
         self.assertTrue(directory.is_dir())
 
+    def test_bulk_prune_keeps_cancelled_job_with_paid_or_local_checkpoints(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        directory = self.manager.job_dir(job["id"])
+        partial = directory / "story_refinement" / "validated.json"
+        partial.parent.mkdir(parents=True)
+        partial.write_text('{"stage":"complete"}', encoding="utf-8")
+        found = self.manager.prune_jobs(max_jobs=0, max_age_days=0)
+        self.assertEqual(found["pruned_count"], 0)
+        self.assertEqual(partial.read_text(encoding="utf-8"), '{"stage":"complete"}')
+        self.assertEqual(self.manager.retry(job["id"])["status"], "running")
+        self.manager.cancel(job["id"])
+
+    def test_bulk_prune_does_not_erase_rendered_parts_of_interrupted_job(self):
+        job = self.manager.create(self.source_id)
+        self.manager.cancel(job["id"])
+        directory = self.manager.job_dir(job["id"])
+        video = directory / "output" / "part_001.mp4"
+        video.parent.mkdir(parents=True, exist_ok=True)
+        video.write_bytes(b"important existing rendered short")
+        result = self.manager.prune_jobs(max_jobs=0, max_age_days=0)
+        self.assertEqual(result["pruned_count"], 0)
+        self.assertEqual(video.read_bytes(), b"important existing rendered short")
+        self.manager.delete_job(job["id"])
+        self.assertFalse(directory.exists())
+
     def test_prune_reports_only_successful_removals(self):
         job = self.manager.create(self.source_id)
         self.manager.cancel(job["id"])
