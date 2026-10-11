@@ -298,6 +298,20 @@ def _visual_checkpoint_signature(job_dir: Path, fresh_signature: str) -> str:
     return fresh_signature
 
 
+def _recoverable_checkpoint(path: Path, expected_type=dict):
+    """Read an optional, reconstructible stage cache.
+
+    A crash or partial write must not strand a multi-hour user job. Only
+    derived snapshots use this helper; source identity, settings and user
+    supplied ASR remain strict so corrupted input cannot be silently trusted.
+    """
+    try:
+        result = load_json(path)
+    except (OSError, ValueError, UnicodeError):
+        return None
+    return result if isinstance(result, expected_type) else None
+
+
 def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     setup_environment()
     from .pipeline_diagnostics import Diagnostics
@@ -338,7 +352,10 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     atomic_json(meta, identity)
     report('prepare', 0.02, 'Проверка серии и подготовка звука')
     probe_path = job_dir / 'probe.json'
-    probe = load_json(probe_path) if probe_path.exists() else probe_media(source)
+    probe = _recoverable_checkpoint(probe_path)
+    if (not isinstance(probe, dict)
+            or not all(key in probe for key in ('duration', 'width', 'height', 'fps', 'has_audio'))):
+        probe = probe_media(source)
     atomic_json(probe_path, probe)
     audio = job_dir / 'audio.wav'
     if not audio.exists():
@@ -422,11 +439,14 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         if recovery_status()['halted']:
             pacing_provider = 'local'
     focus_key = derived_key + f':pacing-v{PACING_VERSION}:endings-v{ENDINGS_VERSION}:ending-recovery-v{ENDING_RECOVERY_VERSION}:' + layout + ':' + pacing_provider
-    if (events_path.exists() and derived_meta.exists()
-            and load_json(derived_meta).get('signature') == focus_key
-            and load_json(derived_meta).get('quality_state') != 'degraded'):
+    saved_events_meta = _recoverable_checkpoint(derived_meta)
+    saved_events = _recoverable_checkpoint(events_path, list)
+    if (saved_events_meta is not None and saved_events is not None
+            and saved_events_meta.get('signature') == focus_key
+            and saved_events_meta.get('quality_state') != 'degraded'
+            and all(isinstance(event, dict) and 'id' in event for event in saved_events)):
         diagnostics.event('analysis', 'cache_hit', signature=focus_key)
-        return analysis_result(job_dir, provider, probe, transcript, shots, load_json(events_path))
+        return analysis_result(job_dir, provider, probe, transcript, shots, saved_events)
     diagnostics.event('analysis', 'cache_miss', signature=focus_key)
     from .scene_analysis import analyze_scenes
     report('analyze', .22, 'Анализ смысловых сцен с соседним контекстом')
@@ -438,8 +458,11 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     # loading it. Framing uses a separate, non-thinking 9B session: short real
     # comparisons reproduced clipped faces with 4B and improved them with 9B.
     story_checkpoint = job_dir / 'story-events.json'
-    saved_story = load_json(story_checkpoint) if story_checkpoint.exists() else {}
-    if saved_story.get('signature') == derived_key and saved_story.get('quality_state') != 'degraded':
+    saved_story = _recoverable_checkpoint(story_checkpoint) or {}
+    if (saved_story.get('signature') == derived_key
+            and saved_story.get('quality_state') != 'degraded'
+            and isinstance(saved_story.get('events'), list)
+            and all(isinstance(event, dict) and 'id' in event for event in saved_story['events'])):
         diagnostics.event('story_refinement', 'cache_hit', signature=derived_key)
         events = saved_story['events']
     else:
