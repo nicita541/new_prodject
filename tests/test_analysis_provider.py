@@ -5,7 +5,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 from app.analysis import (analysis_context_limit, framing_provider, global_story_review, vision_session,
-                          _model_files_for_provider, _visual_checkpoint_signature)
+                          _model_files_for_provider, _visual_checkpoint_signature,
+                          _recoverable_checkpoint)
 from app.config import TEMP
 from app.deepseek import DeepSeekVision, RemoteError, provider_identity
 
@@ -34,6 +35,28 @@ class AnalysisProviderTests(unittest.TestCase):
                 self.assertEqual(_visual_checkpoint_signature(directory, changed_story), changed_story)
             cache.write_text('not json', encoding='utf-8')
             self.assertEqual(_visual_checkpoint_signature(directory, changed_story), changed_story)
+
+    def test_recoverable_stage_metadata_ignores_torn_and_wrong_type_json(self):
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = Path(root) / 'story-events.json'
+            self.assertIsNone(_recoverable_checkpoint(checkpoint))
+            checkpoint.write_text('{"signature":', encoding='utf-8')
+            self.assertIsNone(_recoverable_checkpoint(checkpoint))
+            checkpoint.write_bytes(b'\\xff\\xfe invalid utf-8')
+            self.assertIsNone(_recoverable_checkpoint(checkpoint))
+            checkpoint.write_text('[]', encoding='utf-8')
+            self.assertIsNone(_recoverable_checkpoint(checkpoint))
+            self.assertEqual(_recoverable_checkpoint(checkpoint, list), [])
+            checkpoint.write_text('{"signature":"good"}', encoding='utf-8')
+            self.assertEqual(_recoverable_checkpoint(checkpoint), {'signature': 'good'})
+
+    def test_torn_story_or_final_event_cache_cannot_pass_analysis_resume(self):
+        from pathlib import Path
+        code = (Path(__file__).resolve().parents[1] / 'app' / 'analysis.py').read_text('utf-8')
+        self.assertIn('_recoverable_checkpoint(story_checkpoint)', code)
+        self.assertIn('_recoverable_checkpoint(derived_meta)', code)
+        self.assertIn('_recoverable_checkpoint(events_path, list)', code)
+        self.assertIn('isinstance(saved_story.get(\'events\'), list)', code)
 
     def test_cloud_plan_sessions_use_cloud_and_focus_uses_local(self):
         cancelled = lambda: False
