@@ -5,6 +5,7 @@ param(
     [switch]$DefaultAgent,
     [switch]$Smoke,
     [switch]$JsonText,
+    [switch]$EmptyResponseRetryUsed,
     [string]$StopFile,
     [string]$RunnerStopFile,
     [ValidateRange(1,240)][int]$TimeLimitSeconds = 240
@@ -247,6 +248,26 @@ if ($JsonText -and $result.status -eq 'SUCCESS') {
         ([string]$result.structured_output.kadr_answer_json).Length -gt 0
 }
 if ($result.status -ne 'SUCCESS' -or -not $hasAnswer) {
+    # Observed official CLI failure: SUCCESS, no body, duration0 and explicit
+    # zero usage. Retry this narrow empty completion once; never retry ERROR,
+    # quota, a partial answer, or a completion with unknown/nonzero usage.
+    $emptySuccess = $result.status -eq 'SUCCESS' -and $null -eq $result.structured_output -and
+        [string]::IsNullOrWhiteSpace([string]$result.response) -and $result.duration_seconds -eq 0
+    foreach ($field in @('input_tokens','output_tokens','thinking_tokens','cache_read_tokens','total_tokens')) {
+        if (-not $reportedUsage.ContainsKey($field) -or $reportedUsage[$field] -ne 0) { $emptySuccess = $false }
+    }
+    if ($emptySuccess) {
+        Publish-Failure 'empty_response'
+        $remaining = [int][Math]::Floor($TimeLimitSeconds - $started.Elapsed.TotalSeconds)
+        if (-not $Smoke -and -not $EmptyResponseRetryUsed -and $remaining -ge 15 -and
+            -not ($StopFile -and (Test-Path -LiteralPath $StopFile)) -and
+            -not ($RunnerStopFile -and (Test-Path -LiteralPath $RunnerStopFile))) {
+            Write-Host 'Official CLI returned an empty SUCCESS with zero reported usage; retrying once.'
+            & $PSCommandPath -PacketDirectory $packet -AgyExe $AgyExe -Model $Model -DefaultAgent:$DefaultAgent -JsonText:$JsonText -StopFile $StopFile -RunnerStopFile $RunnerStopFile -TimeLimitSeconds $remaining -EmptyResponseRetryUsed
+            return
+        }
+        throw "Antigravity returned empty SUCCESS; single retry exhausted or unavailable; inspect $attempt"
+    }
     $reason = [string]$result.error
     if ($result.status -eq 'ERROR' -and $reason -match 'exceeded the output token limit') {
         Publish-Failure 'output_limit'

@@ -396,7 +396,7 @@ def test_confirmed_old_cli_output_failure_is_not_imported_or_relaunched(tmp_path
     assert vision.query('overflow', schema=SCHEMA) == {'keep_units': ['u2']}
 
 
-@pytest.mark.parametrize('code,expected', [('quota','квота'), ('authentication','авторизацию'), ('timeout','времени')])
+@pytest.mark.parametrize('code,expected', [('quota','квота'), ('authentication','авторизацию'), ('timeout','времени'), ('empty_response','пустой ответ')])
 def test_known_cli_failure_has_specific_message_without_raw_credentials(tmp_path, code, expected):
     vision = session(tmp_path)
     atomic_json(tmp_path/'antigravity/automation.json', {'enabled': True})
@@ -437,7 +437,7 @@ def test_cloud_natural_endings_do_not_enter_fallback_due_to_local_byte_budget(tm
     assert not result[0].get('endings_degraded')
 
 
-@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize', 'output_limit', 'quota', 'json_string'])
+@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize', 'output_limit', 'quota', 'json_string', 'empty_once', 'empty_twice', 'empty_nonzero'])
 def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, mode):
     import os
     import subprocess
@@ -465,6 +465,15 @@ text=payload['message']['content'][0]['text']
 assert text.startswith('Проверка полного русского контекста') and text.count('контекст')>=5000
 Path('child-started').write_text(str(os.getpid()))
 mode=''' + repr(mode) + '''
+if mode.startswith('empty_'):
+    counter=Path('empty-count')
+    calls=int(counter.read_text())+1 if counter.exists() else 1
+    counter.write_text(str(calls))
+    if mode!='empty_once' or calls==1:
+        usage={k:0 for k in ('input_tokens','output_tokens','thinking_tokens','cache_read_tokens','total_tokens')}
+        if mode=='empty_nonzero': usage['total_tokens']=1
+        print(json.dumps({'event':'result','result':{'status':'SUCCESS','duration_seconds':0,'structured_output':None,'response':'','usage':usage}}),flush=True)
+        sys.exit(0)
 if mode=='cancel':
     time.sleep(60)
 elif mode=='malformed':
@@ -488,7 +497,7 @@ else:
     stop = tmp_path / '.cancel'
     command = ['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(script),
         '-PacketDirectory',str(packet),'-AgyExe',str(root/'tools/python/python.exe'),
-        '-DefaultAgent','-StopFile',str(stop),'-TimeLimitSeconds','15']
+        '-DefaultAgent','-StopFile',str(stop),'-TimeLimitSeconds','30']
     if mode == 'json_string':
         command.append('-JsonText')
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -500,19 +509,25 @@ else:
             assert (packet/'child-started').exists()
             stop.touch()
         stdout, stderr = process.communicate(timeout=20)
-        assert process.returncode == (0 if mode in ('success','output_limit','json_string') else 1), stderr.decode(errors='replace')
+        assert process.returncode == (0 if mode in ('success','output_limit','json_string','empty_once') else 1), stderr.decode(errors='replace')
         if mode == 'image_oversize':
             assert b'Stream image parity is not verified' in stderr
             assert not (packet/'child-started').exists()
             assert not (packet/'agy-result.json').exists()
             return
         records = list((packet/'cli-attempts').glob('*/cli-run.json'))
-        assert len(records)==1
+        assert len(records)==(2 if mode in ('empty_once','empty_twice') else 1)
+        records.sort()
         telemetry=json.loads(records[0].read_text(encoding='utf-8-sig'))
         assert telemetry['input_format']=='stream-json' and telemetry['command_line_chars']<32767
-        assert (packet/'agy-result.json').exists() == (mode in ('success','json_string'))
+        assert (packet/'agy-result.json').exists() == (mode in ('success','json_string','empty_once'))
         assert (records[0].parent/'agy.stream.jsonl').exists()
-        if mode=='success':
+        if mode.startswith('empty_'):
+            assert int((packet/'empty-count').read_text())==(2 if mode in ('empty_once','empty_twice') else 1)
+            assert read_json(packet/'failure.json')['code']==('cli_error' if mode=='empty_nonzero' else 'empty_response')
+            if mode=='empty_once':
+                assert json.loads((packet/'agy-result.json').read_text('utf-8-sig'))['result']['structured_output']=={'ok':True}
+        elif mode=='success':
             assert json.loads((packet/'agy-result.json').read_text(encoding='utf-8-sig'))['result']['structured_output']=={'ok':True}
             assert telemetry['usage']['total_tokens']==9
         elif mode=='malformed':

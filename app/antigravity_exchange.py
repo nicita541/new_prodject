@@ -76,6 +76,7 @@ _FAILURE_MESSAGES = {
     'invalid_json': 'Antigravity вернул повреждённый JSON или некорректный поток ответа',
     'process_exit': 'Процесс Antigravity завершился с ненулевым кодом',
     'cli_error': 'Antigravity вернул ERROR без корректного завершения ответа',
+    'empty_response': 'Antigravity сообщил SUCCESS, но вернул пустой ответ без JSON',
 }
 
 
