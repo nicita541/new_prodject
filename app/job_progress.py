@@ -257,14 +257,15 @@ def stage_progress(job, directory):
         # item. N-1 is the work already completed, never N/total as if accepted.
         message = job.get('message', '')
         message = message if isinstance(message, str) else ''
-        match = re.search(r'(?:сцена|событие|кадрирование)\s+(\d+)\s+из\s+(\d+)', message, re.I)
+        processed = re.search(r'обработано событий:\s*(\d+)\s+из\s+(\d+)', message, re.I)
+        match = processed or re.search(r'(?:сцена|событие|кадрирование|проверка)\s+(\d+)\s+из\s+(\d+)', message, re.I)
         if match:
             completed, total = map(int, match.groups())
             # Presentation never echoes free text from a provider/log/source.
             phase = PHASES.get(stage, '')
             if stage == 'condense' and 'темп' in message.lower():
                 phase = 'Проверка темпа и титров'
-            _counter(current, completed - 1, total, phase, 'обработано')
+            _counter(current, completed if processed else completed - 1, total, phase, 'обработано')
     elif stage == 'render':
         plan = _read(directory / 'plan.json')
         counter = _render_count(directory, plan) if isinstance(plan, dict) else None

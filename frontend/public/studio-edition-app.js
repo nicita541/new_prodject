@@ -121,6 +121,11 @@ function processingRows(job){
   rows.verify={status:['failed','cancelled','interrupted','waiting_analysis'].includes(job.status)?job.status:'running',fraction:null};
   // A subpass count does not describe progress across all independent checks.
   if(Number.isInteger(current.completed)&&Number.isInteger(current.total))rows.verify={...rows.verify,completed:current.completed,total:current.total};
+  else {
+   const message=String(job.message||''),processed=message.match(/обработано событий:\s*(\d+)\s+из\s+(\d+)/i);
+   const count=processed||message.match(/(?:проверка|сцена|событие|фрагмент)\s+(\d+)\s+из\s+(\d+)/i);
+   if(count&&Number(count[2])>0&&Number(count[1])<=Number(count[2]))rows.verify={...rows.verify,completed:Math.max(0,Number(count[1])-(processed?0:1)),total:Number(count[2])};
+  }
  }
  return rows;
 }

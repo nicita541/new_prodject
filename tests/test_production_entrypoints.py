@@ -90,6 +90,14 @@ assert(app.processingProgress(titles).label.includes('Проверка титр�
 const globalCheck={...titles,stage:'global_verify',progress:.485,stage_progress:{analyze:{status:'running',fraction:null}}};
 assert.equal(app.processingRows(globalCheck).analyze.status,'completed');
 assert.equal(app.processingRows(globalCheck).verify.status,'running');
+const countedGlobal={...globalCheck,message:'Независимая визуальная проверка 7 из 129'};
+assert.equal(app.processingRows(countedGlobal).verify.completed,6);
+assert.equal(app.processingRows(countedGlobal).verify.total,129);
+assert(app.processingStageRows(countedGlobal).includes('6 из 129'));
+assert.equal(app.processingProgress(countedGlobal).percent,null);
+const processedGlobal={...globalCheck,message:'Независимая проверка · обработано событий: 7 из 129'};
+assert.equal(app.processingRows(processedGlobal).verify.completed,7);
+assert.equal(app.processingRows(processedGlobal).verify.total,129);
 assert.equal(app.processingRows({...titles,status:'failed'}).verify.status,'failed');
 assert.equal(app.processingRows({...titles,stage:'render'}).verify.status,'completed');
 assert.equal(app.processingRows({...titles,status:'completed'}).verify.status,'completed');

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from queue import Empty, Queue
 import threading
 import time
@@ -29,27 +30,42 @@ class _QueryProducer:
 def refine_in_batches(events, transcript, shots, job_dir, vision, report, cancelled, refiner):
     if not events:
         return []
-    queue, stopped = Queue(), threading.Event()
-    proxy = _QueryProducer(vision, queue, stopped, cancelled)
     duration = max(event['end'] for event in events)
-    results, completed = [None] * len(events), set()
-    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='kadr-contract')
-    def work(event):
+    def work(event, proxy, stop_check):
         # Original per-child logic and episode edge tests remain intact.
         # Worker threads never report through the multiprocessing status pipe.
         return refiner([event], transcript, shots, job_dir, proxy, lambda *args: None,
-            lambda: stopped.is_set() or cancelled(), episode_duration=duration)[0]
-    futures = [pool.submit(work, event) for event in events]
+            stop_check, episode_duration=duration)[0]
+    def progress(completed, total):
+        report('condense', .47+.019*completed/total,
+            f'Сокращение по репликам: сцена {min(total, completed+1)} из {total}')
+    return run_independent_batches(events, vision, cancelled, work, progress)
+
+
+def run_independent_batches(items, vision, cancelled, work, progress):
+    """Preserve item logic/order; only the coordinator drives physical queries."""
+    if not items:
+        return []
+    queue, stopped = Queue(), threading.Event()
+    proxy = _QueryProducer(vision, queue, stopped, cancelled)
+    stop_check = lambda: stopped.is_set() or cancelled()
+    results, completed = [None] * len(items), set()
+    pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='kadr-contract')
+    futures = [pool.submit(copy_context().run, work, item, proxy, stop_check) for item in items]
     try:
-        report('condense', .47, f'Сокращение по репликам: сцена 1 из {len(events)}')
-        while len(completed) < len(events):
+        progress(0, len(items))
+        reported = 0
+        while len(completed) < len(items):
             if cancelled():
                 raise InterruptedError('Обработка отменена')
             for index, future in enumerate(futures):
                 if index not in completed and future.done():
                     results[index] = future.result()
                     completed.add(index)
-            if len(completed) == len(events):
+            if len(completed) != reported:
+                reported = len(completed)
+                progress(reported, len(items))
+            if len(completed) == len(items):
                 break
             try:
                 first = queue.get(timeout=.05)
@@ -68,8 +84,6 @@ def refine_in_batches(events, transcript, shots, job_dir, vision, report, cancel
                 raise ValueError('Пакет не покрыл все независимые запросы')
             for (_, reply), answer in zip(pending, answers, strict=True):
                 reply.set_result(answer)
-            report('condense', .47+.019*len(completed)/len(events),
-                f'Сокращение по репликам: сцена {min(len(events), len(completed)+1)} из {len(events)}')
         return results
     finally:
         stopped.set()

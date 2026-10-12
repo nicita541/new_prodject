@@ -6,6 +6,7 @@ import ssl
 import unittest
 import urllib.error
 import uuid
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -95,6 +96,95 @@ class GlobalVerificationTests(unittest.TestCase):
     def verify(self, events=None, vision=None, transcript=None):
         return verify_global_visual(self.source, events or [self.event], transcript or EMPTY, [], self.job,
                                     vision or FakeVision([answer()]), lambda *a: None, lambda: False)
+
+    def batch_fixture(self):
+        events = []
+        for index in range(4):
+            event = copy.deepcopy(self.event)
+            offset = index * 12
+            event.update(id=f'event_{index:04d}', scene_id=f'scene_{index:04d}',
+                         start=offset, end=offset+12, summary=f'Исходная сцена {index}')
+            event['analysis_chunks'] = [{'id': f'scene_{index:04d}_chunk_000', 'start':offset, 'end':offset+12}]
+            event['units'] = [{**unit, 'start':unit['start']+offset,'end':unit['end']+offset}
+                              for unit in self.event['units']]
+            event['selected_ranges'] = [{'start':offset,'end':offset+4}]
+            self.board(f'event_{index:04d}_chunk_000', event['units'])
+            events.append(event)
+        for index,event in enumerate(events):
+            if index:
+                self.board(event['id']+'_previous',events[index-1]['units'])
+            if index+1<len(events):
+                self.board(event['id']+'_next',events[index+1]['units'])
+        return events
+
+    def test_batch_preserves_exact_requests_neighbors_order_audit_and_cached_answers(self):
+        events = self.batch_fixture()
+        original = copy.deepcopy(events)
+        class BatchVision(FakeVision):
+            supports_query_batch = False
+            def __init__(self):
+                super().__init__([])
+                self.batches = []
+            def query(self, prompt, image=None, max_tokens=1000, schema=None, **kwargs):
+                self.requests.append((prompt,image,schema,max_tokens))
+                current=json.loads(prompt.rsplit('\n',1)[1])['CURRENT']
+                return selection_answer(current['units'],keep=[current['units'][0]['id']])
+            def query_many(self, tasks):
+                self.batches.append(len(tasks))
+                return [self.query(**{k:v for k,v in task.items() if k!='purpose'}) for task in tasks]
+        serial = BatchVision()
+        expected = self.verify(events, serial)
+        for checkpoint in (self.job/'global_verification').glob('*.json'):
+            checkpoint.unlink()
+        batched = BatchVision()
+        batched.supports_query_batch = True
+        reports = []
+        actual = verify_global_visual(self.source,events,EMPTY,[],self.job,batched,
+            lambda *args:reports.append((threading.get_ident(),args)),lambda:False)
+        self.assertEqual(actual,expected)
+        self.assertEqual(events,original)
+        sort_request=lambda request:request[0]
+        self.assertEqual(sorted(batched.requests,key=sort_request),sorted(serial.requests,key=sort_request))
+        self.assertTrue(any(size>1 for size in batched.batches))
+        self.assertTrue(all(size<=4 for size in batched.batches))
+        self.assertEqual({thread for thread,_ in reports},{threading.get_ident()})
+        self.assertEqual(list(load_json(self.job/'diagnostics/pipeline/global_story.json')['events']),
+                         [event['id'] for event in events])
+        cached = BatchVision()
+        cached.supports_query_batch = True
+        self.assertEqual(self.verify(events,cached),actual)
+        self.assertEqual(cached.batches,[])
+        self.assertEqual(cached.requests,[])
+
+    def test_batch_transport_failure_and_cancellation_join_all_owned_workers(self):
+        events = self.batch_fixture()
+        class BrokenVision(FakeVision):
+            supports_query_batch = True
+            def query_many(self,tasks):
+                raise ValueError('batch transport rejected')
+        with self.assertRaisesRegex(ValueError,'batch transport rejected'):
+            self.verify(events,BrokenVision([]))
+        self.assertFalse(any(t.name.startswith('kadr-contract') for t in threading.enumerate()))
+        stopped = threading.Event()
+        class CancelVision(BrokenVision):
+            def query_many(self,tasks):
+                stopped.set()
+                return [{} for _ in tasks]
+        with self.assertRaises(InterruptedError):
+            verify_global_visual(self.source,events,EMPTY,[],self.job,CancelVision([]),lambda *a:None,stopped.is_set)
+        self.assertFalse(any(t.name.startswith('kadr-contract') for t in threading.enumerate()))
+
+    def test_batch_invalid_native_answers_preserve_all_failure_audits(self):
+        events = self.batch_fixture()
+        class InvalidVision(FakeVision):
+            supports_query_batch = True
+            def query_many(self,tasks):
+                return [{} for _ in tasks]
+        results=self.verify(events,InvalidVision([]))
+        self.assertTrue(all(event['global_verification_unresolved'] for event in results))
+        warnings=load_json(self.job/'diagnostics/pipeline/warnings.json')
+        self.assertEqual(len(warnings),4)
+        self.assertEqual({warning['event_id'] for warning in warnings},{event['id'] for event in events})
 
     def test_wrong_conversation_hypothesis_is_corrected_from_actual_images_and_units(self):
         snapshot = copy.deepcopy(self.event)

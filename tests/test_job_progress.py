@@ -82,6 +82,14 @@ class JobProgressTests(unittest.TestCase):
         self.assertEqual((row['completed'],row['total'],row['fraction']), (2,4,.5))
         self.assertEqual(row['status'],'running')
 
+    def test_global_before_item_and_batch_completed_counters_are_distinct(self):
+        before=self.result(stage='global_verify',message='Независимая визуальная проверка 7 из 129')['analyze']
+        self.assertEqual((before['completed'],before['total']),(6,129))
+        batch=self.result(stage='global_verify',message='Независимая проверка · обработано событий: 7 из 129')['analyze']
+        self.assertEqual((batch['completed'],batch['total']),(7,129))
+        completed=self.result(stage='global_verify',message='Независимая проверка · обработано событий: 129 из 129')['analyze']
+        self.assertEqual(completed['fraction'],1)
+
     def test_asr_source_fraction_is_bound_to_current_run_and_probe(self):
         self.job['stage'] = 'transcribe'
         self.write(self.directory/'probe.json', {'duration':120})

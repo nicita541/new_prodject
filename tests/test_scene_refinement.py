@@ -49,6 +49,20 @@ class BatchCoordinatorTests(unittest.TestCase):
             refine_in_batches([{'end': 1}] * 4, EMPTY, [], None, Vision(), lambda *args: None, lambda: False, refine)
         self.assertFalse(any(thread.name.startswith('kadr-contract') for thread in threading.enumerate()))
 
+    def test_request_purpose_context_is_preserved_in_producers(self):
+        from app.model_perf import purpose as inference_purpose
+        purposes=[]
+        class Vision:
+            def query_many(self,tasks):
+                purposes.extend(task['purpose'] for task in tasks)
+                return [{} for _ in tasks]
+        def refine(events,transcript,shots,job,vision,report,cancelled,**kwargs):
+            vision.query('independent verification')
+            return events
+        with inference_purpose('global_visual'):
+            refine_in_batches([{'end':1}]*4,EMPTY,[],None,Vision(),lambda *args:None,lambda:False,refine)
+        self.assertEqual(purposes,['global_visual']*4)
+
 
 def parent():
     return {'id': 'event_0000', 'scene_id': 'scene_0000', 'parent_scene_id': 'scene_0000',

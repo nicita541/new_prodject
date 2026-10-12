@@ -356,6 +356,53 @@ def _bounded_summary(summaries):
 
 
 def verify_global_visual(source, events, transcript, shots, job_dir, vision, report, cancelled):
+    if not getattr(vision, 'supports_query_batch', False) or not events:
+        return _verify_global_visual(source, events, transcript, shots, job_dir, vision, report, cancelled)
+    from .antigravity_batch import run_independent_batches
+    import threading
+    source, job_dir = Path(source).resolve(), Path(job_dir).resolve()
+    if not source.is_relative_to(ROOT.resolve()) or not job_dir.is_relative_to(ROOT.resolve()):
+        raise ValueError('Исходник независимой проверки должен находиться в проекте')
+    if cancelled():
+        raise InterruptedError('Обработка отменена')
+    ids = [event['id'] for event in events]
+    if len(set(ids)) != len(ids):
+        raise ValueError('Повторяющиеся события независимой проверки')
+    stat = source.stat()
+    with source.open('rb') as stream:
+        source_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    diagnostics = Diagnostics(job_dir)
+    lock = threading.RLock()
+    class LockedDiagnostics:
+        def event(self, *args, **kwargs):
+            with lock:
+                return diagnostics.event(*args, **kwargs)
+        def warning(self, *args, **kwargs):
+            with lock:
+                return diagnostics.warning(*args, **kwargs)
+    context = {'stat': stat, 'source_identity': {'path': str(source), 'size': stat.st_size,
+        'mtime_ns': stat.st_mtime_ns, 'ctime_ns':stat.st_ctime_ns, 'sha256':source_digest},
+        'diagnostics': LockedDiagnostics(), 'original': copy.deepcopy(events),
+        'model_identity': _model_identity(vision),
+        'implementation': hashlib.sha256(Path(__file__).read_text('utf-8').replace('\r\n','\n').encode()).hexdigest()}
+    def work(index, proxy, stop_check):
+        return _verify_global_visual(source, events, transcript, shots, job_dir, proxy,
+            lambda *args: None, stop_check, _context=context, _index=index)
+    def progress(completed, total):
+        report('global_verify', .485+.01*completed/total,
+            f'Независимая проверка · обработано событий: {completed} из {total}')
+    checked = run_independent_batches(list(range(len(events))), vision, cancelled, work, progress)
+    result = [item[0][0] for item in checked]
+    audit = {'version': GLOBAL_VERIFICATION_VERSION,
+             'events': {ident: entry for _, part in checked for ident, entry in part['events'].items()}}
+    diagnostics.write('global_story.json', audit)
+    diagnostics.summary(global_visual_reviewed=sum(bool(e.get('global_verification_history')) for e in result),
+                        global_visual_corrections=sum(e.get('summary_source') == 'global_correction' for e in result))
+    return result
+
+
+def _verify_global_visual(source, events, transcript, shots, job_dir, vision, report, cancelled,
+                          *, _context=None, _index=None):
     """Verify important/ambiguous parents from bounded original image pages.
 
     Model confidence is self-reported. Replacement additionally requires a
@@ -367,20 +414,27 @@ def verify_global_visual(source, events, transcript, shots, job_dir, vision, rep
         raise ValueError('Исходник независимой проверки должен находиться в проекте')
     if cancelled():
         raise InterruptedError('Обработка отменена')
-    stat = source.stat()
-    with source.open('rb') as stream:
-        source_digest = hashlib.file_digest(stream,'sha256').hexdigest()
-    source_identity = {'path': str(source), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
-                       'ctime_ns':stat.st_ctime_ns,'sha256':source_digest}
-    diagnostics = Diagnostics(job_dir)
+    if _context is None:
+        stat = source.stat()
+        with source.open('rb') as stream:
+            source_digest = hashlib.file_digest(stream,'sha256').hexdigest()
+        source_identity = {'path': str(source), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+                           'ctime_ns':stat.st_ctime_ns,'sha256':source_digest}
+        diagnostics = Diagnostics(job_dir)
+        original, result = copy.deepcopy(events), copy.deepcopy(events)
+        model_identity = _model_identity(vision)
+        implementation = hashlib.sha256(Path(__file__).read_text('utf-8').replace('\r\n','\n').encode()).hexdigest()
+    else:
+        stat, source_identity, diagnostics = (_context[key] for key in ('stat', 'source_identity', 'diagnostics'))
+        original = _context['original']
+        result = [copy.deepcopy(original[_index])]
+        model_identity, implementation = (_context[key] for key in ('model_identity', 'implementation'))
     checkpoint_dir = job_dir / 'global_verification'
     checkpoint_dir.mkdir(exist_ok=True)
     visual_dir = job_dir / 'visual'
-    original, result = copy.deepcopy(events), copy.deepcopy(events)
     audit = {'version': GLOBAL_VERIFICATION_VERSION, 'events': {}}
-    model_identity = _model_identity(vision)
-    implementation = hashlib.sha256(Path(__file__).read_text('utf-8').replace('\r\n','\n').encode()).hexdigest()
-    for index, event in enumerate(result):
+    for position, event in enumerate(result):
+        index = position if _index is None else _index
         if cancelled():
             raise InterruptedError('Обработка отменена')
         event.setdefault('local_summary', event['summary'])
@@ -671,6 +725,8 @@ def verify_global_visual(source, events, transcript, shots, job_dir, vision, rep
             'state_before': event.get('state_before'), 'state_after': event.get('state_after'),
             **{key: event.get(key) for key in ('semantic_confidence', 'visual_confidence', 'context_confidence')}})
         audit['events'][event['id']] = event_audit
+    if _context is not None:
+        return result, audit
     diagnostics.write('global_story.json', audit)
     diagnostics.summary(global_visual_reviewed=sum(bool(e.get('global_verification_history')) for e in result),
                         global_visual_corrections=sum(e.get('summary_source') == 'global_correction' for e in result))
