@@ -286,7 +286,8 @@ def _valid_cache(saved, signature: str, event: dict, editorial_profile=None) -> 
         return False
 
 
-def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vision, report, cancelled) -> list[dict]:
+def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vision, report, cancelled,
+                 *, episode_duration=None) -> list[dict]:
     from .analysis import candidate_units, storyboard_times
     from .semantic_identity import component_identity
     semantic_component = component_identity('story')
@@ -295,7 +296,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
     from .pipeline_diagnostics import _clean
     editorial_profile=load_profile(job_dir)
     result = copy.deepcopy(events)
-    duration = max((event["end"] for event in events), default=0)
+    duration = max((event["end"] for event in events), default=0) if episode_duration is None else episode_duration
     checkpoint_dir = job_dir / "story_refinement"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     meta = job_dir / "analysis.meta.json"

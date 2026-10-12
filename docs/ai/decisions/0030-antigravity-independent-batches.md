@@ -1,0 +1,11 @@
+# Independent Antigravity refinement batches
+
+The user requested fewer CLI calls during the active full-series refinement. Four independent child refiners may now produce contracts concurrently; one coordinator owns manual file receipt and progress reporting. This is enabled only for automatic ManualVision. Qwen and DeepSeek retain their sequential path. No CLI process is launched by KADR.
+
+The coordinator calls query_many with at most four contracts. Missing answers are grouped within twelve image pages and 32000 original prompt characters. Explicit page ownership and exact request hashes bind each nested response to its original schema. Selection and independent omission review remain sequential inside each child. The original whole-episode duration is passed to each child so credit edge classification and cache signatures retain their meaning. Result order is restored before parent merging.
+
+Individual request identities are unchanged. Every accepted child is validated and saved separately; native coverage failures pause processing while preserving valid siblings. Physical CLI usage belongs to the aggregate attempt, without invented child allocations. Already accepted single-query answers need no paid replacement. The standalone user script continues processing only the current physical exchange packet. Cancellation joins the coordinator's producer threads.
+
+This trades fewer CLI startups and repeated common instructions for larger bounded outputs and potential model attention changes. A real four-task batch completed in10.700s with11441 tokens and four native-valid answers; three retained-unit decisions matched serial, one retained more units. This does not establish artistic equivalence; independent proof and final gates remain required. No automatic paid retry or GPU concurrency is introduced.
+
+Rollback on a stopped job: write antigravity/batching.json with {"enabled":false}, then continue the same job and separate script. Manual import mode remains sequential. Neither rollback nor batching changes the factual video/ASR/4B inputs; verify their existing cache hits on resume. Windows runner.json is an optional status hint: transient sharing denial is retried, without relaxing answer/cache validation. Status publication retries never repeat a model call.

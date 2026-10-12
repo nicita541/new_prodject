@@ -49,6 +49,9 @@ if ($Smoke) {
     # Inline the exact text contract: headless mode need not request a file-read
     # permission just to obtain the prompt. Images use official @ attachments.
     $promptText = [IO.File]::ReadAllText((Join-Path $packet 'prompt.txt'), [Text.Encoding]::UTF8) + "`n`n" + ($mentions -join ' ') + ' Return the requested JSON. Do not run shell commands, use internet, modify files or inspect other directories.'
+    # Gemini's generation schema omits unsupported numeric/boolean enums.
+    # Explicitly supply the ORIGINAL values; native import remains strict.
+    $promptText += "`nOriginal contract, including every numeric/boolean enum. Use only these allowed values:`n" + ($request.schema | ConvertTo-Json -Depth 100 -Compress)
     $outputName = 'agy-result.json'
 }
 $cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath,
@@ -103,7 +106,22 @@ try {
     $process.Dispose()
 }
 $captured | Set-Content -LiteralPath (Join-Path $attempt $outputName) -Encoding UTF8
-@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason} |
+# Numeric telemetry covers the attempt even if its structured answer is rejected.
+# Thinking is already part of output_tokens; never add it to total_tokens.
+$reportedUsage = @{}
+try {
+    $envelope = $captured | ConvertFrom-Json
+    foreach ($field in @('input_tokens','output_tokens','thinking_tokens','cache_read_tokens','total_tokens')) {
+        $counter = $envelope.usage.$field
+        if (($counter -is [int] -or $counter -is [long]) -and $counter -ge 0 -and $counter -le 1000000000000) {
+            $reportedUsage[$field] = $counter
+        }
+    }
+} catch { } # Missing/malformed usage remains unknown; strict import is unchanged.
+$usageReported = $reportedUsage.ContainsKey('total_tokens') -or (
+    $reportedUsage.ContainsKey('input_tokens') -and $reportedUsage.ContainsKey('output_tokens'))
+@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;
+    usage_reported=$usageReported;usage=$reportedUsage} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
 if ($abortReason) { throw "$abortReason; inspect $attempt" }
 if ($cliExit -ne 0) { throw "agy failed (exit $cliExit); inspect $attempt" }

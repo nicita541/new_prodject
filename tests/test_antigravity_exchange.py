@@ -38,6 +38,90 @@ def envelope(answer):
         'duration_seconds': 2.5, 'usage': {'input_tokens': 12, 'output_tokens': 4, 'total_tokens': 16}}).encode()
 
 
+def batch_receiver(vision, calls, answer=None):
+    def receive(directory, identifier):
+        request = json.loads((directory / 'request.json').read_text())
+        members = json.loads((directory / 'batch.json').read_text())['members'] if (directory / 'batch.json').exists() else []
+        calls.append((request, members))
+        result = {('q_' + member): {'request_id': member, 'answer': answer(member) if answer else {'keep_units': ['u1']}}
+                  for member in members} if members else {'keep_units': ['u1']}
+        try:
+            import_result(vision.job_dir, identifier, envelope(result))
+        except ValueError as error:
+            raise AnalysisPending('успешные ответы сохранены') from error
+    return receive
+
+
+def test_batch_preserves_individual_identities_ownership_and_warm_cache(tmp_path):
+    vision = session(tmp_path)
+    tasks = [{'prompt': f'Independent scene {i}', 'image': tmp_path / 'evidence.jpg', 'schema': SCHEMA} for i in range(4)]
+    originals = [vision._prepare_request(**task)[1] for task in tasks]
+    calls = []
+    with patch.object(vision, '_receive', side_effect=batch_receiver(vision, calls)):
+        assert vision.query_many(tasks) == [{'keep_units': ['u1']}] * 4
+        assert vision.query_many(tasks) == [{'keep_units': ['u1']}] * 4
+        assert vision.query(**tasks[0]) == {'keep_units': ['u1']}
+    assert len(calls) == 1 and set(calls[0][1]) == set(originals)
+    contracts = json.loads(calls[0][0]['prompt'].split('\n', 1)[1])
+    assert [item['image_pages'] for item in contracts] == [[f'page_{i:03}.jpg'] for i in range(4)]
+    for identifier in originals:
+        assert json.loads((packet_dir(tmp_path, identifier) / 'result.json').read_text())['usage'] == {}
+
+
+def test_batch_reuses_cached_child_and_splits_large_contracts(tmp_path):
+    vision = session(tmp_path)
+    tasks = [{'prompt': f'{i}' + 'x' * 17000, 'schema': SCHEMA} for i in range(4)]
+    item = vision._prepare_request(**tasks[0])
+    import_result(tmp_path, item[1], envelope({'keep_units': ['u2']}))
+    calls = []
+    with patch.object(vision, '_receive', side_effect=batch_receiver(vision, calls)):
+        assert vision.query_many(tasks)[0] == {'keep_units': ['u2']}
+    assert len(calls) == 3 and all(not members for _, members in calls)
+
+
+def test_batch_keeps_valid_children_when_native_coverage_fails(tmp_path):
+    vision = session(tmp_path)
+    units = {'type': 'array', 'items': {'type': 'string', 'enum': ['u1', 'u2']}}
+    schema = {'type': 'object', 'properties': {'keep_units': units, 'preserve_silent_units': units,
+              'omit_units': {'type': 'array', 'items': {'type': 'object'}}}}
+    tasks = [{'prompt': str(i), 'schema': schema} for i in range(3)]
+    identifiers = [vision._prepare_request(**task)[1] for task in tasks]
+    bad = identifiers[1]
+    def answer(identifier):
+        return {'keep_units': ['u1'] if identifier == bad else ['u1', 'u2'],
+                'preserve_silent_units': [], 'omit_units': []}
+    with patch.object(vision, '_receive', side_effect=batch_receiver(vision, [], answer)):
+        with pytest.raises(AnalysisPending, match='успешные'):
+            vision.query_many(tasks)
+    assert not (packet_dir(tmp_path, bad) / 'result.json').exists()
+    assert all((packet_dir(tmp_path, identifier) / 'result.json').exists() for identifier in identifiers if identifier != bad)
+
+
+def test_batch_cancellation_exports_nothing(tmp_path):
+    vision = session(tmp_path)
+    vision.cancelled = lambda: True
+    with pytest.raises(InterruptedError):
+        vision.query_many([{'prompt': 'one', 'schema': SCHEMA}])
+    assert snapshot(tmp_path)['packets'] == []
+
+
+def test_batch_strict_numeric_enum_failure_still_saves_valid_siblings(tmp_path):
+    vision = session(tmp_path)
+    schema = {'type': 'object', 'properties': {'confidence': {'type': 'number', 'enum': [.95, 1.0]}},
+              'required': ['confidence'], 'additionalProperties': False}
+    tasks = [{'prompt': str(i), 'schema': schema} for i in range(4)]
+    ids = [vision._prepare_request(**task)[1] for task in tasks]
+    calls = []
+    with patch.object(vision, '_receive', side_effect=batch_receiver(vision, calls,
+            lambda identifier: {'confidence': .98 if identifier == ids[1] else .95})):
+        with pytest.raises(AnalysisPending):
+            vision.query_many(tasks)
+    assert not (packet_dir(tmp_path, ids[1]) / 'result.json').exists()
+    assert all((packet_dir(tmp_path, identifier) / 'result.json').exists() for identifier in ids if identifier != ids[1])
+    contracts = json.loads(calls[0][0]['prompt'].split('\n', 1)[1])
+    assert all(item['schema'] == schema for item in contracts)
+
+
 def test_export_import_resume_uses_same_packet_and_native_contract(tmp_path):
     vision = session(tmp_path)
     identifier = prepare(vision)
@@ -300,3 +384,23 @@ def test_external_runner_failure_pauses_same_packet(tmp_path):
     with patch('app.antigravity_exchange.time.sleep', side_effect=failure):
         with pytest.raises(AnalysisPending, match='с ошибкой'):
             vision.query('failed CLI query', schema=SCHEMA)
+
+
+def test_locked_runner_hint_does_not_abort_receipt_or_ui_snapshot(tmp_path):
+    import app.antigravity_exchange as exchange_module
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    original_read = exchange_module.read_json
+    def locked_hint(path, *args):
+        if Path(path).name == 'runner.json':
+            raise PermissionError('Windows status sharing race')
+        return original_read(path, *args)
+    def publish(_):
+        exchange = original_read(tmp_path / 'antigravity/exchange.json')
+        packet_dir(tmp_path, exchange['packet']).joinpath('agy-result.json').write_bytes(envelope({'keep_units': ['u2']}))
+    with patch('app.antigravity_exchange.read_json', side_effect=locked_hint), \
+            patch('app.antigravity_exchange.time.sleep', side_effect=publish):
+        assert vision.query('sharing race', schema=SCHEMA) == {'keep_units': ['u2']}
+        state = snapshot(tmp_path)
+        assert state['runner'] == {}
+        assert state['packets'][0]['status'] == 'ready'

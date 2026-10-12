@@ -267,7 +267,11 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
         if abs(float(start) - parent['end']) > .000001:
             raise ValueError('Технические фрагменты не покрывают конец смысловой сцены')
         owners.append((first, len(children), True))
-    refined = refine_story(children, transcript, shots, Path(job_dir), vision, report, cancelled) if children else []
+    if children and getattr(vision, 'supports_query_batch', False):
+        from .antigravity_batch import refine_in_batches
+        refined = refine_in_batches(children, transcript, shots, Path(job_dir), vision, report, cancelled, refine_story)
+    else:
+        refined = refine_story(children, transcript, shots, Path(job_dir), vision, report, cancelled) if children else []
     if len(refined) != len(children) or any((a['id'], a['start'], a['end']) != (b['id'], b['start'], b['end'])
                                           for a, b in zip(children, refined)):
         raise ValueError('Сокращение изменило владельца или границы исходного фрагмента')

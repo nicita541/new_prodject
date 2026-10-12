@@ -30,8 +30,18 @@ function Write-Runner([string]$Status, [string]$Detail) {
         wall_seconds=$timer.Elapsed.TotalSeconds;updated_at=(Get-Date).ToUniversalTime().ToString('o');
         agent_requested=$(if ($DefaultAgent) { 'default' } else { 'kadr-json' })}
     [IO.File]::WriteAllText($temporary, ($value | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
-    if (Test-Path -LiteralPath $path) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
-    else { [IO.File]::Move($temporary, $path) }
+    # A short-lived Python/UI reader can hold a Windows sharing lock.
+    # Retry only status publication, never the paid model request.
+    for ($attemptNumber=0; $attemptNumber -lt 20; $attemptNumber++) {
+        try {
+            if (Test-Path -LiteralPath $path) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
+            else { [IO.File]::Move($temporary, $path) }
+            break
+        } catch [IO.IOException], [UnauthorizedAccessException] {
+            if ($attemptNumber -eq 19) { throw }
+            Start-Sleep -Milliseconds 50
+        }
+    }
 }
 try {
     Write-Runner 'waiting' 'User-started script waiting for current packet'

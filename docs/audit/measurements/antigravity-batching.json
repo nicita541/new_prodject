@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-12",
+  "scope": "four actual choose_units contracts from job00a9e488, isolated batch; not whole-pipeline speed",
+  "model": "gemini-3.8-flash-low",
+  "agent": "kadr-json",
+  "serial": {"physical_calls": 4, "wall_seconds": 24.2117201, "tokens": 17298},
+  "batch": {"physical_calls": 1, "wall_seconds": 10.7004559, "tokens": 11441, "pages": 4},
+  "native_valid_children": 4,
+  "matching_retained_unit_decisions": 3,
+  "changed_decisions": "one batch answer retained all three units instead of only the middle unit; independent proof remains required",
+  "limitations": "First batch transport before adding explicit original schemas to text. Current transport additionally includes numeric/boolean enums and saves valid siblings when another schema fails. Different model attention/output, not artistic equivalence or a controlled whole-series benchmark."
+}

@@ -3,15 +3,51 @@ import copy
 import shutil
 import unittest
 import uuid
+import threading
 from unittest.mock import patch
 
 from app.config import TEMP
 from app.scene_refinement import refine_scene_story
 from app.source_roles import confirmed_exclusions, verified_story_ranges
 from app.story import _valid_cache, STORY_VERSION
+from app.antigravity_batch import refine_in_batches
 
 
 EMPTY = {'words': [], 'segments': []}
+
+
+class BatchCoordinatorTests(unittest.TestCase):
+    def test_dependencies_order_duration_and_single_reporting_thread(self):
+        calls, reports = [], []
+        events = [{'id': str(i), 'end': i+1} for i in range(9)]
+        class Vision:
+            def query_many(self, tasks):
+                calls.append(tasks)
+                return [task['prompt'] + ':answer' for task in tasks]
+        def refine(events, transcript, shots, job, vision, report, cancelled, *, episode_duration):
+            self.assertEqual(episode_duration, 9)
+            event = events[0]
+            selection = vision.query('select:' + event['id'])
+            proof = vision.query('proof:' + selection)
+            return [{**event, 'proof': proof}]
+        result = refine_in_batches(events, EMPTY, [], None, Vision(),
+            lambda *args: reports.append(threading.get_ident()), lambda: False, refine)
+        self.assertEqual([item['id'] for item in result], [item['id'] for item in events])
+        self.assertTrue(all(item['proof'] == 'proof:select:' + item['id'] + ':answer:answer' for item in result))
+        self.assertTrue(all(1 <= len(call) <= 4 for call in calls))
+        self.assertTrue(any(len(call) == 4 for call in calls))
+        self.assertEqual(set(reports), {threading.get_ident()})
+
+    def test_transport_failure_joins_waiting_workers(self):
+        class Vision:
+            def query_many(self, tasks):
+                raise ValueError('transport rejected')
+        def refine(events, transcript, shots, job, vision, report, cancelled, **kwargs):
+            vision.query('select')
+            return events
+        with self.assertRaisesRegex(ValueError, 'transport rejected'):
+            refine_in_batches([{'end': 1}] * 4, EMPTY, [], None, Vision(), lambda *args: None, lambda: False, refine)
+        self.assertFalse(any(thread.name.startswith('kadr-contract') for thread in threading.enumerate()))
 
 
 def parent():
