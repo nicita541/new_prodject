@@ -122,6 +122,24 @@ def test_batch_strict_numeric_enum_failure_still_saves_valid_siblings(tmp_path):
     assert all(item['schema'] == schema for item in contracts)
 
 
+def test_batch_bounds_windows_quoting_without_truncating_child_prompt(tmp_path):
+    import subprocess
+    vision = session(tmp_path)
+    tasks = [{'prompt': str(i) + ('quote " and slash \\ ' * 240), 'schema': SCHEMA} for i in range(4)]
+    calls = []
+    with patch.object(vision, '_receive', side_effect=batch_receiver(vision, calls)):
+        assert len(vision.query_many(tasks)) == 4
+    assert len(calls) > 1
+    observed = []
+    for request, members in calls:
+        if members:
+            assert len(subprocess.list2cmdline([request['prompt']])) < 28000
+            observed.extend(item['prompt'] for item in json.loads(request['prompt'].split('\n', 1)[1]))
+        else:
+            observed.append(request['prompt'])
+    assert sorted(observed) == sorted(task['prompt'] for task in tasks)
+
+
 def test_export_import_resume_uses_same_packet_and_native_contract(tmp_path):
     vision = session(tmp_path)
     identifier = prepare(vision)

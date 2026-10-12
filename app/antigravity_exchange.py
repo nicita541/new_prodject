@@ -391,9 +391,12 @@ class ManualVision:
         groups, group, chars, pages = [], [], 0, 0
         for item in sorted(missing.values(), key=lambda value: value[1]):
             request = item[2]
-            size = len(request['prompt']) + len(json.dumps(request['schema'], ensure_ascii=False)) + 600
+            # Reserve Windows command-line space including JSON/native quoting.
+            # The standalone script does not repeat the schema already in a batch.
+            encoded = json.dumps({'prompt': request['prompt'], 'schema': request['schema']}, ensure_ascii=False)
+            size = len(encoded) + encoded.count('"') + encoded.count('\\') + 600
             count = len(request['images'])
-            if group and (chars + size > 32000 or pages + count > 12):
+            if group and (chars + size > 24000 or pages + count > 12):
                 groups.append(group)
                 group, chars, pages = [], 0, 0
             group.append(item)

@@ -51,7 +51,9 @@ if ($Smoke) {
     $promptText = [IO.File]::ReadAllText((Join-Path $packet 'prompt.txt'), [Text.Encoding]::UTF8) + "`n`n" + ($mentions -join ' ') + ' Return the requested JSON. Do not run shell commands, use internet, modify files or inspect other directories.'
     # Gemini's generation schema omits unsupported numeric/boolean enums.
     # Explicitly supply the ORIGINAL values; native import remains strict.
-    $promptText += "`nOriginal contract, including every numeric/boolean enum. Use only these allowed values:`n" + ($request.schema | ConvertTo-Json -Depth 100 -Compress)
+    if (-not (Test-Path -LiteralPath (Join-Path $packet 'batch.json'))) {
+        $promptText += "`nOriginal contract, including every numeric/boolean enum. Use only these allowed values:`n" + ($request.schema | ConvertTo-Json -Depth 100 -Compress)
+    }
     $outputName = 'agy-result.json'
 }
 $cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath,
