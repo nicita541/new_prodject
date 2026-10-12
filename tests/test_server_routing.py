@@ -108,6 +108,10 @@ def test_studio_deep_links_preserve_screen_and_identifiers():
 
 
 def test_canonical_studio_is_not_silent_react_fallback():
+    # Logging is process-wide. Initialize it before patching the UI root so
+    # Windows temp cleanup does not encounter an open session log handle.
+    from app.run_logging import configure_logging
+    configure_logging("tests")
     with TemporaryDirectory() as root:
         dist = Path(root) / "frontend" / "dist"
         dist.mkdir(parents=True)
