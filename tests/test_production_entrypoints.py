@@ -57,7 +57,7 @@ const context=vm.createContext({console,URL,URLSearchParams,structuredClone,
  localStorage:{getItem(){return null},setItem(){}},
  document:{getElementById:element,addEventListener(){},querySelector(){return null},querySelectorAll(){return []}},
  window:{KadrBridge:{},addEventListener(){}},location:{search:''},navigator:{},Blob,File,FormData,TextEncoder,atob});
-const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,processingRows,processingProgress,processingStageRows,renderPacketSummary,
+const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,processingRows,processingProgress,processingStageRows,renderPacketSummary,processingMessage,
  setup(){ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';},
  job(){return currentJob();},data(){return db},entries(){return ui.apiEntries}};})();`;
 vm.runInContext(source.split('// Live Studio Edition: preserve')[0]+expose,context);
@@ -66,6 +66,13 @@ assert(!app.renderReview().includes('Демо: встроенные ролики
 assert(app.renderReview().includes('Реальные видео'));
 assert(!app.renderProcessing().includes('Имитация сообщений'));
 assert(app.renderProcessing().includes('Сводка статуса'));
+assert.equal(app.processingMessage({message:'Обработка завершилась с ошибкой',error:'FFmpeg: отсутствует звуковой поток'}),'FFmpeg: отсутствует звуковой поток');
+assert.equal(app.processingMessage({message:'Antigravity: исчерпана квота',error:null}),'Antigravity: исчерпана квота');
+const savedError=app.job().error;
+app.job().error='Ошибка JSON <script>invalid</script>';
+assert(app.renderProcessing().includes('Ошибка JSON &lt;script&gt;invalid&lt;/script&gt;'));
+assert(!app.renderProcessing().includes('<script>invalid</script>'));
+app.job().error=savedError;
 const zero={local:{total_tokens:0,calls:0},deepseek:{total_tokens:0,calls:0},all_tokens:0,unknown_calls:0};
 assert.equal(app.tokenLabel(zero),'Нет сохранённых данных о токенах');
 assert(!app.renderProcessing().includes('Из фактических ответов API'));
@@ -79,28 +86,29 @@ assert(!app.tokenLabel({...reportedZero,unknown_calls:1}).includes('Всего:'
 
 assert(!app.renderProcessing().includes('stage_progress из'));
 const selection={status:'running',stage:'condense',progress:.475,stage_progress:{condense:{status:'running',fraction:.25,completed:92,total:368}}};
-assert.equal(app.processingRows(selection).verify.status,'pending');
+assert.equal(app.processingRows(selection).titles.status,'pending');
 assert.equal(app.processingProgress(selection).percent,25);
-assert(app.processingStageRows(selection).includes('Проверка титров и истории'));
-const titles={...selection,progress:.4893,stage_progress:{condense:{status:'running',fraction:.3,completed:38,total:129}}};
-assert.equal(app.processingRows(titles).condense.status,'completed');
-assert.equal(app.processingRows(titles).verify.status,'running');
+assert(app.processingStageRows(selection).includes('Проверка титров и заставок'));
+const titles={...selection,analysis_passes:{visual_analysis:{status:'completed',fraction:1},story_refinement:{status:'completed',fraction:1},titles:{status:'running',fraction:null}}};
+assert.equal(app.processingRows(titles).story_refinement.status,'completed');
+assert.equal(app.processingRows(titles).titles.status,'running');
 assert.equal(app.processingProgress(titles).percent,null);
-assert(app.processingProgress(titles).label.includes('Проверка титров и истории'));
-const globalCheck={...titles,stage:'global_verify',progress:.485,stage_progress:{analyze:{status:'running',fraction:null}}};
-assert.equal(app.processingRows(globalCheck).analyze.status,'completed');
-assert.equal(app.processingRows(globalCheck).verify.status,'running');
-const countedGlobal={...globalCheck,message:'Независимая визуальная проверка 7 из 129'};
-assert.equal(app.processingRows(countedGlobal).verify.completed,6);
-assert.equal(app.processingRows(countedGlobal).verify.total,129);
+assert(app.processingProgress(titles).label.includes('Проверка титров и заставок'));
+const globalCheck={...titles,stage:'global_verify',analysis_passes:{...titles.analysis_passes,titles:{status:'completed',fraction:1},global_visual_verification:{status:'running',fraction:null}}};
+assert.equal(app.processingRows(globalCheck).visual_analysis.status,'completed');
+assert.equal(app.processingRows(globalCheck).global_visual_verification.status,'running');
+const countedGlobal={...globalCheck,analysis_passes:{...globalCheck.analysis_passes,global_visual_verification:{status:'running',fraction:null,completed:6,total:129}}};
+assert.equal(app.processingRows(countedGlobal).global_visual_verification.completed,6);
 assert(app.processingStageRows(countedGlobal).includes('6 из 129'));
 assert.equal(app.processingProgress(countedGlobal).percent,null);
-const processedGlobal={...globalCheck,message:'Независимая проверка · обработано событий: 7 из 129'};
-assert.equal(app.processingRows(processedGlobal).verify.completed,7);
-assert.equal(app.processingRows(processedGlobal).verify.total,129);
-assert.equal(app.processingRows({...titles,status:'failed'}).verify.status,'failed');
-assert.equal(app.processingRows({...titles,stage:'render'}).verify.status,'completed');
-assert.equal(app.processingRows({...titles,status:'completed'}).verify.status,'completed');
+const processedGlobal={...globalCheck,analysis_passes:{...globalCheck.analysis_passes,global_visual_verification:{status:'running',fraction:7/129,completed:7,total:129}}};
+assert.equal(app.processingRows(processedGlobal).global_visual_verification.completed,7);
+assert.equal(app.processingProgress(processedGlobal).percent,5);
+const failedTitles={...titles,status:'failed',analysis_passes:{...titles.analysis_passes,titles:{status:'failed',fraction:null}}};
+assert.equal(app.processingRows(failedTitles).titles.status,'failed');
+assert(app.processingStageRows(failedTitles).includes('Ошибка'));
+assert(app.processingStageRows({...titles,analysis_passes:{titles:{status:'not_required',fraction:null}}}).includes('Не потребовалось'));
+assert.equal(app.processingProgress({...titles,status:'completed'}).percent,100);
 const packetSummary=app.renderPacketSummary([{id:'abc123',purpose:'choose_units',status:'ready'},{id:'xyz789',purpose:'story_refinement',status:'error',batch_size:4}], 'j1',false);
 assert(packetSummary.includes('1 готовы · 0 ожидают · 1 с ошибкой в истории'));
 assert(packetSummary.includes('<details class="expand" id="manualPacketDetails">'));

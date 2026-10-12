@@ -126,6 +126,20 @@ def packet_failure(directory, identifier):
         return None
 
 
+def json_string_response(directory):
+    request = read_json(Path(directory)/'request.json', {})
+    fields = set((request.get('schema') or {}).get('properties', {}))
+    try:
+        config = read_json(Path(directory).parent.parent/'text-response.json', {})
+        mode = config.get('mode', 'json_string')
+    except (OSError, ValueError, AttributeError) as error:
+        raise AnalysisPending('Не удалось прочитать профиль text-response.json; проверьте файл, результаты сохранены') from error
+    if mode not in ('json_string', 'structured'):
+        raise AnalysisPending('Некорректный mode в text-response.json: допускаются json_string или structured')
+    return (mode == 'json_string' and not request.get('images') and
+        ({'canonical_entities','units'} <= fields or {'pairs','coverage'} <= fields))
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
         separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
@@ -207,6 +221,9 @@ def validate_answer(value, request):
         raise ValueError('Ответ должен быть объектом JSON')
     json.dumps(value, allow_nan=False)
     if request['schema'] is not None:
+        missing = [key for key in request['schema'].get('required', []) if key not in value]
+        if missing:
+            raise ValueError('Отсутствуют обязательные поля JSON: '+', '.join(missing)[:240])
         _validate(value, request['schema'])
         fields = request['schema'].get('properties', {})
         if {'keep_units', 'preserve_silent_units', 'omit_units'} <= fields.keys():
@@ -296,6 +313,15 @@ def import_result(job_dir, identifier, raw):
         answer = envelope.get('structured_output')
         if answer is None:
             answer = _strict_json(envelope.get('response', ''))
+        # Generation-only string envelope for complex cloud text schemas.
+        # Parse its ORIGINAL string strictly: duplicates/NaN/partial JSON
+        # must not be normalized away by the standalone PowerShell wrapper.
+        fields = (request.get('schema') or {}).get('properties', {})
+        if (isinstance(answer, dict) and set(answer) == {'kadr_answer_json'}
+                and 'kadr_answer_json' not in fields):
+            if not isinstance(answer['kadr_answer_json'], str):
+                raise ValueError('Текстовый ответ Antigravity должен быть JSON-строкой')
+            answer = _strict_json(answer['kadr_answer_json'])
         if (directory / 'batch.json').is_file():
             _save_batch_children(job_dir, directory, request, answer)
         validate_answer(answer, request)
@@ -311,12 +337,13 @@ def import_result(job_dir, identifier, raw):
         atomic_json(directory / 'result.json', result)
         atomic_json(directory / 'state.json', {'status': 'ready', 'updated_at': now(), 'error': None})
         return {'id': identifier, 'status': 'ready', 'usage': usage, 'duration_seconds': duration}
-    except (ValueError, TypeError, KeyError, UnicodeError):
+    except (ValueError, TypeError, KeyError, UnicodeError) as error:
         # A bad replacement must not destroy a previously accepted result.
         if not (directory / 'result.json').is_file():
             atomic_json(directory / 'state.json', {'status': 'error', 'updated_at': now(),
                 'error': 'JSON, schema или временные отметки не прошли проверку'})
-        raise ValueError('Результат не прошёл проверку JSON/schema/таймкодов') from None
+        detail = str(error).replace('DeepSeek', 'Antigravity')[:240]
+        raise ValueError('Результат не прошёл проверку JSON/schema/таймкодов: '+detail) from None
 
 
 def _runner_state(path):
@@ -516,6 +543,8 @@ class ManualVision:
                 if failure['code'] == 'process_exit' and type(failure.get('exit_code')) is int:
                     message += ' · код ' + str(failure['exit_code'])
                 if failure['code'] == 'output_limit':
+                    if failure.get('response_mode') != 'json_string' and json_string_response(directory):
+                        return # One distinct wire-mode repair; never repeat its failure.
                     raise OutputLimitExceeded(message)
                 runner = _runner_state(root/'runner.json')
                 if runner.get('status') == 'error' and runner.get('packet') == identifier:
@@ -541,6 +570,12 @@ class ManualVision:
                         raw = stream.read(MAX_RESULT_BYTES + 1)
                     import_result(self.job_dir, identifier, raw)
                 except (ValueError, OSError) as error:
+                    if (isinstance(error, ValueError) and str(error).startswith('Результат не прошёл проверку')
+                            and json_string_response(directory)):
+                        # Native bounded text logic can issue a corrective
+                        # request/split. Trust-boundary/source-identity errors
+                        # outside answer validation still pause immediately.
+                        raise ValueError(str(error)) from error
                     publish('error')
                     raise AnalysisPending('Ответ Antigravity отклонён · пакет ' + identifier[:12] +
                         ' · ' + str(error)[:200]) from error

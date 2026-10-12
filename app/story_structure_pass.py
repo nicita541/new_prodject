@@ -501,7 +501,11 @@ def validate_structure(raw, nodes, current, registry=None):
         if (row['type'] not in RELATIONS or not {left, right}.intersection(owner)
                 or known[left]['start'] > known[right]['start']
                 or _number(row['confidence'], 'relation.confidence', confidence=True) < .9):
-            raise ValueError('Invalid or unsupported source relation')
+            reason = ('neither endpoint belongs to CURRENT' if not {left, right}.intersection(owner) else
+                      'source time runs backwards' if known[left]['start'] > known[right]['start'] else
+                      'unsupported type or insufficient source confidence')
+            raise ValueError('Invalid or unsupported source relation: '+reason+' · '+
+                left[0]+'/'+left[1]+' -> '+right[0]+'/'+right[1])
         _text(row['evidence'], 'relation.evidence', minimum=12)
         support(row['support'], [left, right])
         relations.append(copy.deepcopy(row))
@@ -522,7 +526,8 @@ def validate_structure(raw, nodes, current, registry=None):
         if (not members or anchor not in roles or not set(member_keys).intersection(owner)
                 or any(known[anchor]['start'] > known[k]['start'] for k in member_keys)
                 or type(arc['closed']) is not bool or _number(arc['confidence'], 'arc.confidence', confidence=True) < .9):
-            raise ValueError('Unsupported story arc')
+            reason = 'anchor missing from members' if anchor not in roles else 'invalid membership/order/confidence'
+            raise ValueError('Unsupported story arc: '+reason+' · '+anchor[0]+'/'+anchor[1])
         _text(arc['evidence'], 'arc.evidence', minimum=12)
         support(arc['support'], member_keys)
         if arc['closed']:
@@ -644,13 +649,14 @@ def _merge_arcs(arcs, nodes, relations, signature):
     return sorted(result, key=lambda arc: (arc['start'], arc['end'], arc['id']))
 
 
-def infer_story_structure(events, transcript, job_dir, vision, cancelled):
+def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, progress=None):
     """Bounded genuine provider text pass; selection and exclusions stay unchanged."""
     from app.config import ROOT
     result_events = copy.deepcopy(events)
     from app.antigravity_batch import text_batch_limits
     from app.antigravity_exchange import OutputLimitExceeded, AnalysisPending
     batch_units, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
+    configured_batch_units, split_until = batch_units, 0
     history, assignments, relation_map, arc_map, registry = [], {}, {}, {}, {}
     coverage, nodes, snapshots, signatures = [], [], [], []
     unresolved, final_arcs = [], []
@@ -668,6 +674,10 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
         cursor = 0
         while cursor < len(nodes):
             _check(cancelled)
+            if progress:
+                progress(cursor, len(nodes))
+            if cursor >= split_until:
+                batch_units = configured_batch_units
             size = min(batch_units, len(nodes)-cursor)
             while size:
                 current = nodes[cursor:cursor+size]
@@ -763,6 +773,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
             except OutputLimitExceeded as error:
                 if size <= 1:
                     raise AnalysisPending(str(error) + '; даже один фрагмент не помещается. Нужна проверка пакета') from error
+                split_until = max(split_until, cursor+size)
                 batch_units = max(1, size//2)
                 history.append({'status': 'split', 'reason': 'cloud_output_limit',
                     'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': batch_units})
@@ -772,6 +783,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
                     raise
                 if (isinstance(error, (ValueError, TypeError, KeyError)) and size > 1
                         and getattr(type(vision), 'split_invalid_text_batches', False) is True):
+                    split_until = max(split_until, cursor+size)
                     batch_units = max(1, size//2)
                     history.append({'status': 'split', 'reason': 'source_validation_split',
                         'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': batch_units,
@@ -782,6 +794,8 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
                     'reason': 'invalid_source_structure' if isinstance(error, (ValueError, TypeError, KeyError)) else 'model_failure',
                     'error_type': type(error).__name__, 'error': _clean(str(error))[:800]})
             cursor += size
+        if progress:
+            progress(cursor, len(nodes))
         final_arcs = _merge_arcs(arc_map, nodes, list(relation_map.values()), _hash(signatures))
         # Cross-batch context references must agree with their actual owner pass.
         for arc in final_arcs:

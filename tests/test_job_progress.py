@@ -115,6 +115,17 @@ class JobProgressTests(unittest.TestCase):
         self.assertEqual(rows['endings']['status'], 'completed')
         self.assertEqual(rows['story_structure_analysis']['status'], 'running')
 
+    def test_text_pass_counters_belong_only_to_current_pass(self):
+        for step, caption in (('story_structure_analysis','Сюжетные связи'), ('dialogue_relations','Связи реплик')):
+            with self.subTest(step=step):
+                self.lines('timeline.jsonl', [{'run_id':'current','stage':step,'action':'start'}])
+                job={**self.job,'stage':'analyze','message':f'{caption} · обработано фрагментов: 4 из 9'}
+                rows=job_progress.analysis_passes(job,self.directory)
+                self.assertEqual((rows[step]['completed'],rows[step]['total']), (4,9))
+                self.assertAlmostEqual(rows[step]['fraction'],4/9)
+                other=job_progress.analysis_passes({**job,'message':'Темп · обработано фрагментов: 129 из 129'},self.directory)
+                self.assertNotIn('completed',other[step])
+
     def test_current_run_unique_boundary_decisions_not_model_acceptance(self):
         self.decisions()
         row = self.result()['scenes']

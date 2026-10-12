@@ -138,5 +138,65 @@
       "not a serial A/B or completed export",
       "all original source-proof validators retained"
     ]
+  },
+  "json_string_wire": {
+    "date": "2026-10-12",
+    "scope": "same failing one-unit and six-unit source evidence; real official CLI string envelope and strict native validators",
+    "calls": [
+      {
+        "packet": "ddbe084b2c9767c26d1c1a4dcd7b1b8bfe1ddb21a0341134c2df35dc061cdcea",
+        "cli_wall_seconds": 8.224857199999999,
+        "usage": {
+          "total_tokens": 16337,
+          "output_tokens": 294,
+          "input_tokens": 16043,
+          "thinking_tokens": 0,
+          "cache_read_tokens": 0
+        }
+      },
+      {
+        "packet": "e68269e77094a24ee8e6daf8bc79c9f4dd4e0caf347f2e69d169e979b959fe71",
+        "cli_wall_seconds": 12.1777863,
+        "usage": {
+          "total_tokens": 30493,
+          "output_tokens": 2394,
+          "input_tokens": 28099,
+          "thinking_tokens": 0,
+          "cache_read_tokens": 0
+        }
+      },
+      {
+        "packet": "5a98f361b4bdb58ad02f854e9fde6585e28b99fd1298e196a53aab16437d8085",
+        "cli_wall_seconds": 15.8731177,
+        "usage": {
+          "total_tokens": 32197,
+          "output_tokens": 3918,
+          "input_tokens": 28279,
+          "thinking_tokens": 0,
+          "cache_read_tokens": 0
+        }
+      },
+      {
+        "packet": "2f9b978f5172a9e98c7ba68f38b1034ff3f076b1879eebba43daa51862c3327f",
+        "cli_wall_seconds": 17.179807999999998,
+        "usage": {
+          "total_tokens": 33293,
+          "output_tokens": 4912,
+          "input_tokens": 28381,
+          "thinking_tokens": 0,
+          "cache_read_tokens": 0
+        }
+      }
+    ],
+    "native_valid_final_rows": 6,
+    "native_valid_final_relations": 5,
+    "generation_schema_bytes": 130,
+    "limitations": [
+      "not a pure latency A/B: correction instructions differ",
+      "first one-unit answer retained unknown role",
+      "first six-unit answer lacked arc anchor; next included invalid context-only relations",
+      "final six-unit answer accepted by native proof validator; full graph/export still pending",
+      "ERROR never accepted; source/schema/citation gates unchanged"
+    ]
   }
 }

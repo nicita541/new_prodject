@@ -111,7 +111,15 @@ try {
                     if ($packetFailure.packet -eq $packetId -and $packetFailure.code -eq 'output_limit') {
                         # Backend splits whole units. Never relaunch the same
                         # truncated paid request while it publishes new work.
-                        continue
+                        $request = Read-ExchangeJson (Join-Path $packet 'request.json')
+                        $fields = @($request.schema.properties.PSObject.Properties.Name)
+                        $complexText = @($request.images).Count -eq 0 -and
+                            ((($fields -contains 'canonical_entities') -and ($fields -contains 'units')) -or
+                             (($fields -contains 'pairs') -and ($fields -contains 'coverage')))
+                        $responseMode = 'json_string'
+                        $responseConfig = Join-Path $root 'text-response.json'
+                        if (Test-Path -LiteralPath $responseConfig) { $responseMode = (Read-ExchangeJson $responseConfig).mode }
+                        if (-not $complexText -or $responseMode -ne 'json_string' -or $packetFailure.response_mode -eq 'json_string') { continue }
                     }
                 }
                 if (-not (Test-Path -LiteralPath (Join-Path $packet 'agy-result.json')) -and

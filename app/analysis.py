@@ -266,11 +266,15 @@ def finalize_editorial_selection(source, events, transcript, shots, probe, job_d
         from .dialogue_relations import infer_dialogue_relations, attach_dialogue_result
         report('analyze', .62, 'Определяем сюжетные связи и состояния исходных units')
         with diagnostics.stage('story_structure_analysis', provider=provider):
-            structure = infer_story_structure(events, transcript, job_dir, text_vision, cancelled)
+            structure = infer_story_structure(events, transcript, job_dir, text_vision, cancelled,
+                progress=lambda done,total: report('analyze', .62,
+                    f'Сюжетные связи · обработано фрагментов: {done} из {total}'))
         events = structure['events']
         atomic_json(job_dir/'story_structure-result.json', {k:v for k,v in structure.items() if k != 'events'})
         with diagnostics.stage('dialogue_relations', provider=provider):
-            dialogue = infer_dialogue_relations(events, transcript, job_dir, text_vision, cancelled, relations=structure)
+            dialogue = infer_dialogue_relations(events, transcript, job_dir, text_vision, cancelled, relations=structure,
+                progress=lambda done,total: report('analyze', .62,
+                    f'Связи реплик · обработано фрагментов: {done} из {total}'))
         events = attach_dialogue_result(events,dialogue)
         atomic_json(job_dir/'dialogue_relations-result.json', dialogue)
         diagnostics.write('story_structure.json', {k:v for k,v in structure.items() if k != 'events'})

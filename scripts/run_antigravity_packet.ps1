@@ -4,6 +4,7 @@ param(
     [string]$Model = 'gemini-3.8-flash-low',
     [switch]$DefaultAgent,
     [switch]$Smoke,
+    [switch]$JsonText,
     [string]$StopFile,
     [string]$RunnerStopFile,
     [ValidateRange(1,240)][int]$TimeLimitSeconds = 240
@@ -11,6 +12,7 @@ param(
 
 # Standalone direct scripting: invoked by the user, never by KADR.
 $ErrorActionPreference = 'Stop'
+if ($Smoke -and $JsonText) { throw 'JsonText is for real analysis packets, not the structured smoke check' }
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $packet = (Resolve-Path -LiteralPath $PacketDirectory).Path
 if (-not $packet.StartsWith($workspace + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -58,11 +60,24 @@ if ($Smoke) {
     $promptText += "`nBefore returning any keep_units/preserve_silent_units/omit_units answer: their selected union and omitted unit IDs must be DISJOINT and together cover ALL allowed unit IDs. A preserved silent unit is retained and must never also appear in omit_units. Check this separately for every independent task; do not transfer unit IDs between tasks."
     $outputName = 'agy-result.json'
 }
+if (-not $Smoke -and -not $JsonText -and @($request.images).Count -eq 0) {
+    $fields = @($request.schema.properties.PSObject.Properties.Name)
+    $complexText = (($fields -contains 'canonical_entities') -and ($fields -contains 'units')) -or
+        (($fields -contains 'pairs') -and ($fields -contains 'coverage'))
+    $responseConfig = Join-Path (Split-Path (Split-Path $packet -Parent) -Parent) 'text-response.json'
+    $responseMode = 'json_string'
+    if (Test-Path -LiteralPath $responseConfig) {
+        $responseMode = (Get-Content -LiteralPath $responseConfig -Raw -Encoding UTF8 | ConvertFrom-Json).mode
+        if ($responseMode -notin @('json_string','structured')) { throw 'Invalid text-response.json mode' }
+    }
+    if ($complexText -and $responseMode -eq 'json_string') { $JsonText = $true }
+}
 function Publish-Failure([string]$Code) {
     if ($Smoke) { return }
     $failure = Join-Path $packet 'failure.json'
     $failurePending = $failure + '.pending'
-    $failureRecord = @{packet=$request.id;code=$Code;attempt=(Split-Path $attempt -Leaf)}
+    $failureRecord = @{packet=$request.id;code=$Code;attempt=(Split-Path $attempt -Leaf);
+        response_mode=$(if ($JsonText) { 'json_string' } else { 'structured' })}
     if ($Code -eq 'process_exit') { $failureRecord.exit_code = $cliExit }
     [IO.File]::WriteAllText($failurePending, ($failureRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     if (Test-Path -LiteralPath $failure) { [IO.File]::Replace($failurePending,$failure,[NullString]::Value) }
@@ -70,13 +85,24 @@ function Publish-Failure([string]$Code) {
 }
 if (-not $Smoke -and (Test-Path -LiteralPath (Join-Path $packet 'failure.json'))) {
     $previousFailure = Get-Content -LiteralPath (Join-Path $packet 'failure.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($previousFailure.packet -eq $request.id -and $previousFailure.code -eq 'output_limit') {
+    if ($previousFailure.packet -eq $request.id -and $previousFailure.code -eq 'output_limit' -and
+        (-not $JsonText -or $previousFailure.response_mode -eq 'json_string')) {
         Write-Host 'Output limit already confirmed; waiting for a smaller native packet.'
         return
     }
 }
-$cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath,
-                  '--print-timeout', '3m', '--disable-slash-commands', '--add-dir', $packet,
+if ($JsonText) {
+    # A small string envelope avoids the large nested Gemini finish-tool
+    # grammar. Original source/schema remain in the input; KADR validates
+    # the decoded JSON with its unchanged original contract on import.
+    $schemaPath = Join-Path $packet 'reply-schema.json'
+    [IO.File]::WriteAllText($schemaPath, '{"type":"object","properties":{"kadr_answer_json":{"type":"string"}},"required":["kadr_answer_json"],"additionalProperties":false}', [Text.UTF8Encoding]::new($false))
+    $promptText += "`nTransport envelope: return ONLY kadr_answer_json, a string containing the COMPLETE raw JSON object matching the ORIGINAL contract above. No markdown fences, toolAction/toolSummary, prose or extra envelope keys. All ORIGINAL fields, references, citations and native constraints still apply INSIDE that JSON string."
+    $promptText += "`nSource contract reminders: every arc.anchor MUST also appear in that arc.members with its evidenced role and its own support. A closed arc requires a DIRECT supported relation from anchor to closing_unit, a payoff closing role and an evidenced outcome; an indirect chain alone does not close it. Keep unsupported arcs open. A canonical before/after ID needs an observed mention from THAT EXACT unit ref; a neighboring unit's entity mention does not populate its states. Use null/[] for unsupported canonical facts, without suppressing separately evidenced story roles. Every non-unknown unit row cites its own inherited proof."
+    $promptText += "`nEvery returned relation MUST have at least one endpoint in CURRENT. Do not return a relation only between MEMORY and CONTEXT_ONLY, or between two CONTEXT_ONLY refs. Relations follow source time from earlier to later. Every arc has at least one CURRENT member. Return entities/relations/arcs only when their actual supported confidence meets the native 0.9 minimum; omit unsupported claims, never inflate confidence to satisfy validation."
+}
+$cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath)
+$cliArguments += @('--print-timeout', '3m', '--disable-slash-commands', '--add-dir', $packet,
                   '--log-file', (Join-Path $attempt 'agy.log'))
 if ($Model) { $cliArguments += @('--model', $Model) }
 $agentRequested = 'default'
@@ -146,7 +172,7 @@ try {
     $stdinClosed = -not $streamInput
     while (-not $process.WaitForExit(500)) {
         if (-not $stdinClosed -and $stdinTask.IsCompleted) {
-            $stdinTask.GetAwaiter().GetResult()
+            $null = $stdinTask.GetAwaiter().GetResult()
             $stdinWriter.Close()
             $stdinClosed = $true
         }
@@ -201,7 +227,9 @@ try {
 $usageReported = $reportedUsage.ContainsKey('total_tokens') -or (
     $reportedUsage.ContainsKey('input_tokens') -and $reportedUsage.ContainsKey('output_tokens'))
 @{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;started_at=$cliStartedAt;finished_at=$cliFinishedAt;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;command_line_chars=$startInfo.FileName.Length+$startInfo.Arguments.Length+3;
-    input_format=$(if ($streamInput) { 'stream-json' } else { 'text' });stream_error=$streamError;usage_reported=$usageReported;usage=$reportedUsage} |
+    input_format=$(if ($streamInput) { 'stream-json' } else { 'text' });
+    response_mode=$(if ($JsonText) { 'json_string' } else { 'structured' });
+    stream_error=$streamError;usage_reported=$usageReported;usage=$reportedUsage} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
 if ($abortReason) {
     if (-not ($StopFile -and (Test-Path -LiteralPath $StopFile)) -and
@@ -213,7 +241,12 @@ if ($streamError) { Publish-Failure 'invalid_json'; throw "$streamError; inspect
 try { $result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json }
 catch { Publish-Failure 'invalid_json'; throw "Antigravity returned invalid JSON; inspect $attempt" }
 if ($streamInput) { $result = $result.result }
-if ($result.status -ne 'SUCCESS' -or $null -eq $result.structured_output) {
+$hasAnswer = $null -ne $result.structured_output
+if ($JsonText -and $result.status -eq 'SUCCESS') {
+    $hasAnswer = ($result.structured_output.kadr_answer_json -is [string]) -and
+        ([string]$result.structured_output.kadr_answer_json).Length -gt 0
+}
+if ($result.status -ne 'SUCCESS' -or -not $hasAnswer) {
     $reason = [string]$result.error
     if ($result.status -eq 'ERROR' -and $reason -match 'exceeded the output token limit') {
         Publish-Failure 'output_limit'

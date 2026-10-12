@@ -636,7 +636,7 @@ def _code_identity():
             'gate_version': selection_gate.VERSION, 'source_roles_version': source_roles.VERSION}
 
 
-def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, relations=None):
+def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, relations=None, progress=None):
     """Bounded real-provider adapter. No implicit provider/session construction."""
     from app.global_verification import _model_identity
     from app.scene_understanding import _control_failure
@@ -656,9 +656,13 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
             for ref in [*candidate['question_refs'], *candidate['answer_refs']]:
                 unresolved[_key(ref)] = ref
     cursor = 0
-    output_batch_cap = 12
+    output_batch_cap, split_until = 12, 0
     while cursor < len(nodes):
         _check(cancelled)
+        if progress:
+            progress(cursor, len(nodes))
+        if cursor >= split_until:
+            output_batch_cap = 12
         from app.antigravity_batch import text_batch_limits
         batch_units, output_tokens = text_batch_limits(vision, 'dialogue_relations', POLICY['max_current_units'], POLICY['output_tokens'])
         batch_units = min(batch_units, output_batch_cap)
@@ -732,6 +736,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
         except OutputLimitExceeded as error:
             if size <= 1:
                 raise AnalysisPending(str(error) + '; даже один фрагмент не помещается. Нужна проверка пакета') from error
+            split_until = max(split_until, cursor+size)
             output_batch_cap = max(1, size//2)
             history.append({'status': 'split', 'reason': 'cloud_output_limit',
                 'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': output_batch_cap})
@@ -741,6 +746,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                 raise
             if (isinstance(error, (ValueError, TypeError, KeyError)) and size > 1
                     and getattr(type(vision), 'split_invalid_text_batches', False) is True):
+                split_until = max(split_until, cursor+size)
                 output_batch_cap = max(1, size//2)
                 history.append({'status': 'split', 'reason': 'source_validation_split',
                     'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': output_batch_cap,
@@ -751,6 +757,8 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                 'reason': 'invalid_dialogue_contract' if isinstance(error, (ValueError, TypeError, KeyError)) else 'model_failure',
                 'error_type': type(error).__name__})
         cursor += size
+    if progress:
+        progress(cursor, len(nodes))
     # CONTEXT participation needs its owning pass to agree; local acceptance alone
     # cannot grant authority to an unexamined episode tail or contradictory batch.
     for pair in pairs.values():

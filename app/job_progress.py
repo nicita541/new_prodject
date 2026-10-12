@@ -97,7 +97,7 @@ def analysis_passes(job, directory):
                 result[step] = {'status': 'not_required', 'fraction': None}
         state = job.get('status')
         result[current].update(status=state if state in ('failed', 'cancelled', 'interrupted', 'waiting_analysis') else 'running', fraction=None)
-        processed = re.search(r'обработано событий:\s*(\d+)\s+из\s+(\d+)', message)
+        processed = re.search(r'обработано (?:событий|фрагментов):\s*(\d+)\s+из\s+(\d+)', message)
         counter = processed or re.search(r'(?:сцена|событие|фрагмент|проверка)\s+(\d+)\s+из\s+(\d+)', message)
         counter = counter or re.search(r'в финале:\s*(\d+)\s*/\s*(\d+)', message)
         relevant = {
@@ -107,7 +107,9 @@ def analysis_passes(job, directory):
             'selection_adjudication': ('проверка конкретного выбора',),
             'final_selection_adjudication': ('проверка конкретного выбора',),
             'ending_selection_adjudication': ('проверка конкретного выбора',),
-            'pacing': ('темп',)}
+            'pacing': ('темп',),
+            'story_structure_analysis': ('сюжетные связи',),
+            'dialogue_relations': ('связи реплик',)}
         if counter and any(text in message for text in relevant.get(current, ())):
             value, total = map(int, counter.groups())
             _counter(result[current], value if processed else value-1, total, '', 'обработано')
