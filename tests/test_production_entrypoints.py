@@ -57,7 +57,7 @@ const context=vm.createContext({console,URL,URLSearchParams,structuredClone,
  localStorage:{getItem(){return null},setItem(){}},
  document:{getElementById:element,addEventListener(){},querySelector(){return null},querySelectorAll(){return []}},
  window:{KadrBridge:{},addEventListener(){}},location:{search:''},navigator:{},Blob,File,FormData,TextEncoder,atob});
-const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,
+const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,processingRows,processingProgress,processingStageRows,renderPacketSummary,
  setup(){ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';},
  job(){return currentJob();},data(){return db},entries(){return ui.apiEntries}};})();`;
 vm.runInContext(source.split('// Live Studio Edition: preserve')[0]+expose,context);
@@ -78,6 +78,26 @@ assert(app.tokenLabel({...reportedZero,unknown_calls:1}).includes('Извест�
 assert(!app.tokenLabel({...reportedZero,unknown_calls:1}).includes('Всего:'));
 
 assert(!app.renderProcessing().includes('stage_progress из'));
+const selection={status:'running',stage:'condense',progress:.475,stage_progress:{condense:{status:'running',fraction:.25,completed:92,total:368}}};
+assert.equal(app.processingRows(selection).verify.status,'pending');
+assert.equal(app.processingProgress(selection).percent,25);
+assert(app.processingStageRows(selection).includes('Проверка титров и истории'));
+const titles={...selection,progress:.4893,stage_progress:{condense:{status:'running',fraction:.3,completed:38,total:129}}};
+assert.equal(app.processingRows(titles).condense.status,'completed');
+assert.equal(app.processingRows(titles).verify.status,'running');
+assert.equal(app.processingProgress(titles).percent,null);
+assert(app.processingProgress(titles).label.includes('Проверка титров и истории'));
+const globalCheck={...titles,stage:'global_verify',progress:.485,stage_progress:{analyze:{status:'running',fraction:null}}};
+assert.equal(app.processingRows(globalCheck).analyze.status,'completed');
+assert.equal(app.processingRows(globalCheck).verify.status,'running');
+assert.equal(app.processingRows({...titles,status:'failed'}).verify.status,'failed');
+assert.equal(app.processingRows({...titles,stage:'render'}).verify.status,'completed');
+assert.equal(app.processingRows({...titles,status:'completed'}).verify.status,'completed');
+const packetSummary=app.renderPacketSummary([{id:'abc123',purpose:'choose_units',status:'ready'},{id:'xyz789',purpose:'story_refinement',status:'error',batch_size:4}], 'j1',false);
+assert(packetSummary.includes('1 готовы · 0 ожидают · 1 с ошибкой в истории'));
+assert(packetSummary.includes('<details class="expand" id="manualPacketDetails">'));
+assert(!packetSummary.includes('id="manualPacketDetails" open'));
+assert(packetSummary.includes('Импортировать результат'));
 assert(!app.renderApi().includes('в демо'));
 assert(!app.renderApi().includes('демонстрационную базу'));
 for(const [method,path] of app.routes)assert(!/balance|recovery|spending|reset-budget/.test(path),path);
