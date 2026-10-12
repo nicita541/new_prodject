@@ -1,12 +1,15 @@
 """Independently verify nonstory source roles without treating ASR as story."""
 from __future__ import annotations
 
+
 import copy
 import hashlib
 import json
 import math
 import re
 from pathlib import Path
+
+from app.source_text import tokens as _tokens, quote_in as _quote_in
 
 from .config import ROOT
 from .jobs import atomic_json
@@ -122,15 +125,6 @@ def apply_exclusions(events):
             if not event['selected_ranges'] and event.get('nonstory_role_ranges'):
                 event.update(source_role_excluded=True,importance=1,kind='filler',requires=[])
     return result
-
-
-def _tokens(value):
-    return re.findall(r'\w+',value.casefold().replace('ё','е'))
-
-
-def _quote_in(quote,text):
-    q,t=_tokens(quote),_tokens(text)
-    return bool(q) and any(t[i:i+len(q)]==q for i in range(len(t)-len(q)+1))
 
 
 def validate_role_decisions(raw,units,credit_confirmed=False):

@@ -5,12 +5,16 @@ Only the caller's real provider can supply perceptual evidence in production.
 """
 from __future__ import annotations
 
+
 import copy
 import hashlib
 import json
 import math
 import re
 from pathlib import Path
+
+from app.cancellation import check_cancelled as _check
+from app.source_text import source_text as _source_text
 
 from .config import ROOT
 from .media import inspect_media
@@ -113,11 +117,6 @@ def _control_failure(error):
     return control(error)
 
 
-def _check(cancelled):
-    if cancelled():
-        raise InterruptedError('Обработка отменена')
-
-
 def _number(value, field):
     if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
         raise ValueError('Некорректная уверенность adjudication: '+field)
@@ -132,13 +131,6 @@ def _words(transcript):
 
 def _safe(time, transcript):
     return not any(w['start'] < time < w['end'] for w in _words(transcript))
-
-
-def _source_text(transcript, start, end):
-    # A segment without word timestamps cannot be attributed to only one
-    # smaller view of that segment. Images can still establish that view.
-    return ' '.join(str(w.get('text', '')) for w in (transcript.get('words') or transcript.get('segments', []))
-                    if start <= w['start'] and w['end'] <= end)
 
 
 def _ranges(ranges, event, transcript, exclusions):

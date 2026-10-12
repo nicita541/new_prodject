@@ -17,10 +17,10 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote, urlsplit, urlencode
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
@@ -924,77 +924,9 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     from .finishing import create_finishing_router
     application.include_router(create_finishing_router())
 
-    dist_dir = config.ROOT / "frontend" / "dist"
-    # Studio is the sole interface. Its static builder copies these assets.
-    studio_html = dist_dir / "studio-edition.html"
-    studio_bridge = dist_dir / "studio-live-bridge.js"
-
-    @application.api_route("/studio-live-bridge.js", methods=["GET", "HEAD"])
-    def studio_bridge_asset():
-        if not studio_bridge.is_file():
-            raise HTTPException(503, "Studio Edition не собрана. Выполните npm run build в frontend.")
-        return FileResponse(studio_bridge, media_type="text/javascript",
-                            headers={"Cache-Control": "no-cache"})
-
-    @application.api_route("/studio-edition.css", methods=["GET", "HEAD"])
-    def studio_stylesheet():
-        file = dist_dir / "studio-edition.css"
-        if not file.is_file():
-            raise HTTPException(503, "Studio Edition CSS не собран. Выполните npm run build в frontend.")
-        return FileResponse(file, media_type="text/css", headers={"Cache-Control": "no-store"})
-
-    @application.api_route("/studio-edition-app.js", methods=["GET", "HEAD"])
-    def studio_application_script():
-        file = dist_dir / "studio-edition-app.js"
-        if not file.is_file():
-            raise HTTPException(503, "Studio Edition JS не собран. Выполните npm run build в frontend.")
-        return FileResponse(file, media_type="text/javascript", headers={"Cache-Control": "no-store"})
-
-    @application.api_route("/{full_path:path}", methods=["GET", "HEAD"])
-    def index(full_path: str, request: Request):
-        if full_path.startswith(("api/", "assets/", "static/")):
-            raise HTTPException(404)
-        if full_path in {"legacy", "legacy/", "react-debug", "studio-edition-reference.html"}:
-            raise HTTPException(404, "Этот интерфейс удалён; используйте KADR Studio")
-        if full_path == "studio-edition.html":
-            filename = full_path
-            target = dist_dir / filename
-            if target.is_file():
-                return FileResponse(target, media_type="text/html",
-                                    headers={"Cache-Control": "no-cache"})
-            raise HTTPException(503, "Studio Edition не собрана. Выполните npm run build в frontend.")
-
-        if not studio_html.is_file() or not studio_bridge.is_file():
-            raise HTTPException(503, "Studio Edition не собрана. Выполните npm ci и npm run build в frontend.")
-
-        if full_path in {"", "projects"}:
-            return FileResponse(studio_html, media_type="text/html",
-                                headers={"Cache-Control": "no-cache"})
-
-        screen = None
-        ids = {}
-        if full_path == "trash":
-            screen = "trash"
-        elif full_path == "studio":
-            screen = "finishing"
-        elif full_path == "api":
-            screen = "api"
-        else:
-            project = re.fullmatch(r"project/([^/]+)", full_path)
-            episode = re.fullmatch(r"episode/([^/]+)/(edit|review|finishing)(?:/([^/]+))?", full_path)
-            if project:
-                screen = "episodes"
-                ids["project"] = project.group(1)
-            elif episode:
-                screen = {"edit": "editor", "review": "review",
-                          "finishing": "finishing"}[episode.group(2)]
-                ids["episode"] = episode.group(1)
-                if episode.group(3):
-                    ids["job"] = episode.group(3)
-        if screen is None:
-            raise HTTPException(404, "Экран не найден")
-        return RedirectResponse("/studio-edition.html?" + urlencode({"screen": screen, **ids}),
-                                status_code=307)
+    # Register the UI fallback last, after every concrete API router.
+    from .studio_routes import create_studio_router
+    application.include_router(create_studio_router(config.ROOT))
     return application
 
 

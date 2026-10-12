@@ -1,4 +1,4 @@
-/* Integration smoke: execute the exact reference SPA against simulated FastAPI
+/* Integration smoke: execute the production Studio against simulated FastAPI
    envelopes in a browser-like DOM. This is not a screenshot comparison. */
 import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
@@ -99,6 +99,7 @@ assert(ready,window.document.querySelector('#main')?.textContent?.slice(0,500)||
 assert(window.document.querySelector('.sidebar'));
 assert(window.document.querySelector('.topbar'));
 assert(window.document.querySelector('#fcCanvas'));
+assert.equal(typeof window.document.querySelector('#fcVideo').ontimeupdate, 'function', 'finishing controls must finish binding');
 assert(window.document.querySelector('#fcVideo')?.getAttribute('src')?.includes(job));
 assert(window.document.body.textContent.includes('РЕАЛЬНАЯ РЕПЛИКА'));
 assert(!window.document.querySelector('.empty')?.textContent.includes('нет готового монтажа'),'failed newer job should not hide completed Shorts');
@@ -155,7 +156,8 @@ videoForCaptions.dispatchEvent(new window.Event('pause'));
 const editorNav = window.document.querySelector('button[data-action="nav"][data-screen="editor"]');
 assert(editorNav, 'settings navigation should exist');
 editorNav.click();
-assert(window.document.querySelector('#dBalance')?.textContent.includes('неизвестен'), 'null DeepSeek budget must not break rendering');
+assert(window.document.querySelector('#analysisSelect'), 'settings must render with unavailable legacy billing fields');
+assert(!window.document.querySelector('#dBalance'), 'retired balance controls must not reappear');
 const finishingNav = window.document.querySelector('button[data-action="nav"][data-screen="finishing"]');
 finishingNav.click();
 for(let i=0;i<60 && !window.document.querySelector('#fcCanvas');i++) await new Promise(done=>setTimeout(done,30));

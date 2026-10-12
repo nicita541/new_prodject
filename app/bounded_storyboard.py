@@ -1,6 +1,7 @@
 """Small source-only storyboards with verified presentation timestamps."""
 from __future__ import annotations
 
+
 import hashlib
 import json
 import math
@@ -8,6 +9,8 @@ import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+
+from app.cancellation import check_cancelled as _check
 
 from .config import FFMPEG, FFPROBE, ROOT
 from .media_probe import atomic_json, run_process
@@ -19,11 +22,6 @@ BOUNDED_STORYBOARD_VERSION = 2
 MAX_INFERENCE_FRAMES = 18
 POLICY = {'max_frames': MAX_INFERENCE_FRAMES, 'context_frames': 2, 'sampling_interval': .5,
           'thumbnail_width': 320, 'thumbnail_height': 180, 'columns': 3, 'caption_height': 24}
-
-
-def _check(cancelled):
-    if cancelled():
-        raise InterruptedError('Обработка отменена')
 
 
 def _number(value):

@@ -1,15 +1,14 @@
 # КАДР: хранение данных и карта собственных модулей
 
-Дата: 11 октября 2026 года. Общая схема и подробный порядок работы — в [architecture.md](architecture.md). Пути ниже относительно корня проекта. Это инвентаризация собственного кода; tools, node_modules, model weights, wheel caches и сторонние библиотеки не считаются собственными модулями. Частные значения настроек не читались. Наличие теста в таблице не означает, что он запускался или подтверждает качество реального видео.
+Обновлено: 13 октября 2026 года. Общая схема и подробный порядок работы — в [architecture.md](architecture.md). Пути ниже относительно корня проекта. Это инвентаризация собственного кода; tools, node_modules, model weights, wheel caches и сторонние библиотеки не считаются собственными модулями. Частные значения настроек не читались. Наличие теста в таблице не означает, что он запускался или подтверждает качество реального видео.
 
 ## 1. Верхний уровень
 
 | Папка/файл | Назначение и владелец | Удалять при обычной уборке? |
 |---|---|---|
 | `app/` | Python приложение и runtime pipeline | Нет; только после проверки imports/callers/контрактов |
-| `frontend/public/` | Активные Studio Edition assets и reference | Нет |
-| `frontend/src/` | React debug/compatibility интерфейс и его тесты | Не считать автоматически мёртвым: `/react-debug` и tests используют его |
-| `frontend/dist/` | Сборка Vite, которую реально отдаёт server | Восстановима build, но удаление немедленно ломает UI до пересборки |
+| `frontend/public/` | Единственные Studio Edition assets | Нет |
+| `frontend/dist/` | Статика единственной Studio, которую отдаёт studio_routes | Восстановима build, но удаление немедленно ломает UI до пересборки |
 | `scripts/`, `tests/` | Собственные диагностика, установка, проверки | По доказанному usage и документированным workflows |
 | `data/` | Каталог, импорты, задания, настройки | Нет, это состояние пользователя |
 | `finishing/` | Общие профили серии и export index; создаётся по запросу | Нет, часть состояния находится вне data |
@@ -127,7 +126,7 @@ Source hash — доказательство байтового совпаден
 | [config](../../app/config.py) | Project paths, offline environment и global readiness |
 | [launcher](../../app/launcher.py) | Запуск/поиск правильного Studio экземпляра и открытие после готовности |
 | [studio_identity](../../app/studio_identity.py) | Backend/UI fingerprints для handshake |
-| [server](../../app/server.py) | FastAPI, source import, library/job/music/provider API, range files, active Studio routing |
+| [server](../../app/server.py) | FastAPI, source import, library/job/music/provider API, range files; Studio routing делегирован studio_routes |
 | [jobs](../../app/jobs.py) | Source/job JSON, locks, один worker, cancel/retry, cleanup/prune |
 | [library](../../app/library.py) | Project/episode ownership, сохранённые настройки и tombstones |
 | [worker](../../app/worker.py) | Один pipeline job в child, status/progress/error publication |
@@ -168,7 +167,7 @@ Source hash — доказательство байтового совпаден
 | [planner](../../app/planner.py) | Deterministic timeline, validation, protected boundaries, cuts/subtitles |
 | [dramatic_planner](../../app/dramatic_planner.py) | Dramatic score/hook/part objectives поверх source contract |
 | [planner_audit](../../app/planner_audit.py) | Объяснение сохранённых/удалённых интервалов, alternatives |
-| [final_quality](../../app/final_quality.py) | Обязательный pre-render quality gate и до 3 recovery passes |
+| [final_quality](../../app/final_quality.py) | Доказательная pre-render проверка; без запуска recovery |
 | [framing](../../app/framing.py) | Shot/reply temporal portrait focus и координатные checkpoints |
 | [part_context](../../app/part_context.py) | Optional title/synopsis/image prompt из финальных cuts; extractive fallback |
 | [media](../../app/media.py) | FFmpeg export, smooth crop, format validation и atomic publication |
@@ -192,6 +191,20 @@ Source hash — доказательство байтового совпаден
 
 Compatibility reexports `analysis` и `planner` не следует удалять без проверки reverse imports/tests: некоторые callers намеренно подменяют boundary factories через эти фасады.
 
+### Явные владельцы, выделенные при очистке
+
+| Модуль | Ответственность |
+|---|---|
+| [studio_routes](../../app/studio_routes.py) | Разрешённые Studio assets и ссылки экранов |
+| [analysis_result](../../app/analysis_result.py) | Сборка сохранённого результата и diagnostics |
+| [editorial_pipeline](../../app/editorial_pipeline.py) | Отбор, финал, сюжет и связи реплик |
+| [quality_recovery](../../app/quality_recovery.py) | Адресное восстановление анализа по проблемам quality gate |
+| [source_text](../../app/source_text.py) | Текст в исходных временных границах и доказательные цитаты |
+| [cancellation](../../app/cancellation.py) | Кооперативная проверка отмены |
+| [content_identity](../../app/content_identity.py) | Строгие JSON hashes с сохранением existing encoding |
+| [antigravity_batch](../../app/antigravity_batch.py) | Пакетный адаптер независимых запросов с сохранением исходного контекста и проверки ответов |
+| [speech_handles](../../app/speech_handles.py) | Исходные границы речи и минимальные поля для целых слов |
+
 ## 4. Собственные `scripts/`
 
 | Скрипт | Назначение |
@@ -210,7 +223,6 @@ Compatibility reexports `analysis` и `planner` не следует удалят
 | [export_stage_timings.py](../../scripts/export_stage_timings.py) | Allowlisted stage/model reports, wall-time attribution |
 | [export_safe_ai_diagnostics.py](../../scripts/export_safe_ai_diagnostics.py) | Allowlisted безопасная telemetry без media/ASR/prompts |
 | [publish_latest_ai_diagnostics.ps1](../../scripts/publish_latest_ai_diagnostics.ps1) | Публикация уже подготовленной безопасной диагностики; не вызывать при только local audit |
-| [export_react_library_contract.py](../../scripts/export_react_library_contract.py) | Генерация fixture через фактический backend `/api/library` |
 | [offline_verify.py](../../scripts/offline_verify.py) | Повтор completed job с запретом внешних Python соединений |
 | [smoke.py](../../scripts/smoke.py) | Короткий настоящий ASR/VLM/render на первом source |
 | [visioncheck.py](../../scripts/visioncheck.py) | Installed model diagnostic для одного local image |
@@ -242,45 +254,14 @@ Diagnostics не равно безопасные unit tests: smoke/vision/title/
 | [public/studio-edition.css](../../frontend/public/studio-edition.css) | Активные Studio layout/styles |
 | [public/studio-edition-app.js](../../frontend/public/studio-edition-app.js) | Screen rendering, interaction, polling, finishing editor |
 | [public/studio-live-bridge.js](../../frontend/public/studio-live-bridge.js) | Реальный API adapter/state, lazy plan/caption loading, diagnostics |
-| [public/studio-edition-reference.html](../../frontend/public/studio-edition-reference.html) | Отдельный reference макет |
 | [public/favicon.svg](../../frontend/public/favicon.svg) | Иконка UI |
 | [scripts/smoke-studio-exact.mjs](../../frontend/scripts/smoke-studio-exact.mjs) | Browser проверка точного Studio дизайна/потоков |
 | [scripts/smoke-studio-bridge.mjs](../../frontend/scripts/smoke-studio-bridge.mjs) | Browser проверка реального backend bridge |
-| [src/main.tsx](../../frontend/src/main.tsx), [App.tsx](../../frontend/src/App.tsx) | React debug entry/route tree |
-| [src/navigation.ts](../../frontend/src/navigation.ts) | Legacy hash → path migration для React |
-| [src/api/client.ts](../../frontend/src/api/client.ts), [types.ts](../../frontend/src/api/types.ts) | Typed React API boundary |
-| [src/library/contract.ts](../../frontend/src/library/contract.ts), [selectors.ts](../../frontend/src/library/selectors.ts) | Library response/parent ownership и archived filtering |
-| [src/hooks/useLibrary.ts](../../frontend/src/hooks/useLibrary.ts) | React library state |
-| [src/hooks/useJobPolling.ts](../../frontend/src/hooks/useJobPolling.ts) | React job polling/lifecycle |
-| [src/utils/timeline.ts](../../frontend/src/utils/timeline.ts) | Source/output timeline mappings |
-| [src/pages/ProjectsPage.tsx](../../frontend/src/pages/ProjectsPage.tsx) | React project catalog |
-| [src/pages/EpisodesPage.tsx](../../frontend/src/pages/EpisodesPage.tsx) | React series catalog |
-| [src/pages/EditEpisodePage.tsx](../../frontend/src/pages/EditEpisodePage.tsx) | React source/settings/start |
-| [src/pages/ReviewEpisodePage.tsx](../../frontend/src/pages/ReviewEpisodePage.tsx) | React plan/video quality review |
-| [src/pages/TrashPage.tsx](../../frontend/src/pages/TrashPage.tsx) | React archived catalog/restore |
-| [src/pages/FinishingPage.tsx](../../frontend/src/pages/FinishingPage.tsx), [FinishingPage.css](../../frontend/src/pages/FinishingPage.css) | React finishing и Studio home |
-| [src/components/common/Sidebar.tsx](../../frontend/src/components/common/Sidebar.tsx) | React navigation |
-| [src/components/VideoPlayer.tsx](../../frontend/src/components/VideoPlayer.tsx) | Playback component |
-| [src/components/Timeline.tsx](../../frontend/src/components/Timeline.tsx) | Source timeline/retained cuts |
-| [src/components/SourceSelect.tsx](../../frontend/src/components/SourceSelect.tsx) | Source selection/import |
-| [src/components/QualityWarnings.tsx](../../frontend/src/components/QualityWarnings.tsx) | Plan warnings |
-| [src/components/Playlist.tsx](../../frontend/src/components/Playlist.tsx) | Part choice |
-| [src/components/PartContext.tsx](../../frontend/src/components/PartContext.tsx) | Title/synopsis/image prompt metadata |
-| [src/components/MusicPanel.tsx](../../frontend/src/components/MusicPanel.tsx) | Music settings |
-| [src/components/JobProgressPanel.tsx](../../frontend/src/components/JobProgressPanel.tsx) | Per-stage counters/status |
-| [src/components/DownloadControls.tsx](../../frontend/src/components/DownloadControls.tsx) | Output save/download |
-| [src/components/DeepSeekPanel.tsx](../../frontend/src/components/DeepSeekPanel.tsx) | Provider public status/control |
-| [src/styles/style.css](../../frontend/src/styles/style.css) | React shared styles |
-| [src/setupTests.ts](../../frontend/src/setupTests.ts) | Vitest DOM test initialization |
-| [src/test/fixtures/library.ts](../../frontend/src/test/fixtures/library.ts), [library.json](../../frontend/src/test/fixtures/library.json) | Backend-generated library fixture adaptation |
-| [vite.config.ts](../../frontend/vite.config.ts) | Build/dev/test configuration |
-| [index.html](../../frontend/index.html) | React Vite document entry |
+| [scripts/build-studio.mjs](../../frontend/scripts/build-studio.mjs), [check-studio.mjs](../../frontend/scripts/check-studio.mjs) | Native Node build/watch и Studio проверки |
 | [package.json](../../frontend/package.json), [package-lock.json](../../frontend/package-lock.json) | Реальные frontend commands/dependency pins |
-| [tsconfig.json](../../frontend/tsconfig.json), [tsconfig.app.json](../../frontend/tsconfig.app.json), [tsconfig.node.json](../../frontend/tsconfig.node.json) | TypeScript project boundaries |
 | [README.md](../../frontend/README.md) | Frontend setup/документация |
-| [app/static/index.html](../../app/static/index.html), [app.js](../../app/static/app.js), [library.js](../../app/static/library.js), [style.css](../../app/static/style.css) | Legacy UI и его библиотечный adapter |
 
-React `*.test.ts(x)` перечислены ниже вместе с Python/browser tests, чтобы отличать компонентную проверку debug UI от проверки активного Studio DOM.
+React/legacy/reference удалены вместе с их отдельными проверками. Активную Studio проверяют два Node/jsdom integration scripts и Python entrypoint/route tests.
 
 ## 6. Карта проверок
 
@@ -351,7 +332,6 @@ React `*.test.ts(x)` перечислены ниже вместе с Python/brow
 | [test_question_context.py](../../tests/test_question_context.py) | Вопрос/ответ и causal context; например `test_global_redundancy_cannot_leave_retained_answer_without_question` |
 | [test_raw_export_quality.py](../../tests/test_raw_export_quality.py) | Technical/source contract настоящих exports; например `test_completed_artifact_mechanism_preserves_reaction_removes_neutral` |
 | [test_raw_fixture_contract.py](../../tests/test_raw_fixture_contract.py) | Разделение сырых media fixtures и evaluator labels; например `test_all_seven_sources_are_actual_decodable_media_without_semantic_inputs` |
-| [test_react_library_contract.py](../../tests/test_react_library_contract.py) | Python backend ↔ committed React fixture; например `test_frontend_fixture_is_exact_current_backend_snapshot` |
 | [test_recovery_tokens.py](../../tests/test_recovery_tokens.py) | Token provenance при recovery; например `test_tokens_are_real_success_and_rejected_calls_and_survive_restart` |
 | [test_retention_allocation.py](../../tests/test_retention_allocation.py) | Контракты/регрессии [retention_allocation](../../app/retention_allocation.py); например `test_optional_source_arc_defers_oversized_seed_when_another_complete_arc_fits` |
 | [test_run_logging.py](../../tests/test_run_logging.py) | Session logs и scrub; например `test_credentials_are_redacted_even_in_freeform_error_and_stack` |
@@ -364,7 +344,7 @@ React `*.test.ts(x)` перечислены ниже вместе с Python/brow
 | [test_semantic_boundary.py](../../tests/test_semantic_boundary.py) | Контракты/регрессии [semantic_boundary](../../app/semantic_boundary.py); например `test_schema_requires_flags_and_concrete_evidence` |
 | [test_semantic_identity.py](../../tests/test_semantic_identity.py) | Контракты/регрессии [semantic_identity](../../app/semantic_identity.py); например `test_identity_is_stable_json_and_covers_all_pipeline_components` |
 | [test_semantic_pipeline.py](../../tests/test_semantic_pipeline.py) | Source-only semantic pipeline contracts; например `test_technical_chunks_remain_one_scene_event_and_reuse_cache` |
-| [test_server_routing.py](../../tests/test_server_routing.py) | Активные Studio routes/assets, React debug и legacy; например `test_studio_routes_serve_exact_ui_or_explicit_build_error` |
+| [test_server_routing.py](../../tests/test_server_routing.py) | Единственная Studio, её assets/deep links; старые входы недоступны; например `test_studio_routes_serve_exact_ui_or_explicit_build_error` |
 | [test_source_continuity.py](../../tests/test_source_continuity.py) | Контракты/регрессии [source_continuity](../../app/source_continuity.py); например `test_synonyms_with_same_canonical_ids_keep_state_without_redundant_restore` |
 | [test_source_roles.py](../../tests/test_source_roles.py) | Source role exclusions и authority ownership; например `test_failed_role_review_retries_original_material_even_after_empty_selection` |
 | [test_speech_context.py](../../tests/test_speech_context.py) | Контракты/регрессии [speech_context](../../app/speech_context.py); например `test_negation_is_restored_without_inventing_gap_speech` |
@@ -379,36 +359,16 @@ React `*.test.ts(x)` перечислены ниже вместе с Python/brow
 | [test_subtitles.py](../../tests/test_subtitles.py) | Контракты/регрессии [subtitles](../../app/subtitles.py); например `test_accent_captions_preserve_words_in_short_uppercase_blocks` |
 | [test_titles.py](../../tests/test_titles.py) | Контракты/регрессии [titles](../../app/titles.py); например `test_only_current_confirmed_title_units_are_removed` |
 | [test_token_performance_reports.py](../../tests/test_token_performance_reports.py) | Actual usage и local-model telemetry reports; например `test_model_averages_and_generation_throughput_weight_by_calls` |
-| [test_ui.cjs](../../tests/test_ui.cjs) | Browser/JS UI smoke legacy и DOM contracts |
 | [test_verification_report_contract.py](../../tests/test_verification_report_contract.py) | Итоговый verification report schema; например `test_report_directory_created_before_checks_json_is_written` |
 
 | [test_local_audit_report.py](../../tests/test_local_audit_report.py) | Границы local report: fresh/resume, незавершённые model requests, исключение частных данных и wall-time/resource attribution |
 
-### 6.2. React компонентные tests
+### 6.2. Studio проверки
 
-| Файл | Проверяемый React модуль |
+| Файл | Ответственность |
 |---|---|
-| [src/components/App.test.tsx](../../frontend/src/components/App.test.tsx) | [App.tsx](../../frontend/src/App.tsx) |
-| [src/components/DeepSeekPanel.test.tsx](../../frontend/src/components/DeepSeekPanel.test.tsx) | [DeepSeekPanel.tsx](../../frontend/src/components/DeepSeekPanel.tsx) |
-| [src/components/DownloadControls.test.tsx](../../frontend/src/components/DownloadControls.test.tsx) | [DownloadControls.tsx](../../frontend/src/components/DownloadControls.tsx) |
-| [src/components/JobProgressPanel.test.tsx](../../frontend/src/components/JobProgressPanel.test.tsx) | [JobProgressPanel.tsx](../../frontend/src/components/JobProgressPanel.tsx) |
-| [src/components/MusicPanel.test.tsx](../../frontend/src/components/MusicPanel.test.tsx) | [MusicPanel.tsx](../../frontend/src/components/MusicPanel.tsx) |
-| [src/components/PartContext.test.tsx](../../frontend/src/components/PartContext.test.tsx) | [PartContext.tsx](../../frontend/src/components/PartContext.tsx) |
-| [src/components/Playlist.test.tsx](../../frontend/src/components/Playlist.test.tsx) | [Playlist.tsx](../../frontend/src/components/Playlist.tsx) |
-| [src/components/QualityWarnings.test.tsx](../../frontend/src/components/QualityWarnings.test.tsx) | [QualityWarnings.tsx](../../frontend/src/components/QualityWarnings.tsx) |
-| [src/components/SourceSelect.test.tsx](../../frontend/src/components/SourceSelect.test.tsx) | [SourceSelect.tsx](../../frontend/src/components/SourceSelect.tsx) |
-| [src/components/Timeline.test.tsx](../../frontend/src/components/Timeline.test.tsx) | [Timeline.tsx](../../frontend/src/components/Timeline.tsx) |
-| [src/components/VideoPlayer.test.tsx](../../frontend/src/components/VideoPlayer.test.tsx) | [VideoPlayer.tsx](../../frontend/src/components/VideoPlayer.tsx) |
-| [src/hooks/useJobPolling.test.ts](../../frontend/src/hooks/useJobPolling.test.ts) | [useJobPolling.ts](../../frontend/src/hooks/useJobPolling.ts) |
-| [src/library/contract.test.ts](../../frontend/src/library/contract.test.ts) | [contract.ts](../../frontend/src/library/contract.ts) |
-| [src/library/selectors.test.ts](../../frontend/src/library/selectors.test.ts) | [selectors.ts](../../frontend/src/library/selectors.ts) |
-| [src/pages/EditEpisodePage.test.tsx](../../frontend/src/pages/EditEpisodePage.test.tsx) | [EditEpisodePage.tsx](../../frontend/src/pages/EditEpisodePage.tsx) |
-| [src/pages/EpisodesPage.test.tsx](../../frontend/src/pages/EpisodesPage.test.tsx) | [EpisodesPage.tsx](../../frontend/src/pages/EpisodesPage.tsx) |
-| [src/pages/FinishingPage.test.tsx](../../frontend/src/pages/FinishingPage.test.tsx) | [FinishingPage.tsx](../../frontend/src/pages/FinishingPage.tsx) |
-| [src/pages/ProjectsPage.test.tsx](../../frontend/src/pages/ProjectsPage.test.tsx) | [ProjectsPage.tsx](../../frontend/src/pages/ProjectsPage.tsx) |
-| [src/pages/ReviewEpisodePage.test.tsx](../../frontend/src/pages/ReviewEpisodePage.test.tsx) | [ReviewEpisodePage.tsx](../../frontend/src/pages/ReviewEpisodePage.tsx) |
-| [src/pages/TrashPage.test.tsx](../../frontend/src/pages/TrashPage.test.tsx) | [TrashPage.tsx](../../frontend/src/pages/TrashPage.tsx) |
-| [src/utils/timeline.test.ts](../../frontend/src/utils/timeline.test.ts) | [timeline.ts](../../frontend/src/utils/timeline.ts) |
+| `frontend/scripts/smoke-studio-exact.mjs` | Экраны, finishing, captions, save через настоящий bridge с изолированным HTTP fixture |
+| `frontend/scripts/smoke-studio-bridge.mjs` | API ошибки, lazy loading, retry и refresh |
 
 ## 7. Где менять нужное поведение
 

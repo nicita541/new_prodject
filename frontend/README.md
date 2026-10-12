@@ -1,25 +1,17 @@
 # KADR Studio frontend
 
-`public/studio-edition.html`, its CSS/application script and `studio-live-bridge.js` provide the main studio served by FastAPI. Vite copies these files into `dist` during the build. `studio-edition-reference.html` is the visual reference used by CI. React source under `src` remains available through `/react-debug`; the older static interface is served through `/legacy`.
+Единственный интерфейс — `public/studio-edition.html`, `studio-edition.css`, `studio-edition-app.js` и `studio-live-bridge.js`. Данные поступают из FastAPI; при недоступном сервере показывается ошибка подключения, вымышленные проекты и результаты не создаются.
 
-Use the portable Node runtime in `../tools/node`. Run from this directory:
+`npm run build` вызывает `scripts/build-studio.mjs`: проверяет синтаксис JavaScript, копирует Studio в `dist` и удаляет устаревшие продукты frontend-сборки только внутри `dist`. Для сборки достаточно portable Node в `../tools/node`; React, Vite и TypeScript не используются. `npm run dev` следит за изменениями `public` и пересобирает ту же Studio; HTTP предоставляет основной backend на `127.0.0.1:8765`.
 
-```powershell
-$env:PATH = (Resolve-Path ../tools/node).Path + ';' + $env:PATH
-$env:npm_config_cache = (Resolve-Path ../cache).Path + '/npm'
-$npmCli = '../tools/node/node_modules/npm/bin/npm-cli.js'
-& ../tools/node/node.exe $npmCli test
-& ../tools/node/node.exe $npmCli run lint
-& ../tools/node/node.exe $npmCli run build
-```
-
-`npm run dev` starts the React development server. Its `/api` proxy uses `127.0.0.1:8765`, configurable through `KADR_STUDIO_API_PORT`. Start the backend through the root launcher.
-
-The standalone Studio checks run from the repository root:
+Из корня проекта:
 
 ```powershell
-& tools/node/node.exe frontend/scripts/smoke-studio-exact.mjs
-& tools/node/node.exe frontend/scripts/smoke-studio-bridge.mjs
+& tools/node/node.exe frontend/scripts/build-studio.mjs
+& tools/node/node.exe frontend/scripts/check-studio.mjs --lint
+& tools/node/node.exe frontend/scripts/check-studio.mjs
 ```
 
-For full project verification, see [ТЕСТЫ/README.md](../ТЕСТЫ/README.md). Keep all dependencies, generated files and caches inside the project.
+Последняя команда выполняет две проверки Studio в jsdom. Если тестовые зависимости отсутствуют, установите их проектным `scripts/npm.cmd ci --prefix frontend --no-audit --no-fund`. Это единственная dev-зависимость; она не нужна для работы приложения или сборки.
+
+API-адаптер `studio-live-bridge.js` отвечает за запросы, нормализацию и загрузку реальных записей. `studio-edition-app.js` отвечает за экраны, действия пользователя и воспроизведение. Backend-маршруты Studio принадлежат `app/studio_routes.py`. Удалённые `/legacy`, `/react-debug` и reference HTML возвращают 404. Подробная карта: [docs/audit/architecture.md](../docs/audit/architecture.md).

@@ -349,7 +349,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         except (ValueError, TypeError):
             pass
     planning_started = time.perf_counter()
-    from .final_quality import (inspect_final_quality, recover_final_quality, recovery_stalled,
+    from .quality_recovery import recover_final_quality
+    from .final_quality import (inspect_final_quality, recovery_stalled,
                                 quality_failure_message, POLICY as QUALITY_POLICY)
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)

@@ -11,7 +11,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 
-from app import final_quality, pipeline
+from app import final_quality, pipeline, quality_recovery
 from app.config import ROOT
 from app.music import DEFAULT_CONFIG
 from tests.test_final_quality import fixture, make_plan
@@ -74,7 +74,7 @@ class QualityPipelineTests(unittest.TestCase):
         with ExitStack() as stack:
             self.builder = stack.enter_context(patch.object(pipeline, 'build_plan', side_effect=build))
             self.renderer = stack.enter_context(patch.object(pipeline, 'render_part', side_effect=render))
-            self.recovery = stack.enter_context(patch.object(final_quality, 'recover_final_quality', side_effect=recovery))
+            self.recovery = stack.enter_context(patch.object(quality_recovery, 'recover_final_quality', side_effect=recovery))
             self.encoder = stack.enter_context(patch.object(pipeline, 'choose_encoder', return_value='authored_stub_encoder'))
             stack.enter_context(patch.object(pipeline, '_run_identity', return_value={'verification_kind': 'authored_pipeline_mechanism'}))
             stack.enter_context(patch.object(pipeline, 'setup_environment'))
@@ -150,10 +150,10 @@ class QualityPipelineTests(unittest.TestCase):
         recovered=copy.deepcopy(analysis['events'])
         recovered[0].pop('source_role_unresolved')
         with patch('app.source_roles.refine_source_roles',return_value=recovered) as roles, \
-             patch('app.analysis.finalize_editorial_selection',return_value=recovered) as finalize, \
-             patch('app.analysis.analysis_result',return_value=analysis), \
+             patch('app.editorial_pipeline.finalize_editorial_selection',return_value=recovered) as finalize, \
+             patch('app.analysis_result.analysis_result',return_value=analysis), \
              patch('app.selection_adjudication.adjudicate_event') as adjudicate:
-            final_quality.recover_final_quality(self.source,analysis,None,gate,self.job,provider,
+            quality_recovery.recover_final_quality(self.source,analysis,None,gate,self.job,provider,
                                                lambda *a:None,lambda:False)
         self.assertIs(roles.call_args.args[4],provider)
         self.assertEqual(roles.call_args.kwargs,{'retry_unresolved':True,'event_ids':{'e'}})

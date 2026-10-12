@@ -5,12 +5,16 @@ source proof; it neither observes new video nor changes selection authority.
 """
 from __future__ import annotations
 
+
 import copy
 import hashlib
 import json
 import math
 from pathlib import Path
-import re
+
+from app.content_identity import digest as _hash
+from app.cancellation import check_cancelled as _check
+from app.source_text import tokens as _tokens
 
 
 VERSION = 4
@@ -52,11 +56,6 @@ question/answer pair. An ordinary acknowledgment without such a spoken question 
 not automatically paired. Decide resolved only after complete coverage. JSON only.'''
 
 
-def _hash(value):
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
-        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
-
-
 def _stable(value):
     if isinstance(value, dict):
         return {k: _stable(v) for k, v in value.items() if k not in ('cache_hit', 'visual_cache_hit')}
@@ -77,10 +76,6 @@ def _key(ref):
             or any(not isinstance(ref[k], str) or not ref[k] for k in ref)):
         raise ValueError('Invalid scoped dialogue reference')
     return ref['event'], ref['unit']
-
-
-def _tokens(text):
-    return re.findall(r'\w+', text.casefold().replace('ё', 'е'))
 
 
 def _object(value, fields):
@@ -621,11 +616,6 @@ def validate_dialogue(raw, nodes, current):
     return {'accepted': accepted, 'pairs': pairs, 'coverage': rows,
             'accepted_coverage': accepted_coverage, 'limitations': limitations,
             'understanding_confidence': dimensions[0], 'relation_confidence': dimensions[1]}
-
-
-def _check(cancelled):
-    if cancelled():
-        raise InterruptedError('Обработка отменена')
 
 
 def _code_identity():

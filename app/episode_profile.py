@@ -5,9 +5,11 @@ Neither camera cuts nor optical flow assert that a semantic physical action occu
 """
 from __future__ import annotations
 
+
 import copy
 import math
-import re
+
+from app.source_text import source_text as _source_text, tokens as _tokens, quote_in as _quote_in
 
 
 EPISODE_PROFILE_VERSION = 2
@@ -130,20 +132,6 @@ def _confirmed(event):
     return (event.get('selection_status') == 'accepted'
             and all(type(event.get(k)) in (int, float) and .9 <= event[k] <= 1
                     for k in ('understanding_confidence', 'selection_confidence')))
-
-
-def _source_text(transcript, start, end):
-    return ' '.join(str(w.get('text', '')) for w in (transcript.get('words') or transcript.get('segments', []))
-                    if start <= w['start'] and w['end'] <= end)
-
-
-def _tokens(text):
-    return re.findall(r'\w+', text.casefold().replace('ё', 'е'))
-
-
-def _quote_in(quote, text):
-    q, t = _tokens(quote), _tokens(text)
-    return bool(q) and any(t[i:i+len(q)] == q for i in range(len(t)-len(q)+1))
 
 
 def _positive_evidence(record):

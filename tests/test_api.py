@@ -56,7 +56,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((directory/'job.json').read_bytes(),before)
         atomic_json(audit/'run.json',[])
         atomic_json(directory/'scene-features.json',[])
-        (audit/'timeline.jsonl').write_text('[]\n{"stage":[]}\n{"partial":',encoding='utf-8')
+        (audit/'timeline.jsonl').write_text('[]\n{"stage":[]}\n{"stage":{}}\n{"stage":42}\n{"partial":',encoding='utf-8')
         malformed=self.client.get(f"/api/jobs/{job['id']}")
         self.assertEqual(malformed.status_code,200,malformed.text)
         self.assertIsNone(malformed.json()['stage_progress']['scenes']['fraction'])

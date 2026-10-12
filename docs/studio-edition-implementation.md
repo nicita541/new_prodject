@@ -1,6 +1,6 @@
 # КАДР STUDIO — Studio Edition
 
-Реализация макета `KADR_STUDIO_StudioEdition_v3.html` в React и FastAPI. Исходный HTML был автономной демонстрацией и не подключён к рабочему API. Реальный код находится в `frontend/src/pages/FinishingPage.tsx`, `app/finishing.py` и `app/studio_render.py`.
+Рабочий интерфейс — единственная KADR Studio, связанная с FastAPI. HTML/CSS и основной JavaScript находятся в `frontend/public`; `studio-live-bridge.js` загружает настоящие данные. `app/studio_routes.py` обслуживает её assets и ссылки экранов, `app/finishing.py` владеет finishing API, `app/studio_render.py` выполняет повторный рендер. Демонстрационные и запасные интерфейсы удалены. Сборка и проверки: [frontend/README.md](../frontend/README.md).
 
 ## Маршруты редактора
 
@@ -10,12 +10,13 @@
 
 В редакторе есть выбор Shorts, субтитры (редактирование времени и текста, цвет, размер, позиция drag и стрелками, пресеты), аудио (импорт, стриминг, громкость, режим треков, fade, ducking), кадр (cinema/portrait, zoom, brightness, размытие фонового слоя, vignette), предпросмотр и отдельный экспорт.
 
-## Новые HTTP-контракты
+## HTTP-контракты
 
 | Метод | Путь | Действие |
 |---|---|---|
 | GET/PUT | `/api/episodes/{id}/finishing` | Профиль оформления, version=1 |
 | GET/PUT | `/api/jobs/{id}/parts/{index}/captions` | Правки реплик по частям и revision |
+| PUT | `/api/jobs/{id}/finishing/state` | Атомарное сохранение профиля и изменённых реплик выбранного job |
 | POST | `/api/jobs/{id}/previews` | Фоновая задача предпросмотра до 10 с |
 | GET | `/api/jobs/{id}/previews/{preview_id}` | Статус предпросмотра |
 | GET/HEAD | `/api/jobs/{id}/previews/{preview_id}.mp4` | MP4 с поддержкой Range |
@@ -42,18 +43,7 @@
 
 ## Автоматические тесты
 
-GitHub Actions `Studio Edition checks` при push в `fix/montage-stability` запускает тесты React, линтер, сборку Vite и тесты FastAPI. Результат доступен на вкладке Actions.
-
-На Windows:
-
-```powershell
-cd F:\new_prodject-fixed
-git pull --ff-only origin fix/montage-stability
-.\ПРОВЕРИТЬ_ПРОЕКТ.bat -Quick
-.\ПРОВЕРИТЬ_ПРОЕКТ.bat -Video
-```
-
-`-Quick` включает `tests/test_finishing.py` и React-тесты; `-Video` проверяет короткий синтетический MP4 с FFmpeg, не анализируя настоящую серию. Оба режима сохраняют и публикуют краткие отчёты в `test-reports`.
+GitHub Actions `KADR production checks` выполняет две Studio DOM/API проверки, проверку синтаксиса, native Node сборку и Python-регрессии. Локальные команды — в [инструкции проверок](../ТЕСТЫ/README.md); временные файлы остаются в `F:\new_prodject`. Проверки интерфейса используют изолированные fixtures и не считаются доказательством качества анализа настоящей серии. Для сохранения отчётов локально используйте `-NoUpload`.
 
 ## Ограничения
 

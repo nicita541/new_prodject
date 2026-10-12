@@ -6,6 +6,7 @@ Proposals require downstream semantic adjudication; they are not scene facts.
 """
 from __future__ import annotations
 
+
 import bisect
 import hashlib
 import json
@@ -18,6 +19,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from app.content_identity import evidence_digest as _hash
+
 from .config import FFMPEG, FFPROBE, ROOT
 from .media import run_command
 from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
@@ -28,10 +31,6 @@ POLICY = {'sample_interval': .2, 'frame_width': 160, 'frame_height': 90,
           'embedding_jump': .22, 'audio_jump': .65, 'motion_jump': .18,
           'flow_method': 'normalized_farneback', 'subtitle_crop': .80,
           'embedding_method': 'normalized_luminance_dct_and_spatial_gradient_v1'}
-
-
-def _hash(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
 def _finite(value):

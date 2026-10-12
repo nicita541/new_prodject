@@ -35,7 +35,7 @@ $script:checks = @()
 # Overall time includes setup and media selection but excludes the later
 # report push itself (which cannot know its own completion time before push).
 $script:verificationStarted = [System.Diagnostics.Stopwatch]::StartNew()
-# The complete real-AI acceptance (Python, React, offline E2E, ASR/VLM, render)
+# The complete real-AI acceptance (Python, Studio, offline E2E, ASR/VLM, render)
 # has one shared 1800-second (30-minute) deadline. No individual stage may
 # reset this clock; TIMEOUT remains FAIL and does not mean a successful render.
 $script:verificationBudgetSeconds = 1800
@@ -270,7 +270,7 @@ if ($RequireRealModel -or $RealSource) {
 Write-Host ("Run: " + $runId)
 Write-Host ("Branch: " + $branch)
 Write-Host ("Commit: " + $commit)
-Write-Host ("Mode: " + $(if ($Quick) { "quick (no 180s E2E)" } elseif ($Video) { "video + 180s E2E" } else { "FULL: all Python/React checks + 180s E2E" }))
+Write-Host ("Mode: " + $(if ($Quick) { "quick (no 180s E2E)" } elseif ($Video) { "video + 180s E2E" } else { "FULL: all Python/Studio checks + 180s E2E" }))
 if ($RequireRealModel -or $RealSource) { Write-Host "FULL ACCEPTANCE: 180s real local ASR/VLM run required in addition to technical E2E." }
 else { Write-Host "TECHNICAL ONLY: local ASR/VLM will not run (clearly marked in report)." }
 if ($branch -notin @("codex/dramatic-montage", "fix/montage-stability")) {
@@ -314,14 +314,18 @@ if ($python) {
     Add-Check "python_tests" "SKIP" 0 "Python unavailable"
 }
 
-if ($npm -and (Test-Path -LiteralPath (Join-Path $frontend "node_modules"))) {
-    Run-Check "studio_tests" $npm.Source @("test") $frontend 1800
+if ($npm) {
+    if (Test-Path -LiteralPath (Join-Path $frontend "node_modules/jsdom")) {
+        Run-Check "studio_tests" $npm.Source @("test") $frontend 1800
+    } else {
+        Add-Check "studio_tests" "SKIP" 0 "jsdom missing; run npm ci in frontend"
+    }
     Run-Check "studio_lint" $npm.Source @("run", "lint") $frontend 600
     Run-Check "studio_build" $npm.Source @("run", "build") $frontend 900
 } else {
-    Add-Check "studio_tests" "SKIP" 0 "npm/node_modules missing; run npm ci in frontend"
-    Add-Check "studio_lint" "SKIP" 0 "npm/node_modules missing"
-    Add-Check "studio_build" "SKIP" 0 "npm/node_modules missing"
+    Add-Check "studio_tests" "SKIP" 0 "portable npm missing"
+    Add-Check "studio_lint" "SKIP" 0 "portable npm missing"
+    Add-Check "studio_build" "SKIP" 0 "portable npm missing"
 }
 if (Test-Path -LiteralPath $ffmpeg) {
     Run-Check "ffmpeg" $ffmpeg @("-version") $root 30

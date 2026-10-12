@@ -24,7 +24,7 @@ from scripts.export_safe_ai_diagnostics import (
 # These names come from source code, never from a user-controlled log message.
 CHECKS = set("""
 python_compile python_dependencies python_tests react_tests react_lint
-react_build ffmpeg ffprobe full_pipeline_3min prepare_real_source
+react_build studio_tests studio_lint studio_build ffmpeg ffprobe full_pipeline_3min prepare_real_source
 real_model_3min safe_ai_diagnostics stage_timings
 """.split())
 

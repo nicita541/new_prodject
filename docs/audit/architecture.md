@@ -70,11 +70,8 @@ flowchart TD
 | Реализация | Доступ и назначение | Где изменять |
 |---|---|---|
 | Studio Edition | Каноническое приложение `/`, `/projects`, переходы `/project/...`, `/episode/...`, `/studio`, `/trash`, `/api` | [HTML](../../frontend/public/studio-edition.html), [CSS](../../frontend/public/studio-edition.css), [app JS](../../frontend/public/studio-edition-app.js), [live bridge](../../frontend/public/studio-live-bridge.js) |
-| React | Отладочный вход `/react-debug`; отдельные страницы и компонентные тесты | [App.tsx](../../frontend/src/App.tsx), `frontend/src/pages`, `frontend/src/components` |
-| Legacy | Справочный интерфейс `/legacy`, статика `/static` | [app/static](../../app/static/index.html) |
-| Reference HTML | Отдельный макет `/studio-edition-reference.html` | [reference](../../frontend/public/studio-edition-reference.html) |
 
-Vite копирует public assets в dist. Python не выполняет JSX: [catch-all в server](../../app/server.py) выдаёт собранный Studio HTML и перенаправляет глубокие ссылки на `studio-edition.html?screen=...&project=...&episode=...&job=...`. Неизвестные экраны дают 404. Изменение React-компонента само по себе не меняет активный Studio экран.
+Сборщик [build-studio.mjs](../../frontend/scripts/build-studio.mjs) копирует только Studio assets. [studio_routes](../../app/studio_routes.py) отвечает за статику и ссылки экранов; [server](../../app/server.py) — за API/security/lifecycle. Вторые интерфейсы удалены. Неизвестные экраны и старые входы дают 404.
 
 [live bridge](../../frontend/public/studio-live-bridge.js) загружает `/api/library`, `/api/sources`, `/api/jobs`, `/api/music`, `/api/health`, затем безопасные публичные сведения DeepSeek. Полные планы и caption overrides подгружаются для выбранного завершённого задания, а не для всей истории; captions запрашиваются пакетами максимум по четыре. Он нормализует `plan.source.duration` в UI `plan.duration`, связывает старые задания с эпизодами и обновляет frontend state после API-мутирования. [Studio app](../../frontend/public/studio-edition-app.js) содержит экраны, обработчики действий и периодический опрос статуса с защитой от наложения опросов.
 
@@ -281,3 +278,26 @@ flowchart LR
 - Любая смена анализатора, модели, thresholds, prompts или cache signature может сделать старые derived decisions непригодными. Произвольная зачистка этих артефактов перед аудитом уничтожит возможность сравнения и resume.
 
 Безопасный порядок развития: устранить расхождение карты UI и telemetry attribution; проверить lifecycle и конкретные quality risks; измерить fully local cold/warm run; затем менять только подтверждённый bottleneck с проверкой исходного качества и совместимости cache. Новые замены ASR/VLM/планировщика — отдельные решения с контрольным набором реального материала.
+
+## Границы после очистки 13 октября 2026
+
+```mermaid
+flowchart TD
+    Studio[Единственная KADR Studio] --> Bridge[studio-live-bridge: реальный API]
+    Bridge --> HTTP[server: контракты и безопасность]
+    HTTP --> State[library / jobs: каталог и worker]
+    State --> Pipeline[pipeline: checkpoints и orchestration]
+    Pipeline --> Analysis[analysis: исходник и восприятие]
+    Analysis --> Editorial[editorial_pipeline: отбор и смысловые проходы]
+    Analysis --> Result[analysis_result: сохранённый результат]
+    Pipeline --> Gate[final_quality: доказательная проверка]
+    Gate --> Decision{Есть проблемы?}
+    Decision -->|да, адресное восстановление| Recovery[quality_recovery]
+    Recovery --> Editorial
+    Recovery --> Result
+    Result --> Gate
+    Decision -->|нет| Planner[planner: монтажный план]
+    Planner --> Render[media: FFmpeg экспорт]
+```
+
+Количество повторов восстановления ограничивает `pipeline`; проверка не запускает исправления сама. `analysis_result` не делает модельных запросов. Провайдеры Qwen/DeepSeek/Antigravity, распознавание и render сохраняют свои контракты. Базовые одинаковые операции принадлежат `source_text`, `cancellation`, `content_identity`. Подробное решение: [ADR 0032](../ai/decisions/0032-studio-only-and-pipeline-ownership.md).

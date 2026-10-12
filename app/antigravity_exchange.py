@@ -1,6 +1,7 @@
 """Job-local manual JSON exchange. This module never starts a cloud process."""
 from __future__ import annotations
 
+
 import copy
 import hashlib
 import json
@@ -12,6 +13,8 @@ import re
 import shutil
 import time
 import uuid
+
+from app.content_identity import digest
 
 from .config import STORY_MODEL, STORY_PROJECTOR
 from .jobs import atomic_json, now, read_json
@@ -145,11 +148,6 @@ def json_string_response(directory):
         raise AnalysisPending('Некорректный mode в text-response.json: допускаются json_string или structured')
     return (mode == 'json_string' and not request.get('images') and
         ({'canonical_entities','units'} <= fields or {'pairs','coverage'} <= fields))
-
-
-def digest(value):
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
-        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
 
 def cli_schema(schema):

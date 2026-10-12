@@ -49,7 +49,7 @@ def analysis_passes(job, directory):
     current, seen, failed = None, set(), set()
     for record in records:
         step, action = record.get('stage'), record.get('action')
-        if step not in result:
+        if not isinstance(step, str) or step not in result:
             continue
         seen.add(step)
         if action == 'start':

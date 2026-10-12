@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   frontend:
-    name: React tests, lint and build
+    name: Studio tests, lint and build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -24,20 +24,16 @@ jobs:
       - name: Install frontend
         working-directory: frontend
         run: npm ci --no-audit --no-fund
-      - name: React regression tests
+      - name: Studio regression tests
         working-directory: frontend
         run: npm test
       - name: Verify exact Studio Edition HTML, JavaScript and CSS
         run: |
           python - <<'PY'
           from pathlib import Path
-          import re
-          original = Path("frontend/public/studio-edition-reference.html").read_text("utf-8")
           live = Path("frontend/public/studio-edition.html").read_text("utf-8")
-          original_css = original.split("<style>", 1)[1].split("</style>", 1)[0]
           external_css = Path("frontend/public/studio-edition.css").read_text("utf-8")
           external_js = Path("frontend/public/studio-edition-app.js").read_text("utf-8")
-          assert original_css == external_css, "Studio Edition visual styles drifted"
           assert '<link rel="stylesheet" href="/studio-edition.css">' in live
           assert '<script src="/studio-live-bridge.js"></script>' in live
           assert '<script src="/studio-edition-app.js"></script>' in live
@@ -46,26 +42,27 @@ jobs:
           assembled = live + external_css + external_js
           for required in ("fc-workspace", "rv2-layout", "navset", "sidebar", "topbar"):
               assert required in assembled, required
-          print("Reference CSS is byte-for-byte equal; UI uses external CSP-compliant scripts")
+          assert not Path("frontend/src").exists()
+          assert not Path("app/static").exists()
+          assert "DEMO_MP4_BASE64" not in external_js
+          print("Single Studio interface uses external CSP-compliant scripts")
 
           PY
           node --check frontend/public/studio-live-bridge.js
           node --check frontend/public/studio-edition-app.js
-      - name: Execute exact Studio Edition screens with simulated FastAPI
-        run: node frontend/scripts/smoke-studio-exact.mjs
-      - name: Exercise Studio API refresh, error isolation and retry cache
-        run: node frontend/scripts/smoke-studio-bridge.mjs
-      - name: TypeScript and Vite build
+      - name: Studio production build
         working-directory: frontend
         run: npm run build
       - name: Verify exact HTML and bridge included in production dist
         run: |
           test -s frontend/dist/studio-edition.html
           test -s frontend/dist/studio-live-bridge.js
-          test -s frontend/dist/studio-edition-reference.html
+          test ! -e frontend/dist/studio-edition-reference.html
+          test ! -e frontend/dist/index.html
+          test ! -e frontend/dist/assets
           test -s frontend/dist/studio-edition.css
           test -s frontend/dist/studio-edition-app.js
-      - name: ESLint
+      - name: Studio syntax checks
         working-directory: frontend
         run: npm run lint
 

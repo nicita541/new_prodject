@@ -80,6 +80,23 @@ class SemanticIdentityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             component_identity('arbitrary_module')
 
+    def test_shared_helper_changes_invalidate_their_consumers(self):
+        from app import source_text, cancellation, content_identity
+        cases = (
+            (source_text, "replace('ё', 'е')", "replace('ё', 'ё')",
+             ('episode_profile', 'story_structure', 'planner', 'final_quality')),
+            (cancellation, 'Обработка отменена', 'Обработка отменена по запросу',
+             ('storyboard', 'local_prompt', 'story_structure', 'final_quality')),
+            (content_identity, "encode('utf-8')", "encode('utf-16')",
+             ('scene_detector', 'story_structure', 'continuity', 'final_quality')),
+        )
+        for module, before, after, consumers in cases:
+            original = {name: component_identity(name)['digest'] for name in consumers}
+            with changed_source(module, before, after):
+                for name in consumers:
+                    with self.subTest(helper=module.__name__, component=name):
+                        self.assertNotEqual(original[name], component_identity(name)['digest'])
+
     def test_literal_fallback_equals_loaded_policy_without_importing_components(self):
         expected = component_identity('episode_profile')
         with patch.dict(sys.modules, {'app.episode_profile': None}):

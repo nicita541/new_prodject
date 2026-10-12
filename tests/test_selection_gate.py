@@ -50,7 +50,7 @@ class SelectionGateTests(unittest.TestCase):
             self.assertEqual(source_selection_readiness([event])['status'], 'unresolved')
 
     def test_failed_text_pass_retries_its_owner_and_cannot_clear_quality_without_success(self):
-        from app.analysis import finalize_editorial_selection
+        from app.editorial_pipeline import finalize_editorial_selection
         event = accepted()
         event.update(analysis_unresolved=True, analysis_unresolved_reasons=['story_structure_unresolved'])
         diagnostics = MagicMock()
@@ -59,7 +59,7 @@ class SelectionGateTests(unittest.TestCase):
                 patch('app.story_structure_pass.infer_story_structure', return_value={'events': [event]}) as structure, \
                 patch('app.dialogue_relations.infer_dialogue_relations', return_value={}) as dialogue, \
                 patch('app.dialogue_relations.attach_dialogue_result', return_value=[event]), \
-                patch('app.analysis.atomic_json'):
+                patch('app.editorial_pipeline.atomic_json'):
             result = finalize_editorial_selection('source', [event], {}, [], {}, 'job', None,
                 lambda *a: None, lambda: False, diagnostics, 'local')
         visual.assert_not_called(); endings.assert_not_called()
@@ -78,7 +78,7 @@ class SelectionGateTests(unittest.TestCase):
         self.assertEqual(positive_ranges(event), [{'start': 0, 'end': 10}])
 
     def test_unresolved_analysis_persists_gate_without_invoking_ending_planner(self):
-        from app.analysis import finalize_editorial_selection
+        from app.editorial_pipeline import finalize_editorial_selection
         event=accepted();event.update(analysis_unresolved=True,selection_uncertain=True)
         diagnostics=MagicMock()
         with patch('app.selection_gate.adjudicate_selections',return_value=[event]), \
@@ -91,7 +91,7 @@ class SelectionGateTests(unittest.TestCase):
         self.assertEqual(diagnostics.write.call_args.args[1]['status'], 'unresolved')
 
     def test_endings_run_after_resolution_and_new_selection_is_rechecked(self):
-        from app.analysis import finalize_editorial_selection
+        from app.editorial_pipeline import finalize_editorial_selection
         ready=accepted();changed=accepted();changed['selected_ranges']=[{'start':0,'end':11}]
         diagnostics=MagicMock()
         with patch('app.selection_gate.adjudicate_selections',side_effect=[[ready],[ready]]) as adjudicate, \
@@ -99,7 +99,7 @@ class SelectionGateTests(unittest.TestCase):
                 patch('app.story_structure_pass.infer_story_structure',return_value={'events':[ready]}) as structure, \
                 patch('app.dialogue_relations.infer_dialogue_relations',return_value={}) as dialogue, \
                 patch('app.dialogue_relations.attach_dialogue_result',return_value=[ready]), \
-                patch('app.analysis.atomic_json'):
+                patch('app.editorial_pipeline.atomic_json'):
             result=finalize_editorial_selection('source',[ready],{},[],{},'job',None,
                 lambda *a:None,lambda:False,diagnostics,'local')
         self.assertEqual(adjudicate.call_count,2)

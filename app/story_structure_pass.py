@@ -5,12 +5,17 @@ change selections, fabricate timestamps, or replace unresolved source analysis.
 """
 from __future__ import annotations
 
+
 import copy
 import hashlib
 import json
 import math
 from pathlib import Path
 import re
+
+from app.content_identity import digest as _hash
+from app.cancellation import check_cancelled as _check
+from app.source_text import source_text as _source_text, tokens as _tokens, quote_in as _quote_in
 
 
 VERSION = 7
@@ -75,11 +80,6 @@ def _normalized(text):
     return text.replace('\r\n', '\n').replace('\r', '\n')
 
 
-def _hash(value):
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
-        separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
-
-
 def _stable(value):
     if isinstance(value, dict):
         return {k: _stable(v) for k, v in value.items() if k not in ('cache_hit', 'visual_cache_hit')}
@@ -93,11 +93,6 @@ def _number(value, field, *, confidence=False):
             or confidence and not 0 <= value <= 1):
         raise ValueError('Invalid story structure number: '+field)
     return float(value)
-
-
-def _check(cancelled):
-    if cancelled():
-        raise InterruptedError('Обработка отменена')
 
 
 def _key(ref):
@@ -122,20 +117,6 @@ def _text(value, field, *, minimum=1, maximum=1500):
     if not isinstance(value, str) or not minimum <= len(value.strip()) <= maximum:
         raise ValueError('Invalid story structure text: '+field)
     return value
-
-
-def _tokens(text):
-    return re.findall(r'\w+', text.casefold().replace('ё', 'е'))
-
-
-def _quote_in(quote, text):
-    q, t = _tokens(quote), _tokens(text)
-    return bool(q) and any(t[i:i+len(q)] == q for i in range(len(t)-len(q)+1))
-
-
-def _source_text(transcript, start, end):
-    return ' '.join(str(w.get('text', '')) for w in transcript.get('words') or transcript.get('segments', [])
-                    if start <= w['start'] and w['end'] <= end)
 
 
 def _safe(time, transcript):
