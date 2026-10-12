@@ -66,7 +66,7 @@ class PartContextTests(unittest.TestCase):
             session = Mock()
             session.__enter__ = Mock(return_value=vision)
             session.__exit__ = Mock(return_value=False)
-            with patch('app.analysis.vision_session', return_value=session) as factory:
+            with patch('app.vision.vision_session', return_value=session) as factory:
                 generate(plan, base, lambda *args: None, lambda: False)
                 self.assertEqual(plan['parts'][0]['cover_context']['method'], 'model')
                 self.assertEqual(factory.call_args.args[2], 'deepseek_plan')
@@ -92,14 +92,14 @@ class PartContextTests(unittest.TestCase):
             parts = [copy.deepcopy(self.part), {**copy.deepcopy(self.part), 'index': 2}]
             before = copy.deepcopy(parts)
             plan = {'parts': parts, 'events': self.events}
-            with patch('app.analysis.vision_session', return_value=session):
+            with patch('app.vision.vision_session', return_value=session):
                 generate(plan, Path(directory), lambda *args: None, lambda: False)
             self.assertEqual(vision.query.call_count, 1)
             self.assertTrue(all(part['cover_context']['method'] == 'extractive' for part in parts))
             self.assertEqual([{k: v for k, v in part.items() if k != 'cover_context'} for part in parts], before)
 
     def test_cancellation_is_propagated(self):
-        with workspace_directory('part_context_') as directory, patch('app.analysis.vision_session') as factory:
+        with workspace_directory('part_context_') as directory, patch('app.vision.vision_session') as factory:
             with self.assertRaises(InterruptedError):
                 generate({'parts': [self.part]}, Path(directory), lambda *args: None, lambda: True)
             factory.assert_not_called()
@@ -117,7 +117,7 @@ class PartContextTests(unittest.TestCase):
             session.__enter__ = Mock(return_value=vision)
             session.__exit__ = Mock(return_value=False)
             with patch('app.part_context.frames', return_value=base / 'frames.jpg'), \
-                    patch('app.analysis.vision_session', return_value=session):
+                    patch('app.vision.vision_session', return_value=session):
                 generate({'parts': [part], 'events': []}, base, lambda *args: None, lambda: False)
             self.assertEqual(part['cover_context']['method'], 'model')
             self.assertEqual(vision.query.call_args.args[1], base / 'frames.jpg')
@@ -144,7 +144,7 @@ class PartContextTests(unittest.TestCase):
                 path.with_suffix('.srt').write_text('', 'utf-8')
                 return path
             with patch('app.analysis.analyze', return_value=analysis), \
-                    patch('app.analysis.vision_session', return_value=session), \
+                    patch('app.vision.vision_session', return_value=session), \
                     patch('app.part_context.frames', return_value=None), \
                     patch('app.pipeline.render_part', side_effect=render) as renderer, \
                     patch('app.pipeline.choose_encoder', return_value='libx264'), \

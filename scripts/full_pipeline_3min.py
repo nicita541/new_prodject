@@ -27,7 +27,7 @@ from app import config
 from app.media import run_command, validate_export
 from app.media_probe import probe_media
 from app.pipeline import run_job
-from app.jobs import atomic_json
+from app.json_store import atomic_json
 from app.subtitles import write_srt
 
 
@@ -321,7 +321,7 @@ def run_real(root: Path, report: dict, source_arg: Path | None, transcript_arg: 
         raise RuntimeError("Production quality gate did not pass; see observed-outcome.json")
     assert outcome["actual_model_requests"] > 0, "Real mode made zero model requests"
     report["real_model_requests"] = outcome["actual_model_requests"]
-    from app.media_probe import load_json
+    from app.json_store import load_json
     first_outputs = {name: sha(job / "output" / name) for name in outcome["outputs"]}
     first_calls = outcome["actual_model_requests"]
     paid_journal = job / ("deepseek-story-budgeted.json" if local_provider == "local_flash_story_budgeted"

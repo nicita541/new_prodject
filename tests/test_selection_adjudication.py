@@ -15,7 +15,7 @@ from PIL import Image
 from app.config import FFMPEG, TEMP
 from app.deepseek import BudgetExceeded, RemoteError
 from app.jobs import BusyError
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from app.selection_adjudication import (adjudicate_event, issues, minimal_semantic_context,
     validate_adjudication, adjudication_schema, _views)
 

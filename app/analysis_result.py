@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 
 
 def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict, shots: list[dict], events: list[dict]) -> dict:

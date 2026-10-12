@@ -1,8 +1,9 @@
 """Persistent source registry and a single, cancellable background worker."""
 from __future__ import annotations
 
+from app.json_store import atomic_json, read_json, now
+
 import ctypes
-import json
 import logging
 import os
 import shutil
@@ -12,7 +13,6 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -20,38 +20,6 @@ from app import config
 
 TERMINAL = {"completed", "failed", "cancelled", "interrupted", "waiting_analysis"}
 LOGGER = logging.getLogger(__name__)
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def read_json(path: Path, default=None):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return default
-
-
-def atomic_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(data, stream, ensure_ascii=False, indent=2, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        # A browser/read on Windows may briefly hold the old file handle.
-        for attempt in range(20):
-            try:
-                os.replace(temporary, path)
-                break
-            except PermissionError:
-                if attempt == 19:
-                    raise
-                time.sleep(0.01)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def contained(path: Path, root: Path) -> Path:

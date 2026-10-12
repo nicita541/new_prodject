@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.config import TEMP
-from app.media_probe import (parse_shot_candidates, adaptive_cut_times, adaptive_shot_evidence,
-                             detect_shots, raw_shot_evidence, shot_checkpoint, load_json)
+from app.media_probe import parse_shot_candidates, adaptive_shot_evidence, detect_shots, raw_shot_evidence, shot_checkpoint
+from app.json_store import load_json
 
 
 class AdaptiveShotsTests(unittest.TestCase):
@@ -44,10 +44,7 @@ class AdaptiveShotsTests(unittest.TestCase):
             (12.0, 0.24),
             (20.0, 0.21),
         ]
-        times = adaptive_cut_times(candidates, duration)
-        # Should include start (0.0), duration (30.0), and the dialogue cut points
-        self.assertEqual(times[0], 0.0)
-        self.assertEqual(times[-1], duration)
+        times = [row['time'] for row in adaptive_shot_evidence(candidates, duration) if row['accepted']]
         self.assertIn(5.0, times)
         self.assertIn(12.0, times)
         self.assertIn(20.0, times)
@@ -71,7 +68,7 @@ class AdaptiveShotsTests(unittest.TestCase):
             (11.10, 0.22),
             (25.0, 0.23),
         ]
-        times = adaptive_cut_times(candidates, duration)
+        times = [row['time'] for row in adaptive_shot_evidence(candidates, duration) if row['accepted']]
         # Verify cluster around 10s was collapsed to the peak (10.15s) and not shredded into 6 cuts
         action_cuts = [t for t in times if 9.5 <= t <= 11.5]
         self.assertEqual(len(action_cuts), 1)
@@ -79,19 +76,19 @@ class AdaptiveShotsTests(unittest.TestCase):
         # Verify calm cut at 3.0s remains
         self.assertIn(3.0, times)
 
-    def test_adaptive_cut_times_edge_cases(self):
+    def test_adaptive_evidence_edge_cases(self):
         # Empty candidates
-        self.assertEqual(adaptive_cut_times([], 10.0), [0.0, 10.0])
+        self.assertEqual(adaptive_shot_evidence([], 10.0), [])
         # Near boundaries (<=0.3 and >= duration - 0.3) ignored
         candidates = [(0.1, 0.9), (0.25, 0.9), (9.8, 0.9), (9.9, 0.9)]
-        self.assertEqual(adaptive_cut_times(candidates, 10.0), [0.0, 10.0])
+        self.assertTrue(all(not row['accepted'] for row in adaptive_shot_evidence(candidates, 10.0)))
 
     def test_detect_shots_integration(self):
         job_dir = self.directory
         log_file = job_dir / "shots.log"
         log_file.write_text("pts_time:2.5 lavfi.scene_score=0.35\npts_time:5.0 lavfi.scene_score=0.40\n", encoding="utf-8")
         
-        with patch("app.analysis.run_process") as mock_run:
+        with patch("app.media_probe.run_process") as mock_run:
             shots = detect_shots(Path("dummy.mp4"), 10.0, job_dir, lambda: False)
             self.assertTrue(len(shots) >= 2)
             self.assertEqual(shots[0]["start"], 0.0)
@@ -110,7 +107,7 @@ class AdaptiveShotsTests(unittest.TestCase):
         self.assertEqual(evidence[-1]['decision'], 'accepted')
         self.assertIsNone(evidence[-1]['suppression_reason'])
         self.assertTrue(all(row['preserved_as_candidate'] for row in evidence))
-        self.assertEqual(adaptive_cut_times(candidates, 20), [0, 15, 20])
+        self.assertEqual([row['time'] for row in evidence if row['accepted']], [15])
         self.assertEqual(evidence, adaptive_shot_evidence(list(reversed(candidates)), 20))
 
     def test_cluster_gap_and_tail_reasons_remain_distinguishable(self):
@@ -127,7 +124,7 @@ class AdaptiveShotsTests(unittest.TestCase):
         candidates = [(2 + index * .1, .22) for index in range(12)] + [(8, .8)]
         (self.directory / 'shots.log').write_text('\n'.join(
             f'pts_time:{time} lavfi.scene_score={score}' for time, score in candidates), encoding='utf-8')
-        with patch('app.analysis.run_process'):
+        with patch('app.media_probe.run_process'):
             shots = detect_shots(Path('dummy.mp4'), 10, self.directory, lambda: False)
         self.assertEqual([(row['start'], row['end']) for row in shots], [(0, 8), (8, 10)])
         self.assertEqual([row['id'] for row in shots], ['shot_0000', 'shot_0001'])
@@ -142,7 +139,7 @@ class AdaptiveShotsTests(unittest.TestCase):
         raw = adaptive_shot_evidence([(1, .17), (5, .8)], 10)
         shots = [{'id': 'shot_0000', 'start': 0, 'end': 5, 'raw_shot_candidates': raw[:1]},
                  {'id': 'shot_0001', 'start': 5, 'end': 10, 'raw_shot_candidates': raw[1:]}]
-        with patch('app.analysis.detect_shots', return_value=shots) as detect:
+        with patch('app.media_probe.detect_shots', return_value=shots) as detect:
             first = shot_checkpoint(Path('dummy.mp4'), 'source', 10, self.directory, lambda: False)
             identity = load_json(self.directory / 'shots.meta.json')
             second = shot_checkpoint(Path('dummy.mp4'), 'source', 10, self.directory, lambda: False)

@@ -17,22 +17,23 @@ import sys
 SEMANTIC_IDENTITY_VERSION = 1
 _ROOT = Path(__file__).resolve().parent
 _COMPONENTS = {
-    'shot_detector': ('media_probe',),
-    'scene_detector': ('scene_detection', 'semantic_boundary', 'media_evidence', 'episode_profile', 'media_probe', 'source_text', 'content_identity'),
-    'scene_grouping': ('scene_detection', 'semantic_boundary'),
-    'visual_features': ('scene_detection', 'media_evidence', 'media_probe', 'content_identity'),
-    'storyboard': ('vision', 'bounded_storyboard', 'story_review', 'media_probe', 'cancellation'),
-    'local_prompt': ('scene_analysis', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation'),
-    'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation'),
-    'global_story': ('global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation'),
-    'episode_profile': ('episode_profile', 'media_evidence', 'selection_gate', 'source_text', 'content_identity'),
-    'story_structure': ('story_structure_pass', 'dialogue_relations', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity'),
-    'continuity': ('source_continuity', 'continuity_verification', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity'),
-    'final_quality': ('final_quality', 'speech_handles', 'source_continuity', 'continuity_verification', 'selection_gate', 'pipeline', 'content_identity', 'quality_recovery', 'editorial_pipeline', 'analysis_result', 'source_text', 'cancellation'),
-    'story': ('story', 'scene_refinement', 'story_review', 'closing', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation'),
-    'pacing': ('pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'deepseek', 'source_text'),
-    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'speech_handles', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'content_identity'),
-    'ending': ('endings', 'speech_handles', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek', 'source_text')}
+    'shot_detector': ('media_probe', 'json_store'),
+    'scene_detector': ('scene_detection', 'semantic_boundary', 'media_evidence', 'episode_profile', 'media_probe', 'source_text', 'content_identity', 'json_store'),
+    'scene_grouping': ('scene_detection', 'semantic_boundary', 'content_identity', 'json_store'),
+    'visual_features': ('scene_detection', 'media_evidence', 'media_probe', 'content_identity', 'json_store'),
+    'storyboard': ('vision', 'bounded_storyboard', 'story_review', 'media_probe', 'cancellation', 'json_store'),
+    'local_prompt': ('scene_analysis', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'content_identity'),
+    'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges'),
+    'global_story': ('global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'content_identity'),
+    'episode_profile': ('episode_profile', 'media_evidence', 'selection_gate', 'source_text', 'content_identity', 'json_store', 'source_ranges'),
+    'story_structure': ('story_structure_pass', 'dialogue_relations', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity', 'json_store', 'source_ranges'),
+    'continuity': ('source_continuity', 'continuity_verification', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity', 'source_ranges', 'json_store'),
+    'final_quality': ('final_quality', 'speech_handles', 'source_continuity', 'continuity_verification', 'selection_gate', 'pipeline', 'content_identity', 'quality_recovery', 'editorial_pipeline', 'analysis_result', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'analysis_provider'),
+    'story': ('story', 'scene_refinement', 'story_review', 'closing', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges'),
+    'pacing': ('pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'deepseek', 'source_text', 'json_store', 'source_ranges'),
+    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'speech_handles', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'content_identity', 'json_store', 'source_ranges'),
+    'ending': ('endings', 'speech_handles', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek', 'source_text', 'json_store', 'source_ranges'),
+}
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
     'media_probe': ('SHOT_DETECTOR_VERSION', 'BASE_SCENE_THRESHOLD'),

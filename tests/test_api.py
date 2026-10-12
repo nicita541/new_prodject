@@ -14,7 +14,8 @@ from starlette import formparsers
 from fastapi.testclient import TestClient
 
 from app import config
-from app.jobs import JobManager, atomic_json
+from app.jobs import JobManager
+from app.json_store import atomic_json
 from app.server import create_app, validate_media
 from tests.test_jobs import FakeWorker, deepseek_stub
 
@@ -157,7 +158,7 @@ class ApiTests(unittest.TestCase):
         job = started.json()
         self.assertEqual(job['episode_id'], episode['id'])
         self.assertEqual(job['layout'], 'cinema')
-        from app.jobs import read_json
+        from app.json_store import read_json
         self.assertEqual(read_json(self.manager.job_dir(job['id'])/'job.json')['episode_id'],episode['id'])
         self.assertEqual(self.client.put(f"/api/episodes/{episode['id']}/settings", json=settings).status_code, 400)
         snapshot = self.client.get('/api/library').json()

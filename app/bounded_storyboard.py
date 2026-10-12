@@ -13,7 +13,8 @@ from PIL import Image, ImageDraw
 from app.cancellation import check_cancelled as _check
 
 from .config import FFMPEG, FFPROBE, ROOT
-from .media_probe import atomic_json, run_process
+from app.json_store import analysis_json as atomic_json
+from .media_probe import run_process
 
 BOUNDED_STORYBOARD_VERSION = 2
 # One shared capacity for chunk planner and the physical storyboard renderer.

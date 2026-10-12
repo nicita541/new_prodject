@@ -11,12 +11,13 @@ from pathlib import Path
 from app.content_identity import evidence_digest as _hash
 
 from .config import ROOT
-from .media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from .selection_adjudication import (adjudicate_event, _board, _source_identity,
                                     _model_identity, _control_failure, _source_text)
 from .selection_gate import _covers, positive_ranges
 from .source_continuity import selected_nodes, omitted_units, gap_key
-from .source_roles import merge_ranges, confirmed_exclusions
+from app.source_ranges import merge_ranges
+from .source_roles import confirmed_exclusions
 
 VERSION = 3
 POLICY = {'confidence':.9, 'context_seconds':2, 'max_candidate_units':24,

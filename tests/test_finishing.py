@@ -10,7 +10,8 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from app import config
-from app.jobs import JobManager, atomic_json
+from app.jobs import JobManager
+from app.json_store import atomic_json
 from app.server import create_app
 from app.studio_render import slice_part
 from tests.test_jobs import FakeWorker
@@ -440,7 +441,7 @@ class StudioApiTests(unittest.TestCase):
                 if not started.wait(.02):
                     continue
                 time.sleep(.02)
-            from app.jobs import atomic_json
+            from app.json_store import atomic_json
             atomic_json(status, {"preview_id": base.name, "source_job_id":job_id,
                                  "status":"interrupted", "files":[], "progress":0})
         with patch("app.studio_render.run_export", side_effect=wait_until_cancelled):

@@ -250,7 +250,7 @@ def build_plan(analysis: dict) -> dict:
                     for w in continuity['warnings'] if w.get('reason') != 'unknown_transition_state')
     intervals = []
     excluded_ranges = [r for event in events for r in confirmed_exclusions(event)]
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     for event in events:
         if event["id"] not in selected:
             continue

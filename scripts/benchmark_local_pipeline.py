@@ -24,8 +24,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from app import config
-from app.jobs import atomic_json
-from app.media_probe import load_json, probe_media
+from app.json_store import atomic_json
+from app.json_store import load_json
+from app.media_probe import probe_media
 from app.media import run_command
 
 
@@ -169,6 +170,8 @@ class Measurements:
 def instrument(measurements):
     import app.pipeline as pipeline
     import app.analysis as analysis
+    import app.media_probe as media_probe
+    import app.vision as vision
     import app.deepseek as deepseek
     from app.vision import LocalVision
     from app.model_perf import model_alias
@@ -217,6 +220,8 @@ def instrument(measurements):
 
     with patch.object(pipeline, 'run_job', observed_pipeline), \
          patch.object(analysis, 'run_process', observed_process), \
+         patch.object(media_probe, 'run_process', observed_process), \
+         patch.object(vision, 'run_process', observed_process), \
          patch.object(LocalVision, 'start', observed_start), \
          patch.object(LocalVision, 'close', observed_close), \
          patch.object(deepseek, '_http', remote_forbidden):

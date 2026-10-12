@@ -16,7 +16,7 @@ from app.config import TEMP
 from app.deepseek import RemoteError, BudgetExceeded
 from app.jobs import BusyError
 from app.global_verification import verify_global_visual, validate_global_visual, global_visual_schema
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from app.source_roles import confirmed_exclusions
 
 

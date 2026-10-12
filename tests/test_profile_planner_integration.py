@@ -10,7 +10,7 @@ from app.analysis import analysis_result
 from app.config import TEMP
 from app.dramatic_planner import build_dramatic_plan
 from app.episode_profile import build_episode_profile
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from app.semantic_identity import component_identity
 from tests.test_retention_allocation import event
 

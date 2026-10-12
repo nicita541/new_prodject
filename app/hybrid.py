@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .config import ROOT
 from .deepseek import BudgetExceeded, DeepSeekVision, MODEL, PROFILE, RemoteError, _validate
-from .jobs import BusyError, atomic_json
+from .jobs import BusyError
+from app.json_store import atomic_json
 
 HYBRID_VERSION = 1
 FOCUS_REVIEW_THRESHOLD = .75

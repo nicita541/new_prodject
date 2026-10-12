@@ -1,6 +1,8 @@
 """Remove confirmed production-title cards from actual selected source units."""
 from __future__ import annotations
 
+from app.source_ranges import subtract_ranges as _subtract
+
 import copy
 import hashlib
 import json
@@ -22,7 +24,7 @@ def title_units(start, end, transcript, shots):
     check must not merge a short logo with the following character dialogue.
     These finer boundaries never split recognized speech or its handles.
     """
-    from .analysis import candidate_units
+    from app.story_review import candidate_units
     original = candidate_units(start, end, transcript, shots)
     boundaries = {start, end} | {unit['start'] for unit in original}
     for shot in shots:
@@ -80,29 +82,6 @@ def _decision(raw, spoken):
             and (not spoken or raw['narrated_title']))
 
 
-def _subtract(selections, excluded):
-    result = []
-    for selection in selections:
-        pieces = [(selection['start'],selection['end'])]
-        for unit in excluded:
-            following = []
-            for left,right in pieces:
-                if unit['end'] <= left or unit['start'] >= right:
-                    following.append((left,right))
-                else:
-                    if left < unit['start']:
-                        following.append((left,unit['start']))
-                    if unit['end'] < right:
-                        following.append((unit['end'],right))
-            pieces = following
-        for left,right in pieces:
-            if result and left <= result[-1]['end']:
-                result[-1]['end'] = max(result[-1]['end'],right)
-            else:
-                result.append({'start':left,'end':right})
-    return result
-
-
 def _groups(candidates):
     groups=[]
     for unit in candidates:
@@ -116,7 +95,7 @@ def _groups(candidates):
 def _extend_bumpers(event, candidates, excluded, checked, transcript, shots,
                     source, directory, identity, models, vision, report, cancelled):
     """Confirm abstract animation adjoining a proven logo, never a time pad."""
-    from .analysis import storyboard
+    from app.vision import storyboard
     attempted = set()
     while True:
         target = None
@@ -189,7 +168,7 @@ def _extend_bumpers(event, candidates, excluded, checked, transcript, shots,
 
 
 def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cancelled):
-    from .analysis import storyboard
+    from app.vision import storyboard
     result = copy.deepcopy(events)
     source = None
     try:

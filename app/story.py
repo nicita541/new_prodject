@@ -242,7 +242,8 @@ def _valid_cache(saved, signature: str, event: dict, editorial_profile=None) -> 
                 return False
             previous = right
         if 'story_omission_review' in value or value.get('verified_current_story_ranges'):
-            from .source_roles import verified_story_ranges,merge_ranges
+            from .source_roles import verified_story_ranges
+            from app.source_ranges import merge_ranges
             from .editorial import DEFAULT_PROFILE
             profile=editorial_profile or DEFAULT_PROFILE
             review=value.get('story_omission_review',{})
@@ -288,7 +289,8 @@ def _valid_cache(saved, signature: str, event: dict, editorial_profile=None) -> 
 
 def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vision, report, cancelled,
                  *, episode_duration=None) -> list[dict]:
-    from .analysis import candidate_units, storyboard_times
+    from app.story_review import candidate_units
+    from app.vision import storyboard_times
     from .semantic_identity import component_identity
     semantic_component = component_identity('story')
     from .editorial import load_profile, instruction
@@ -495,7 +497,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     omissions=approved
                     verified_units=[u for u in units if u['id'] in verified]
                     if verified_units:
-                        from .source_roles import merge_ranges
+                        from app.source_ranges import merge_ranges
                         event['verified_current_story_ranges']=merge_ranges(verified_units)
                     event['story_omission_review']={'version':2,'decision':proof,
                                                   'restored_units':sorted(restored),'verified_units':verified_units}

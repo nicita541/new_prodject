@@ -51,7 +51,7 @@ class TitleTests(unittest.TestCase):
         directory,events,transcript,shots,source=fixture()
         original=copy.deepcopy(events)
         vision=Vision([decision(True),decision(True),decision(True),decision(True),decision(False,narrative=True),decision(False)])
-        with patch('app.analysis.storyboard',side_effect=frames) as render:
+        with patch('app.vision.storyboard',side_effect=frames) as render:
             result=refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':10},{'start':22,'end':30}])
         self.assertEqual(result[0]['excluded_title_units'],[
@@ -66,7 +66,7 @@ class TitleTests(unittest.TestCase):
         directory,events,transcript,shots,_=fixture()
         vision=Vision([decision(True),decision(False),decision(True,narrative=True),decision(False),
                        decision(True,dialogue=True),decision(True,confidence=.8)])
-        with patch('app.analysis.storyboard',side_effect=frames):
+        with patch('app.vision.storyboard',side_effect=frames):
             result=refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result[0]['selected_ranges'],events[0]['selected_ranges'])
         self.assertTrue(result[0]['story_warnings'])
@@ -78,7 +78,7 @@ class TitleTests(unittest.TestCase):
                 transcript={'segments':[{'start':0,'end':10,'text':'Заголовок этой истории.'}],
                     'words':[{'start':i,'end':i+1,'text':str(i),'probability':.995} for i in range(3)]}
                 vision=Vision([decision(True),decision(True,narrated=narrated,dialogue=dialogue)]+[decision(False)]*5)
-                with patch('app.analysis.storyboard',side_effect=frames):
+                with patch('app.vision.storyboard',side_effect=frames):
                     result=refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:False)
                 self.assertEqual(result[0]['selected_ranges'],[{'start':10 if excluded else 0,'end':30}])
 
@@ -86,7 +86,7 @@ class TitleTests(unittest.TestCase):
         directory,events,_,shots,_=fixture()
         events[0]['selected_ranges']=[{'start':10,'end':14},{'start':18,'end':22}]
         vision=Vision([decision(False),decision(False)])
-        with patch('app.analysis.storyboard',side_effect=frames) as render:
+        with patch('app.vision.storyboard',side_effect=frames) as render:
             result=refine_titles(events,{'words':[],'segments':[]},shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result,events)
         self.assertEqual([(c.args[1],c.args[2]) for c in render.call_args_list],[(10,22)])
@@ -99,7 +99,7 @@ class TitleTests(unittest.TestCase):
                 transcript={'words':[{'start':offset+6+i*.75,'end':offset+6+(i+1)*.75,'text':'Сюжет.','probability':.99} for i in range(8)],
                             'segments':[{'start':offset+6,'end':offset+12,'text':'Реплика персонажа.'}]}
                 vision=Vision([decision(True),decision(True)])
-                with patch('app.analysis.storyboard',side_effect=frames):
+                with patch('app.vision.storyboard',side_effect=frames):
                     result=refine_titles(events,transcript,[{'start':offset+4}],directory,vision,lambda *a:None,lambda:False)
                 self.assertEqual(result[0]['selected_ranges'],[{'start':offset+4,'end':offset+12}])
 
@@ -109,7 +109,7 @@ class TitleTests(unittest.TestCase):
         transcript={'words':[{'start':2+i,'end':3+i,'text':'Слово','probability':.99} for i in range(10)],
                     'segments':[{'start':2,'end':12,'text':'Слова персонажа.'}]}
         vision=Vision([decision(True),decision(True)])
-        with patch('app.analysis.storyboard',side_effect=frames):
+        with patch('app.vision.storyboard',side_effect=frames):
             result=refine_titles(events,transcript,[{'start':1.2}],directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result[0]['selected_ranges'],[{'start':1.2,'end':12}])
 
@@ -124,7 +124,7 @@ class TitleTests(unittest.TestCase):
                 continuity={'same_production_bumper':same_bumper,'wholly_nonnarrative':True,
                             'continuous_narrative':narrative,'confidence':.95}
                 vision=Vision([decision(True),abstract,decision(True),continuity])
-                with patch('app.analysis.storyboard',side_effect=frames):
+                with patch('app.vision.storyboard',side_effect=frames):
                     result=refine_titles(events,transcript,[{'start':2},{'start':5}],directory,
                                          vision,lambda *a:None,lambda:False)
                 self.assertEqual(result[0]['selected_ranges'],[{'start':expected,'end':12}] if expected else
@@ -133,7 +133,7 @@ class TitleTests(unittest.TestCase):
 
     def test_cache_reuses_decision_and_invalidates_source_and_profile(self):
         directory,events,transcript,shots,source=fixture()
-        with patch('app.analysis.storyboard',side_effect=frames):
+        with patch('app.vision.storyboard',side_effect=frames):
             refine_titles(events,transcript,shots,directory,Vision([decision(True)]*6),lambda *a:None,lambda:False)
             cached=Vision([])
             result=refine_titles(events,transcript,shots,directory,cached,lambda *a:None,lambda:False)
@@ -151,7 +151,7 @@ class TitleTests(unittest.TestCase):
     def test_cancel_inside_query_propagates_and_does_not_publish_partial_exclusion(self):
         directory,events,transcript,shots,_=fixture()
         vision=Vision([decision(True)])
-        with patch('app.analysis.storyboard',side_effect=frames):
+        with patch('app.vision.storyboard',side_effect=frames):
             with self.assertRaises(InterruptedError):
                 refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:bool(vision.calls))
         self.assertFalse(list((directory/'title_units').glob('*.json')))
@@ -160,7 +160,7 @@ class TitleTests(unittest.TestCase):
     def test_unknown_boolean_and_missing_source_preserve_scene(self):
         directory,events,transcript,shots,_=fixture()
         vision=Vision([decision(True),{**decision(True),'visible_production_title':'true'}]+[decision(False)]*4)
-        with patch('app.analysis.storyboard',side_effect=frames):
+        with patch('app.vision.storyboard',side_effect=frames):
             result=refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result[0]['selected_ranges'],events[0]['selected_ranges'])
         self.assertTrue(result[0]['story_warnings'])
@@ -173,7 +173,7 @@ class TitleTests(unittest.TestCase):
     def test_confident_negative_group_screen_performs_no_per_unit_queries(self):
         directory,events,transcript,shots,_=fixture()
         vision=Vision([decision(False)])
-        with patch('app.analysis.storyboard',side_effect=frames) as render:
+        with patch('app.vision.storyboard',side_effect=frames) as render:
             result=refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result[0]['selected_ranges'],events[0]['selected_ranges'])
         self.assertEqual(len(vision.calls),1)

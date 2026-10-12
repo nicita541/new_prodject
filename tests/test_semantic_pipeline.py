@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from app.config import TEMP, FFMPEG, FFPROBE
 from app.media import run_command
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from app.pipeline_diagnostics import Diagnostics
 from app.scene_analysis import analyze_scenes, query_scene, bounded_chunks, frame_backed_scenes
 from app.scene_detection import detect_semantic_scenes

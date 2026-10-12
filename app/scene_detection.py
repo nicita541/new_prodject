@@ -7,15 +7,17 @@ and all original shot boundaries remain available to the unit/storyboard stage.
 """
 from __future__ import annotations
 
+from app.content_identity import evidence_digest as _hash
+
 import bisect
-import hashlib
 import json
 import math
 from pathlib import Path
 import re
 
 from .config import FFMPEG
-from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
+from app.json_store import analysis_json as atomic_json, load_json
+from .media_probe import raw_shot_evidence, run_process
 
 SCENE_DETECTOR_VERSION = 5
 SCENE_GROUPING_VERSION = 4
@@ -29,11 +31,6 @@ DEFAULT_SETTINGS = {
     'short_transition_seconds': 6.0,
     'feature_sample_interval': 8.0,
 }
-
-
-def _hash(value) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                                     allow_nan=False).encode('utf-8')).hexdigest()
 
 
 def _settings(settings: dict | None) -> dict:
@@ -387,7 +384,6 @@ def production_shots(shots, proposals, duration):
     return result
 
 
-
 # Ambiguous shot proposals are not semantic scenes. Checking every optical-flow
 # / fade / suppressed-cut proposal with a large VLM can produce hundreds of
 # inferences on a three-minute source. Preserve every original proposal for
@@ -400,7 +396,6 @@ SEMANTIC_VLM_WINDOW_SECONDS = 1.5
 # of a dialogue break, physical state transition or dramatic visual relocation.
 # Every original candidate is still retained for the later scene inference.
 SEMANTIC_VLM_WEAK_WINDOW_SECONDS = 3.0
-
 
 
 def _boundary_check_priority(measured: dict, proposal: dict) -> tuple:

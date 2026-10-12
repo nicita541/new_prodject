@@ -5,6 +5,8 @@ source proof; it neither observes new video nor changes selection authority.
 """
 from __future__ import annotations
 
+from app.content_identity import stable_semantics as _stable
+
 
 import copy
 import hashlib
@@ -54,14 +56,6 @@ the answer endpoints; do not skip a ref because another row already describes it
 paired has a narrow meaning: the exact ref must participate in a returned required
 question/answer pair. An ordinary acknowledgment without such a spoken question is
 not automatically paired. Decide resolved only after complete coverage. JSON only.'''
-
-
-def _stable(value):
-    if isinstance(value, dict):
-        return {k: _stable(v) for k, v in value.items() if k not in ('cache_hit', 'visual_cache_hit')}
-    if isinstance(value, list):
-        return [_stable(v) for v in value]
-    return value
 
 
 def _number(value, field, confidence=False):
@@ -633,7 +627,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
     """Bounded real-provider adapter. No implicit provider/session construction."""
     from app.global_verification import _model_identity
     from app.scene_understanding import _control_failure
-    from app.media_probe import atomic_json
+    from app.json_store import analysis_json as atomic_json
     from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse, AnalysisPending
     _check(cancelled)
     nodes, source_coverage, snapshots = source_units(events, transcript)

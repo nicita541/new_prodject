@@ -123,7 +123,7 @@ def test_corrupted_reservation_log_fails_closed(tmp_path):
 def test_4b_always_local_only_story_model_routes_to_trial(tmp_path):
     assert provider_identity("local_flash_story")["paid_http_attempt_limit"] is None
     assert provider_identity("local_flash_story")["remote_story"] == "deepseek-flash"
-    with patch("app.analysis.LocalVision", DummyLocal):
+    with patch("app.vision.LocalVision", DummyLocal):
         visual = vision_session(tmp_path, lambda: False, "local_flash_story")
         assert isinstance(visual, DummyLocal)
         story = vision_session(tmp_path, lambda: False, "local_flash_story",
@@ -131,7 +131,6 @@ def test_4b_always_local_only_story_model_routes_to_trial(tmp_path):
         assert isinstance(story, TrialStoryVision)
         assert story.local is None
     assert STORY_MODEL != VLM_MODEL
-
 
 
 def test_public_report_contains_only_flash_trial_counters(tmp_path):
@@ -151,7 +150,6 @@ def test_public_report_contains_only_flash_trial_counters(tmp_path):
     assert private not in json.dumps(public)
     private_record = json.loads((job / "deepseek-story-pilot.json").read_text("utf-8"))
     assert private_record["reserved"][0] not in json.dumps(public)
-
 
 
 def test_free_cached_reply_is_reused_without_call_limit(tmp_path):

@@ -16,7 +16,7 @@ import wave
 from PIL import Image, ImageDraw, ImageEnhance
 
 from app.config import FFMPEG, ROOT
-from app.media_probe import atomic_json
+from app.json_store import analysis_json as atomic_json
 
 
 FIXTURE_NAMES = ('reverse_shots_same_room', 'similar_rooms', 'binding_same_background',

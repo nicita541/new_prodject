@@ -4,9 +4,9 @@ import uuid
 
 from app.dramatic_planner import build_dramatic_plan, _compress_dialogue_turns
 from app.planner import validate_plan
-from app.analysis import analysis_result
+from app.analysis_result import analysis_result
 from app.config import TEMP
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from tests.montage_fixtures import finalized_profile
 
 

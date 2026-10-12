@@ -134,7 +134,6 @@ def test_partial_provider_usage_is_unknown_not_false_total(tmp_path):
     assert usage["unknown_calls"] == 1
 
 
-
 def test_corrupted_scene_cache_only_rebuilds_affected_chunk(tmp_path):
     from app.scene_analysis import _read_optional_checkpoint
     checkpoint = tmp_path / "event_0000_chunk_001.checkpoint.json"
@@ -152,7 +151,7 @@ def test_frame_empty_80ms_pause_keeps_speech_and_caps_sampled_frames(tmp_path, m
     from app import scene_detection
     from app.vision import inference_samples, inference_storyboard
     from app import bounded_storyboard
-    from app.media_probe import atomic_json
+    from app.json_store import analysis_json as atomic_json
 
     transcript = {"segments": [{"start": .08, "end": 3.84, "text": "Реплика"}],
                   "words": [{"start": .08, "end": 3.84, "text": "Реплика"}]}

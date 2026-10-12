@@ -18,7 +18,7 @@ import time
 import urllib.error
 import urllib.request
 from .config import CACHE, DATA, ROOT
-from .jobs import atomic_json
+from app.json_store import atomic_json
 
 MODEL = 'deepseek-flash'
 ENDPOINT = 'https://api.deepseek.com'

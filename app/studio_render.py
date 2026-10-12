@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 
 from app import config
-from app.jobs import atomic_json, read_json
+from app.json_store import atomic_json, read_json
 from app.media import inspect_media, render_part
 from app.music import list_tracks, pick_track_for_part
 
@@ -29,7 +29,6 @@ _ACTIVE_OWNERS = {}
 # One FFmpeg worker is allowed to render at a time. Keep no more than two
 # additional waiting requests; unlimited daemon threads exhaust local memory.
 MAX_PENDING_FINISHING_TASKS = 3
-
 
 
 @contextmanager

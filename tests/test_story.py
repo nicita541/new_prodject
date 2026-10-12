@@ -206,7 +206,7 @@ class StoryRefinementTests(unittest.TestCase):
                                      None,[],FakeVision([proof]),DEFAULT_PROFILE)
 
     def test_independently_verified_action_survives_later_scenery_review_and_planning(self):
-        from app.analysis import apply_global_selection
+        from app.story_review import apply_global_selection
         from app.editorial import DEFAULT_PROFILE
         from app.pacing import apply_review
         directory,events,transcript=fixture()

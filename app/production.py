@@ -11,7 +11,7 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont
 
 from .config import ROOT
-from .jobs import atomic_json
+from app.json_store import atomic_json
 
 
 def production_context(events, anchors, center, shots, transcript):
@@ -21,7 +21,7 @@ def production_context(events, anchors, center, shots, transcript):
     that window mislabels preceding character shots as 'before the OP'.
     Bound visual work to 36 context frames; target intervals remain unchanged.
     """
-    from .analysis import storyboard_times
+    from app.vision import storyboard_times
     left=right=center
     original=set(anchors)
     while left-1 in original:left-=1
@@ -114,9 +114,10 @@ def clean_sequences(events, transcript, shots, job_dir, vision, report, cancelle
     if getattr(vision, 'supports_image_pages', False):
         from .production_sequence import clean_whole_sequences
         return clean_whole_sequences(events, transcript, shots, job_dir, vision, report, cancelled)
-    from .analysis import candidate_units, storyboard_times
+    from app.story_review import candidate_units
+    from app.vision import storyboard_times
     from .story import EDGE_VERSION, _credit_kind, _protected_speech, _spoken_words
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     result = copy.deepcopy(events)
     directory = job_dir / 'credit_edges'
     directory.mkdir(exist_ok=True)

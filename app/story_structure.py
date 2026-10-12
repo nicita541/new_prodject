@@ -6,21 +6,20 @@ actions. Restoring context grants positive selection only, never exclusion proof
 """
 from __future__ import annotations
 
+from app.content_identity import finite_number as _number
+
 import copy
 import math
 
-from .source_roles import confirmed_exclusions, merge_ranges, verified_story_ranges
-from .titles import _subtract
+from .source_roles import confirmed_exclusions, verified_story_ranges
+from app.source_ranges import merge_ranges
+from app.source_ranges import subtract_ranges as _subtract
 
 STORY_STRUCTURE_VERSION = 2
 CONTINUITY_VERSION = 2
 ROLES = ('setup', 'development', 'turning_point', 'payoff', 'transition')
 STATE_FIELDS = ('locations', 'character_state', 'objects', 'relationship', 'topic')
 CONFIDENCE_FIELDS = ('semantic_confidence', 'visual_confidence', 'context_confidence')
-
-
-def _number(value):
-    return type(value) in (int, float) and math.isfinite(value)
 
 
 def _events(events, duration=None):

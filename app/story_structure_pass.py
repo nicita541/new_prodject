@@ -5,6 +5,10 @@ change selections, fabricate timestamps, or replace unresolved source analysis.
 """
 from __future__ import annotations
 
+from app.content_identity import stable_semantics as _stable
+
+from app.json_store import analysis_json as _atomic
+
 
 import copy
 import hashlib
@@ -78,14 +82,6 @@ Return only JSON matching the schema.'''
 
 def _normalized(text):
     return text.replace('\r\n', '\n').replace('\r', '\n')
-
-
-def _stable(value):
-    if isinstance(value, dict):
-        return {k: _stable(v) for k, v in value.items() if k not in ('cache_hit', 'visual_cache_hit')}
-    if isinstance(value, list):
-        return [_stable(v) for v in value]
-    return value
 
 
 def _number(value, field, *, confidence=False):
@@ -544,11 +540,6 @@ def _control_failure(error):
 def _clean(value):
     from app.pipeline_diagnostics import _clean as clean
     return clean(value)
-
-
-def _atomic(path, value):
-    from app.media_probe import atomic_json
-    atomic_json(path, value)
 
 
 def _tokens_count(vision, prompt):

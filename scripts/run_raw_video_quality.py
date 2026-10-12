@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 
 from app.config import IMPORTS, JOBS, VLM_MODEL, VLM_PROJECTOR, setup_environment
-from app.media_probe import atomic_json, detect_shots, load_json, probe_media, raw_shot_evidence
+from app.json_store import analysis_json as atomic_json, load_json
+from app.media_probe import detect_shots, probe_media, raw_shot_evidence
 from app.scene_detection import scene_checkpoint
 from app.vision import LocalVision
 from tests.raw_video_fixtures import FIXTURE_NAMES, build_fixture

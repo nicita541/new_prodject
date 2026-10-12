@@ -258,7 +258,7 @@ class WholeSequenceTests(unittest.TestCase):
     def test_confirmed_whole_opening_outranks_action_reaction_speech_and_later_story_guards(self):
         from app.source_roles import apply_exclusions,verified_story_ranges,confirmed_exclusions
         from app.story import preserve_dialogue_in_credits
-        from app.analysis import apply_global_selection
+        from app.story_review import apply_global_selection
         from app.pacing import apply_review
         directory,event,_=edge_fixture(start=0,end=25)
         event.update(contains_credits=True,credit_montage=True,

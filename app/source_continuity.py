@@ -5,12 +5,15 @@ Unexplained omitted gaps become concrete tasks for original-video verification.
 """
 from __future__ import annotations
 
+from app.source_ranges import intersect_ranges as _intersect
+
 import copy
 import math
 
 from .selection_gate import positive_ranges, _covers
-from .source_roles import confirmed_exclusions, merge_ranges
-from .titles import _subtract
+from .source_roles import confirmed_exclusions
+from app.source_ranges import merge_ranges
+from app.source_ranges import subtract_ranges as _subtract
 
 VERSION = 2
 FACTS = ('location_id', 'character_ids', 'physical_state_ids', 'object_ids',
@@ -19,11 +22,6 @@ FACTS = ('location_id', 'character_ids', 'physical_state_ids', 'object_ids',
 
 def _key(ref):
     return ref['event'], ref['unit']
-
-
-def _intersect(left, right):
-    return merge_ranges([{'start':max(a['start'],b['start']), 'end':min(a['end'],b['end'])}
-        for a in left for b in right if a['start'] < b['end'] and a['end'] > b['start']])
 
 
 def source_nodes(events):

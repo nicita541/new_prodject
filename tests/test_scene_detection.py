@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 from app.config import FFMPEG, TEMP
 from app.media import run_command
-from app.media_probe import adaptive_shot_evidence, load_json
+from app.media_probe import adaptive_shot_evidence
+from app.json_store import load_json
 from app.scene_detection import analysis_chunks, detect_semantic_scenes, scene_checkpoint
 
 

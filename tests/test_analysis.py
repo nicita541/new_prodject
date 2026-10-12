@@ -4,11 +4,14 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
-from app.analysis import analysis_windows, candidate_units, validated_event, apply_unit_selection, global_story_review, normalize_transcript
-from app.analysis import atomic_json, load_json, shot_checkpoint
-from app.analysis import analysis_provider, vision_session
-from app.analysis import storyboard_times
-from app.analysis import apply_global_selection
+from app.story_review import candidate_units, validated_event, apply_unit_selection, global_story_review
+from app.media_probe import normalize_transcript
+from app.json_store import analysis_json as atomic_json, load_json
+from app.media_probe import shot_checkpoint
+from app.analysis_provider import analysis_provider
+from app.vision import vision_session
+from app.vision import storyboard_times
+from app.story_review import apply_global_selection
 from app.planner import build_plan
 from app.config import TEMP
 
@@ -96,7 +99,7 @@ class AnalysisValidationTests(unittest.TestCase):
     def test_cloud_selection_is_explicit_and_local_never_starts_api_client(self):
         with analysis_directory() as job:
             self.assertEqual(analysis_provider(job), 'local')
-            with patch('app.analysis.LocalVision') as local, patch('app.deepseek.DeepSeekVision') as cloud:
+            with patch('app.vision.LocalVision') as local, patch('app.deepseek.DeepSeekVision') as cloud:
                 vision_session(job, lambda: False)
                 local.assert_called_once()
                 cloud.assert_not_called()
@@ -114,19 +117,19 @@ class AnalysisValidationTests(unittest.TestCase):
         with analysis_directory() as job:
             source = job / 'episode.mp4'
             atomic_json(job / 'shots.json', old)
-            with patch('app.analysis.detect_shots', return_value=corrected) as detect:
+            with patch('app.media_probe.detect_shots', return_value=corrected) as detect:
                 self.assertEqual(shot_checkpoint(source, 'original-sha', 10, job, lambda: False), corrected)
                 detect.assert_called_once()
-            with patch('app.analysis.detect_shots') as detect:
+            with patch('app.media_probe.detect_shots') as detect:
                 self.assertEqual(shot_checkpoint(source, 'original-sha', 10, job, lambda: False), corrected)
                 detect.assert_not_called()
             meta = load_json(job / 'shots.meta.json')
             meta['threshold'] = .24
             atomic_json(job / 'shots.meta.json', meta)
-            with patch('app.analysis.detect_shots', return_value=corrected) as detect:
+            with patch('app.media_probe.detect_shots', return_value=corrected) as detect:
                 shot_checkpoint(source, 'original-sha', 10, job, lambda: False)
                 detect.assert_called_once()
-            with patch('app.analysis.detect_shots', return_value=corrected) as detect:
+            with patch('app.media_probe.detect_shots', return_value=corrected) as detect:
                 shot_checkpoint(source, 'different-sha', 10, job, lambda: False)
                 detect.assert_called_once()
 
@@ -146,11 +149,6 @@ class AnalysisValidationTests(unittest.TestCase):
         self.assertEqual(len(event['focus']), 1)
         self.assertEqual(event['focus'][0]['time'], 12)
 
-    def test_visual_windows_cover_entire_episode_including_silence(self):
-        windows = analysis_windows(123, {'segments': [], 'words': []})
-        self.assertEqual(windows[0][0], 0)
-        self.assertEqual(windows[-1][1], 123)
-        self.assertTrue(all(a[1] == b[0] for a, b in zip(windows, windows[1:])))
 
     def test_unit_selection_rejects_unknown_ids(self):
         event = {'start': 0, 'end': 10, 'importance': 4, 'uncertain': False}

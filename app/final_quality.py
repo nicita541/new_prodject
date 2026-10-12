@@ -9,8 +9,9 @@ from app.content_identity import evidence_digest as gate_identity
 
 from .selection_gate import selection_readiness, positive_ranges, _covers
 from .selection_adjudication import _source_text
-from .source_roles import merge_ranges, confirmed_exclusions
-from .titles import _subtract
+from app.source_ranges import merge_ranges
+from .source_roles import confirmed_exclusions
+from app.source_ranges import subtract_ranges as _subtract
 
 VERSION = 4
 POLICY = {'max_recovery_passes':3, 'word_tolerance':.002,

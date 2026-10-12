@@ -13,7 +13,8 @@ from types import ModuleType
 from unittest.mock import Mock, patch
 
 from app import config
-from app.jobs import BusyError, JobManager, WorkerProcess, atomic_json, read_json
+from app.jobs import BusyError, JobManager, WorkerProcess
+from app.json_store import atomic_json, read_json
 
 
 def deepseek_stub(status=None, connection=None):
@@ -50,6 +51,51 @@ class FakeWorker:
 
 
 class JobTests(unittest.TestCase):
+    def test_atomic_json_keeps_old_state_and_cleans_temporary_file_on_failure(self):
+        path = self.root / 'atomic-state.json'
+        atomic_json(path, {'value': 'old'})
+        before = path.read_bytes()
+        with patch('app.json_store.os.replace', side_effect=OSError('disk failure')):
+            with self.assertRaises(OSError):
+                atomic_json(path, {'value': 'new'})
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(list(self.root.glob('.atomic-state.json.*.tmp')), [])
+
+    def test_atomic_json_retries_transient_windows_lock_and_preserves_encoding(self):
+        import json
+        from app.json_store import analysis_json, compact_json
+        path = self.root / 'atomic-encoding.json'
+        replace = os.replace
+        with patch('app.json_store.os.replace', side_effect=[PermissionError('locked'), None]) as mocked, \
+             patch('app.json_store.time.sleep') as sleep:
+            # The successful attempt must actually publish the temporary file.
+            def publish(source, destination):
+                if mocked.call_count == 1:
+                    raise PermissionError('locked')
+                return replace(source, destination)
+            mocked.side_effect = publish
+            atomic_json(path, {'text': 'Кадр'})
+        self.assertEqual(read_json(path), {'text': 'Кадр'})
+        self.assertEqual(mocked.call_count, 2)
+        sleep.assert_called_once_with(.01)
+        value = {'text': 'Кадр', 'float': float('nan')}
+        with self.assertRaises(ValueError):
+            atomic_json(path, value)
+        self.assertEqual(read_json(path), {'text': 'Кадр'})
+        analysis_json(path, value)
+        self.assertEqual(path.read_text('utf-8'), json.dumps(value, ensure_ascii=False, indent=2))
+        compact_json(path, {'text': 'Кадр'})
+        self.assertEqual(path.read_text('utf-8'), json.dumps({'text': 'Кадр'}, ensure_ascii=False))
+
+    def test_concurrent_json_writers_publish_complete_records(self):
+        from concurrent.futures import ThreadPoolExecutor
+        path = self.root / 'atomic-concurrent.json'
+        values = [{'index': index, 'payload': 'Кадр' * 2048} for index in range(16)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(lambda value: atomic_json(path, value), values))
+        self.assertIn(read_json(path), values)
+        self.assertEqual(list(self.root.glob('.atomic-concurrent.json.*.tmp')), [])
+
     def test_default_analysis_remains_local_without_reading_deepseek_settings(self):
         client = deepseek_stub()
         with patch.dict(sys.modules, {"app.deepseek": client}):

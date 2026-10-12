@@ -1,22 +1,20 @@
 """Reserve evidenced mandatory source material before ranked optional costs."""
 from __future__ import annotations
 
+from app.source_ranges import intersect_ranges as _intersect
+
 import copy
 
 from app.selection_gate import positive_ranges, selection_problems
-from app.source_roles import confirmed_exclusions, merge_ranges
-from app.titles import _subtract
+from app.source_roles import confirmed_exclusions
+from app.source_ranges import merge_ranges
+from app.source_ranges import subtract_ranges as _subtract
 
 VERSION = 4
 
 
 def _cost(ranges):
     return sum(r['end']-r['start'] for r in merge_ranges(ranges))
-
-
-def _intersect(left, right):
-    return merge_ranges([{'start':max(a['start'], b['start']), 'end':min(a['end'], b['end'])}
-        for a in left for b in right if a['start'] < b['end'] and a['end'] > b['start']])
 
 
 def _source_candidates(events, candidate_ranges, ranked_ids, arcs, budget):

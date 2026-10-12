@@ -8,7 +8,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import ROOT, TEMP, FFMPEG, setup_environment
-from app.analysis import atomic_json
+from app.json_store import analysis_json as atomic_json
 from app.pipeline import run_job
 
 setup_environment()

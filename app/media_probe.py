@@ -1,5 +1,7 @@
-"""Media probing, shot detection, windows chunking, and transcript normalization."""
+"""Media probing, shot detection, and transcript normalization."""
 from __future__ import annotations
+
+from app.json_store import analysis_json as atomic_json, load_json
 
 import bisect
 import json
@@ -15,17 +17,6 @@ from app.config import FFMPEG, FFPROBE, ROOT
 SHOT_DETECTOR_VERSION = 5
 BASE_SCENE_THRESHOLD = 0.14
 SCENE_THRESHOLD = 0.20
-
-
-def atomic_json(path: Path, data) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(f'.tmp.{time.time_ns()}')
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
-    tmp.replace(path)
-
-
-def load_json(path: Path):
-    return json.loads(path.read_text('utf-8'))
 
 
 def run_process(command: list[str | Path], log: Path, cancelled, timeout: float = 3600) -> None:
@@ -146,12 +137,6 @@ def adaptive_shot_evidence(candidates: list[tuple[float, float]], duration: floa
     return evidence
 
 
-def adaptive_cut_times(candidates: list[tuple[float, float]], duration: float, window: float = 4.0) -> list[float]:
-    """Keep the stable montage representation; suppressed candidates remain queryable."""
-    return [0.0, *(item['time'] for item in adaptive_shot_evidence(candidates, duration, window)
-                   if item['accepted']), duration]
-
-
 def raw_shot_evidence(shots: list[dict], job_dir: Path | None = None) -> list[dict]:
     """Read additive raw evidence without changing the legacy list-of-shots API."""
     rows = [item for shot in shots for item in shot.get('raw_shot_candidates', [])]
@@ -163,9 +148,8 @@ def raw_shot_evidence(shots: list[dict], job_dir: Path | None = None) -> list[di
 
 
 def detect_shots(source: Path, duration: float, job_dir: Path, cancelled) -> list[dict]:
-    import app.analysis as _analysis
     log = job_dir / 'shots.log'
-    _analysis.run_process([
+    run_process([
         FFMPEG, '-hide_banner', '-i', source,
         '-vf', f"scale=320:-2,select='gt(scene,{BASE_SCENE_THRESHOLD})',metadata=print:key=lavfi.scene_score,showinfo",
         '-an', '-f', 'null', '-'
@@ -189,7 +173,6 @@ def detect_shots(source: Path, duration: float, job_dir: Path, cancelled) -> lis
 
 
 def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Path, cancelled) -> list[dict]:
-    import app.analysis as _analysis
     from .semantic_identity import component_identity
     path, meta = job_dir / 'shots.json', job_dir / 'shots.meta.json'
     identity = {'source': fingerprint, 'duration': duration,
@@ -200,7 +183,7 @@ def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Pa
     from .pipeline_diagnostics import Diagnostics
     Diagnostics(job_dir).event('shot_detection', 'cache_hit' if hit else 'cache_miss', detector_version=SHOT_DETECTOR_VERSION)
     shots = (load_json(path) if hit
-             else _analysis.detect_shots(source, duration, job_dir, cancelled))
+             else detect_shots(source, duration, job_dir, cancelled))
     atomic_json(path, shots)
     atomic_json(meta, identity)
     evidence = raw_shot_evidence(shots)
@@ -216,24 +199,6 @@ def shot_checkpoint(source: Path, fingerprint: str, duration: float, job_dir: Pa
                           adaptive_threshold=item['adaptive_threshold'], reason=item['suppression_reason'],
                           preserved_as_candidate=True)
     return shots
-
-
-def analysis_windows(duration: float, transcript: dict, target: float = 40) -> list[tuple[float, float]]:
-    boundaries = [float(s['end']) for s in transcript['segments'] if s['end'] > s['start']]
-    windows = []
-    start = 0.0
-    while start < duration - 0.01:
-        limit = min(start + target, duration)
-        near = [b for b in boundaries if start + target - 8 <= b <= min(start + target + 8, duration)]
-        end = min(near, key=lambda b: abs(b - limit)) if near and limit < duration else limit
-        # Never introduce a visual-analysis boundary within an ASR word.
-        for word in transcript['words']:
-            if word['start'] < end < word['end']:
-                end = word['end']
-        end = min(end, duration)
-        windows.append((start, end))
-        start = end
-    return windows
 
 
 def normalize_transcript(transcript: dict, duration: float) -> dict:

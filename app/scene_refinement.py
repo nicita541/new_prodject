@@ -6,7 +6,8 @@ import json
 import math
 from pathlib import Path
 
-from .source_roles import merge_ranges, verified_story_ranges
+from app.source_ranges import merge_ranges
+from .source_roles import verified_story_ranges
 
 SCENE_REFINEMENT_VERSION = 3
 
@@ -99,7 +100,7 @@ def _merge_parent(parent, children, profile, transcript):
     from .story import _valid_cache, STORY_VERSION
     from .selection_adjudication import minimal_semantic_context
     from .source_roles import confirmed_exclusions
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     result = copy.deepcopy(parent)
     # New selections supersede tentative earlier omission decisions. Existing
     # independently verified protections remain separately authoritative.

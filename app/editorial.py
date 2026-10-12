@@ -25,7 +25,7 @@ def load_profile(job_dir: Path, *, persist=False):
             or any(type(value[k]) is not bool for k in DEFAULT_PROFILE if k not in ('version','policy'))):
         raise ValueError('Некорректный редакторский профиль')
     if persist and not path.is_file():
-        from .jobs import atomic_json
+        from app.json_store import atomic_json
         atomic_json(path,value)
     return value
 

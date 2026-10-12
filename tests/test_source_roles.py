@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.analysis import apply_global_selection
+from app.story_review import apply_global_selection
 from app.closing import refine_closing_novelty
 from app.config import TEMP
 from app.editorial import DEFAULT_PROFILE

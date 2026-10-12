@@ -18,9 +18,10 @@ from app.source_text import source_text as _source_text
 
 from .config import ROOT
 from .media import inspect_media
-from .media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from .pipeline_diagnostics import _clean
-from .source_roles import confirmed_exclusions, merge_ranges
+from .source_roles import confirmed_exclusions
+from app.source_ranges import merge_ranges
 from .story_review import candidate_units
 from .bounded_storyboard import build_bounded_storyboard as storyboard
 

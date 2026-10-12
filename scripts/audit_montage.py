@@ -11,7 +11,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import cv2
 from PIL import Image,ImageDraw,ImageFont
 from app.config import JOBS,ROOT
-from app.jobs import atomic_json
+from app.json_store import atomic_json
 from app.deepseek import job_spending
 from app.planner import MAX_DURATION
 

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from app.analysis import storyboard
+from app.vision import storyboard
 from app.config import TEMP
 
 
@@ -37,7 +37,7 @@ class StoryboardCacheTests(unittest.TestCase):
         # These cache tests mock JPEG extraction and do not need a valid video
         # container; source-bound probing has separate FFmpeg integration tests.
         with patch("app.media.video_frame_bounds", return_value=(0.0, 100.0)), \
-                patch("app.analysis.run_process", side_effect=self.extract_frame):
+                patch("app.vision.run_process", side_effect=self.extract_frame):
             return storyboard(source or self.source, start, end, [], {"words": [], "segments": []},
                               self.collage, lambda: False)
 

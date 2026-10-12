@@ -8,7 +8,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from app.config import JOBS
-from app.jobs import atomic_json, now
+from app.json_store import atomic_json, now
 
 
 def main():

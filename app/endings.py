@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 
-from .jobs import atomic_json
+from app.json_store import atomic_json
 from .planner import build_plan, _safe, _speech_tail
 
 VERSION = 6
@@ -290,7 +290,7 @@ def refine_endings(events, transcript, shots, probe, job_dir, vision, report, ca
         digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         checkpoint = directory / (digest + '.json')
         try:
-            from .analysis import analysis_context_limit
+            from app.story_review import analysis_context_limit
             if vision.token_count(prompt) > analysis_context_limit(vision):
                 raise ValueError('Контекст концовки превышает доступное окно модели')
             raw = json.loads(checkpoint.read_text('utf-8')) if checkpoint.is_file() else vision.query(

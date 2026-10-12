@@ -55,7 +55,7 @@ def test_studio_routes_serve_exact_ui_or_explicit_build_error():
         assert "script-src 'self'" in policy
         assert "script-src 'self' 'unsafe-inline'" not in policy
         for asset, mimetype, snippet in (
-            ("/studio-edition.css", "text/css", ".sidebar{"),
+            ("/studio-edition.css", "text/css", ".sidebar {"),
             ("/studio-edition-app.js", "javascript", "window.KadrBridge.refresh"),
         ):
             response = client.get(asset)
@@ -71,7 +71,6 @@ def test_studio_routes_serve_exact_ui_or_explicit_build_error():
     else:
         assert client.get("/studio-edition.css").status_code == 503
         assert client.get("/studio-edition-app.js").status_code == 503
-
 
 
 def test_active_server_identifies_loaded_backend_and_real_studio_assets():

@@ -5,7 +5,7 @@ import json
 import argparse
 import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app.analysis import LocalVision
+from app.vision import LocalVision
 from app.config import ROOT, TEMP
 
 def main():

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import cv2
 import numpy as np
 
-from app.analysis import LocalVision
+from app.vision import LocalVision
 from app.config import JOBS, ROOT, STORY_MODEL, STORY_PROJECTOR, VLM_MODEL, VLM_PROJECTOR
 from app.framing import FOCUS_SCHEMA, _FrameReader, _grid_image, focus_samples, temporal_times
 

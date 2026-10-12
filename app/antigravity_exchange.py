@@ -17,7 +17,7 @@ import uuid
 from app.content_identity import digest
 
 from .config import STORY_MODEL, STORY_PROJECTOR
-from .jobs import atomic_json, now, read_json
+from app.json_store import atomic_json, now, read_json
 
 PROVIDER = 'antigravity_manual'
 PROFILE = {'provider': PROVIDER, 'transport': 'official-user-run-agy-json', 'version': 1}

@@ -195,7 +195,11 @@ class LocalVision:
 
 
 def vision_session(job_dir: Path, cancelled, provider='local', **local_settings):
-    import app.analysis as _analysis
+    if provider == 'antigravity_manual':
+        if Path(local_settings.get('model', VLM_MODEL)) == STORY_MODEL:
+            from .antigravity_exchange import ManualVision
+            return ManualVision(job_dir, cancelled, **local_settings)
+        provider = 'local'
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import DeepSeekVision
         return DeepSeekVision(job_dir, cancelled)
@@ -206,27 +210,26 @@ def vision_session(job_dir: Path, cancelled, provider='local', **local_settings)
         settings = dict(local_settings)
         if Path(settings.get('model', VLM_MODEL)) == STORY_MODEL:
             settings.update(model=VLM_MODEL, projector=VLM_PROJECTOR, thinking=False)
-        return _analysis.LocalVision(job_dir, cancelled, **settings)
+        return LocalVision(job_dir, cancelled, **settings)
     if provider in ('local_flash_story', 'local_flash_story_budgeted'):
         from .flash_story_trial import TrialStoryVision
         selected = Path(local_settings.get('model', VLM_MODEL))
         if selected == STORY_MODEL:
-            return TrialStoryVision(job_dir, cancelled, local_factory=_analysis.LocalVision,
+            return TrialStoryVision(job_dir, cancelled, local_factory=LocalVision,
                                     budgeted=(provider == 'local_flash_story_budgeted'),
                                     **local_settings)
-        return _analysis.LocalVision(job_dir, cancelled, **local_settings)
+        return LocalVision(job_dir, cancelled, **local_settings)
     if provider == 'hybrid':
         from .hybrid import HybridVision
-        return HybridVision(job_dir, cancelled, _analysis.LocalVision(job_dir, cancelled, **local_settings))
+        return HybridVision(job_dir, cancelled, LocalVision(job_dir, cancelled, **local_settings))
     if provider != 'local':
         raise ValueError('Неизвестный способ анализа')
-    return _analysis.LocalVision(job_dir, cancelled, **local_settings)
+    return LocalVision(job_dir, cancelled, **local_settings)
 
 
 def storyboard_samples(start: float, end: float, shots: list, transcript: dict) -> list[dict]:
     """Mandatory beat coverage and before/current/after visual evidence."""
-    import app.analysis as _analysis
-    units = _analysis.candidate_units(start, end, transcript, shots, annotated=True)
+    units = candidate_units(start, end, transcript, shots, annotated=True)
     samples = {}
 
     def add(timestamp, reason, unit_id=None):
@@ -283,7 +286,7 @@ def inference_samples(start, end, units, *, recovery=False):
 def inference_storyboard(source, start, end, units, destination, cancelled, *,
                          recovery=False, context=False, sample_limit=None):
     from .bounded_storyboard import build_bounded_storyboard
-    from .media_probe import atomic_json, load_json
+    from app.json_store import analysis_json as atomic_json, load_json
     times = None if context else inference_samples(start,end,units,recovery=recovery)
     if times is not None and sample_limit is not None and len(times) > sample_limit:
         if not isinstance(sample_limit, int) or sample_limit < 2:
@@ -303,14 +306,13 @@ def inference_storyboard(source, start, end, units, destination, cancelled, *,
 
 def storyboard(source: Path, start: float, end: float, shots: list, transcript: dict, destination: Path, cancelled,
                *, sampling_interval=None) -> list[float]:
-    import app.analysis as _analysis
     from PIL import Image, ImageDraw
     from .media import video_frame_bounds
     first, last = video_frame_bounds(source, destination.parent, cancelled)
     left, right = max(start, first), min(end, last + .000001)
     if left >= right:
         raise ValueError('В выбранном исходном интервале нет видеокадра')
-    requested = _analysis.storyboard_times(left, right, shots, transcript)
+    requested = storyboard_times(left, right, shots, transcript)
     dense_samples = []
     if sampling_interval is not None:
         if not math.isfinite(sampling_interval) or sampling_interval <= 0:
@@ -335,7 +337,7 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
     for i, timestamp in enumerate(candidates):
         frame = destination.parent / f'{destination.stem}_{source_key}_{timestamp:.6f}.jpg'
         if not frame.exists():
-            _analysis.run_process([FFMPEG, '-y', '-v', 'error', '-ss', f'{timestamp:.6f}', '-i', source, '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2', '-pix_fmt', 'yuvj420p', frame], destination.parent / 'frames.log', cancelled, timeout=30)
+            run_process([FFMPEG, '-y', '-v', 'error', '-ss', f'{timestamp:.6f}', '-i', source, '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2', '-pix_fmt', 'yuvj420p', frame], destination.parent / 'frames.log', cancelled, timeout=30)
         if not frame.is_file() or frame.stat().st_size == 0:
             raise ValueError('FFmpeg не создал исходный видеокадр')
         x, y = (i % columns) * 480, (i // columns) * 294
@@ -353,7 +355,7 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
         path = destination.with_name(destination.stem+f'.page-{number:03d}.jpg')
         page.save(path, quality=84)
         page_paths.append(str(path))
-    from .media_probe import atomic_json
+    from app.json_store import analysis_json as atomic_json
     samples = storyboard_samples(left, right, shots, transcript)
     audit = []
     for timestamp in candidates:

@@ -1,6 +1,8 @@
 """Independently verify nonstory source roles without treating ASR as story."""
 from __future__ import annotations
 
+from app.source_ranges import merge_ranges
+
 
 import copy
 import hashlib
@@ -12,24 +14,11 @@ from pathlib import Path
 from app.source_text import tokens as _tokens, quote_in as _quote_in
 
 from .config import ROOT
-from .jobs import atomic_json
+from app.json_store import atomic_json
 
 VERSION = 7
 ROLES = ('current_story','uploader','next_preview','title_narration','song_or_artifact','production_credit','uncertain')
 EXCLUSION_KEYS = ('excluded_title_units','excluded_credit_ranges','excluded_closing_ranges','excluded_review_ranges')
-
-
-def merge_ranges(ranges):
-    merged=[]
-    for value in sorted(ranges,key=lambda r:r['start']):
-        a,b=float(value['start']),float(value['end'])
-        if not math.isfinite(a) or not math.isfinite(b) or a>=b:
-            raise ValueError('Некорректный подтверждённый интервал')
-        if merged and a<=merged[-1]['end']:
-            merged[-1]['end']=max(merged[-1]['end'],b)
-        else:
-            merged.append({'start':a,'end':b})
-    return merged
 
 
 def _bounded_ranges(event,key):
@@ -46,7 +35,7 @@ def _bounded_ranges(event,key):
 def _authoritative_sequence_ranges(event,kind,ranges_key,proofs_key):
     """Only independently bounded, anchored production proof outranks labels."""
     from .production_sequence import VERSION as sequence_version,STRONG_ANCHORS
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     ranges=_bounded_ranges(event,ranges_key)
     if not ranges:return []
     proofs=event.get(proofs_key)
@@ -89,13 +78,13 @@ def authoritative_ending_ranges(event):
 
 def verified_story_ranges(event):
     """Current-story proof survives outside whole OP and confirmed pure ED."""
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     return _subtract(_bounded_ranges(event,'verified_current_story_ranges'),
                      [*authoritative_opening_ranges(event),*authoritative_ending_ranges(event)])
 
 
 def confirmed_exclusions(event):
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     # A broad later exclusion cannot swallow an independently verified story
     # exception. Genuine confirmed nonstory elsewhere remains authoritative.
     ordinary=_subtract(merge_ranges([r for key in EXCLUSION_KEYS for r in event.get(key,[])]),
@@ -109,7 +98,7 @@ def overlaps_exclusions(interval,events):
 
 
 def apply_exclusions(events):
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     result=copy.deepcopy(events)
     for event in result:
         verified=verified_story_ranges(event)
@@ -186,9 +175,9 @@ def _schema(units):
 
 
 def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,*,retry_unresolved=False,event_ids=None):
-    from .analysis import candidate_units
+    from app.story_review import candidate_units
     from .production import sequence_sheet
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     from .editorial import instruction,load_profile
     result=copy.deepcopy(events)
     source=Path(json.loads((job_dir/'source.json').read_text('utf-8'))['path']).resolve()

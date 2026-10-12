@@ -208,7 +208,7 @@ def debug_timeline(plan: dict) -> dict:
             if start >= end:
                 continue
             if record.get('decision') == 'drop':
-                from .titles import _subtract
+                from app.source_ranges import subtract_ranges as _subtract
                 removed = _subtract([{'start':start, 'end':end}], [{'start':a,'end':b} for a,b in final])
                 evidence_seen = True
                 for row in removed:

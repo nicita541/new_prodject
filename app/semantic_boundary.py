@@ -9,7 +9,8 @@ from pathlib import Path
 import re
 
 from .config import FFMPEG
-from .media_probe import atomic_json, load_json, run_process
+from app.json_store import analysis_json as atomic_json, load_json
+from .media_probe import run_process
 from .pipeline_diagnostics import Diagnostics
 
 SEMANTIC_BOUNDARY_VERSION = 4

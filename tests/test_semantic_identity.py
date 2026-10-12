@@ -13,7 +13,8 @@ from PIL import Image
 
 from app.config import TEMP
 from app import deepseek, episode_profile, scene_analysis, scene_detection, story, endings, pacing
-from app.media_probe import atomic_json, load_json, shot_checkpoint
+from app.json_store import analysis_json as atomic_json, load_json
+from app.media_probe import shot_checkpoint
 from app.semantic_identity import component_identity, semantic_identity, _static_constants
 from app.vision import storyboard_samples
 
@@ -348,7 +349,7 @@ class SemanticIdentityTests(unittest.TestCase):
         source.write_bytes(b'fixture')
         shots = [{'id': 'shot_0', 'start': 0, 'end': 10}]
         from app import media_probe
-        with patch('app.analysis.detect_shots', return_value=shots) as detector:
+        with patch('app.media_probe.detect_shots', return_value=shots) as detector:
             shot_checkpoint(source, 'same-source', 10, self.directory, lambda: False)
             shot_checkpoint(source, 'same-source', 10, self.directory, lambda: False)
             detector.assert_called_once()

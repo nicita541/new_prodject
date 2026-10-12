@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from app.config import STORY_MODEL, STORY_PROJECTOR, VLM_MODEL, VLM_PROJECTOR
-from app.analysis import analysis_provider, framing_provider
+from app.analysis_provider import analysis_provider, framing_provider
 from app.deepseek import provider_identity
 from app.vision import vision_session
 
@@ -17,7 +17,7 @@ def test_fast_story_routes_only_story_to_local_4b_no_network(tmp_path):
             self.job = job
             self.settings = kw
 
-    with patch("app.analysis.LocalVision", DummyLocal), \
+    with patch("app.vision.LocalVision", DummyLocal), \
          patch("app.deepseek._http", side_effect=AssertionError("Cloud forbidden")):
         early = vision_session(tmp_path, lambda: False, "local_fast_story")
         story = vision_session(tmp_path, lambda: False, "local_fast_story",
@@ -67,7 +67,6 @@ def test_raw_observer_only_allows_explicit_fully_local_models(tmp_path):
     assert '"local_flash_story"' in inspect.getsource(run)
     with pytest.raises(ValueError, match="genuine local"):
         run(tmp_path, tmp_path / "output", analysis_provider="deepseek")
-
 
 
 def test_real_model_recorder_preserves_per_request_thinking_override(tmp_path):

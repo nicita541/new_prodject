@@ -17,7 +17,8 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app import config
-from app.jobs import atomic_json, read_json, validate_id
+from app.json_store import atomic_json, read_json
+from app.jobs import validate_id
 
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
 
@@ -120,7 +121,6 @@ class CaptionsUpdate(BaseModel):
     part_index: int = Field(ge=1, le=100)
     cues: list[Cue] = Field(max_length=150)
     revision: int | None = Field(None, ge=0)
-
 
 
 class FinishingSave(BaseModel):
@@ -349,7 +349,6 @@ def create_finishing_router() -> APIRouter:
         return stored
 
 
-
     @router.post("/api/jobs/{job_id}/previews", status_code=202)
     def create_preview(request: Request, job_id: str, body: PreviewSubmission):
         from .studio_render import submit_render
@@ -371,7 +370,7 @@ def create_finishing_router() -> APIRouter:
     @router.api_route("/api/jobs/{job_id}/previews/{preview_file}.mp4", methods=["GET", "HEAD"])
     def stream_preview(request: Request, job_id: str, preview_file: str):
         from .studio_render import task_status, _locate_task
-        from .server import ranged_file
+        from .http_media import ranged_file
         identifier = preview_file
         if not re.fullmatch(r"pv_[0-9a-f]{32}", identifier):
             raise HTTPException(404, "Предпросмотр не найден")
@@ -414,7 +413,7 @@ def create_finishing_router() -> APIRouter:
     @router.api_route("/api/exports/{export_id}/files/{filename}", methods=["GET", "HEAD"])
     def stream_export(request: Request, export_id: str, filename: str):
         from .studio_render import task_status, _locate_task
-        from .server import ranged_file
+        from .http_media import ranged_file
         if not re.fullmatch(r"ex_[0-9a-f]{32}", export_id):
             raise HTTPException(404, "Экспорт не найден")
         state = task_status(_manager(request), export_id)
@@ -431,7 +430,7 @@ def create_finishing_router() -> APIRouter:
 
     @router.api_route("/api/music/tracks/{filename}/stream", methods=["GET", "HEAD"])
     def stream_music(request: Request, filename: str):
-        from .server import ranged_file
+        from .http_media import ranged_file
         # Restrict to the exact list presented by the existing /api/music API.
         from .music import list_tracks
         found = next((p for p in list_tracks(config.MUSIC) if p.name == filename), None)

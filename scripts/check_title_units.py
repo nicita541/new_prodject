@@ -13,7 +13,7 @@ import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from app.analysis import vision_session
+from app.vision import vision_session
 from app.config import JOBS
 from app.deepseek import job_spending
 from app.titles import TITLES_VERSION, refine_titles

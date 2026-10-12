@@ -1,7 +1,7 @@
 """Offline, checkpointed audio/visual analysis pipeline; models never invent source timestamps.
 
 Decomposed into:
-- app.media_probe: Subprocess execution, ffprobe analysis, shot detection, windows, transcript normalization.
+- app.media_probe: Subprocess execution, ffprobe analysis, shot detection, transcript normalization.
 - app.vision: LocalVision VLM runner, session management, and storyboard generation.
 - app.story_review: Story units, event validation, global omission validation, and LLM review.
 """
@@ -12,65 +12,23 @@ import hashlib
 import json
 from pathlib import Path
 import sys
-import urllib.error
 
+from .analysis_provider import analysis_provider, provider_identity, framing_provider, _model_files_for_provider
 from .analysis_result import analysis_result
 from .editorial_pipeline import finalize_editorial_selection
 
-from app.config import (
-    FFMPEG, ROOT, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR, setup_environment
-)
+from app.config import FFMPEG, ROOT, STORY_MODEL, STORY_PROJECTOR, setup_environment
 from app.model_perf import purpose as inference_purpose
 
-# Re-exports from app.media_probe
-from app.media_probe import (
-    atomic_json,
-    load_json,
-    run_process,
-    probe_media,
-    detect_shots,
-    shot_checkpoint,
-    analysis_windows,
-    normalize_transcript,
-    SHOT_DETECTOR_VERSION,
-    SCENE_THRESHOLD,
-)
+# Media preparation
+from app.json_store import analysis_json as atomic_json, load_json
+from app.media_probe import run_process, probe_media, shot_checkpoint, normalize_transcript
 
-# Re-exports from app.vision
-from app.vision import (
-    LocalVision,
-    vision_session as _native_vision_session,
-    storyboard_times,
-    storyboard,
-)
+# Model sessions
+from app.vision import LocalVision, vision_session
 
-# Re-exports from app.story_review
-from app.story_review import (
-    analysis_context_limit,
-    validated_event,
-    candidate_units,
-    apply_unit_selection,
-    validate_global_omissions,
-    apply_global_selection,
-    global_story_review,
-)
-
-
-def vision_session(job_dir, cancelled, provider='local', **settings):
-    if provider == 'antigravity_manual':
-        if Path(settings.get('model', VLM_MODEL)) == STORY_MODEL:
-            from .antigravity_exchange import ManualVision
-            return ManualVision(job_dir, cancelled, **settings)
-        return _native_vision_session(job_dir, cancelled, 'local', **settings)
-    return _native_vision_session(job_dir, cancelled, provider, **settings)
-
-
-def provider_identity(provider):
-    if provider == 'antigravity_manual':
-        from .antigravity_exchange import PROFILE
-        return dict(PROFILE)
-    from .deepseek import provider_identity as native_identity
-    return native_identity(provider)
+# Global review
+from app.story_review import apply_global_selection, global_story_review
 
 
 ANALYSIS_VERSION = 16
@@ -121,38 +79,14 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
             'focus_projector': str(STORY_PROJECTOR)}
 
 
-def analysis_provider(job_dir: Path) -> str:
-    settings = job_dir / 'analysis-settings.json'
-    provider = load_json(settings).get('provider', 'local') if settings.is_file() else 'local'
-    if provider not in ('local', 'deepseek', 'hybrid', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted', 'antigravity_manual'):
-        raise ValueError('Неизвестный способ анализа')
-    return provider
-
-
 def selection_snapshot(diagnostics, stage, events):
-    from .source_roles import merge_ranges
+    from app.source_ranges import merge_ranges
     active = [e for e in events if not e.get('global_excluded') and not e.get('pacing_excluded')]
     ranges = merge_ranges([r for e in active for r in e.get('selected_ranges', [e])])
     retained = sum(r['end']-r['start'] for r in ranges)
     diagnostics.event(stage, 'result', events=len(events), selected_events=len(active),
                       selected_duration=retained, uncertain=sum(bool(e.get('uncertain')) for e in events))
     diagnostics.summary(**{f'duration_after_{stage}': retained})
-
-
-def framing_provider(provider: str) -> str:
-    return 'local' if provider in ('deepseek_plan', 'local_fast_story') else provider
-
-
-def _model_files_for_provider(provider: str) -> tuple[Path, ...]:
-    """Only local models actually used by this provider are mandatory.
-
-    DeepSeek story, pacing and framing require local visual 4B, not an
-    installed local 9B. Asking for STORY_MODEL.stat() made otherwise valid
-    paid jobs fail before the first story request on machines without 9B.
-    """
-    if provider in ('local_flash_story', 'local_flash_story_budgeted', 'deepseek', 'antigravity_manual'):
-        return (VLM_MODEL, VLM_PROJECTOR)
-    return (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)
 
 
 def _visual_checkpoint_signature(job_dir: Path, fresh_signature: str) -> str:

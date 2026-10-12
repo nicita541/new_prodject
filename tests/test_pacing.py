@@ -205,7 +205,7 @@ class PacingTests(unittest.TestCase):
         remote.query.side_effect = EpisodeBudgetExceeded('cap')
         local = MagicMock()
         local.query.return_value = {'decisions':[], 'uncertain':False}
-        with patch('app.analysis.LocalVision', return_value=local):
+        with patch('app.vision.LocalVision', return_value=local):
             with BudgetPacingVision(remote,directory,lambda:False) as vision:
                 vision.query('prompt',image,max_tokens=800,schema={})
                 vision.query('next prompt',image,max_tokens=800,schema={})

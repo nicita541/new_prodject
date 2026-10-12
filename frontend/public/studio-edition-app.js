@@ -1134,7 +1134,7 @@
         ui.reviewAutoNext = e.target.checked;
       };
     const strip = $("rvStrip"),
-      chosen = strip?.querySelector(".rv-scene.picked");
+      chosen = strip?.querySelector(".rv2-clip.active");
     if (chosen && ui.reviewScrollNeeded) {
       chosen.scrollIntoView({
         behavior: "instant",
@@ -1620,16 +1620,6 @@
             .catch(() => {});
           break;
         }
-        case "toggle-debug":
-          ui.showDebug = !ui.showDebug;
-          ui.reviewInspector = "quality";
-          render();
-          break;
-        case "removed-info":
-          ui.showDebug = true;
-          render();
-          notify("Внизу таймлайна раскрыты причины сохранения и удаления");
-          break;
         case "review-mode": {
           ui.reviewMode = rid;
           render();
@@ -1638,11 +1628,6 @@
         case "review-detail": {
           await request("GET", `/api/jobs/${j.id}/plan`);
           showReviewDetail(rid);
-          break;
-        }
-        case "review-inspector": {
-          ui.reviewInspector = rid;
-          render();
           break;
         }
         case "review-select-seg": {
@@ -1655,43 +1640,6 @@
           ui.reviewScrollNeeded = true;
           render();
           reviewSeek($("reviewSourceVideo"), segment.start, true);
-          break;
-        }
-        case "review-select-cut": {
-          const pl = db.plans[j?.id],
-            selected = reviewSegments(pl).find(
-              (s) => s.kind === "kept" && s.part === ui.part && s.cut === idx,
-            );
-          if (selected) {
-            ui.reviewSelection = selected.key;
-            ui.reviewScrollNeeded = true;
-            ui.reviewMode = "compare";
-            render();
-            reviewSeek($("reviewSourceVideo"), selected.start, true);
-          }
-          break;
-        }
-        case "review-warning": {
-          ui.reviewWarning = idx;
-          ui.reviewInspector = "quality";
-          render();
-          break;
-        }
-        case "review-show-short": {
-          ui.reviewMode = "short";
-          render();
-          break;
-        }
-        case "review-scroll-selected": {
-          ui.reviewScrollNeeded = true;
-          const node = document.querySelector(".rv-scene.picked");
-          if (node) {
-            node.scrollIntoView({
-              behavior: "smooth",
-              inline: "center",
-              block: "nearest",
-            });
-          }
           break;
         }
         case "review-prev": {

@@ -2,8 +2,9 @@
 from __future__ import annotations
 import math
 
-from .source_roles import merge_ranges, confirmed_exclusions
-from .titles import _subtract
+from app.source_ranges import merge_ranges
+from .source_roles import confirmed_exclusions
+from app.source_ranges import subtract_ranges as _subtract
 
 VERSION = 1
 LEAD = .18

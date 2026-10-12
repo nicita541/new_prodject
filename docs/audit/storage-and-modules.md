@@ -20,7 +20,7 @@
 | `temp/`, `scratch/`, `ТЕСТЫ/` | Временные/экспериментальные/отчётные материалы | Только по проверке назначения, незавершённых задач и пользовательских результатов |
 | `.agent/`, `.agents/`, `docs/` | Планы, agent workflows, архитектура/решения/аудиты | Нет |
 | `.git/`, `.github/` | История и CI workflows | Нет |
-| `1_Запустить_Кадр.bat`, `start.bat`, `ПОСМОТРЕТЬ_ИНТЕРФЕЙС.bat` | Канонический запуск и compatibility shortcut | Нет |
+| `1_Запустить_Кадр.bat`, `start.bat` | Пользовательский запуск и его служебный start.bat | Нет |
 | `остановить_Кадр.bat`, `открыть_логи.bat`, `setup.bat` | Idle stop, открытие журналов и explicit setup | Нет |
 | MP4/MKV в корне | Оригиналы источников, видимые registry | Нет |
 
@@ -131,6 +131,11 @@ Source hash — доказательство байтового совпаден
 | [library](../../app/library.py) | Project/episode ownership, сохранённые настройки и tombstones |
 | [worker](../../app/worker.py) | Один pipeline job в child, status/progress/error publication |
 | [pipeline](../../app/pipeline.py) | Run manifests, analysis→plan→quality→context→render, ordered checkpoints |
+| [json_store](../../app/json_store.py) | Единственная атомарная запись JSON, чтение и явные контракты encodings |
+| [source_ranges](../../app/source_ranges.py) | Общая математика исходных диапазонов: merge/intersection/ordered subtraction |
+| [http_media](../../app/http_media.py) | HTTP byte-range выдача уже разрешённого пути без композиции server |
+| [analysis_provider](../../app/analysis_provider.py) | Сохранённые настройки провайдера, identity, routing и обязательные model files |
+| [antigravity_exchange](../../app/antigravity_exchange.py) | Ручной transport пакетов, строгий импорт JSON, ожидание результата и provider banks |
 | [analysis](../../app/analysis.py) | Последовательный stage orchestration и derived cache identities; reexports нижних utilities |
 | [media_probe](../../app/media_probe.py) | FFprobe, subprocess runner, raw/accepted shots, analysis windows, transcript normalization |
 | [inference](../../app/inference.py) | Isolated Whisper ASR и bounded VAD repair |
@@ -242,7 +247,6 @@ Compatibility reexports `analysis` и `planner` не следует удалят
 | [run_raw_video_quality.py](../../scripts/run_raw_video_quality.py) | Actual local vision quality run без supplied semantic answers |
 | [run_production_raw_quality.py](../../scripts/run_production_raw_quality.py) | Genuine production video+ASR observer, real analysis/export режимы |
 | [verify_production_raw_exports.py](../../scripts/verify_production_raw_exports.py) | Read-only audit completed actual raw-video exports/SRT |
-| [diagnostics/simulate_dramatic_montage.py](../../scripts/diagnostics/simulate_dramatic_montage.py) | Simulation planner по сохранённым facts; не model E2E |
 
 Diagnostics не равно безопасные unit tests: smoke/vision/title/framing/real-run могут загрузить GPU и делать inference, DeepSeek wrappers могут обращаться к remote. Offline full-pipeline fixture checks подтверждают FFmpeg/планирование/доставку, но не работу ASR/VLM над реальным source.
 
@@ -397,3 +401,5 @@ React/legacy/reference удалены вместе с их отдельными 
 ## Дополнение: ручной Antigravity
 
 Модуль `app/antigravity_exchange.py` принадлежит границе9B query: экспорт/строгий импорт, ожидание и банк контрольных точек. В задании добавляется `antigravity/packets/<hash>` (request/schema/prompt/pages/result/state/cli-attempts) и `antigravity/checkpoint-bank`. Это данные для продолжения; успешные ответы не являются мусором. `antigravity/automation.json` хранит настройку автоимпорта, `exchange.json` — текущий ожидаемый пакет, `runner.json` — состояние отдельного сценария; `runner.lock` исключает два сценария одновременно. Пользователь отдельно запускает `scripts/run_antigravity_packet.ps1` для одного пакета либо `scripts/run_antigravity_job.ps1` для последовательной обработки и автоимпорта. KADR не запускает CLI и не читает авторизацию. Инструкции, узкий CLI-профиль и проверенные результаты — в [руководстве](../antigravity-manual.md). Тесты границы: `tests/test_antigravity_exchange.py`.
+
+Зоны ответственности и разрешённое направление зависимостей: [app/README](../../app/README.md). Альтернативный simulation planner удалён; диагностика использует рабочие planners и их существующие изолированные проверки.

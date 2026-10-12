@@ -63,7 +63,7 @@ def _validate(raw, known):
 
 
 def _prompt(units, prior, vision, anchored, editorial_profile=None, input_limit=None):
-    from .analysis import analysis_context_limit
+    from app.story_review import analysis_context_limit
     from .editorial import instruction as policy_instruction,DEFAULT_PROFILE
     instruction = (
         policy_instruction(editorial_profile or DEFAULT_PROFILE)+' Compare CURRENT timestamped units/images with earlier RETAINED chronological story facts. '
@@ -129,7 +129,8 @@ def _novelty_schema(ids):
 
 def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, report, cancelled):
     """Check late silent candidates; establish montage only from evidence."""
-    from .analysis import candidate_units, storyboard
+    from app.story_review import candidate_units
+    from app.vision import storyboard
     from .editorial import load_profile
     editorial_profile=load_profile(job_dir)
     from .source_roles import apply_exclusions,verified_story_ranges
@@ -140,7 +141,7 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                  or candidate_units(event['start'], event['end'], transcript, shots)
                  for event in events]
     from .source_roles import confirmed_exclusions
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     if editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor']:
         for event,units in zip(result,all_units):
             protected=[*event.get('protected_atmosphere_ranges',[]),

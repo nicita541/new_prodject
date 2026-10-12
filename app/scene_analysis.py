@@ -8,7 +8,7 @@ from bisect import bisect_left
 from pathlib import Path
 import urllib.error
 
-from .media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from .bounded_storyboard import MAX_INFERENCE_FRAMES
 from .pipeline_diagnostics import Diagnostics
 from .story_review import candidate_units, validated_event, apply_unit_selection
@@ -147,7 +147,7 @@ def query_scene(vision, prompt, image, units, event_id, start, end, timestamps, 
             apply_unit_selection(event, raw, units)
             from .scene_understanding import validate_understanding
             event = validate_understanding(raw, event, units)
-            from .source_roles import merge_ranges
+            from app.source_ranges import merge_ranges
             event['selected_ranges'] = merge_ranges([*event.get('selected_ranges',[]),
                 *[u for u in units if u['id'] in event.get('action_units',[])]])
             diagnostics.append('scene_analysis.jsonl', {'scene_id': units[0].get('parent_scene_id'),

@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 
 from .config import ROOT
-from .jobs import atomic_json
+from app.json_store import atomic_json
 
 VERSION = 10
 CONTEXT_RADIUS = 2
@@ -276,7 +276,7 @@ def _visible_low_confidence_candidate(raw,units):
 
 def sequence_units(start,end,transcript,shots):
     """Keep audible reply tails on the story side of a proposed OP/ED edge."""
-    from .analysis import candidate_units
+    from app.story_review import candidate_units
     from .planner import _speech_tail
     speech=[*transcript['segments'],*transcript['words']]
     # ASR ends are not acoustic cuts. Reuse the planner's bounded handles
@@ -293,7 +293,7 @@ def sequence_units(start,end,transcript,shots):
 def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, cancelled):
     from .production import sequence_sheet
     from .story import _protected_speech
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     from .source_roles import verified_story_ranges,apply_exclusions
     result=copy.deepcopy(events)
     duration=max((e['end'] for e in events),default=0)
@@ -416,17 +416,17 @@ def clean_whole_sequences(events, transcript, shots, job_dir, vision, report, ca
             event['credit_sequence_proofs']=[*original.get('credit_sequence_proofs',[]),*review['proofs']]
             event['credits_kind']=review['kind'] or original.get('credits_kind',original['kind'])
         if review['sequence_ranges']:
-            from .source_roles import merge_ranges
+            from app.source_ranges import merge_ranges
             event['confirmed_credit_sequence_ranges']=merge_ranges([
                 *original.get('confirmed_credit_sequence_ranges',[]),*review['sequence_ranges']])
         if review['opening_ranges']:
-            from .source_roles import merge_ranges
+            from app.source_ranges import merge_ranges
             event['confirmed_opening_ranges']=merge_ranges([
                 *original.get('confirmed_opening_ranges',[]),*review['opening_ranges']])
             event['confirmed_opening_proofs']=[*original.get('confirmed_opening_proofs',[]),
                                               *review['opening_proofs']]
         if review['ending_ranges']:
-            from .source_roles import merge_ranges
+            from app.source_ranges import merge_ranges
             event['confirmed_nonstory_ending_ranges']=merge_ranges([
                 *original.get('confirmed_nonstory_ending_ranges',[]),*review['ending_ranges']])
             event['confirmed_nonstory_ending_proofs']=[*original.get('confirmed_nonstory_ending_proofs',[]),

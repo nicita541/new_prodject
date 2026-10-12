@@ -5,7 +5,8 @@ import re
 import uuid
 from pathlib import Path
 
-from .jobs import atomic_json, contained, now, read_json, validate_id
+from app.json_store import atomic_json, now, read_json
+from .jobs import contained, validate_id
 
 DEFAULT_SETTINGS = {'analysis_provider': 'deepseek_plan', 'layout': 'cinema', 'caption_style': 'accent'}
 

@@ -15,9 +15,9 @@ from app import continuity_verification as verification
 from app.config import TEMP
 from app.deepseek import BudgetExceeded, RemoteError
 from app.jobs import BusyError
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from app.source_continuity import resolve_source_continuity
-from app.source_roles import merge_ranges
+from app.source_ranges import merge_ranges
 from tests.test_selection_adjudication import answer as selection_answer
 from tests.test_source_continuity import chain, span
 

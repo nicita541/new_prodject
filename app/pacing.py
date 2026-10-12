@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 from PIL import Image, ImageDraw
 
-from .jobs import atomic_json
+from app.json_store import atomic_json
 
 PACING_VERSION = 20
 REMOVABLE = {'waiting','repeat','scenery'}
@@ -45,7 +45,7 @@ class BudgetPacingVision:
         except (BudgetExceeded, RemoteError) as error:
             self.fallback_reason = {'category':getattr(error,'category',None) or type(error).__name__,
                                     'endpoint':getattr(error,'endpoint',None)}
-            from .analysis import LocalVision
+            from app.vision import LocalVision
             from .config import STORY_MODEL, STORY_PROJECTOR
             self.local = LocalVision(self.job_dir, self.cancelled, model=STORY_MODEL, projector=STORY_PROJECTOR)
             self.local.__enter__()
@@ -163,7 +163,7 @@ def apply_review(event, units, raw, editorial_profile=None):
         event.setdefault('story_warnings', []).append('Неподтверждённые повторы сохранены: '+', '.join(sorted(blocked)))
     if any(not item['keep'] and item['reason']=='production_credit' for item in decisions):
         event.setdefault('story_warnings', []).append('Проверка темпа не удаляет неподтверждённые титры: нужны независимые признаки заставки')
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     neutral = [known[item['unit']] for item in decisions if item.get('reaction_or_humor') is False
                and item['reason'] != 'reaction']
     if event.get('protected_atmosphere_ranges'):
@@ -267,7 +267,7 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
     semantic_component = component_identity('pacing')
     from .source_roles import apply_exclusions, verified_story_ranges
     from .speech_context import _retained
-    from .titles import _subtract
+    from app.source_ranges import subtract_ranges as _subtract
     profile = load_profile(job_dir)
     result = apply_exclusions(events)
     retained_ids = _retained(result)

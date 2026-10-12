@@ -6,6 +6,8 @@ Proposals require downstream semantic adjudication; they are not scene facts.
 """
 from __future__ import annotations
 
+from app.content_identity import finite_number as _finite
+
 
 import bisect
 import hashlib
@@ -23,7 +25,8 @@ from app.content_identity import evidence_digest as _hash
 
 from .config import FFMPEG, FFPROBE, ROOT
 from .media import run_command
-from .media_probe import atomic_json, load_json, raw_shot_evidence, run_process
+from app.json_store import analysis_json as atomic_json, load_json
+from .media_probe import raw_shot_evidence, run_process
 
 VERSION = 1
 POLICY = {'sample_interval': .2, 'frame_width': 160, 'frame_height': 90,
@@ -31,10 +34,6 @@ POLICY = {'sample_interval': .2, 'frame_width': 160, 'frame_height': 90,
           'embedding_jump': .22, 'audio_jump': .65, 'motion_jump': .18,
           'flow_method': 'normalized_farneback', 'subtitle_crop': .80,
           'embedding_method': 'normalized_luminance_dct_and_spatial_gradient_v1'}
-
-
-def _finite(value):
-    return type(value) in (int, float) and math.isfinite(value)
 
 
 def _structure(shots, duration):

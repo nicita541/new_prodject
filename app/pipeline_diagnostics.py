@@ -9,7 +9,7 @@ import re
 import time
 import uuid
 
-from .media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 
 
 def _clean(value):

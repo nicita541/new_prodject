@@ -19,6 +19,7 @@ sys.pycache_prefix = str(ROOT / 'cache' / 'pycache')
 for _name in ('TEMP', 'TMP', 'TMPDIR'):
     os.environ[_name] = str(ROOT / 'temp')
 sys.path.insert(0, str(ROOT))
+from app.json_store import compact_json as _atomic
 from app.job_progress import ALIASES, STEPS, _read, stage_progress
 
 TERMINAL = {'completed', 'failed', 'cancelled', 'interrupted'}
@@ -30,26 +31,6 @@ def _contained(path, root):
     if not value.is_relative_to(root.resolve()):
         raise ValueError('Presentation path must stay inside the workspace')
     return value
-
-
-def _atomic(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex + '.tmp')
-    try:
-        with temporary.open('w', encoding='utf-8') as stream:
-            json.dump(value, stream, ensure_ascii=False, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        for attempt in range(20):
-            try:
-                os.replace(temporary, path)
-                break
-            except PermissionError:
-                if attempt == 19:
-                    raise
-                time.sleep(.01)
-    finally:
-        temporary.unlink(missing_ok=True)
 
 
 def publish_once(job_id, *, root=ROOT):

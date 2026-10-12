@@ -4,7 +4,8 @@ from __future__ import annotations
 import copy
 
 from .final_quality import _planned_source, gate_identity
-from .source_roles import merge_ranges, confirmed_exclusions
+from app.source_ranges import merge_ranges
+from .source_roles import confirmed_exclusions
 from .selection_gate import positive_ranges
 
 
@@ -12,7 +13,7 @@ def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report,
     """Return new source analysis; a recovery result never silently enlarges cuts."""
     from .analysis_result import analysis_result
     from .editorial_pipeline import finalize_editorial_selection
-    from .media_probe import atomic_json
+    from app.json_store import analysis_json as atomic_json
     from .pipeline_diagnostics import Diagnostics
     from .continuity_verification import verify_omitted_continuity
     events = copy.deepcopy(analysis['events'])
@@ -66,7 +67,7 @@ def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report,
         # Reinspect the disputed source geometry. A failure remains explicit;
         # source ambiguity cannot be hidden by greater retention.
         from .scene_detection import scene_checkpoint
-        from .media_probe import load_json
+        from app.json_store import load_json
         fingerprint = load_json(job_dir/'source-fingerprint.json') if (job_dir/'source-fingerprint.json').is_file() else gate_identity(analysis['probe'])
         cache = job_dir/'scenes.meta.json'
         if cache.is_file():

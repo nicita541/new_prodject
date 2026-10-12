@@ -4,9 +4,10 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from app.analysis import (analysis_context_limit, framing_provider, global_story_review, vision_session,
-                          _model_files_for_provider, _visual_checkpoint_signature,
-                          _recoverable_checkpoint)
+from app.story_review import analysis_context_limit, global_story_review
+from app.analysis_provider import framing_provider, _model_files_for_provider
+from app.vision import vision_session
+from app.analysis import _visual_checkpoint_signature, _recoverable_checkpoint
 from app.config import TEMP
 from app.deepseek import DeepSeekVision, RemoteError, provider_identity
 
@@ -60,7 +61,7 @@ class AnalysisProviderTests(unittest.TestCase):
 
     def test_cloud_plan_sessions_use_cloud_and_focus_uses_local(self):
         cancelled = lambda: False
-        with patch('app.deepseek.DeepSeekVision') as cloud, patch('app.analysis.LocalVision') as local:
+        with patch('app.deepseek.DeepSeekVision') as cloud, patch('app.vision.LocalVision') as local:
             vision_session(TEMP, cancelled, 'deepseek_plan', thinking=True)
             cloud.assert_called_once_with(TEMP, cancelled)
             local.assert_not_called()

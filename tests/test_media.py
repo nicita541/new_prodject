@@ -334,7 +334,7 @@ class MediaIntegrationTests(unittest.TestCase):
             self.assertLessEqual(validate_export(result, 90, base)["duration"], 90)
 
     def test_storyboard_clamps_audio_tail_to_real_video_frames(self):
-        from app.analysis import storyboard
+        from app.vision import storyboard
         from app.media import video_frame_bounds
         with workspace_directory() as directory:
             base = Path(directory)

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.config import setup_environment
-from app.media_probe import atomic_json, load_json
+from app.json_store import analysis_json as atomic_json, load_json
 from app.semantic_identity import semantic_identity
 from scripts.run_raw_video_quality import RecordedVision, sha256, workspace
 

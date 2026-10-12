@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .media_probe import atomic_json
+from app.json_store import analysis_json as atomic_json
 
 
 def finalize_editorial_selection(source, events, transcript, shots, probe, job_dir,

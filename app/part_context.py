@@ -84,7 +84,7 @@ def sample_times(cuts):
 
 def frames(source, cuts, directory, cancelled):
     from PIL import Image, ImageDraw
-    from .analysis import run_process
+    from app.media_probe import run_process
     from .config import FFMPEG
     from .media import video_frame_bounds
     first, last = video_frame_bounds(source, directory, cancelled)
@@ -150,7 +150,9 @@ def with_context(plan):
 
 def generate(plan, job_dir: Path, report, cancelled):
     """Called by every montage after final planning; cache is separate from MP4."""
-    from .analysis import analysis_provider, atomic_json, vision_session
+    from app.analysis_provider import analysis_provider
+    from app.vision import vision_session
+    from app.json_store import analysis_json as atomic_json
     from .config import ROOT, STORY_MODEL, STORY_PROJECTOR
     from .deepseek import provider_identity
     provider = analysis_provider(job_dir)
@@ -214,7 +216,7 @@ def generate(plan, job_dir: Path, report, cancelled):
 
 if __name__ == '__main__':
     import sys
-    from .analysis import atomic_json
+    from app.json_store import analysis_json as atomic_json
     from .config import JOBS
     from .jobs import contained
     directory = contained(JOBS / sys.argv[1], JOBS)

@@ -74,10 +74,10 @@ def test_legacy_profile_is_opt_in_but_unrestricted(tmp_path):
         assert profile["on_remote_error"] == "local4b_conservative_fallback"
         assert profile["framing"] == "flash_or_local4b"
         assert profile["pacing"] == "flash_or_local4b"
-    from app.analysis import framing_provider
+    from app.analysis_provider import framing_provider
     assert framing_provider("local_flash_story_budgeted") == "local_flash_story_budgeted"
     assert framing_provider("local_flash_story") == "local_flash_story"
-    with patch("app.analysis.LocalVision", FastLocal):
+    with patch("app.vision.LocalVision", FastLocal):
         visual = vision_session(tmp_path, lambda: False, "local_flash_story_budgeted")
         assert isinstance(visual, FastLocal)
         story = vision_session(tmp_path, lambda: False, "local_flash_story_budgeted",

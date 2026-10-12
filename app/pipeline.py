@@ -1,6 +1,8 @@
 """Recoverable analysis → deterministic plan → validated local media export."""
 from __future__ import annotations
 
+from app.json_store import analysis_json as _atomic_json
+
 import concurrent.futures
 import hashlib
 import json
@@ -16,18 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ROOT, MUSIC, setup_environment
-from .media import choose_encoder, inspect_media, render_part, validate_export
-from .planner import build_plan, validate_analysis, validate_plan, PLANNER_VERSION
+from .media import choose_encoder, render_part, validate_export
+from .planner import build_plan, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
-from .music import load_settings, pick_track, pick_track_for_part, music_library_identity
-
-
-def _atomic_json(path: Path, value) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+from .music import load_settings, pick_track_for_part, music_library_identity
 
 
 @contextmanager
@@ -123,10 +118,11 @@ def _validated_cached_render(path: Path, checkpoint: Path, fingerprint: str,
 
 def _run_identity(job_dir: Path) -> dict:
     """Record code/settings provenance; never inspect private provider settings."""
-    from .analysis import ANALYSIS_VERSION, analysis_provider, derived_story_identity
+    from .analysis import ANALYSIS_VERSION, derived_story_identity
+    from app.analysis_provider import analysis_provider
     from .editorial import load_profile
     from .pacing import PACING_VERSION
-    from .analysis import provider_identity
+    from app.analysis_provider import provider_identity
     from .config import ASR_MODEL, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
     provider = analysis_provider(job_dir)
     profile = load_profile(job_dir)
@@ -404,7 +400,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         if stalled or attempt == QUALITY_POLICY['max_recovery_passes']:
             raise ValueError(quality_failure_message(gate, stalled=stalled))
         report('quality_gate', .68, f'Финальная проверка: уточняем исходные доказательства, проход {attempt+1}')
-        from .analysis import vision_session, analysis_provider
+        from app.vision import vision_session
+        from app.analysis_provider import analysis_provider
         from .config import STORY_MODEL, STORY_PROJECTOR
         with vision_session(job_dir,cancelled,analysis_provider(job_dir),model=STORY_MODEL,projector=STORY_PROJECTOR,thinking=True) as vision:
             analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)

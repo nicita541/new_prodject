@@ -5,12 +5,10 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_old_interface_shortcut_delegates_to_real_entrypoint():
-    shortcut = (ROOT / "ПОСМОТРЕТЬ_ИНТЕРФЕЙС.bat").read_text(encoding="utf-8")
-    assert 'call "%~dp0start.bat"' in shortcut
-    assert ".venv" not in shortcut
-    assert "8766" not in shortcut
-    assert "create_studio_demo" not in shortcut
+def test_only_the_named_product_launcher_remains():
+    assert not (ROOT / "ПОСМОТРЕТЬ_ИНТЕРФЕЙС.bat").exists()
+    launcher = (ROOT / "1_Запустить_Кадр.bat").read_text(encoding="utf-8")
+    assert 'call "%~dp0start.bat"' in launcher
 
 
 def test_production_entrypoint_uses_portable_runtime_and_real_build():
@@ -38,6 +36,24 @@ def test_studio_is_the_only_built_interface():
 
 def test_no_synthetic_demo_is_shipped_as_startup_code():
     assert not (ROOT / "scripts" / "create_studio_demo.py").exists()
+
+
+def test_domain_helpers_do_not_import_application_composition():
+    """Utilities/providers must not enter HTTP or analysis orchestration backwards."""
+    import ast
+    forbidden = {'app.analysis', 'app.server'}
+    allowed = {'app.server': {'__main__.py', 'launcher.py'}, 'app.analysis': {'pipeline.py'}}
+    for path in (ROOT/'app').glob('*.py'):
+        for node in ast.walk(ast.parse(path.read_text('utf-8'))):
+            if isinstance(node, ast.ImportFrom):
+                name = ('app.' if node.level == 1 else '') + (node.module or '')
+                assert name not in forbidden or path.name in allowed[name], f'{path.name}:{node.lineno}: {name}'
+                assert not (name == 'app.jobs' and any(a.name in {'atomic_json', 'read_json', 'now'} for a in node.names)), path.name
+            elif isinstance(node, ast.Import):
+                assert not any(a.name in forbidden and path.name not in allowed[a.name] for a in node.names), path.name
+    for name in ('json_store', 'source_ranges', 'content_identity', 'source_text', 'cancellation'):
+        tree = ast.parse((ROOT/'app'/f'{name}.py').read_text('utf-8'))
+        assert not any(isinstance(n, ast.ImportFrom) and ((n.module or '').startswith('app.') or n.level) for n in ast.walk(tree)), name
 
 
 def test_live_studio_labels_and_transport_match_real_data():
@@ -70,7 +86,7 @@ const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,d
   db.sources=[{id:'s1',name:'source.mp4',size:100}];
   db.jobs=[{id:'j1',episode_id:'e1',source_id:'s1',status:'completed',stage:'completed',progress:1,created_at:1,outputs:[],files:[]}];
   db.plans={j1:{duration:1420,events:[],parts:[{index:1,duration:10,cuts:[{start:0,end:10}],subtitles:[]}],quality_summary:{available:false},debug_timeline:{available:false}}};
-  ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';},
+  ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';ui.reviewScrollNeeded=true;},
  job(){return currentJob();},data(){return db},entries(){return ui.apiEntries}};})();`;
 vm.runInContext(source.split('// Live Studio Edition: preserve')[0]+expose,context);
 const app=context.window.audit;assert.equal(app.data().projects.length,0);assert.equal(app.data().jobs.length,0);app.setup();
@@ -134,7 +150,13 @@ assert(app.exemplarRoute(['GET','/api/jobs/{id}/previews/{preview_id}']).unavail
 assert(app.exemplarRoute(['GET','/api/exports/{export_id}']).unavailable);
 app.data().previews={selected:{preview_id:'selected',source_job_id:'j1'},other:{preview_id:'other',source_job_id:'j2'}};
 assert.equal(app.exemplarRoute(['GET','/api/jobs/{id}/previews/{preview_id}']).path,'/api/jobs/j1/previews/selected');
+let selectedScrolled=false;
+element('rvStrip').querySelector=selector=>{
+ assert.equal(selector,'.rv2-clip.active');
+ return {scrollIntoView(){selectedScrolled=true}};
+};
 app.bindReview();
+assert(selectedScrolled,'Current Studio clip must scroll into view');
 const button=element('rvPlayButton'),video=element('reviewShortVideo');
 assert.equal(button.textContent,'▷ Смотреть');
 video.play();assert.equal(button.textContent,'Ⅱ Пауза');

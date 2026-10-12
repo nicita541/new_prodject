@@ -1,11 +1,12 @@
 """Loopback-only HTTP API and static UI; no model downloads at runtime."""
 from __future__ import annotations
 
+from app.http_media import ranged_file
+
 import asyncio
 import json
 import logging
 import math
-import mimetypes
 import os
 import re
 import shutil
@@ -17,15 +18,16 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
 from app.studio_identity import server_identity
-from app.jobs import BusyError, JobManager, contained, read_json
+from app.jobs import BusyError, JobManager, contained
+from app.json_store import read_json
 from app.quality import debug_timeline, summarize_plan
 from app.part_context import with_context
 from app.music import list_tracks, load_settings, save_settings
@@ -258,50 +260,6 @@ def public_job(job: dict, manager: JobManager | None = None) -> dict:
                         "duration": durations.get(name)}
                        for name in outputs if name.endswith(".mp4")]
     return result
-
-
-def ranged_file(path: Path, request: Request, as_attachment: bool = False):
-    """Single-range streaming with bounded reads and correct 416 responses."""
-    length = path.stat().st_size
-    start, end, status = 0, length - 1, 200
-    range_header = request.headers.get("range")
-    if range_header:
-        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
-        if not match or not any(match.groups()) or length == 0:
-            return JSONResponse({"detail": "Недопустимый диапазон"}, 416,
-                                headers={"Content-Range": f"bytes */{length}", "Accept-Ranges": "bytes"})
-        left, right = match.groups()
-        if left:
-            start = int(left)
-            end = min(int(right), length - 1) if right else length - 1
-        else:
-            suffix = int(right)
-            start = max(0, length - suffix)
-            if suffix == 0:
-                start = length
-        if start >= length or end < start:
-            return JSONResponse({"detail": "Диапазон за пределами файла"}, 416,
-                                headers={"Content-Range": f"bytes */{length}", "Accept-Ranges": "bytes"})
-        status = 206
-    disposition = "attachment" if as_attachment else "inline"
-    headers = {"Accept-Ranges": "bytes", "Content-Length": str(max(0, end - start + 1)),
-               "Content-Disposition": f"{disposition}; filename*=UTF-8''" + quote(path.name, safe=""),
-               "X-Content-Type-Options": "nosniff"}
-    if status == 206:
-        headers["Content-Range"] = f"bytes {start}-{end}/{length}"
-    def chunks():
-        with path.open("rb") as stream:
-            stream.seek(start)
-            remaining = end - start + 1
-            while remaining > 0:
-                content = stream.read(min(1024 * 1024, remaining))
-                if not content:
-                    break
-                yield content
-                remaining -= len(content)
-    return StreamingResponse(iter(()) if request.method == "HEAD" else chunks(), status_code=status,
-                             media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-                             headers=headers)
 
 
 def create_app(manager: JobManager | None = None) -> FastAPI:
@@ -672,7 +630,8 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     def manual_analysis_mode(request: Request, identifier: str, body: ManualAnalysisMode):
         current = get_manager(request)
         from .antigravity_exchange import preserve_provider_checkpoints
-        from .jobs import atomic_json, TERMINAL
+        from app.json_store import atomic_json
+        from .jobs import TERMINAL
         with current.mutex:
             current._assert_available()
             job = current.get(identifier)
@@ -697,7 +656,8 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @application.post('/api/jobs/{identifier}/antigravity/automation')
     def automatic_file_reception(request: Request, identifier: str, enabled: bool):
         current = get_manager(request)
-        from .jobs import atomic_json, TERMINAL
+        from app.json_store import atomic_json
+        from .jobs import TERMINAL
         from .antigravity_exchange import snapshot
         with current.mutex:
             current._assert_available()

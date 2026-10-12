@@ -5,7 +5,8 @@ import math
 import re
 
 from .selection_adjudication import POSITIVE_KINDS, _concrete
-from .source_roles import confirmed_exclusions, merge_ranges
+from .source_roles import confirmed_exclusions
+from app.source_ranges import merge_ranges
 
 VERSION = 4
 DOWNSTREAM_REASONS = {'story_structure_unresolved', 'dialogue_relations_unresolved'}

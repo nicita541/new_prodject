@@ -15,7 +15,7 @@ from pathlib import Path
 import threading
 
 from .config import STORY_MODEL, STORY_PROJECTOR, VLM_MODEL, VLM_PROJECTOR
-from .jobs import atomic_json
+from app.json_store import atomic_json
 
 PROFILE = "local4b-deepseek-flash-story-pilot-v1"
 # Historical name retained for safe resume of old test jobs, not a cap.
@@ -42,7 +42,6 @@ def _peak_charge(raw):
         hit, miss = 0, prompt
     return round((hit * .006 + miss * PEAK_INPUT_USD_PER_MILLION +
                   completion * PEAK_OUTPUT_USD_PER_MILLION) / 1_000_000, 9)
-
 
 
 def routing_profile(budgeted=False):

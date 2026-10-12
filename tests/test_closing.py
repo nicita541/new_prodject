@@ -247,7 +247,7 @@ class ClosingTests(unittest.TestCase):
         def frames(src, start, end, shots, text, destination, cancelled):
             Image.new('RGB', (48,27)).save(destination)
             return [start,end]
-        with patch('app.analysis.storyboard', side_effect=frames) as images:
+        with patch('app.vision.storyboard', side_effect=frames) as images:
             result = refine_closing_novelty(events, transcript, [{'start':94},{'start':97}],
                 directory, vision, lambda *a:None, lambda:False)
         self.assertEqual(result[0], events[0])
@@ -273,7 +273,7 @@ class ClosingTests(unittest.TestCase):
                 vision = Vision(answers)
                 def frames(src, start, end, shots, text, destination, cancelled):
                     Image.new('RGB', (48,27)).save(destination)
-                with patch('app.analysis.storyboard', side_effect=frames):
+                with patch('app.vision.storyboard', side_effect=frames):
                     result = refine_closing_novelty(events[:2], transcript, [], directory, vision, lambda *a:None, lambda:False)
                 self.assertFalse(result[1].get('credit_montage', False))
                 self.assertEqual(result[1]['selected_ranges'], [{'start':80,'end':85}])
@@ -289,7 +289,7 @@ class ClosingTests(unittest.TestCase):
         def frames(src, start, end, shots, text, destination, cancelled):
             Image.new('RGB', (48,27), 'blue').save(destination)
         original = copy.deepcopy(events)
-        with patch('app.analysis.storyboard', side_effect=frames) as images:
+        with patch('app.vision.storyboard', side_effect=frames) as images:
             result = refine_closing_novelty(events[:2], transcript, [], directory, vision,
                                            lambda *a:None, lambda:False)
         self.assertTrue(result[1]['credit_montage'])
@@ -305,7 +305,7 @@ class ClosingTests(unittest.TestCase):
         self.assertIn('meaningful_character_dialogue', schema['required'])
         self.assertEqual(events, original)
         # A confirmed answer is reusable without another model or image request.
-        with patch('app.analysis.storyboard') as cached_images:
+        with patch('app.vision.storyboard') as cached_images:
             cached, cached_vision = self.run_closing(directory, events[:2], [], transcript)
         self.assertTrue(cached[1]['credit_montage'])
         self.assertFalse(cached_vision.calls)
@@ -321,7 +321,7 @@ class ClosingTests(unittest.TestCase):
                           'meaningful_character_dialogue':True,'confidence':.95}])
         def frames(src, start, end, shots, text, destination, cancelled):
             Image.new('RGB', (48,27), 'green').save(destination)
-        with patch('app.analysis.storyboard', side_effect=frames) as images:
+        with patch('app.vision.storyboard', side_effect=frames) as images:
             result = refine_closing_novelty(events[:2], transcript, [], directory, vision,
                                            lambda *a:None, lambda:False)
         self.assertEqual(images.call_count, 1)
@@ -345,7 +345,7 @@ class ClosingTests(unittest.TestCase):
                 vision = Vision([decision(['u000','u001'], [], dialogue=['u000'], visible=['u000']), current_check])
                 def frames(src, start, end, shots, text, destination, cancelled):
                     Image.new('RGB', (48,27)).save(destination)
-                with patch('app.analysis.storyboard', side_effect=frames) as images:
+                with patch('app.vision.storyboard', side_effect=frames) as images:
                     result = refine_closing_novelty(events[:2], transcript, [], directory, vision,
                                                    lambda *a:None, lambda:False)
                 self.assertEqual(images.call_count, 1)
@@ -364,7 +364,7 @@ class ClosingTests(unittest.TestCase):
                                {'start':85,'end':86,'text':'работаю.','probability':.99}]}
         vision = Vision([decision(['u000','u001','u002'], [],
                                  dialogue=['u000','u001'], visible=['u000','u001'])])
-        with patch('app.analysis.storyboard') as images:
+        with patch('app.vision.storyboard') as images:
             result = refine_closing_novelty(events[:2], transcript, [], directory, vision,
                                            lambda *a:None, lambda:False)
         images.assert_not_called()
@@ -380,7 +380,7 @@ class ClosingTests(unittest.TestCase):
                       'words':[{'start':81+i*.5,'end':81.5+i*.5,'text':word,'probability':.99}
                                for i,word in enumerate(text.split())]}
         vision = Vision([decision(['u000','u001'], [], visible=['u000'])])
-        with patch('app.analysis.storyboard') as images:
+        with patch('app.vision.storyboard') as images:
             result = refine_closing_novelty(events[:2], transcript, [], directory, vision,
                                            lambda *a:None, lambda:False)
         images.assert_not_called()

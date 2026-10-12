@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 from app.antigravity_exchange import (AnalysisPending, ManualVision, PROVIDER,
     import_result, packet_dir, preserve_provider_checkpoints, snapshot)
 from app.config import STORY_MODEL
-from app.jobs import JobManager, atomic_json, read_json
+from app.jobs import JobManager
+from app.json_store import atomic_json, read_json
 from app.server import create_app
 from tests.test_jobs import FakeWorker
 
@@ -865,14 +866,20 @@ def test_switch_restores_qwen_checkpoints_and_keeps_factual_data(tmp_path):
 
 
 def test_only_manual_9b_routed_and_other_providers_unchanged(tmp_path):
-    from app.analysis import vision_session, provider_identity
-    with patch('app.analysis._native_vision_session', return_value='native') as native:
+    from app.vision import vision_session
+    from app.analysis_provider import provider_identity
+    with patch('app.vision.LocalVision', return_value='native') as local, \
+         patch('app.deepseek.DeepSeekVision', return_value='cloud') as cloud, \
+         patch('app.hybrid.HybridVision', return_value='hybrid') as hybrid:
         assert vision_session(tmp_path, lambda: False, PROVIDER) == 'native'
-        assert native.call_args.args[2] == 'local'
+        assert local.call_count == 1 and local.call_args.args[0] == tmp_path
         assert isinstance(vision_session(tmp_path, lambda: False, PROVIDER, model=STORY_MODEL), ManualVision)
-        for provider in ('local', 'deepseek', 'deepseek_plan', 'hybrid'):
-            assert vision_session(tmp_path, lambda: False, provider) == 'native'
-            assert native.call_args.args[2] == provider
+        assert vision_session(tmp_path, lambda: False, 'local') == 'native'
+        for provider in ('deepseek', 'deepseek_plan'):
+            assert vision_session(tmp_path, lambda: False, provider) == 'cloud'
+        assert cloud.call_count == 2
+        assert vision_session(tmp_path, lambda: False, 'hybrid') == 'hybrid'
+        assert hybrid.call_args.args[2] == 'native'
     assert provider_identity('local') == {'provider': 'local'}
 
 

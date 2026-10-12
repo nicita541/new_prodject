@@ -22,7 +22,7 @@ from .planner import (
 from .subtitles import make_cues, remap_words
 from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
-from .titles import _subtract
+from app.source_ranges import subtract_ranges as _subtract
 from .episode_profile import build_episode_profile, adaptive_retention_budget
 
 TARGET_SHORT_MIN = 60.0
@@ -114,7 +114,7 @@ def _compress_dialogue_turns(
                     left = max(ev_start, _speech_lead(left, speech_all))
                 right = min(ev_end, _speech_tail(right, speech_all, duration))
             protected.append({'start': left, 'end': right})
-        from .source_roles import merge_ranges
+        from app.source_ranges import merge_ranges
         return merge_ranges(protected)
     norm_shots = _normalize_shots(shots, duration) if shots else []
     ev_speech = sorted(
@@ -440,7 +440,6 @@ def _build_dramatic_boundaries(
         curr_t = prev_t
         curr_k -= 1
     return list(reversed(boundaries))
-
 
 
 def build_dramatic_plan(analysis: dict) -> dict:
