@@ -54,6 +54,7 @@ if ($Smoke) {
     if (-not (Test-Path -LiteralPath (Join-Path $packet 'batch.json'))) {
         $promptText += "`nOriginal contract, including every numeric/boolean enum. Use only these allowed values:`n" + ($request.schema | ConvertTo-Json -Depth 100 -Compress)
     }
+    $promptText += "`nBefore returning any keep_units/preserve_silent_units/omit_units answer: their selected union and omitted unit IDs must be DISJOINT and together cover ALL allowed unit IDs. A preserved silent unit is retained and must never also appear in omit_units. Check this separately for every independent task; do not transfer unit IDs between tasks."
     $outputName = 'agy-result.json'
 }
 $cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath,
