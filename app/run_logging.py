@@ -28,14 +28,14 @@ _CURRENT = None
 _PID = None
 _HANDLERS = ()
 _QUOTED_SECRET = re.compile(
-    r'''(?i)((?:["']?)(?:api[_-]?key|access[_-]?token|password|secret|authorization)'''
+    r'''(?i)((?:["']?)(?:api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|credentials|password|secret|authorization)'''
     r'''(?:["']?)\s*[:=]\s*)(["'])((?:\\.|(?!\2)[^\\])*)\2''', re.DOTALL
 )
 _SECRET = re.compile(
     r"(?i)(?:authorization\s*[:=]\s*(?:bearer|basic)\s+[^\s,;&]+|"
     r"bearer\s+[^\s,;&]+|"
     r"(?:sk-|github_pat_|gh[pousr]_)[A-Za-z0-9_.-]{8,})|"
-    r"((?:api[_-]?key|access[_-]?token|password|secret|authorization)\s*[:=]\s*)"
+    r"((?:api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|credentials|password|secret|authorization)\s*[:=]\s*)"
     r"([^\s,;&]+)"
 )
 _MAX_MESSAGE = 1200

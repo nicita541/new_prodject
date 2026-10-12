@@ -399,12 +399,12 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         return {**config.readiness(), "busy": get_manager(request).busy()}
 
     @application.get("/api/sources")
-    def sources(request: Request):
-        return get_manager(request).list_sources()
+    def sources(request: Request, read_only: bool = False):
+        return get_manager(request).list_sources(discover=not read_only)
 
     @application.get('/api/library')
-    def library(request: Request):
-        return request.app.state.library.snapshot()
+    def library(request: Request, read_only: bool = False):
+        return request.app.state.library.snapshot(migrate=not read_only)
 
     @application.delete('/api/projects/{identifier}')
     def delete_project(request: Request, identifier: str):
@@ -434,7 +434,12 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     def episode_settings(request: Request, identifier: str, body: EpisodeSettings):
         values = body.model_dump()
         source_id = values.pop('source_id')
-        return request.app.state.library.save_episode(identifier, source_id, values)
+        from app.library import RevisionConflict
+        try:
+            return request.app.state.library.save_episode(identifier, source_id, values,
+                expected_revision=request.headers.get('if-match'))
+        except RevisionConflict as error:
+            raise HTTPException(409, str(error)) from None
 
     @application.post('/api/episodes/{identifier}/jobs', status_code=201)
     def episode_job(request: Request, identifier: str):

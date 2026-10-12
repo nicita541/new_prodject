@@ -80,7 +80,7 @@ class WorkerProcess:
     assign it to a kill-on-close Job Object before allowing grandchildren.
     POSIX: children share a new process group.
     """
-    def __init__(self, job_dir: Path):
+    def __init__(self, job_dir: Path, *, command: list[str] | None = None):
         self.process = None
         self.handle = None
         self.log = (job_dir / "worker.log").open("ab")
@@ -94,7 +94,7 @@ class WorkerProcess:
             kwargs["start_new_session"] = True
         try:
             self.process = subprocess.Popen(
-                [sys.executable, "-m", "app.worker", "--job", job_dir.name], **kwargs)
+                command or [sys.executable, "-m", "app.worker", "--job", job_dir.name], **kwargs)
             if os.name == "nt":
                 self._assign_windows_job()
             start.touch()
@@ -206,12 +206,23 @@ class JobManager:
                            updated_at=now(), cancel_requested=False)
                 atomic_json(path, job)
 
-    def list_sources(self) -> list[dict]:
+    def list_sources(self, *, discover=True) -> list[dict]:
         with self.mutex:
             sources_path = self.data / "sources.json"
             on_disk = read_json(sources_path, {})
             if isinstance(on_disk, dict):
                 self.sources.update(on_disk)
+            if not discover:
+                result = []
+                for identifier, record in self.sources.items():
+                    try:
+                        path = contained(Path(record['path']), self.root)
+                        if path.is_file():
+                            result.append({'id': identifier, 'name': record.get('name', path.name),
+                                           'size': path.stat().st_size})
+                    except (ValueError, KeyError, OSError):
+                        continue
+                return sorted(result, key=lambda item: item['name'])
             by_path = {record["path"]: identifier for identifier, record in self.sources.items()}
             candidates = list(self.root.iterdir()) + list(self.imports.glob("*/*"))
             result = []

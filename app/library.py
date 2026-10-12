@@ -11,6 +11,10 @@ from .jobs import contained, validate_id
 DEFAULT_SETTINGS = {'analysis_provider': 'deepseek_plan', 'layout': 'cinema', 'caption_style': 'accent'}
 
 
+class RevisionConflict(ValueError):
+    pass
+
+
 def title(value):
     value = value.strip()
     if not value or len(value) > 200 or any(ord(c) < 32 for c in value):
@@ -97,9 +101,10 @@ class Library:
         if changed:
             self._save()
 
-    def snapshot(self):
+    def snapshot(self, *, migrate=True):
         with self.manager.mutex:
-            self._migrate()
+            if migrate:
+                self._migrate()
             jobs = self.manager.list_jobs()
             episodes = []
             for episode in self.data['episodes'].values():
@@ -131,9 +136,14 @@ class Library:
             self._save()
             return dict(result)
 
-    def save_episode(self, identifier, source_id, settings):
+    def save_episode(self, identifier, source_id, settings, *, expected_revision=None):
         with self.manager.mutex:
             episode = self._episode(identifier)
+            if expected_revision is not None:
+                from .content_identity import digest
+                actual = digest({'source_id': episode['source_id'], 'settings': episode['settings']})
+                if expected_revision != actual:
+                    raise RevisionConflict('Настройки серии изменились; прочитайте их заново')
             if self.manager.busy():
                 active = self.manager.get(self.manager.active[0])
                 owner = active.get('episode_id') or self.data['legacy_jobs'].get(active['id'])

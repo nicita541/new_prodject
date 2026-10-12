@@ -34,3 +34,6 @@ __pycache__/
 
 # Worktree-local Python environment
 .venv/
+
+# Workspace-specific MCP endpoints; documentation holds the portable contract.
+/.codex/config.toml

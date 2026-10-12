@@ -7,6 +7,7 @@
 | Папка/файл | Назначение и владелец | Удалять при обычной уборке? |
 |---|---|---|
 | `app/` | Python приложение и runtime pipeline | Нет; только после проверки imports/callers/контрактов |
+| `devtools/` | Отдельно подключаемые разработческие MCP readers/проверки | Не входит в продуктовый запуск |
 | `frontend/public/` | Единственные Studio Edition assets | Нет |
 | `frontend/dist/` | Статика единственной Studio, которую отдаёт studio_routes | Восстановима build, но удаление немедленно ломает UI до пересборки |
 | `scripts/`, `tests/` | Собственные диагностика, установка, проверки | По доказанному usage и документированным workflows |
@@ -25,6 +26,8 @@
 | MP4/MKV в корне | Оригиналы источников, видимые registry | Нет |
 
 `config.setup_environment` направляет рабочие TEMP/TMP/TMPDIR, Hugging Face, pip, CUDA, Torch, Python bytecode внутрь проекта. Реальные пути — [config.py](../../app/config.py); portable interpreter — `tools/python/python.exe`. Установки/скачивание выполняются только явными setup workflows.
+
+MCP: [mcp_server](../../app/mcp_server.py) настраивает workspace environment и запускает продуктовый stdio; [mcp_runtime](../../app/mcp_runtime.py) владеет протоколом SDK; [mcp_contract](../../app/mcp_contract.py) — строгими схемами, ошибками, пагинацией, redaction и replay journal; [mcp_product](../../app/mcp_product.py) — loopback HTTP, identity и проверкой принадлежности целей. Отдельный [devtools/mcp_server](../../devtools/mcp_server.py) подключает [mcp_dev](../../devtools/mcp_dev.py), [mcp_readers](../../devtools/mcp_readers.py) и [mcp_tasks](../../devtools/mcp_tasks.py); [task_worker](../../devtools/task_worker.py) ожидает назначение родительского Job Object и исполняет только фиксированный каталог проверок. `data/mcp/operations` хранит защищённые результаты продуктовых команд, `temp/mcp-operations`, `temp/mcp-tasks`, `temp/mcp-benchmarks` — разработческие операции/вывод. Чтение не создаёт этих папок. [test_mcp](../../tests/test_mcp.py) проверяет реальный stdio-контракт, targeting, replay, revisions и доступ к файлам. Полный контракт — [mcp.md](../mcp.md).
 
 ## 2. Что куда записывается
 
