@@ -30,6 +30,92 @@ PHASES = {
 }
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_FEATURE_BYTES = 512 * 1024 * 1024
+ANALYSIS_PASSES = ('visual_analysis', 'story_refinement', 'titles', 'closing_novelty',
+    'source_roles', 'global_visual_verification', 'selection_adjudication', 'global_story',
+    'pacing', 'silent_sequences', 'final_selection_adjudication', 'endings',
+    'ending_selection_adjudication', 'story_structure_analysis', 'dialogue_relations')
+
+
+def analysis_passes(job, directory):
+    """Separate actual passes without changing legacy stage IDs or worker state."""
+    directory = Path(directory)
+    result = {step: {'status': 'pending', 'fraction': 0.0} for step in ANALYSIS_PASSES}
+    if job.get('status') == 'queued':
+        return result
+    audit = directory / 'diagnostics' / 'pipeline'
+    run = _read(audit / 'run.json')
+    run_id = run.get('run_id') if isinstance(run, dict) else None
+    records = _current_rows(_lines(audit / 'timeline.jsonl'), run_id if isinstance(run_id, str) else None)
+    current, seen, failed = None, set(), set()
+    for record in records:
+        step, action = record.get('stage'), record.get('action')
+        if step not in result:
+            continue
+        seen.add(step)
+        if action == 'start':
+            current = step
+            failed.discard(step)
+            result[step] = {'status': 'running', 'fraction': None}
+        elif action == 'exception':
+            failed.add(step)
+            result[step] = {'status': 'waiting_analysis' if record.get('error_type') == 'AnalysisPending' else 'failed', 'fraction': None}
+        elif action == 'end' and step not in failed:
+            result[step] = {'status': 'completed', 'fraction': 1.0}
+            if current == step:
+                current = None
+        elif action == 'cache_hit' and step == 'story_refinement':
+            for cached in ANALYSIS_PASSES[:ANALYSIS_PASSES.index('pacing')]:
+                result[cached] = {'status': 'completed', 'fraction': 1.0}
+    message = str(job.get('message') or '')[:2000].lower()
+    stage = canonical(job.get('stage'))
+    if current is None and stage in ('analyze', 'condense'):
+        if 'проверка конкретного выбора' in message:
+            current = 'selection_adjudication'
+        elif 'обработано событий' in message or job.get('stage') == 'global_verify':
+            current = 'global_visual_verification'
+        elif 'темп и титры' in message:
+            current = 'pacing'
+        elif 'безречевую последовательность' in message:
+            current = 'silent_sequences'
+        elif 'сюжетную речь' in message:
+            current = 'source_roles'
+        elif 'новых событий в финале' in message:
+            current = 'closing_novelty'
+        elif any(text in message for text in ('поиск титров', 'подтверждение титра', 'подтверждённой заставкой')):
+            current = 'titles'
+        elif stage == 'condense':
+            current = 'story_refinement'
+        elif 'анализ смысловых сцен' in message or 'смысловая сцена' in message:
+            current = 'visual_analysis'
+    if current in result:
+        # Earlier mandatory passes completed before this pass could start.
+        # Conditional downstream passes need their own diagnostic evidence.
+        for step in ANALYSIS_PASSES[:ANALYSIS_PASSES.index(current)]:
+            if step not in seen and ANALYSIS_PASSES.index(step) <= ANALYSIS_PASSES.index('silent_sequences'):
+                result[step] = {'status': 'completed', 'fraction': 1.0}
+            elif step not in seen:
+                result[step] = {'status': 'not_required', 'fraction': None}
+        state = job.get('status')
+        result[current].update(status=state if state in ('failed', 'cancelled', 'interrupted', 'waiting_analysis') else 'running', fraction=None)
+        processed = re.search(r'обработано событий:\s*(\d+)\s+из\s+(\d+)', message)
+        counter = processed or re.search(r'(?:сцена|событие|фрагмент|проверка)\s+(\d+)\s+из\s+(\d+)', message)
+        counter = counter or re.search(r'в финале:\s*(\d+)\s*/\s*(\d+)', message)
+        relevant = {
+            'visual_analysis': ('сцена',), 'story_refinement': ('сцена', 'фрагмент'),
+            'titles': ('титр', 'заставк'), 'closing_novelty': ('в финале',),
+            'global_visual_verification': ('независимая проверка', 'проверка изображения'),
+            'selection_adjudication': ('проверка конкретного выбора',),
+            'final_selection_adjudication': ('проверка конкретного выбора',),
+            'ending_selection_adjudication': ('проверка конкретного выбора',),
+            'pacing': ('темп',)}
+        if counter and any(text in message for text in relevant.get(current, ())):
+            value, total = map(int, counter.groups())
+            _counter(result[current], value if processed else value-1, total, '', 'обработано')
+    if stage in ('framing', 'plan', 'render') or job.get('status') == 'completed':
+        for step in ANALYSIS_PASSES:
+            if step not in seen and result[step]['status'] == 'pending':
+                result[step] = {'status': 'not_required', 'fraction': None}
+    return result
 
 
 def canonical(stage):

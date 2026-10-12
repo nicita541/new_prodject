@@ -3,7 +3,8 @@ param(
     [string]$AgyExe,
     [string]$Model = 'gemini-3.8-flash-low',
     [switch]$DefaultAgent,
-    [ValidateRange(0,180)][int]$MaxMinutes = 0
+    [ValidateRange(0,180)][int]$MaxMinutes = 0,
+    [ValidateRange(1,2)][int]$MaxConcurrent = 2
 )
 # User-started direct scripting. No HTTP control of KADR, no credential access.
 $ErrorActionPreference = 'Stop'
@@ -23,12 +24,16 @@ $lock = [IO.File]::Open((Join-Path $root 'runner.lock'), [IO.FileMode]::OpenOrCr
     [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $packetId = $null
+$workers = @{}
+$launched = New-Object 'Collections.Generic.HashSet[string]'
+$runnerStop = Join-Path $root ('.runner-stop-' + [Guid]::NewGuid().ToString('N'))
 function Write-Runner([string]$Status, [string]$Detail) {
     $path = Join-Path $root 'runner.json'
     $temporary = $path + '.pending'
     $value = @{status=$Status;packet=$packetId;message=$Detail;model=$Model;
         wall_seconds=$timer.Elapsed.TotalSeconds;updated_at=(Get-Date).ToUniversalTime().ToString('o');
-        agent_requested=$(if ($DefaultAgent) { 'default' } else { 'kadr-json' })}
+        agent_requested=$(if ($DefaultAgent) { 'default' } else { 'kadr-json' });
+        active_packets=@($workers.Keys);max_concurrent=$MaxConcurrent}
     [IO.File]::WriteAllText($temporary, ($value | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
     # A short-lived Python/UI reader can hold a Windows sharing lock.
     # Retry only status publication, never the paid model request.
@@ -44,10 +49,10 @@ function Write-Runner([string]$Status, [string]$Detail) {
     }
 }
 try {
-    Write-Runner 'waiting' 'User-started script waiting for current packet'
+    Write-Runner 'waiting' 'User-started script waiting for independent packets'
     Write-Host 'Keep this separate script running. Cancel in KADR stops the current CLI request.'
     # Production has no overall deadline. Tests may opt into a bounded run.
-    while ($MaxMinutes -eq 0 -or $timer.Elapsed.TotalMinutes -lt $MaxMinutes) {
+    :processing while ($MaxMinutes -eq 0 -or $timer.Elapsed.TotalMinutes -lt $MaxMinutes) {
         $state = Get-Content -LiteralPath (Join-Path $job 'job.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($state.analysis_provider -ne 'antigravity_manual') { throw 'Job no longer uses Antigravity' }
         if ($state.status -eq 'completed') { Write-Runner 'completed' 'KADR finished'; return }
@@ -57,12 +62,35 @@ try {
         }
         $automation = Get-Content -LiteralPath (Join-Path $root 'automation.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if (-not $automation.enabled) { throw 'Enable automatic file reception in KADR first' }
+        foreach ($completedId in @($workers.Keys)) {
+            $worker = $workers[$completedId]
+            if ($worker.State -in @('Completed','Failed','Stopped')) {
+                $packetId = $completedId
+                # Receive each worker once. A failed paid attempt is never relaunched.
+                Receive-Job -Job $worker -ErrorAction Stop | Out-Null
+                if ($worker.State -ne 'Completed') { throw 'Official CLI worker failed' }
+                Remove-Job -Job $worker
+                $workers.Remove($completedId)
+                Write-Runner $(if ($workers.Count) { 'processing' } else { 'waiting' }) 'Results published; waiting for validation'
+            }
+        }
         $exchangePath = Join-Path $root 'exchange.json'
         if (Test-Path -LiteralPath $exchangePath) {
             $exchange = Get-Content -LiteralPath $exchangePath -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($exchange.status -eq 'error') { throw 'KADR rejected the result; inspect packet before retry' }
-            if ($exchange.status -eq 'waiting' -and $exchange.packet -match '^[a-f0-9]{64}$') {
-                $packetId = $exchange.packet
+            if ($exchange.status -eq 'waiting') {
+                $queue = @($exchange.packet)
+                if ($null -ne $exchange.packets) { $queue = @($exchange.packets) }
+                if ($queue.Count -gt 4 -or @($queue | Select-Object -Unique).Count -ne $queue.Count) {
+                    throw 'Invalid independent packet queue'
+                }
+                foreach ($queuedId in $queue) {
+                    if ($queuedId -isnot [string] -or $queuedId -notmatch '^[a-f0-9]{64}$') { throw 'Invalid packet identifier' }
+                }
+                foreach ($queuedId in $queue) {
+                if ($workers.ContainsKey($queuedId)) { continue }
+                if ($workers.Count -ge $MaxConcurrent) { break }
+                $packetId = $queuedId
                 $packet = Join-Path $root ('packets\' + $packetId)
                 if (-not (Resolve-Path -LiteralPath $packet).Path.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
                     throw 'Packet outside exchange folder'
@@ -75,11 +103,16 @@ try {
                     }
                     # Do not launch an inevitably interrupted one-second query.
                     # A budget pause retains the pending packet and is not a CLI failure.
-                    if ($remaining -lt 15) { break }
-                    Write-Runner 'processing' 'Running official CLI for current packet'
+                    if ($remaining -lt 15) { break processing }
+                    if (-not $launched.Add($packetId)) { throw 'Attempt already finished without a result; inspect before retry' }
                     $remaining = [Math]::Min(240, $remaining)
-                    & (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1') -PacketDirectory $packet -AgyExe $AgyExe -Model $Model -DefaultAgent:$DefaultAgent -StopFile (Join-Path $job '.cancel') -TimeLimitSeconds $remaining
-                    Write-Runner 'waiting' 'Result published; waiting for validation and next packet'
+                    $workers[$packetId] = Start-Job -ScriptBlock {
+                        param($script, $directory, $exe, $requestedModel, $agent, $cancel, $stop, $limit)
+                        $ErrorActionPreference = 'Stop'
+                        & $script -PacketDirectory $directory -AgyExe $exe -Model $requestedModel -DefaultAgent:$agent -StopFile $cancel -RunnerStopFile $stop -TimeLimitSeconds $limit
+                    } -ArgumentList (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1'), $packet, $AgyExe, $Model, ([bool]$DefaultAgent), (Join-Path $job '.cancel'), $runnerStop, $remaining
+                    Write-Runner 'processing' 'Running independent official CLI packets'
+                }
                 }
             }
         }
@@ -87,6 +120,10 @@ try {
     }
     Write-Runner 'budget_exhausted' 'Standalone script reached its time budget; checkpoints retained'
 } catch {
+    if (Test-Path -LiteralPath (Join-Path $job '.cancel')) {
+        Write-Runner 'stopped' 'Job cancelled; checkpoints retained'
+        return
+    }
     if ($MaxMinutes -gt 0 -and $timer.Elapsed.TotalMinutes -ge $MaxMinutes -and
         -not (Test-Path -LiteralPath (Join-Path $job '.cancel'))) {
         Write-Runner 'budget_exhausted' 'Standalone script reached its time budget; checkpoints retained'
@@ -95,5 +132,16 @@ try {
     Write-Runner 'error' $_.Exception.Message
     throw
 } finally {
+    if ($workers.Count) {
+        # Let the owned packet wrappers stop their native agy processes first.
+        # Stop-Job alone could orphan a native child process.
+        [IO.File]::WriteAllText($runnerStop, 'stop')
+        $null = Wait-Job -Job @($workers.Values) -Timeout 7
+        foreach ($worker in @($workers.Values)) {
+            if ($worker.State -notin @('Completed','Failed','Stopped')) { Stop-Job -Job $worker }
+            Remove-Job -Job $worker -Force
+        }
+        Remove-Item -LiteralPath $runnerStop -Force
+    }
     $lock.Dispose()
 }

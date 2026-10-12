@@ -325,13 +325,19 @@ class ManualVision:
         # No tokenizer/model process is started for a manual exchange.
         return len(text.encode('utf-8'))
 
-    def _receive(self, directory, identifier):
+    def _receive(self, directory, identifier, *, packets=None):
         """Wait for a user-run script's file; never invoke/control that script."""
         root = directory.parent.parent
         automation = read_json(root / 'automation.json', {})
         if not automation.get('enabled'):
             raise AnalysisPending('Ожидается ручной анализ Antigravity: пакет ' + identifier[:12])
-        atomic_json(root / 'exchange.json', {'status': 'waiting', 'packet': identifier, 'updated_at': now()})
+        pending = list(packets or [identifier])
+        def publish(status):
+            remaining = [key for key in pending if not (packet_dir(self.job_dir, key) / 'result.json').is_file()]
+            atomic_json(root / 'exchange.json', {'status': status if status == 'error' else ('waiting' if remaining else 'ready'),
+                'packet': identifier if status == 'error' else (remaining[0] if remaining else identifier),
+                'packets': remaining, 'updated_at': now()})
+        publish('waiting')
         deadline = time.monotonic() + 600
         while True:
             if self.cancelled():
@@ -345,15 +351,14 @@ class ManualVision:
                         raw = stream.read(MAX_RESULT_BYTES + 1)
                     import_result(self.job_dir, identifier, raw)
                 except (ValueError, OSError) as error:
-                    atomic_json(root / 'exchange.json', {'status': 'error', 'packet': identifier,
-                        'updated_at': now(), 'error': 'Файл ответа не прошёл проверку'})
+                    publish('error')
                     raise AnalysisPending('Ответ Antigravity отклонён; проверьте пакет ' + identifier[:12]) from error
-                atomic_json(root / 'exchange.json', {'status': 'ready', 'packet': identifier, 'updated_at': now()})
+                publish('ready')
                 return read_json(directory / 'result.json')
             runner = _runner_state(root / 'runner.json')
             if runner.get('status') == 'budget_exhausted':
                 raise AnalysisPending('Лимит времени сценария agy исчерпан. Результаты сохранены; для продолжения запустите сценарий снова')
-            if runner.get('status') == 'error' and runner.get('packet') == identifier:
+            if runner.get('status') == 'error' and runner.get('packet') in pending:
                 raise AnalysisPending('Отдельный сценарий agy завершился с ошибкой; проверьте cli-attempts')
             if time.monotonic() >= deadline:
                 raise AnalysisPending('Ответ agy не появился за 10 минут. Запустите отдельный сценарий и продолжите задание')
@@ -437,21 +442,36 @@ class ManualVision:
             pages += count
         if group:
             groups.append(group)
+        # Publish every independent physical group before waiting for the first.
+        # Only the separately user-started runner launches CLI workers.
+        work = []
         for group in groups:
             if len(group) == 1:
-                item = group[0]
-                self._receive(item[0], item[1])
-                answers[item[1]] = self._cached_answer(*item)
-                continue
-            images, prompt, schema = _batch_contract(group)
-            physical = self._prepare_request(prompt, images,
-                sum(item[2]['max_tokens'] for item in group), schema, purpose='story_refinement')
-            atomic_json(physical[0] / 'batch.json', {'version': 1, 'members': [item[1] for item in group]})
-            raw = self._cached_answer(*physical)
-            if raw is None:
-                self._receive(physical[0], physical[1])
+                physical = group[0]
+            else:
+                images, prompt, schema = _batch_contract(group)
+                physical = self._prepare_request(prompt, images,
+                    sum(item[2]['max_tokens'] for item in group), schema, purpose='story_refinement')
+                atomic_json(physical[0] / 'batch.json', {'version': 1, 'members': [item[1] for item in group]})
+            work.append((group, physical))
+        pending = [item[1] for _, item in work if self._cached_answer(*item) is None]
+        errors = []
+        for group, physical in work:
+            try:
                 raw = self._cached_answer(*physical)
-            errors = []
+                if raw is None:
+                    # After a sibling failed, drain only already published answers.
+                    # Do not wait for or launch another paid attempt.
+                    if errors and not (physical[0] / 'agy-result.json').is_file():
+                        continue
+                    self._receive(physical[0], physical[1], packets=pending)
+                    raw = self._cached_answer(*physical)
+            except AnalysisPending as error:
+                errors.append(error)
+                continue
+            if len(group) == 1:
+                answers[physical[1]] = raw
+                continue
             for directory, identifier, request in group:
                 try:
                     child = raw['q_' + identifier]['answer']
@@ -462,6 +482,9 @@ class ManualVision:
                     answers[identifier] = self._cached_answer(directory, identifier, request)
                 except (ValueError, KeyError, TypeError) as error:
                     errors.append(error)
-            if errors:
-                raise AnalysisPending('Часть пакета Antigravity отклонена; успешные ответы сохранены') from errors[0]
+        if errors:
+            # Draining a valid sibling must not overwrite the failure hint.
+            atomic_json(self.job_dir / 'antigravity' / 'exchange.json', {'status': 'error',
+                'packet': pending[0] if pending else None, 'packets': pending, 'updated_at': now()})
+            raise AnalysisPending('Часть пакета Antigravity отклонена; успешные ответы сохранены') from errors[0]
         return [copy.deepcopy(answers[item[1]]) for item in prepared]

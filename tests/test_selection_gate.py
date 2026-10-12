@@ -204,6 +204,70 @@ class SelectionGateTests(unittest.TestCase):
             with self.assertRaises(InterruptedError):
                 adjudicate_selections('source.mp4',[event],{},[],'job',None,lambda *x:None,lambda:False)
 
+    def test_batch_adjudication_preserves_queries_dependencies_and_source_order(self):
+        import json
+        from app.antigravity_batch import adjudicate_in_batches
+        from app.source_roles import apply_exclusions
+        class Provider:
+            def __init__(self, batch):
+                self.supports_query_batch = batch
+                self.requests, self.groups = [], []
+            def query(self, prompt, image=None, max_tokens=1200, schema=None, **kwargs):
+                self.requests.append({'prompt':prompt,'image':image,'max_tokens':max_tokens,'schema':schema})
+                return {'id':prompt}
+            def query_many(self, requests):
+                self.groups.append(len(requests))
+                return [self.query(**{k:v for k,v in request.items() if k != 'purpose'}) for request in requests]
+        events = []
+        for index in range(5):
+            event = accepted()
+            event.update(id='event_'+str(index), uncertain=index < 4)
+            events.append(event)
+        original = copy.deepcopy(events)
+        def adjudicate(source, event, transcript, shots, directory, provider, cancelled, questions):
+            prompt = json.dumps({'event':event,'questions':questions}, sort_keys=True)
+            first = provider.query(prompt, max_tokens=800, schema={'type':'object'})
+            # The second query depends on the first inside this same event.
+            self.assertEqual(first['id'], prompt)
+            second = provider.query(prompt+' proof', max_tokens=900, schema={'type':'object'})
+            self.assertEqual(second['id'], prompt+' proof')
+            result = copy.deepcopy(event)
+            result['uncertain'] = False
+            return result
+        outcomes, providers = [], []
+        for batch in (False, True):
+            provider = Provider(batch)
+            providers.append(provider)
+            with patch('app.selection_adjudication.adjudicate_event', side_effect=adjudicate), \
+                    patch('app.source_roles.apply_exclusions', wraps=apply_exclusions) as exclusions:
+                outcomes.append(adjudicate_in_batches('source',copy.deepcopy(events),{},[], 'job',
+                    provider, lambda *args:None, lambda:False, refiner=adjudicate_selections))
+                self.assertEqual(exclusions.call_count, 5 if batch else 1)
+                self.assertEqual(len(exclusions.call_args.args[0]), 1 if batch else 5)
+        self.assertEqual(outcomes[0], outcomes[1])
+        self.assertEqual(events, original)
+        self.assertEqual([event['id'] for event in outcomes[1]], [event['id'] for event in events])
+        sort = lambda requests: sorted(requests, key=lambda request:request['prompt'])
+        self.assertEqual(sort(providers[0].requests), sort(providers[1].requests))
+        self.assertTrue(any(size > 1 for size in providers[1].groups))
+        self.assertEqual(len(providers[1].requests), 8)
+
+    def test_batch_source_gate_preserves_downstream_failure_and_cancellation(self):
+        from types import SimpleNamespace
+        from app.antigravity_batch import adjudicate_in_batches
+        event = accepted()
+        event.update(analysis_unresolved=True, analysis_unresolved_reasons=['story_structure_unresolved'])
+        provider = SimpleNamespace(supports_query_batch=True)
+        with patch('app.selection_adjudication.adjudicate_event') as adjudicate:
+            result = adjudicate_in_batches('source',[event],{},[], 'job', provider,
+                lambda *args:None, lambda:False, refiner=adjudicate_selections, source_only=True)
+        adjudicate.assert_not_called()
+        self.assertTrue(result[0]['analysis_unresolved'])
+        self.assertEqual(result[0]['analysis_unresolved_reasons'], ['story_structure_unresolved'])
+        with self.assertRaises(InterruptedError):
+            adjudicate_in_batches('source',[event],{},[], 'job', provider,
+                lambda *args:None, lambda:True, refiner=adjudicate_selections)
+
     def test_planner_rejects_analysis_unresolved_before_timeline_work(self):
         for analysis in ({'selection_gate':{'status':'unresolved'}}, {'events':[{'analysis_unresolved':True}]}):
             with self.subTest(analysis=analysis):

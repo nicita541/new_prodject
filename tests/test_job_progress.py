@@ -76,6 +76,45 @@ class JobProgressTests(unittest.TestCase):
         (media.parent / 'part_002.mp4').write_bytes(b'partial output must not count')
         return media, checkpoint
 
+    def test_analysis_passes_show_each_completed_and_active_pass(self):
+        self.lines('timeline.jsonl', [
+            {'run_id':'old','stage':'dialogue_relations','action':'end'},
+            {'run_id':'current','stage':'story_refinement','action':'start'},
+            {'run_id':'current','stage':'story_refinement','action':'end'},
+            {'run_id':'current','stage':'global_visual_verification','action':'start'},
+            {'run_id':'current','stage':'global_visual_verification','action':'end'},
+            {'run_id':'current','stage':'selection_adjudication','action':'start'}])
+        job = {**self.job, 'stage':'analyze', 'message':'Проверка конкретного выбора · обработано событий: 4 из 9'}
+        rows = job_progress.analysis_passes(job, self.directory)
+        self.assertEqual(rows['global_visual_verification']['status'], 'completed')
+        self.assertEqual(rows['titles']['status'], 'completed')
+        self.assertEqual(rows['selection_adjudication']['completed'], 4)
+        self.assertAlmostEqual(rows['selection_adjudication']['fraction'], 4/9)
+        self.assertEqual(rows['dialogue_relations']['status'], 'pending')
+
+    def test_analysis_passes_do_not_transfer_previous_counter_or_hide_failure(self):
+        self.lines('timeline.jsonl', [
+            {'run_id':'current','stage':'selection_adjudication','action':'end'},
+            {'run_id':'current','stage':'global_story','action':'start'},
+            {'run_id':'current','stage':'global_story','action':'exception','error_type':'AnalysisPending'},
+            {'run_id':'current','stage':'global_story','action':'end'}])
+        job = {**self.job, 'stage':'analyze', 'status':'waiting_analysis',
+            'message':'Проверка конкретного выбора · обработано событий: 129 из 129'}
+        rows = job_progress.analysis_passes(job, self.directory)
+        self.assertEqual(rows['global_story']['status'], 'waiting_analysis')
+        self.assertIsNone(rows['global_story']['fraction'])
+        self.assertNotIn('completed', rows['global_story'])
+
+    def test_analysis_passes_conditional_end_review_skipped_not_success(self):
+        self.lines('timeline.jsonl', [
+            {'run_id':'current','stage':'endings','action':'start'},
+            {'run_id':'current','stage':'endings','action':'end'},
+            {'run_id':'current','stage':'story_structure_analysis','action':'start'}])
+        rows = job_progress.analysis_passes({**self.job,'stage':'analyze'}, self.directory)
+        self.assertEqual(rows['ending_selection_adjudication']['status'], 'not_required')
+        self.assertEqual(rows['endings']['status'], 'completed')
+        self.assertEqual(rows['story_structure_analysis']['status'], 'running')
+
     def test_current_run_unique_boundary_decisions_not_model_acceptance(self):
         self.decisions()
         row = self.result()['scenes']

@@ -243,8 +243,9 @@ def public_job(job: dict, manager: JobManager | None = None) -> dict:
     result.setdefault("analysis_provider", "local")
     identifier = job["id"]
     if manager:
-        from .job_progress import stage_progress
+        from .job_progress import stage_progress, analysis_passes
         result['stage_progress'] = stage_progress(job, manager.job_dir(identifier))
+        result['analysis_passes'] = analysis_passes(job, manager.job_dir(identifier))
     outputs = job.get("outputs", []) if job["status"] == "completed" else []
     durations = {}
     if outputs and manager:

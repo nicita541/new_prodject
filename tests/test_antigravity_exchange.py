@@ -39,7 +39,7 @@ def envelope(answer):
 
 
 def batch_receiver(vision, calls, answer=None):
-    def receive(directory, identifier):
+    def receive(directory, identifier, **unused):
         request = json.loads((directory / 'request.json').read_text(encoding='utf-8'))
         members = json.loads((directory / 'batch.json').read_text(encoding='utf-8'))['members'] if (directory / 'batch.json').exists() else []
         calls.append((request, members))
@@ -77,6 +77,47 @@ def test_batch_reuses_cached_child_and_splits_large_contracts(tmp_path):
     with patch.object(vision, '_receive', side_effect=batch_receiver(vision, calls)):
         assert vision.query_many(tasks)[0] == {'keep_units': ['u2']}
     assert len(calls) == 3 and all(not members for _, members in calls)
+
+
+def test_independent_queue_exports_all_groups_and_restores_result_order(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    tasks = [{'prompt': str(i) + 'x' * 17000, 'schema': SCHEMA} for i in range(4)]
+    ids = [vision._prepare_request(**task)[1] for task in tasks]
+    queues = []
+    def publish(_):
+        exchange = read_json(tmp_path / 'antigravity/exchange.json')
+        queues.append(exchange['packets'])
+        assert exchange['packet'] == exchange['packets'][0]
+        # Simulate out-of-order external completions. KADR starts no processes.
+        for key in reversed(exchange['packets']):
+            packet_dir(tmp_path, key).joinpath('agy-result.json').write_bytes(
+                envelope({'keep_units': ['u1'] if key == ids[0] else ['u2']}))
+    with patch('app.antigravity_exchange.time.sleep', side_effect=publish), \
+            patch('subprocess.Popen', side_effect=AssertionError('no embedded CLI')):
+        assert vision.query_many(tasks) == [{'keep_units': ['u1']}] + [{'keep_units': ['u2']}] * 3
+    assert len(queues) == 1 and set(queues[0]) == set(ids)
+    assert read_json(tmp_path / 'antigravity/exchange.json')['packets'] == []
+    with patch.object(vision, '_receive', side_effect=AssertionError('warm cache')):
+        assert len(vision.query_many(tasks)) == 4
+
+
+def test_non_head_queue_failure_preserves_published_sibling(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    tasks = [{'prompt': str(i) + 'x' * 17000, 'schema': SCHEMA} for i in range(3)]
+    ids = sorted(vision._prepare_request(**task)[1] for task in tasks)
+    def failure(_):
+        exchange = read_json(tmp_path / 'antigravity/exchange.json')
+        assert exchange['packet'] == ids[0]
+        packet_dir(tmp_path, ids[-1]).joinpath('agy-result.json').write_bytes(envelope({'keep_units': ['u2']}))
+        atomic_json(tmp_path / 'antigravity/runner.json', {'status': 'error', 'packet': ids[1]})
+    with patch('app.antigravity_exchange.time.sleep', side_effect=failure):
+        with pytest.raises(AnalysisPending, match='успешные ответы сохранены'):
+            vision.query_many(tasks)
+    assert (packet_dir(tmp_path, ids[-1]) / 'result.json').exists()
+    assert not (packet_dir(tmp_path, ids[0]) / 'result.json').exists()
+    assert read_json(tmp_path / 'antigravity/exchange.json')['status'] == 'error'
 
 
 def test_batch_keeps_valid_children_when_native_coverage_fails(tmp_path):
@@ -485,6 +526,88 @@ def test_standalone_production_unlimited_and_test_budget_pause(tmp_path, limited
     result = subprocess.run(command, capture_output=True, timeout=20)
     assert result.returncode == 0, result.stderr.decode(errors='replace')
     assert read_json(exchange / 'runner.json')['status'] == ('budget_exhausted' if limited else 'completed')
+
+
+@pytest.mark.parametrize('mode', ['parallel', 'serial', 'cancel', 'failure', 'invalid'])
+def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode):
+    import os
+    import shutil
+    import subprocess
+    import time
+    if os.name != 'nt':
+        pytest.skip('executes the actual Windows PowerShell coordinator')
+    root = Path(__file__).resolve().parents[1]
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    shutil.copyfile(root / 'scripts/run_antigravity_job.ps1', scripts / 'run_antigravity_job.ps1')
+    # Replace only the external paid-call boundary, leaving native queue,
+    # Start-Job, completion, locking, cancellation and error handling intact.
+    stub = r'''param($PacketDirectory, $AgyExe, $Model, [switch]$DefaultAgent, $StopFile, $RunnerStopFile, $TimeLimitSeconds)
+    $ErrorActionPreference='Stop'
+    $stamp=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    [IO.File]::WriteAllText((Join-Path $PacketDirectory 'started.json'), "$stamp")
+    try {
+        for($i=0;$i -lt 35;$i++) {
+            if ((Test-Path -LiteralPath $StopFile) -or (Test-Path -LiteralPath $RunnerStopFile)) {
+                [IO.File]::WriteAllText((Join-Path $PacketDirectory 'observed-stop'), 'yes')
+                throw 'cancelled owned worker'
+            }
+            if ((Test-Path -LiteralPath (Join-Path $PacketDirectory 'fail')) -and $i -eq 10) { throw 'simulated CLI failure' }
+            Start-Sleep -Milliseconds 100
+        }
+        [IO.File]::WriteAllText((Join-Path $PacketDirectory 'agy-result.json'), '{}')
+    } finally {
+        [IO.File]::WriteAllText((Join-Path $PacketDirectory 'ended.json'), "$( [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() )")
+    }
+    '''
+    (scripts / 'run_antigravity_packet.ps1').write_text(stub, encoding='utf-8-sig')
+    job = tmp_path / 'job'
+    job.mkdir()
+    atomic_json(job / 'job.json', {'analysis_provider': PROVIDER, 'status': 'running'})
+    exchange = job / 'antigravity'
+    exchange.mkdir()
+    atomic_json(exchange / 'automation.json', {'enabled': True})
+    ids = ['a' * 64, 'b' * 64]
+    packets = [exchange / 'packets' / key for key in ids]
+    for directory in packets:
+        directory.mkdir(parents=True)
+    if mode == 'failure':
+        (packets[1] / 'fail').touch()
+    atomic_json(exchange / 'exchange.json', {'status': 'waiting', 'packet': ids[0],
+        'packets': [ids[0], '../outside'] if mode == 'invalid' else ids})
+    command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        str(scripts / 'run_antigravity_job.ps1'), '-JobDirectory', str(job),
+        '-MaxConcurrent', '1' if mode == 'serial' else '2']
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline and process.poll() is None:
+            if mode == 'cancel' and all((path / 'started.json').exists() for path in packets):
+                (job / '.cancel').touch()
+            elif mode in ('parallel', 'serial') and all((path / 'agy-result.json').exists() for path in packets):
+                atomic_json(job / 'job.json', {'analysis_provider': PROVIDER, 'status': 'completed'})
+            time.sleep(.05)
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == (1 if mode in ('failure', 'invalid') else 0), stderr.decode(errors='replace')
+        state = read_json(exchange / 'runner.json')
+        assert state['status'] == {'cancel': 'stopped', 'failure': 'error', 'invalid': 'error'}.get(mode, 'completed')
+        if mode == 'invalid':
+            assert not any((path / 'started.json').exists() for path in packets)
+            return
+        assert all((path / 'ended.json').exists() for path in packets)
+        if mode in ('parallel', 'serial'):
+            starts = [json.loads((path / 'started.json').read_text()) for path in packets]
+            ends = [json.loads((path / 'ended.json').read_text()) for path in packets]
+            assert (max(starts) < min(ends)) == (mode == 'parallel')
+            assert 'Attempt already finished' not in stderr.decode(errors='replace')
+        else:
+            assert (packets[0] / 'observed-stop').exists()
+            assert not (packets[0] / 'agy-result.json').exists()
+        assert not list(exchange.glob('.runner-stop-*'))
+    finally:
+        if process.poll() is None:
+            (job / '.cancel').touch()
+            process.communicate(timeout=10)
 
 
 def test_locked_runner_hint_does_not_abort_receipt_or_ui_snapshot(tmp_path):

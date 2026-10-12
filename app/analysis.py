@@ -243,16 +243,18 @@ def finalize_editorial_selection(source, events, transcript, shots, probe, job_d
     job_dir = Path(job_dir)
     from .endings import refine_endings
     from .selection_gate import adjudicate_selections, selection_readiness, source_selection_readiness
+    from .antigravity_batch import adjudicate_in_batches
     with diagnostics.stage('final_selection_adjudication', provider=provider):
-        events = adjudicate_selections(source, events, transcript, shots, job_dir,
-                                      vision, report, cancelled, source_only=True)
+        events = adjudicate_in_batches(source, events, transcript, shots, job_dir,
+                                      vision, report, cancelled, refiner=adjudicate_selections, source_only=True)
     gate = source_selection_readiness(events)
     if gate['status'] == 'passed' and selection_readiness(events)['status'] == 'passed':
-        events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
+        with diagnostics.stage('endings', provider=provider):
+            events = refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled)
         if selection_readiness(events)['status'] != 'passed':
             with diagnostics.stage('ending_selection_adjudication', provider=provider):
-                events = adjudicate_selections(source, events, transcript, shots, job_dir,
-                                              vision, report, cancelled)
+                events = adjudicate_in_batches(source, events, transcript, shots, job_dir,
+                                              vision, report, cancelled, refiner=adjudicate_selections)
         gate = source_selection_readiness(events)
     elif gate['status'] != 'passed':
         diagnostics.warning('endings', 'unresolved_selection',
@@ -499,10 +501,13 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
                 events = apply_eyecatch_exclusions(events, eyecatches)
             from app.titles import refine_titles
             from app.closing import refine_closing_novelty
-            events = refine_titles(events, transcript, shots, job_dir, vision, report, cancelled)
-            events = refine_closing_novelty(events, transcript, shots, job_dir, vision, report, cancelled)
+            with diagnostics.stage('titles', provider=provider):
+                events = refine_titles(events, transcript, shots, job_dir, vision, report, cancelled)
+            with diagnostics.stage('closing_novelty', provider=provider):
+                events = refine_closing_novelty(events, transcript, shots, job_dir, vision, report, cancelled)
             from .source_roles import refine_source_roles
-            events = refine_source_roles(events, transcript, shots, job_dir, vision, report, cancelled)
+            with diagnostics.stage('source_roles', provider=provider):
+                events = refine_source_roles(events, transcript, shots, job_dir, vision, report, cancelled)
             selection_snapshot(diagnostics, 'source_roles', events)
             report('analyze', 0.49, 'Проверка связности истории целиком')
             from .global_verification import verify_global_visual
@@ -510,8 +515,10 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
                 events = verify_global_visual(source,events,transcript,shots,job_dir,vision,report,cancelled)
             selection_snapshot(diagnostics, 'global_visual_verification', events)
             from .selection_gate import adjudicate_selections
+            from .antigravity_batch import adjudicate_in_batches
             with diagnostics.stage('selection_adjudication', provider=provider):
-                events = adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled)
+                events = adjudicate_in_batches(source, events, transcript, shots, job_dir, vision, report,
+                                               cancelled, refiner=adjudicate_selections)
             selection_snapshot(diagnostics, 'selection_adjudication', events)
             # Global pass references only existing event IDs, never generated time ranges.
             with inference_purpose("global_story"), diagnostics.stage('global_story', provider=provider, model=str(STORY_MODEL)):
@@ -560,12 +567,14 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             'quality_state': 'degraded' if any(e.get('analysis_unresolved') or e.get('source_role_unresolved') for e in events) else 'complete'})
     from .pacing import refine_pacing, refine_silent_sequences, BudgetPacingVision
     with inference_purpose("pacing"), vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
-        if pacing_provider in ('deepseek', 'deepseek_plan'):
-            with BudgetPacingVision(vision, job_dir, cancelled) as paced:
-                events = refine_pacing(source, events, transcript, shots, job_dir, paced, report, cancelled)
-        else:
-            events = refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled)
-        events = refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled)
+        with diagnostics.stage('pacing', provider=pacing_provider):
+            if pacing_provider in ('deepseek', 'deepseek_plan'):
+                with BudgetPacingVision(vision, job_dir, cancelled) as paced:
+                    events = refine_pacing(source, events, transcript, shots, job_dir, paced, report, cancelled)
+            else:
+                events = refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled)
+        with diagnostics.stage('silent_sequences', provider=pacing_provider):
+            events = refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled)
         selection_snapshot(diagnostics, 'pacing', events)
         events = finalize_editorial_selection(source, events, transcript, shots, probe,
             job_dir, vision, report, cancelled, diagnostics, pacing_provider)

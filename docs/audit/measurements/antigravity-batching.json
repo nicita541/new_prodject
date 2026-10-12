@@ -9,6 +9,22 @@
   "matching_retained_unit_decisions": 3,
   "changed_decisions": "one batch answer retained all three units instead of only the middle unit; independent proof remains required",
   "limitations": "First batch transport before adding explicit original schemas to text. Current transport additionally includes numeric/boolean enums and saves valid siblings when another schema fails. Different model attention/output, not artistic equivalence or a controlled whole-series benchmark.",
+  "parallel_official_cli": {
+    "job_id": "00a9e488-dbe1-4614-9ec1-cf443e26083e",
+    "max_concurrent": 2,
+    "native_valid_answers": 2,
+    "started_at": "2026-10-12T08:16:45.8510512Z",
+    "finished_at": "2026-10-12T08:16:59.1248469Z",
+    "pair_interval_seconds": 13.2737957,
+    "individual_wall_seconds_sum": 22.9313321,
+    "total_tokens_sum": 19198,
+    "early_vision_resume": {"run_id": "d311cc5b58a348c7a58e82dce313432f", "cache_hits": 129, "cache_misses": 0, "local_requests": 0},
+    "packets": [
+      {"id": "a9f145866d4f1f85d6567a22f206143bc9d4b2a33385a1c846c3656351778edd", "started_at": "2026-10-12T08:16:45.8510512Z", "finished_at": "2026-10-12T08:16:59.1248469Z", "wall_seconds": 13.3191257, "total_tokens": 10020},
+      {"id": "ecfc86a0b4ae619bf8e1a030a1319e711b83dbce3d905a0a8f72486639d27570", "started_at": "2026-10-12T08:16:45.9011280Z", "finished_at": "2026-10-12T08:16:55.4687844Z", "wall_seconds": 9.6122064, "total_tokens": 9178}
+    ],
+    "limitations": "Observed overlap of two real accepted official CLI attempts, not a paid serial A/B or whole-series speedup. Pair interval excludes PowerShell worker startup. Parallel execution does not reduce token use; batching does."
+  },
   "global_verification_compact_batches": {
     "job_id": "00a9e488-dbe1-4614-9ec1-cf443e26083e",
     "physical_calls": 3,

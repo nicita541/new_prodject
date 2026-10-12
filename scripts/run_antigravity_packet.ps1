@@ -5,6 +5,7 @@ param(
     [switch]$DefaultAgent,
     [switch]$Smoke,
     [string]$StopFile,
+    [string]$RunnerStopFile,
     [ValidateRange(1,240)][int]$TimeLimitSeconds = 240
 )
 
@@ -88,17 +89,22 @@ $startInfo.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
 $process = New-Object Diagnostics.Process
 $process.StartInfo = $startInfo
 $abortReason = $null
+$cliStartedAt = $null
+$cliFinishedAt = $null
 try {
-    if ($StopFile -and (Test-Path -LiteralPath $StopFile)) { throw 'Job cancelled before CLI launch' }
+    if (($StopFile -and (Test-Path -LiteralPath $StopFile)) -or
+        ($RunnerStopFile -and (Test-Path -LiteralPath $RunnerStopFile))) { throw 'Job cancelled before CLI launch' }
     if ($startInfo.FileName.Length + $startInfo.Arguments.Length + 3 -ge 32767) {
         throw 'Packet exceeds Windows command-line limit before CLI launch; split without truncating input'
     }
     # Bypass PowerShell 5 native marshalling, which strips embedded quotes.
+    $cliStartedAt = (Get-Date).ToUniversalTime().ToString('o')
     $null = $process.Start()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     while (-not $process.WaitForExit(500)) {
-        if (($StopFile -and (Test-Path -LiteralPath $StopFile)) -or $started.Elapsed.TotalSeconds -ge $TimeLimitSeconds) {
+        if (($StopFile -and (Test-Path -LiteralPath $StopFile)) -or
+            ($RunnerStopFile -and (Test-Path -LiteralPath $RunnerStopFile)) -or $started.Elapsed.TotalSeconds -ge $TimeLimitSeconds) {
             $process.Kill()
             $process.WaitForExit()
             $abortReason = "agy cancelled or exceeded outer limit of $TimeLimitSeconds seconds"
@@ -108,6 +114,7 @@ try {
     $captured = $stdoutTask.GetAwaiter().GetResult()
     [IO.File]::WriteAllText((Join-Path $attempt 'agy.stderr.txt'), $stderrTask.GetAwaiter().GetResult(), (New-Object Text.UTF8Encoding($false)))
     $cliExit = $process.ExitCode
+    $cliFinishedAt = (Get-Date).ToUniversalTime().ToString('o')
 } finally {
     $process.Dispose()
 }
@@ -126,7 +133,7 @@ try {
 } catch { } # Missing/malformed usage remains unknown; strict import is unchanged.
 $usageReported = $reportedUsage.ContainsKey('total_tokens') -or (
     $reportedUsage.ContainsKey('input_tokens') -and $reportedUsage.ContainsKey('output_tokens'))
-@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;command_line_chars=$startInfo.FileName.Length+$startInfo.Arguments.Length+3;
+@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;started_at=$cliStartedAt;finished_at=$cliFinishedAt;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;command_line_chars=$startInfo.FileName.Length+$startInfo.Arguments.Length+3;
     usage_reported=$usageReported;usage=$reportedUsage} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
 if ($abortReason) { throw "$abortReason; inspect $attempt" }

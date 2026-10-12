@@ -107,6 +107,12 @@ class SemanticIdentityTests(unittest.TestCase):
             with patch.dict(sys.modules,{'app.selection_adjudication':None}):
                 self.assertEqual(expected,component_identity(name),name)
 
+    def test_batch_coordinator_changes_do_not_invalidate_early_vision(self):
+        from app import antigravity_batch
+        expected = {name: component_identity(name) for name in ('local_prompt', 'recovery', 'storyboard')}
+        with changed_source(antigravity_batch, 'max_workers=4', 'max_workers=2'):
+            self.assertEqual(expected, {name: component_identity(name) for name in expected})
+
     def test_runtime_prompt_and_policy_changes_invalidate_without_version_change(self):
         original = component_identity('recovery')
         from app import scene_understanding

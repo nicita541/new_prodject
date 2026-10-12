@@ -106,34 +106,18 @@ function processingProgress(job){
  const fraction=typeof row.fraction==='number'&&Number.isFinite(row.fraction)?Math.max(0,Math.min(1,row.fraction)):null;
  return {percent:fraction===null?null:Math.round(fraction*100),label:`${title}${row.phase?' · '+row.phase:''}${fraction===null?' · точный прогресс пока не сообщается':''}`};
 }
-const processingStages=stages.flatMap(step=>step[0]==='condense'?[step,['verify','Проверка титров и истории']]:[step]);
+const analysisStages=[['visual_analysis','Анализ кадров и речи'],['story_refinement','Отбор смысловых сцен'],['titles','Проверка титров и заставок'],['closing_novelty','Проверка событий в финале'],['source_roles','Проверка речи, озвучки и анонсов'],['global_visual_verification','Независимая проверка сцен'],['selection_adjudication','Проверка спорного выбора'],['global_story','Проверка истории целиком'],['pacing','Проверка темпа сцен'],['silent_sequences','Проверка безречевых последовательностей'],['final_selection_adjudication','Проверка итогового отбора'],['endings','Проверка завершения истории'],['ending_selection_adjudication','Повторная проверка финала при необходимости'],['story_structure_analysis','Построение сюжетных связей'],['dialogue_relations','Проверка связей между репликами']];
+const processingStages=[...stages.slice(0,3),...analysisStages,...stages.slice(5)];
 function processingRows(job){
- const rows={...(job.stage_progress||{})};
- const later=['framing','focus','plan','planning','quality_gate','render','rendering'].includes(job.stage);
- // Pipeline milestones identify the pass, never its percentage. The legacy
- // API uses condense for both selection and subsequent independent checks.
- const verifying=job.stage==='global_verify'||(['analyze','analysis','analyzing'].includes(job.stage)&&job.progress>=.48)||job.stage==='condense'&&job.progress>=.489;
- rows.verify={status:'pending',fraction:0};
- if(job.status==='completed'||later){rows.condense={status:'completed',fraction:1};rows.verify={status:'completed',fraction:1};}
- else if(verifying){
-  rows.analyze={status:'completed',fraction:1};rows.condense={status:'completed',fraction:1};
-  const current=job.stage_progress?.[job.stage==='global_verify'?'analyze':job.stage]||{};
-  rows.verify={status:['failed','cancelled','interrupted','waiting_analysis'].includes(job.status)?job.status:'running',fraction:null};
-  // A subpass count does not describe progress across all independent checks.
-  if(Number.isInteger(current.completed)&&Number.isInteger(current.total))rows.verify={...rows.verify,completed:current.completed,total:current.total};
-  else {
-   const message=String(job.message||''),processed=message.match(/обработано событий:\s*(\d+)\s+из\s+(\d+)/i);
-   const count=processed||message.match(/(?:проверка|сцена|событие|фрагмент)\s+(\d+)\s+из\s+(\d+)/i);
-   if(count&&Number(count[2])>0&&Number(count[1])<=Number(count[2]))rows.verify={...rows.verify,completed:Math.max(0,Number(count[1])-(processed?0:1)),total:Number(count[2])};
-  }
- }
- return rows;
+ const rows={...(job.stage_progress||{}),...(job.analysis_passes||{})};
+ if(!job.analysis_passes){rows.visual_analysis=rows.analyze;rows.story_refinement=rows.condense;}
+ return Object.fromEntries(processingStages.map(([code])=>[code,rows[code]||{status:'pending',fraction:0}]));
 }
 function processingStageRows(job){
  const rows=processingRows(job);
  return processingStages.map(([code,title])=>{const row=rows[code]||{},done=row.status==='completed',active=row.status==='running',fraction=typeof row.fraction==='number'&&Number.isFinite(row.fraction)?Math.round(Math.max(0,Math.min(1,row.fraction))*100):null;
  const count=Number.isInteger(row.completed)&&Number.isInteger(row.total)?` · ${row.completed} из ${row.total}`:'';
- const label=done?'100% · Готово':active?(fraction===null?'Выполняется':fraction+'%')+count:({failed:'Ошибка',cancelled:'Отменено',interrupted:'Прервано',waiting_analysis:'Ожидает ответа agy'}[row.status]||'0% · Ожидает');
+ const label=done?'100% · Готово':active?(fraction===null?'Выполняется':fraction+'%')+count:({failed:'Ошибка',cancelled:'Отменено',interrupted:'Прервано',waiting_analysis:'Ожидает ответа agy',not_required:'Не потребовалось'}[row.status]||'0% · Ожидает');
  return `<div class="stage-row ${done?'done':active?'active':''}"><span>${done?'✓':active?'◉':'○'} &nbsp; ${esc(title)}</span><i>${esc(label)}</i></div>`;}).join('');
 }
 function runTicker(){

@@ -42,6 +42,27 @@ def refine_in_batches(events, transcript, shots, job_dir, vision, report, cancel
     return run_independent_batches(events, vision, cancelled, work, progress)
 
 
+def adjudicate_in_batches(source, events, transcript, shots, job_dir, vision, report, cancelled,
+                         *, refiner, source_only=False):
+    """Batch independent events through the unchanged native per-event gate.
+
+    Native exclusions and readiness operate only on each event. Keeping the
+    gate module untouched preserves early-vision semantic cache identities.
+    """
+    if not getattr(vision, 'supports_query_batch', False):
+        return refiner(source, events, transcript, shots, job_dir, vision, report,
+                       cancelled, source_only=source_only)
+    import copy
+    if len({event['id'] for event in events}) != len(events):
+        raise ValueError('Пакетная проверка требует уникальных событий')
+    def work(event, proxy, stop_check):
+        return refiner(source, [copy.deepcopy(event)], transcript, shots, job_dir,
+            proxy, lambda *args: None, stop_check, source_only=source_only)[0]
+    def progress(completed, total):
+        report('analyze', .5, f'Проверка конкретного выбора · обработано событий: {completed} из {total}')
+    return run_independent_batches(events, vision, cancelled, work, progress)
+
+
 def run_independent_batches(items, vision, cancelled, work, progress):
     """Preserve item logic/order; only the coordinator drives physical queries."""
     if not items:
