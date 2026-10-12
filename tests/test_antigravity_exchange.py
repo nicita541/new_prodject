@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from app.antigravity_exchange import (AnalysisPending, ManualVision, PROVIDER,
     import_result, packet_dir, preserve_provider_checkpoints, snapshot)
 from app.config import STORY_MODEL
-from app.jobs import JobManager, atomic_json
+from app.jobs import JobManager, atomic_json, read_json
 from app.server import create_app
 from tests.test_jobs import FakeWorker
 
@@ -40,8 +40,8 @@ def envelope(answer):
 
 def batch_receiver(vision, calls, answer=None):
     def receive(directory, identifier):
-        request = json.loads((directory / 'request.json').read_text())
-        members = json.loads((directory / 'batch.json').read_text())['members'] if (directory / 'batch.json').exists() else []
+        request = json.loads((directory / 'request.json').read_text(encoding='utf-8'))
+        members = json.loads((directory / 'batch.json').read_text(encoding='utf-8'))['members'] if (directory / 'batch.json').exists() else []
         calls.append((request, members))
         result = {('q_' + member): {'request_id': member, 'answer': answer(member) if answer else {'keep_units': ['u1']}}
                   for member in members} if members else {'keep_units': ['u1']}
@@ -125,7 +125,7 @@ def test_batch_strict_numeric_enum_failure_still_saves_valid_siblings(tmp_path):
 def test_batch_bounds_windows_quoting_without_truncating_child_prompt(tmp_path):
     import subprocess
     vision = session(tmp_path)
-    tasks = [{'prompt': str(i) + ('quote " and slash \\ ' * 240), 'schema': SCHEMA} for i in range(4)]
+    tasks = [{'prompt': str(i) + ('quote " and slash \\ ' * 400), 'schema': SCHEMA} for i in range(4)]
     calls = []
     with patch.object(vision, '_receive', side_effect=batch_receiver(vision, calls)):
         assert len(vision.query_many(tasks)) == 4
@@ -138,6 +138,36 @@ def test_batch_bounds_windows_quoting_without_truncating_child_prompt(tmp_path):
         else:
             observed.append(request['prompt'])
     assert sorted(observed) == sorted(task['prompt'] for task in tasks)
+
+
+def test_batch_factors_identical_instruction_lines_to_fit_large_requests(tmp_path):
+    import subprocess
+    vision=session(tmp_path)
+    shared='Original independent CURRENT instructions. '*75+'\n'
+    tasks=[{'prompt':shared+str(i)+'x'*10000,'schema':SCHEMA} for i in range(4)]
+    originals=[vision._prepare_request(**task)[1] for task in tasks]
+    calls=[]
+    with patch.object(vision,'_receive',side_effect=batch_receiver(vision,calls)):
+        vision.query_many(tasks)
+    assert len(calls)==2 and all(len(members)==2 for _,members in calls)
+    restored={}
+    for request,members in calls:
+        assert len(subprocess.list2cmdline([request['prompt']]))<28000
+        payload=json.loads(request['prompt'].split('\n',1)[1])
+        for contract in payload['tasks']:
+            restored[contract['request_id']]=payload['shared_instructions']+contract['prompt']
+            assert contract['schema']==SCHEMA
+    assert restored==dict(zip(originals,[task['prompt'] for task in tasks],strict=True))
+
+
+def test_batch_windows_bound_counts_utf16_units(tmp_path):
+    vision=session(tmp_path)
+    tasks=[{'prompt':str(i)+'\U0001f600'*7500,'schema':SCHEMA} for i in range(2)]
+    calls=[]
+    with patch.object(vision,'_receive',side_effect=batch_receiver(vision,calls)):
+        vision.query_many(tasks)
+    assert len(calls)==2 and all(not members for _,members in calls)
+    assert sorted(request['prompt'] for request,_ in calls)==sorted(task['prompt'] for task in tasks)
 
 
 def test_export_import_resume_uses_same_packet_and_native_contract(tmp_path):
@@ -402,6 +432,59 @@ def test_external_runner_failure_pauses_same_packet(tmp_path):
     with patch('app.antigravity_exchange.time.sleep', side_effect=failure):
         with pytest.raises(AnalysisPending, match='с ошибкой'):
             vision.query('failed CLI query', schema=SCHEMA)
+
+
+def test_external_runner_budget_pause_retains_packet_and_cached_results(tmp_path):
+    vision = session(tmp_path)
+    atomic_json(tmp_path / 'antigravity/automation.json', {'enabled': True})
+    def publish(_):
+        exchange = read_json(tmp_path / 'antigravity/exchange.json')
+        packet_dir(tmp_path, exchange['packet']).joinpath('agy-result.json').write_bytes(envelope({'keep_units': ['u2']}))
+    with patch('app.antigravity_exchange.time.sleep', side_effect=publish):
+        assert vision.query('accepted before budget', schema=SCHEMA) == {'keep_units': ['u2']}
+    def stop(_):
+        # May expire while waiting for a different packet; the whole runner stopped.
+        atomic_json(tmp_path / 'antigravity/runner.json', {'status': 'budget_exhausted', 'packet': 'previous'})
+    with patch('app.antigravity_exchange.time.sleep', side_effect=stop):
+        with pytest.raises(AnalysisPending, match='Лимит времени'):
+            vision.query('pending after budget', schema=SCHEMA)
+    with patch('app.antigravity_exchange.time.sleep', side_effect=AssertionError('must reuse accepted cache')):
+        assert vision.query('accepted before budget', schema=SCHEMA) == {'keep_units': ['u2']}
+    assert read_json(tmp_path / 'antigravity/exchange.json')['status'] == 'waiting'
+    assert sorted(item['status'] for item in snapshot(tmp_path)['packets']) == ['ready', 'waiting']
+
+
+@pytest.mark.parametrize('limited', [False, True])
+def test_standalone_production_unlimited_and_test_budget_pause(tmp_path, limited):
+    import os
+    import subprocess
+    if os.name != 'nt':
+        pytest.skip('executes the actual Windows PowerShell runner')
+    root = Path(__file__).resolve().parents[1]
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    runner = (root / 'scripts/run_antigravity_job.ps1').read_text('utf-8')
+    # Freeze only elapsed time, leaving the actual launch and budget branches intact.
+    seconds = 59 if limited else 999999
+    runner = runner.replace('$timer = [Diagnostics.Stopwatch]::StartNew()',
+        '$timer = [PSCustomObject]@{Elapsed=[TimeSpan]::FromSeconds(' + str(seconds) + ')}')
+    (scripts / 'run_antigravity_job.ps1').write_text(runner, encoding='utf-8-sig')
+    (scripts / 'run_antigravity_packet.ps1').write_text("throw 'must not launch CLI'", encoding='utf-8')
+    job = tmp_path / 'job'
+    job.mkdir()
+    atomic_json(job / 'job.json', {'analysis_provider': PROVIDER, 'status': 'running' if limited else 'completed'})
+    exchange = job / 'antigravity'
+    exchange.mkdir()
+    atomic_json(exchange / 'automation.json', {'enabled': True})
+    atomic_json(exchange / 'exchange.json', {'status': 'waiting', 'packet': 'a' * 64})
+    (exchange / 'packets' / ('a' * 64)).mkdir(parents=True)
+    command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        str(scripts / 'run_antigravity_job.ps1'), '-JobDirectory', str(job)]
+    if limited:
+        command += ['-MaxMinutes', '1']
+    result = subprocess.run(command, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert read_json(exchange / 'runner.json')['status'] == ('budget_exhausted' if limited else 'completed')
 
 
 def test_locked_runner_hint_does_not_abort_receipt_or_ui_snapshot(tmp_path):

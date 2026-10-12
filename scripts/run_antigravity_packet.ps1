@@ -90,6 +90,9 @@ $process.StartInfo = $startInfo
 $abortReason = $null
 try {
     if ($StopFile -and (Test-Path -LiteralPath $StopFile)) { throw 'Job cancelled before CLI launch' }
+    if ($startInfo.FileName.Length + $startInfo.Arguments.Length + 3 -ge 32767) {
+        throw 'Packet exceeds Windows command-line limit before CLI launch; split without truncating input'
+    }
     # Bypass PowerShell 5 native marshalling, which strips embedded quotes.
     $null = $process.Start()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
@@ -123,7 +126,7 @@ try {
 } catch { } # Missing/malformed usage remains unknown; strict import is unchanged.
 $usageReported = $reportedUsage.ContainsKey('total_tokens') -or (
     $reportedUsage.ContainsKey('input_tokens') -and $reportedUsage.ContainsKey('output_tokens'))
-@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;
+@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;command_line_chars=$startInfo.FileName.Length+$startInfo.Arguments.Length+3;
     usage_reported=$usageReported;usage=$reportedUsage} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
 if ($abortReason) { throw "$abortReason; inspect $attempt" }

@@ -8,5 +8,18 @@
   "native_valid_children": 4,
   "matching_retained_unit_decisions": 3,
   "changed_decisions": "one batch answer retained all three units instead of only the middle unit; independent proof remains required",
-  "limitations": "First batch transport before adding explicit original schemas to text. Current transport additionally includes numeric/boolean enums and saves valid siblings when another schema fails. Different model attention/output, not artistic equivalence or a controlled whole-series benchmark."
+  "limitations": "First batch transport before adding explicit original schemas to text. Current transport additionally includes numeric/boolean enums and saves valid siblings when another schema fails. Different model attention/output, not artistic equivalence or a controlled whole-series benchmark.",
+  "global_verification_compact_batches": {
+    "job_id": "00a9e488-dbe1-4614-9ec1-cf443e26083e",
+    "physical_calls": 3,
+    "native_valid_children": 6,
+    "wall_seconds_sum": 27.4150061,
+    "tokens_sum": 45079,
+    "packets": [
+      {"id": "1cf5c284491b5d8b19e26e280b58f3a6398abf6f67910e641bd38049e89f71bd", "children": 2, "wall_seconds": 8.9310838, "command_line_chars": 23033, "total_tokens": 13251},
+      {"id": "5a7e549b086c5fb16eb632480bdb838e7d4d17b0c7a49f93e59112dab2bacdab", "children": 2, "wall_seconds": 9.8179292, "command_line_chars": 28107, "total_tokens": 16481},
+      {"id": "5b9c0e065346c13b51f67550fd5f5c60689e193f6e27c30ac2fd37e685c69ccd", "children": 2, "wall_seconds": 8.6659931, "command_line_chars": 26266, "total_tokens": 15347}
+    ],
+    "limitations": "Actual accepted responses during the full job; all six original child caches saved. No paid serial comparison was run. This does not establish whole-series speed or artistic equivalence."
+  }
 }

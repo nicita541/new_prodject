@@ -3,7 +3,7 @@ param(
     [string]$AgyExe,
     [string]$Model = 'gemini-3.8-flash-low',
     [switch]$DefaultAgent,
-    [ValidateRange(1,180)][int]$MaxMinutes = 30
+    [ValidateRange(0,180)][int]$MaxMinutes = 0
 )
 # User-started direct scripting. No HTTP control of KADR, no credential access.
 $ErrorActionPreference = 'Stop'
@@ -46,7 +46,8 @@ function Write-Runner([string]$Status, [string]$Detail) {
 try {
     Write-Runner 'waiting' 'User-started script waiting for current packet'
     Write-Host 'Keep this separate script running. Cancel in KADR stops the current CLI request.'
-    while ($timer.Elapsed.TotalMinutes -lt $MaxMinutes) {
+    # Production has no overall deadline. Tests may opt into a bounded run.
+    while ($MaxMinutes -eq 0 -or $timer.Elapsed.TotalMinutes -lt $MaxMinutes) {
         $state = Get-Content -LiteralPath (Join-Path $job 'job.json') -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($state.analysis_provider -ne 'antigravity_manual') { throw 'Job no longer uses Antigravity' }
         if ($state.status -eq 'completed') { Write-Runner 'completed' 'KADR finished'; return }
@@ -68,8 +69,15 @@ try {
                 }
                 if (-not (Test-Path -LiteralPath (Join-Path $packet 'agy-result.json')) -and
                     -not (Test-Path -LiteralPath (Join-Path $packet 'result.json'))) {
+                    $remaining = 240
+                    if ($MaxMinutes -gt 0) {
+                        $remaining = [int][Math]::Floor($MaxMinutes * 60 - $timer.Elapsed.TotalSeconds)
+                    }
+                    # Do not launch an inevitably interrupted one-second query.
+                    # A budget pause retains the pending packet and is not a CLI failure.
+                    if ($remaining -lt 15) { break }
                     Write-Runner 'processing' 'Running official CLI for current packet'
-                    $remaining = [Math]::Max(1, [Math]::Min(240, [int][Math]::Floor($MaxMinutes * 60 - $timer.Elapsed.TotalSeconds)))
+                    $remaining = [Math]::Min(240, $remaining)
                     & (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1') -PacketDirectory $packet -AgyExe $AgyExe -Model $Model -DefaultAgent:$DefaultAgent -StopFile (Join-Path $job '.cancel') -TimeLimitSeconds $remaining
                     Write-Runner 'waiting' 'Result published; waiting for validation and next packet'
                 }
@@ -77,8 +85,13 @@ try {
         }
         Start-Sleep -Milliseconds 500
     }
-    throw 'Standalone script reached its time budget; checkpoints retained'
+    Write-Runner 'budget_exhausted' 'Standalone script reached its time budget; checkpoints retained'
 } catch {
+    if ($MaxMinutes -gt 0 -and $timer.Elapsed.TotalMinutes -ge $MaxMinutes -and
+        -not (Test-Path -LiteralPath (Join-Path $job '.cancel'))) {
+        Write-Runner 'budget_exhausted' 'Standalone script reached its time budget; checkpoints retained'
+        return
+    }
     Write-Runner 'error' $_.Exception.Message
     throw
 } finally {
