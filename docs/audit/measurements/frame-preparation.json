@@ -1,0 +1,57 @@
+{
+  "status": "isolated_prototype_not_integrated",
+  "scope": "four source windows; no model calls or full-pipeline speed claim; Windows disk cache not reset; full run continued separately",
+  "measurements": [
+    {
+      "sample": "A",
+      "window_seconds": 3.922,
+      "frames": 12,
+      "original_cold_seconds": 3.24,
+      "batch_cold_seconds": 0.943,
+      "original_warm_seconds": 0.662,
+      "batch_warm_seconds": 0.6537,
+      "original_cold_decoders": 12,
+      "batch_cold_decoders": 1,
+      "exact_pts_and_images": true
+    },
+    {
+      "sample": "B",
+      "window_seconds": 4.82,
+      "frames": 14,
+      "original_cold_seconds": 3.6653,
+      "batch_cold_seconds": 0.7796,
+      "original_warm_seconds": 0.4685,
+      "batch_warm_seconds": 0.6805,
+      "original_cold_decoders": 14,
+      "batch_cold_decoders": 1,
+      "exact_pts_and_images": true
+    },
+    {
+      "sample": "C",
+      "window_seconds": 6.761233,
+      "frames": 18,
+      "original_cold_seconds": 5.0403,
+      "batch_cold_seconds": 1.5202,
+      "original_warm_seconds": 0.8874,
+      "batch_warm_seconds": 0.9026,
+      "original_cold_decoders": 18,
+      "batch_cold_decoders": 1,
+      "exact_pts_and_images": true
+    },
+    {
+      "sample": "D",
+      "window_seconds": 2.01,
+      "frames": 13,
+      "original_cold_seconds": 3.4156,
+      "batch_cold_seconds": 1.2199,
+      "original_warm_seconds": 0.698,
+      "batch_warm_seconds": 0.7689,
+      "original_cold_decoders": 13,
+      "batch_cold_decoders": 1,
+      "exact_pts_and_images": true
+    }
+  ],
+  "contract_tests": 15,
+  "candidate_original_tests": 12,
+  "candidate_original_subtests": 18
+}

@@ -1,0 +1,5 @@
+sample,window_seconds,frames,original_cold_seconds,batch_cold_seconds,original_warm_seconds,batch_warm_seconds,original_cold_decoders,batch_cold_decoders,exact_pts_and_images
+A,3.922,12,3.24,0.943,0.662,0.6537,12,1,True
+B,4.82,14,3.6653,0.7796,0.4685,0.6805,14,1,True
+C,6.761233,18,5.0403,1.5202,0.8874,0.9026,18,1,True
+D,2.01,13,3.4156,1.2199,0.698,0.7689,13,1,True
