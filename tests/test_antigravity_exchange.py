@@ -38,6 +38,24 @@ def envelope(answer):
         'duration_seconds': 2.5, 'usage': {'input_tokens': 12, 'output_tokens': 4, 'total_tokens': 16}}).encode()
 
 
+def test_official_stream_final_import_preserves_strict_json_and_usage(tmp_path):
+    vision = session(tmp_path)
+    identifier = prepare(vision)
+    wrapped = b'{"event":"result","result":' + envelope({'keep_units':['u1']}) + b'}'
+    accepted = import_result(tmp_path, identifier, wrapped)
+    assert accepted['usage']['total_tokens'] == 16
+    original = (packet_dir(tmp_path, identifier)/'result.json').read_bytes()
+    for invalid in (
+        b'{"event":"result","result":{"status":"SUCCESS","structured_output":{"keep_units":["u1"],"keep_units":["u2"]}}}',
+        b'{"event":"result","result":{"status":"SUCCESS","structured_output":{"keep_units":["u1"]},"usage":{"total_tokens":NaN}}}',
+        b'{"event":"result","result":null}',
+        b'{"event":"result","result":{"status":"ERROR"}}',
+    ):
+        with pytest.raises(ValueError):
+            import_result(tmp_path, identifier, invalid)
+        assert (packet_dir(tmp_path, identifier)/'result.json').read_bytes()==original
+
+
 def batch_receiver(vision, calls, answer=None):
     def receive(directory, identifier, **unused):
         request = json.loads((directory / 'request.json').read_text(encoding='utf-8'))
@@ -118,6 +136,118 @@ def test_non_head_queue_failure_preserves_published_sibling(tmp_path):
     assert (packet_dir(tmp_path, ids[-1]) / 'result.json').exists()
     assert not (packet_dir(tmp_path, ids[0]) / 'result.json').exists()
     assert read_json(tmp_path / 'antigravity/exchange.json')['status'] == 'error'
+
+
+def test_cloud_global_review_keeps_every_complete_middle_fact_and_native_schema(tmp_path):
+    vision = session(tmp_path)
+    events = [{'id': f'event_{i:04d}', 'summary': ('Начало. ' * 45 + f'UNIQUE_MIDDLE_{i} ' + 'Конец. ' * 45),
+        'kind': 'story', 'importance': 4} for i in range(129)]
+    expected = {'keep':[e['id'] for e in events], 'omit':[], 'dependencies':[], 'summary':'История'}
+    with patch.object(vision, 'query', return_value=expected) as query, \
+            patch('subprocess.Popen', side_effect=AssertionError('no embedded CLI')):
+        result = vision.review_global_story(events)
+    assert result['incomplete_event_ids'] == []
+    prompt = query.call_args.args[0]
+    assert len(prompt.encode('utf-8')) > 5300 and len(prompt) > 32767
+    assert all(e['summary'] in prompt for e in events)
+    assert '[middle omitted]' not in prompt
+    assert query.call_args.kwargs['schema']['properties']['keep']['items']['enum'] == sorted(expected['keep'])
+    assert query.call_args.kwargs['max_tokens'] == 2200
+
+
+def test_cloud_global_review_oversize_and_cancel_never_trim_or_call(tmp_path):
+    vision = session(tmp_path)
+    events = [{'id':'event_0000','summary':'x' * 240001,'kind':'story','importance':4}]
+    with patch.object(vision, 'query', side_effect=AssertionError('must not launch')):
+        with pytest.raises(AnalysisPending, match='без потери контекста'):
+            vision.review_global_story(events)
+        vision.cancelled = lambda: True
+        with pytest.raises(InterruptedError):
+            vision.review_global_story(events)
+
+
+@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel'])
+def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, mode):
+    import os
+    import subprocess
+    import time
+    if os.name != 'nt':
+        pytest.skip('executes Windows PowerShell packet wrapper')
+    root = Path(__file__).resolve().parents[1]
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    packet = tmp_path / 'packet'
+    packet.mkdir()
+    marker = 'Проверка полного русского контекста'
+    prompt = marker + ' контекст ' * 5000
+    atomic_json(packet / 'request.json', {'images':[], 'schema':{'type':'object'}})
+    atomic_json(packet / 'schema.json', {'type':'object'})
+    (packet / 'prompt.txt').write_text(prompt, encoding='utf-8')
+    fake_cli = tmp_path / 'fake-cli.py'
+    fake_cli.write_text('''import json,sys,time,os
+from pathlib import Path
+payload=json.loads(sys.stdin.buffer.readline().decode('utf-8'))
+assert payload['event']=='user' and payload['message']['role']=='user'
+text=payload['message']['content'][0]['text']
+assert text.startswith('Проверка полного русского контекста') and text.count('контекст')>=5000
+Path('child-started').write_text(str(os.getpid()))
+mode=''' + repr(mode) + '''
+if mode=='cancel':
+    time.sleep(60)
+elif mode=='malformed':
+    print('not JSON',flush=True)
+else:
+    print(json.dumps({'event':'init'}))
+    print(json.dumps({'event':'result','result':{'status':'SUCCESS','structured_output':{'ok':True},'usage':{'input_tokens':7,'output_tokens':2,'total_tokens':9}}}),flush=True)
+''', encoding='utf-8')
+    wrapper = (root / 'scripts/run_antigravity_packet.ps1').read_text('utf-8')
+    # Substitute only the native paid executable's arguments AFTER the real
+    # Windows-limit/stream branches; exercise actual stdin, parsing and kill.
+    wrapper = wrapper.replace('$startInfo.WorkingDirectory = $packet',
+        "$startInfo.Arguments = '" + str(fake_cli) + "'\n$startInfo.WorkingDirectory = $packet")
+    script = scripts / 'run_antigravity_packet.ps1'
+    script.write_text(wrapper, encoding='utf-8-sig')
+    stop = tmp_path / '.cancel'
+    command = ['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(script),
+        '-PacketDirectory',str(packet),'-AgyExe',str(root/'tools/python/python.exe'),
+        '-DefaultAgent','-StopFile',str(stop),'-TimeLimitSeconds','15']
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        if mode == 'cancel':
+            deadline = time.monotonic() + 10
+            while not (packet/'child-started').exists() and process.poll() is None and time.monotonic()<deadline:
+                time.sleep(.05)
+            assert (packet/'child-started').exists()
+            stop.touch()
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode == (0 if mode=='success' else 1), stderr.decode(errors='replace')
+        records = list((packet/'cli-attempts').glob('*/cli-run.json'))
+        assert len(records)==1
+        telemetry=json.loads(records[0].read_text(encoding='utf-8-sig'))
+        assert telemetry['input_format']=='stream-json' and telemetry['command_line_chars']<32767
+        assert (packet/'agy-result.json').exists() == (mode=='success')
+        assert (records[0].parent/'agy.stream.jsonl').exists()
+        if mode=='success':
+            assert json.loads((packet/'agy-result.json').read_text(encoding='utf-8-sig'))['result']['structured_output']=={'ok':True}
+            assert telemetry['usage']['total_tokens']==9
+        elif mode=='malformed':
+            assert telemetry['stream_error'] and not telemetry['usage_reported']
+        else:
+            assert telemetry['abort_reason']
+            child_id=int((packet/'child-started').read_text())
+            import ctypes
+            kernel=ctypes.windll.kernel32
+            kernel.OpenProcess.restype=ctypes.c_void_p
+            handle=kernel.OpenProcess(0x1000,False,child_id)
+            if handle:
+                exit_code=ctypes.c_ulong()
+                assert kernel.GetExitCodeProcess(ctypes.c_void_p(handle),ctypes.byref(exit_code))
+                kernel.CloseHandle(ctypes.c_void_p(handle))
+                assert exit_code.value != 259, 'owned native child must exit'
+    finally:
+        if process.poll() is None:
+            stop.touch()
+            process.communicate(timeout=10)
 
 
 def test_batch_keeps_valid_children_when_native_coverage_fails(tmp_path):

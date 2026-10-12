@@ -69,6 +69,8 @@ if (-not $DefaultAgent) {
     $agentRequested = 'kadr-json'
     $cliArguments += @('--agent', $agentRequested)
 }
+$streamInput = $false
+$inputMessage = $null
 $started = [Diagnostics.Stopwatch]::StartNew()
 # No permission bypass, token extraction, proxies, account switching or retries.
 function ConvertTo-NativeArgument([string]$Value) {
@@ -79,6 +81,17 @@ function ConvertTo-NativeArgument([string]$Value) {
 $startInfo = New-Object Diagnostics.ProcessStartInfo
 $startInfo.FileName = $AgyExe
 $startInfo.Arguments = ($cliArguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+if ($startInfo.FileName.Length + $startInfo.Arguments.Length + 3 -ge 32767) {
+    # Official1.3.3 stream-json takes NDJSON user messages from stdin, with
+    # NO --print argument. Preserve the complete prompt and attachment text.
+    # Do not mistake ordinary text stdin (unsupported) for this protocol.
+    $streamInput = $true
+    $streamArguments = @('--input-format','stream-json','--output-format','stream-json') + $cliArguments[4..($cliArguments.Length-1)]
+    $startInfo.Arguments = ($streamArguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
+    $inputMessage = @{event='user';message=@{role='user';content=@(@{type='text';text=$promptText})}} | ConvertTo-Json -Depth 10 -Compress
+    if ([Text.Encoding]::UTF8.GetByteCount($inputMessage) -gt 1048576) { throw 'Input exceeds standalone1MiB guard; split without truncation' }
+    $startInfo.RedirectStandardInput = $true
+}
 $startInfo.WorkingDirectory = $packet
 $startInfo.UseShellExecute = $false
 $startInfo.CreateNoWindow = $true
@@ -102,7 +115,21 @@ try {
     $null = $process.Start()
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
+    # Async stdin avoids deadlocking while a model/process emits stdout.
+    $stdinTask = $null
+    if ($streamInput) {
+        # Windows PowerShell5/.NET Framework lacks StandardInputEncoding.
+        # Explicit UTF-8 without BOM preserves non-ASCII source dialogue.
+        $stdinWriter = [IO.StreamWriter]::new($process.StandardInput.BaseStream, [Text.UTF8Encoding]::new($false))
+        $stdinTask = $stdinWriter.WriteLineAsync($inputMessage)
+    }
+    $stdinClosed = -not $streamInput
     while (-not $process.WaitForExit(500)) {
+        if (-not $stdinClosed -and $stdinTask.IsCompleted) {
+            $stdinTask.GetAwaiter().GetResult()
+            $stdinWriter.Close()
+            $stdinClosed = $true
+        }
         if (($StopFile -and (Test-Path -LiteralPath $StopFile)) -or
             ($RunnerStopFile -and (Test-Path -LiteralPath $RunnerStopFile)) -or $started.Elapsed.TotalSeconds -ge $TimeLimitSeconds) {
             $process.Kill()
@@ -118,12 +145,32 @@ try {
 } finally {
     $process.Dispose()
 }
+$streamError = $null
+if ($streamInput) {
+    [IO.File]::WriteAllText((Join-Path $attempt 'agy.stream.jsonl'), $captured, (New-Object Text.UTF8Encoding($false)))
+    $finalResults = @()
+    try {
+        foreach ($line in ($captured -split "`r?`n")) {
+            if (-not $line.Trim()) { continue }
+            $record = $line | ConvertFrom-Json
+        if ($record.event -eq 'result') { $finalResults += $line }
+        }
+        if ($finalResults.Count -ne 1) { throw 'Expected one final official stream result' }
+        # Retain the original final JSON line. Native strict import must still
+        # see duplicate keys/NaN; PowerShell must not normalize them away.
+        $captured = $finalResults[0]
+    } catch {
+        $streamError = 'Official stream did not contain one valid final result'
+        $captured = '{}'
+    }
+}
 $captured | Set-Content -LiteralPath (Join-Path $attempt $outputName) -Encoding UTF8
 # Numeric telemetry covers the attempt even if its structured answer is rejected.
 # Thinking is already part of output_tokens; never add it to total_tokens.
 $reportedUsage = @{}
 try {
     $envelope = $captured | ConvertFrom-Json
+    if ($streamInput) { $envelope = $envelope.result }
     foreach ($field in @('input_tokens','output_tokens','thinking_tokens','cache_read_tokens','total_tokens')) {
         $counter = $envelope.usage.$field
         if (($counter -is [int] -or $counter -is [long]) -and $counter -ge 0 -and $counter -le 1000000000000) {
@@ -134,11 +181,13 @@ try {
 $usageReported = $reportedUsage.ContainsKey('total_tokens') -or (
     $reportedUsage.ContainsKey('input_tokens') -and $reportedUsage.ContainsKey('output_tokens'))
 @{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;started_at=$cliStartedAt;finished_at=$cliFinishedAt;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;command_line_chars=$startInfo.FileName.Length+$startInfo.Arguments.Length+3;
-    usage_reported=$usageReported;usage=$reportedUsage} |
+    input_format=$(if ($streamInput) { 'stream-json' } else { 'text' });stream_error=$streamError;usage_reported=$usageReported;usage=$reportedUsage} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
 if ($abortReason) { throw "$abortReason; inspect $attempt" }
 if ($cliExit -ne 0) { throw "agy failed (exit $cliExit); inspect $attempt" }
+if ($streamError) { throw "$streamError; inspect $attempt" }
 $result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($streamInput) { $result = $result.result }
 if ($result.status -ne 'SUCCESS' -or $null -eq $result.structured_output) {
     throw "No successful structured result; do not import $attempt"
 }

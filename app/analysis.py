@@ -522,7 +522,8 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             selection_snapshot(diagnostics, 'selection_adjudication', events)
             # Global pass references only existing event IDs, never generated time ranges.
             with inference_purpose("global_story"), diagnostics.stage('global_story', provider=provider, model=str(STORY_MODEL)):
-                decisions = global_story_review(vision, events, editorial_profile)
+                decisions = (vision.review_global_story(events, editorial_profile)
+                    if hasattr(vision, 'review_global_story') else global_story_review(vision, events, editorial_profile))
             apply_global_selection(events, decisions, editorial_profile)
             global_path = diagnostics.path/'global_story.json'
             global_audit = load_json(global_path) if global_path.exists() else {'events':{}}

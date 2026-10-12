@@ -194,6 +194,10 @@ def import_result(job_dir, identifier, raw):
         raise ValueError('Результат больше 8 МБ')
     try:
         envelope = _strict_json(raw.decode('utf-8-sig') if isinstance(raw, bytes) else raw)
+        if isinstance(envelope, dict) and envelope.get('event') == 'result':
+            if set(envelope) != {'event', 'result'}:
+                raise ValueError('Некорректный final stream envelope')
+            envelope = envelope['result']
         if not isinstance(envelope, dict) or envelope.get('status') != 'SUCCESS':
             raise ValueError('Ожидается успешный JSON envelope официального agy')
         answer = envelope.get('structured_output')
@@ -324,6 +328,28 @@ class ManualVision:
         # Conservative planning bound, never presented as Gemini usage.
         # No tokenizer/model process is started for a manual exchange.
         return len(text.encode('utf-8'))
+
+    def review_global_story(self, events, editorial_profile=None):
+        """Use full cloud input with native global validators, without a local5300-token gate.
+
+        The byte bound is a transport safety guard, not a claimed Gemini context
+        size or tokenizer. Official stream-json handles the complete text on
+        the separately user-started side. Never truncate middle facts here.
+        """
+        from .story_review import global_story_review
+        owner = self
+        class CompleteContext:
+            def __getattr__(self, name):
+                return getattr(owner, name)
+            def token_count(self, text):
+                if owner.cancelled():
+                    raise InterruptedError('Обработка отменена')
+                if len(text.encode('utf-8')) > 240000:
+                    raise AnalysisPending('Полная история превышает безопасный размер облачного пакета; требуется разбиение без потери контекста')
+                # Native global review uses this only to decide whether to trim
+                # summaries. The complete input passed the explicit byte guard.
+                return 0
+        return global_story_review(CompleteContext(), events, editorial_profile)
 
     def _receive(self, directory, identifier, *, packets=None):
         """Wait for a user-run script's file; never invoke/control that script."""
