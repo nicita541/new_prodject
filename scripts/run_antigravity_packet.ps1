@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$PacketDirectory,
     [string]$AgyExe,
     [string]$Model = 'gemini-3.8-flash-low',
+    [switch]$DefaultAgent,
     [switch]$Smoke,
     [string]$StopFile,
     [ValidateRange(1,240)][int]$TimeLimitSeconds = 240
@@ -54,6 +55,13 @@ $cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-sch
                   '--print-timeout', '3m', '--disable-slash-commands', '--add-dir', $packet,
                   '--log-file', (Join-Path $attempt 'agy.log'))
 if ($Model) { $cliArguments += @('--model', $Model) }
+$agentRequested = 'default'
+if (-not $DefaultAgent) {
+    $persona = Join-Path $workspace '.agents\agents\kadr-json\agent.md'
+    if (-not (Test-Path -LiteralPath $persona -PathType Leaf)) { throw 'KADR JSON persona missing; restore agent.md or explicitly use -DefaultAgent' }
+    $agentRequested = 'kadr-json'
+    $cliArguments += @('--agent', $agentRequested)
+}
 $started = [Diagnostics.Stopwatch]::StartNew()
 # No permission bypass, token extraction, proxies, account switching or retries.
 function ConvertTo-NativeArgument([string]$Value) {
@@ -95,7 +103,7 @@ try {
     $process.Dispose()
 }
 $captured | Set-Content -LiteralPath (Join-Path $attempt $outputName) -Encoding UTF8
-@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;abort_reason=$abortReason} |
+@{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
 if ($abortReason) { throw "$abortReason; inspect $attempt" }
 if ($cliExit -ne 0) { throw "agy failed (exit $cliExit); inspect $attempt" }

@@ -1,0 +1,38 @@
+# Goal
+Reduce measured local preparation latency and examine excessive request fanout, preserving original source PTS, visual input, semantic validation and cancellation. The authorized full job must continue without a restart.
+
+# Current state
+Full job 00a9e488-dbe1-4614-9ec1-cf443e26083e uses local 4B for boundaries and initial scene analysis; Gemini replaces 9B only. Boundary calls average 3.732 seconds; initial scene calls about 4.245 seconds. Scene analysis has additional preparation cost. bounded_storyboard runs one FFmpeg process per cold frame, verifies actual PTS and hashes, and hashes/probes the source per view. Technical chunks obey an 18-frame ceiling including recovery demand.
+
+# Constraints
+Do not pause/restart the current full run. Runtime components include source hashes, so changing production modules mid-run can invalidate future resume checkpoints or mix identities. Prototype outside app first. All artifacts F. No weaker validation, invented frames, provider changes, or GPU parallelization without a separate quality comparison.
+
+User explicitly requested stop and continuation tomorrow at 2026-10-12 02:29 local time (UTC 2026-10-11 19:29). The job was cancelled through its normal API; worker tree terminated, independent runner confirmed stopped, read-only observer stopped. Resume the same job and caches when the user requests it; do not auto-start overnight. Python production modules must stay unchanged until this pending full run finishes, including the batching prototype: cancellation for a user pause is not permission to invalidate its checkpoints.
+
+# Implementation
+1. Prototype batching cold frame extraction in an ignored local candidate module, leaving production source untouched.
+2. Keep sampling, unit ownership, cache keys and source checks identical. Validate every extracted frame against measured FFmpeg PTS, image dimensions and checksums; retain complete extraction evidence. Reuse verified warm frames; preserve corruption repair and cancellation.
+3. Compare real cold/warm extraction time, process count, PTS and image bytes/pixels on a small real source window. Run existing storyboard integration checks against the candidate.
+4. After the full run reaches an outcome, integrate only a demonstrated improvement and verify regressions. Request reduction is a separate measured decision; the frame batching change does not reduce LLM request count.
+5. Evaluate same-scene interior chunk pairing with independent chunk IDs, original units/pages and per-child validation. Boundary chunks keep their neighboring visual context separately. Count tokens in the loaded model before batching; image-token/output reserves must fit its 8192 context. A real serial/paired quality comparison is required before enabling the policy; invalid children retain the ordinary recovery path. Do not start a second competing model during the current full run.
+6. Inspect official agy customization support. A single main-agent persona with no tools or inherited coding customizations may reduce unrelated CLI context. First compare genuine identical packet answers, token usage and strict import in an isolated job. Do not change the current runner budget or native provider identities. Retain default-agent fallback as an explicit user choice, without automatic paid retries.
+
+# Validation
+Existing real bounded-storyboard tests cover nonzero start PTS, VFR, frame limits, source changes, corrupt image/log/timestamp caches and cancellation. Add focused batch checks to the existing test module on integration. Actual video A/B stays small and avoids concurrent model/GPU work.
+
+# Risks and rollback
+Batch decoding might alter JPEG bytes or produce an unexpected frame; reject any PTS mismatch and prove visual equivalence. Wider decode windows may be slower for sparse samples; benchmark before rollout. Existing semantic hashes change on integration; keep the current full run and its production modules intact until it finishes. Revert only this optimization if equivalence or speed does not hold.
+
+# Progress
+- [x] Inspect current measured bottlenecks and chunk/cache ownership.
+- [x] Candidate in temp/local-throughput/bounded_candidate.py. Real 3.922-second source window, 12 identical frames: cold 3.2400s / 12 FFmpeg processes versus 0.9430s / 1 process; warm 0.6620s versus 0.6537s, zero frame decoders. Exact PTS, frame bytes, page bytes and pixels matched; source unchanged. Proof in temp/local-throughput/frame-batch-proof.json.
+- [x] Existing real integration checks against isolated candidate: 12 tests and 18 subtests passed in 8.94s. No production modules replaced.
+- [x] Partial warm-cache repair: two corrupted candidate frames repaired in one decoder invocation, exact original page bytes restored, next warm invocation uses zero frame decoders.
+- [x] Three additional real cold views (14/18/13 frames) matched exact PTS, frame and page bytes: 3.6653→0.7796s, 5.0403→1.5202s, 3.4156→1.2199s. Warm decoding uses zero FFmpeg processes. Saved multiple-window-proof.json. No production edits.
+- [x] Real read-only structural count: 129 frame-backed scenes, 510 technical chunks, 132 possible interior pairs, 378 primary calls if all pairs fit context and quality (25.88% upper-bound reduction; excludes recovery/retries/fallback). Saved request-pairing-potential.json locally; no new model requests.
+- [ ] Integrate after current full-run outcome, document measured gain and commit.
+- [x] Official single-main-agent persona `kadr-json` supports only `finish`, no inherited coding customizations or command/file/browser/MCP/subagent tools. Genuine identical packet: input 32275→4339, total 32526→4464; CLI 16.649→7.088s, envelope 9.718→1.970s; strict import accepted. Empty-tools attempt omitted structured_output and was rejected. One silent-unit selection differs; not a golden editorial equivalence assertion, native independent omission validation remains mandatory.
+- [x] Standalone packet script defaults to the measured persona with explicit `-DefaultAgent` rollback and actual-agent attempt metadata. Python production sources remain unchanged, full job still running, zero full-job cloud packets at change time. Existing independent runner reads the packet script on each call, so no restart or 180-minute budget reset is needed.
+- [x] User pause saved 87 complete scene checkpoints and 325 complete chunk checkpoints; source preparation, ASR and boundary detection complete. Full-series cloud packets: zero. Job 00a9e488-dbe1-4614-9ec1-cf443e26083e remains cancelled at analyze, with no error.
+- [x] Updated production standalone job script exercised on one genuine packet in temp/local-throughput/production-persona-smoke: one CLI call, strict automatic import, identical warm answer without another call, runner completed normally. Actual CLI metadata 12.239s, input4339/output617 (thinking496)/total4956. CLI variability and one differing silent-unit decision prevent a general latency/editorial equivalence claim. Both scripts parse; 26 transport tests passed (restricted initial fixture setup failed on Windows temp ACL; same tests passed with workspace temp access).
+- [x] User resumed work on 2026-10-12. Restarted Studio and retried same job; diagnostic run132d5cc49af946bdb971f5c4e576f939 confirms 87 scene cache hits before the next missing chunk. Preparation/ASR/scenes restored. Previous standalone runner spent 5440.584s of approved10800s; remaining budget5359.416s. Start the new runner with MaxMinutes89 when the first cloud packet is needed, avoiding idle budget use and any reset to180.

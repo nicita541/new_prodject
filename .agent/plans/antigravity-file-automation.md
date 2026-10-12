@@ -30,3 +30,13 @@ Cloud quotas/invalid model output pause with retained packets; do not blindly re
 - [ ] Authorized full job resumed after mistaken interpretation of deferring parallelization. Full-series result remains pending. User explicitly approved separate script limit 180 minutes; 30-minute target for 3-minute tests unchanged.
 - [ ] Verify and document.
 - [ ] Exercise selected job, report actual outcome and commit.
+
+## User-requested pause, 2026-10-12
+
+Stopped only on the user's explicit request to continue tomorrow. Same full job 00a9e488-dbe1-4614-9ec1-cf443e26083e is cancelled at analyze: 87/129 semantic scenes complete, 325 durable chunk checkpoints, preparation/ASR/scenes complete, no full-job Gemini packets yet. Native cancel API terminated the worker tree; independent agy runner exited normally with status stopped, wall5440.584s; read-only observer stopped. Keep Studio available, do not restart the job overnight.
+
+Uncommitted performance work is tracked in local-analysis-throughput.md. Python production modules remain unchanged so resume can reuse existing semantic identities. Frame batching is still an isolated tested candidate; do not integrate until the resumed full job finishes. Official single-main-agent CLI persona has one genuine strict-import proof (fewer service tokens, one differing silent-unit selection); updated production job script requires a real smoke before claiming its complete flow passed. Original 180-minute standalone budget has about89minutes remaining; do not reset the accumulated budget without renewed authorization.
+
+## Authorized continuation, 2026-10-12
+
+User requested continuation. Studio restarted and same job retried; run132d5cc49af946bdb971f5c4e576f939 confirms87 scene cache hits and factual-stage reuse before new processing. Updated production CLI job script passed genuine packet auto-import and warm cache with one CLI call, then completed normally. Persona input4339tokens; actual production test CLI12.239s, output617 including496thinking. 26 exchange tests passed. First restricted pytest attempt failed creating Windows fixtures, not assertions; access-correct rerun passed. Start full-job independent runner only when cloud packets are needed with MaxMinutes89 to retain the cumulative approved180minute ceiling.

@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory=$true)][string]$JobDirectory,
     [string]$AgyExe,
     [string]$Model = 'gemini-3.8-flash-low',
+    [switch]$DefaultAgent,
     [ValidateRange(1,180)][int]$MaxMinutes = 30
 )
 # User-started direct scripting. No HTTP control of KADR, no credential access.
@@ -26,7 +27,8 @@ function Write-Runner([string]$Status, [string]$Detail) {
     $path = Join-Path $root 'runner.json'
     $temporary = $path + '.pending'
     $value = @{status=$Status;packet=$packetId;message=$Detail;model=$Model;
-        wall_seconds=$timer.Elapsed.TotalSeconds;updated_at=(Get-Date).ToUniversalTime().ToString('o')}
+        wall_seconds=$timer.Elapsed.TotalSeconds;updated_at=(Get-Date).ToUniversalTime().ToString('o');
+        agent_requested=$(if ($DefaultAgent) { 'default' } else { 'kadr-json' })}
     [IO.File]::WriteAllText($temporary, ($value | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
     if (Test-Path -LiteralPath $path) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
     else { [IO.File]::Move($temporary, $path) }
@@ -58,7 +60,7 @@ try {
                     -not (Test-Path -LiteralPath (Join-Path $packet 'result.json'))) {
                     Write-Runner 'processing' 'Running official CLI for current packet'
                     $remaining = [Math]::Max(1, [Math]::Min(240, [int][Math]::Floor($MaxMinutes * 60 - $timer.Elapsed.TotalSeconds)))
-                    & (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1') -PacketDirectory $packet -AgyExe $AgyExe -Model $Model -StopFile (Join-Path $job '.cancel') -TimeLimitSeconds $remaining
+                    & (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1') -PacketDirectory $packet -AgyExe $AgyExe -Model $Model -DefaultAgent:$DefaultAgent -StopFile (Join-Path $job '.cancel') -TimeLimitSeconds $remaining
                     Write-Runner 'waiting' 'Result published; waiting for validation and next packet'
                 }
             }
