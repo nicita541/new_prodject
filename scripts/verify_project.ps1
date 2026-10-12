@@ -103,7 +103,7 @@ function Run-Check([string]$Name, [string]$Exe, [string[]]$Arguments, [string]$W
                 $note = $Matches[1]
             }
         }
-        if ($Name -eq "react_lint" -and $code -eq 0) {
+        if ($Name -eq "studio_lint" -and $code -eq 0) {
             $outputText = Get-Content -LiteralPath $outFile -Raw -ErrorAction Stop
             if ($outputText -match 'Found (\d+) warnings and 0 errors') {
                 $note = "$($Matches[1]) warnings, 0 errors"
@@ -315,13 +315,13 @@ if ($python) {
 }
 
 if ($npm -and (Test-Path -LiteralPath (Join-Path $frontend "node_modules"))) {
-    Run-Check "react_tests" $npm.Source @("test") $frontend 1800
-    Run-Check "react_lint" $npm.Source @("run", "lint") $frontend 600
-    Run-Check "react_build" $npm.Source @("run", "build") $frontend 900
+    Run-Check "studio_tests" $npm.Source @("test") $frontend 1800
+    Run-Check "studio_lint" $npm.Source @("run", "lint") $frontend 600
+    Run-Check "studio_build" $npm.Source @("run", "build") $frontend 900
 } else {
-    Add-Check "react_tests" "SKIP" 0 "npm/node_modules missing; run npm ci in frontend"
-    Add-Check "react_lint" "SKIP" 0 "npm/node_modules missing"
-    Add-Check "react_build" "SKIP" 0 "npm/node_modules missing"
+    Add-Check "studio_tests" "SKIP" 0 "npm/node_modules missing; run npm ci in frontend"
+    Add-Check "studio_lint" "SKIP" 0 "npm/node_modules missing"
+    Add-Check "studio_build" "SKIP" 0 "npm/node_modules missing"
 }
 if (Test-Path -LiteralPath $ffmpeg) {
     Run-Check "ffmpeg" $ffmpeg @("-version") $root 30

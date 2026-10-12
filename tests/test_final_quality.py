@@ -72,6 +72,16 @@ def codes(result):
 
 
 class FinalQualityTests(unittest.TestCase):
+    def test_unchanged_recovery_stops_but_improved_gate_can_continue(self):
+        from app.final_quality import recovery_stalled, quality_failure_message
+        gate = {'status': 'unresolved', 'problems': [{'code': 'dialogue_relations_unresolved'}]}
+        history = [{'gate': copy.deepcopy(gate)}, {'gate': copy.deepcopy(gate)}]
+        self.assertTrue(recovery_stalled(history))
+        self.assertIn('повтор того же кэша остановлен', quality_failure_message(gate, stalled=True))
+        self.assertIn('dialogue_relations_unresolved (1)', quality_failure_message(gate))
+        history[-1]['gate'] = {'status': 'passed', 'problems': []}
+        self.assertFalse(recovery_stalled(history))
+
     def test_complete_production_proof_chain_before_render(self):
         analysis, plan = fixture()
         result = final_quality.inspect_final_quality(analysis, plan)

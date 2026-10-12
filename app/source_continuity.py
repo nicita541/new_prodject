@@ -6,12 +6,13 @@ Unexplained omitted gaps become concrete tasks for original-video verification.
 from __future__ import annotations
 
 import copy
+import math
 
 from .selection_gate import positive_ranges, _covers
 from .source_roles import confirmed_exclusions, merge_ranges
 from .titles import _subtract
 
-VERSION = 1
+VERSION = 2
 FACTS = ('location_id', 'character_ids', 'physical_state_ids', 'object_ids',
          'topic_id', 'relationship_state_id')
 
@@ -79,14 +80,48 @@ def omitted_units(events, left, right):
     candidates = []
     for event in events:
         for unit in event.get('units', []):
-            if unit['start'] < left['end']-.002 or unit['end'] > right['start']+.002:
+            start,end = max(unit['start'],left['end']),min(unit['end'],right['start'])
+            if start >= end:
                 continue
-            pieces = _subtract([unit], confirmed_exclusions(event))
+            pieces = _subtract([{'start':start,'end':end}], confirmed_exclusions(event))
             retained = event.get('selected_ranges', []) if event.get('_continuity_selected') else []
-            if pieces and not _covers(retained, pieces):
-                candidates.append({'ref':{'event':event['id'], 'unit':unit['id']}, 'unit':unit,
+            pieces = _subtract(pieces,retained)
+            if pieces:
+                bounded = {**unit,'start':pieces[0]['start'],'end':pieces[-1]['end']}
+                candidates.append({'ref':{'event':event['id'], 'unit':unit['id']}, 'unit':bounded,
                                    'ranges':pieces, 'event':event})
     return sorted(candidates, key=lambda n:n['unit']['start'])
+
+
+def _accepted_omission_proofs(events, transcript):
+    """Reuse bounded, frame-backed source decisions; absence of speech is no proof."""
+    from .selection_gate import _anchored, source_selection_problems
+    proofs = []
+    for event in events:
+        if source_selection_problems(event):
+            continue
+        known = {u['id']:u for u in event.get('units', [])}
+        for record in event.get('unit_evidence', []):
+            confidence = record.get('confidence')
+            unit = known.get(record.get('unit'))
+            if (not unit or record.get('decision') != 'drop'
+                    or record.get('kind') not in ('waiting', 'neutral_scenery')
+                    or type(confidence) not in (int,float) or not math.isfinite(confidence) or not .9 <= confidence <= 1
+                    or not record.get('frame_indices') or not record.get('checkpoint')
+                    or not isinstance(record.get('evidence'),str) or len(record['evidence'].strip()) < 12):
+                continue
+            bounds = (unit['start'],unit['end'],record.get('view_start',unit['start']),record.get('view_end',unit['end']))
+            if any(type(t) not in (int,float) or not math.isfinite(t) for t in bounds):
+                continue
+            start,end = max(bounds[0],bounds[2]),min(bounds[1],bounds[3])
+            text = ' '.join(w.get('text','') for w in transcript.get('words') or transcript.get('segments',[])
+                            if unit['start'] <= w['start'] and w['end'] <= unit['end'])
+            if start >= end or not _anchored(record,{'text':text},start,end):
+                continue
+            proofs.append({'start':start,'end':end,'ref':{'event':event['id'],'unit':unit['id']},
+                'confidence':confidence,'checkpoint':record['checkpoint'],'evidence':record['evidence'],
+                'frame_indices':copy.deepcopy(record['frame_indices']),'frame_times':copy.deepcopy(record['frame_times'])})
+    return proofs
 
 
 def resolve_source_continuity(events, selected_ids, transcript, duration):
@@ -116,6 +151,19 @@ def resolve_source_continuity(events, selected_ids, transcript, duration):
             'reason':reason, 'evidence':copy.deepcopy(evidence), 'confidence':node['confidence'],
             'uncertain':False, 'limitations':[], 'endpoint':endpoint, 'continuity_version':VERSION})
         return True
+
+    # A retained consequential action must keep its proved source span. Merely
+    # having an action ID is insufficient; do not enlarge partial/invalid proof.
+    for node in nodes:
+        event = known[node['ref']['event']]
+        if event['id'] not in selected or node['ref']['unit'] not in event.get('action_units', []):
+            continue
+        records = [p for p in event.get('unit_evidence', []) if p.get('unit') == node['ref']['unit']
+                   and p.get('kind') in ('physical_action','state_transition') and p.get('decision') == 'keep']
+        action = _intersect(node['ranges'],positive_ranges({**event,'unit_evidence':records}))
+        retained = event.get('selected_ranges', [])
+        if action and any(r['start'] < a['end'] and r['end'] > a['start'] for r in retained for a in action):
+            restore(node['ref'],action,'verified_consequential_action',{'source_proofs':copy.deepcopy(records)})
 
     pairs = {}
     relations = {}
@@ -189,6 +237,9 @@ def resolve_source_continuity(events, selected_ids, transcript, duration):
         event['_continuity_selected'] = event['id'] in selected
     current, transitions = selected_nodes(source,selected), []
     verifications = [v for e in source for v in e.get('continuity_verifications', [])]
+    omissions = _accepted_omission_proofs(source,transcript)
+    positive = [r for e in source for r in positive_ranges(e)]
+    speech = transcript.get('words') or transcript.get('segments', [])
     for left,right in zip(current,current[1:]):
         comparison = compare_states(left['after'],right['before'])
         omitted_gap = right['start']-left['end'] > .002
@@ -196,10 +247,19 @@ def resolve_source_continuity(events, selected_ids, transcript, duration):
             and v.get('status') == 'accepted' and v.get('coherent') is True and v.get('confidence',0) >= .9),None)
         natural_exit = ('payoff' in left['roles'] and 'setup' in right['roles']
                         and left['arc_ids'] and right['arc_ids'] and not set(left['arc_ids']) & set(right['arc_ids']))
+        gap = {'start':left['end'],'end':right['start']}
+        gap_proofs = [p for p in omissions if p['start'] < gap['end'] and p['end'] > gap['start']]
+        proven_omission = (omitted_gap and not comparison['changed_dimensions'] and _covers(gap_proofs,[gap])
+            and not any(r['start'] < gap['end']-.002 and r['end'] > gap['start']+.002 for r in positive)
+            and not any(w['start'] < gap['end'] and w['end'] > gap['start'] for w in speech))
         if verification:
             status, reason = 'consistent','original_video_continuity_verified'
         elif not omitted_gap:
             status, reason = 'consistent','consecutive_original_source_units'
+        elif proven_omission:
+            status, reason = 'consistent','accepted_source_omission_proofs'
+            verification = {'method':reason,'confidence':min(p['confidence'] for p in gap_proofs),
+                            'source_proofs':copy.deepcopy(gap_proofs)}
         elif natural_exit:
             status, reason = 'consistent','verified_arc_resolution_and_new_setup'
         elif not comparison['changed_dimensions'] and comparison['matched_dimensions'] and (

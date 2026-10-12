@@ -118,6 +118,48 @@ class FakeProvider:
 
 
 class StoryStructurePassTests(unittest.TestCase):
+    def test_supported_payoff_can_set_up_a_different_arc_without_reassigning_its_owner(self):
+        event, transcript = fixture(4)
+        def chained(payload):
+            decision = response(payload)
+            if payload['CURRENT'][0]['ref']['unit'] != 'c000_u002':
+                return decision
+            available = {n['ref']['unit']:n for n in nodes(payload)}
+            anchor, closing = available['c000_u001'], available['c000_u003']
+            citations = [support(anchor), support(closing)]
+            decision['relations'].append({'type':'setup_payoff','from':anchor['ref'],'to':closing['ref'],
+                'confidence':.95,'evidence':'The supplied earlier outcome sets up this independently supported later response.',
+                'support':citations})
+            decision['arcs'].append({'anchor':anchor['ref'],'members':[{'ref':anchor['ref'],'role':'setup'},
+                {'ref':closing['ref'],'role':'payoff'}],'closed':True,'closing_unit':closing['ref'],
+                'confidence':.95,'evidence':'The earlier payoff also serves as setup in this different source arc.',
+                'support':citations})
+            return decision
+        with patch.dict(structure.POLICY, max_current_units=2):
+            result = self.infer([event], transcript, FakeProvider(chained))
+        self.assertEqual(result['status'], 'accepted')
+        owner = next(u for u in result['units'] if u['ref']['unit']=='c000_u001')
+        self.assertEqual(owner['roles'], ['payoff'])
+        later = next(a for a in result['arcs'] if a['anchor']==owner['ref'])
+        self.assertEqual(later['roles'][0]['role'], 'setup')
+
+    def test_conflicting_anchor_preserves_unrelated_accepted_arcs(self):
+        event, transcript = fixture(4)
+        current, _, _ = structure.source_units([event], transcript)
+        payload = {'CURRENT': current, 'CONTEXT_ONLY': [], 'MEMORY': []}
+        raw = response(payload)
+        first, other = raw['arcs']
+        conflicting = copy.deepcopy(first)
+        conflicting['closing_unit'] = other['closing_unit']
+        conflicting['members'].append(other['members'][-1])
+        grouped = {structure._key(first['anchor']): [first, conflicting],
+                   structure._key(other['anchor']): [other]}
+        arcs, unresolved, history = structure._merge_arc_groups(grouped, current, raw['relations'], 'audit')
+        self.assertEqual([a['anchor'] for a in arcs], [other['anchor']])
+        self.assertIn(first['anchor'], unresolved)
+        self.assertNotIn(other['anchor'], unresolved)
+        self.assertEqual(history[0]['reason'], 'conflicting_source_arc')
+
     def setUp(self):
         self.job = ROOT/'temp'/('story-structure-mechanism-'+uuid.uuid4().hex)
         self.job.mkdir(parents=True)
@@ -283,15 +325,18 @@ class StoryStructurePassTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unresolved')
         self.assertEqual(result['arcs'], [])
 
-    def test_partial_arc_is_explicitly_unresolved_not_closed_at_batch_end(self):
+    def test_supported_open_arc_accepts_roles_without_claiming_a_verified_ending(self):
         def partial(payload):
             decision = response(payload)
             decision['arcs'][0].update(closed=False, closing_unit=None)
             return decision
         result = self.infer(vision=FakeProvider(partial))
-        self.assertEqual(result['status'], 'unresolved')
+        self.assertEqual(result['status'], 'accepted')
         self.assertEqual(len(result['arcs']), 1)
         self.assertFalse(result['arcs'][0]['complete_ending'])
+        self.assertFalse(result['arcs'][0]['ending_verified'])
+        self.assertTrue(result['arcs'][0]['uncertain'])
+        self.assertTrue(all(u['status'] == 'accepted' for u in result['units']))
         self.assertIn('partial_arc_context_unresolved', result['arcs'][0]['boundary_reason'])
 
     def test_unknown_roles_and_facts_stay_unknown(self):
@@ -307,12 +352,24 @@ class StoryStructurePassTests(unittest.TestCase):
         self.assertEqual(result['canonical_facts'], [])
         self.assertTrue(all(u.get('before', facts()) == facts() for u in result['units']))
 
-    def test_roles_without_source_arc_membership_remain_unresolved(self):
+    def test_supported_roles_without_an_arc_do_not_invent_a_verified_ending(self):
         def no_arcs(payload):
             decision = response(payload); decision['arcs'] = []; return decision
         result = self.infer(vision=FakeProvider(no_arcs))
+        self.assertEqual(result['status'], 'accepted')
+        self.assertEqual(result['unresolved_refs'], [])
+        self.assertEqual(result['arcs'], [])
+
+    def test_unknown_row_does_not_discard_supported_sibling_roles(self):
+        def partial(payload):
+            decision = response(payload)
+            decision.update(arcs=[], relations=[])
+            decision['units'][0].update(roles=['unknown'], confidence=0, support=[])
+            return decision
+        result = self.infer(vision=FakeProvider(partial))
         self.assertEqual(result['status'], 'unresolved')
-        self.assertEqual(len(result['unresolved_refs']), 2)
+        self.assertEqual([u['status'] for u in result['units']], ['unresolved', 'accepted'])
+        self.assertEqual(len(result['unresolved_refs']), 1)
 
     def test_relation_support_cannot_borrow_another_unit_proof_or_invent_quote(self):
         for mutate in (lambda d: d['relations'][0]['support'][0].update(quote='Несуществующая реплика'),
@@ -604,9 +661,11 @@ class StoryStructurePassTests(unittest.TestCase):
                                or payload['MEMORY'] or payload['CANONICAL_REGISTRY']) else limit
         vision.token_counter = count
         result = self.infer([event], transcript, vision)
-        # Missing relationship context stays unresolved, but no actual CURRENT
-        # evidence is silently skipped or reported as too large.
-        self.assertEqual(result['status'], 'unresolved')
+        # Supported source roles survive without claiming a relationship or
+        # ending that the limited context cannot establish.
+        self.assertEqual(result['status'], 'accepted')
+        self.assertEqual(result['arcs'], [])
+        self.assertEqual(result['relations'], [])
         self.assertTrue(all(h['status'] == 'accepted' for h in result['history']))
         self.assertEqual(len(vision.calls), 4)
         self.assertEqual([p['CURRENT'][0]['ref']['unit'] for p in vision.payloads],

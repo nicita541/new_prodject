@@ -21,7 +21,6 @@ from urllib.parse import quote, urlsplit, urlencode
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
@@ -925,19 +924,8 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     from .finishing import create_finishing_router
     application.include_router(create_finishing_router())
 
-    static_legacy = config.ROOT / "app" / "static"
     dist_dir = config.ROOT / "frontend" / "dist"
-    assets_dir = dist_dir / "assets"
-    
-    if assets_dir.is_dir():
-        application.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-    if static_legacy.is_dir():
-        application.mount("/static", StaticFiles(directory=static_legacy), name="static_legacy")
-        
-    # The user's Studio Edition HTML is the *canonical application*, not an
-    # unserved file buried in frontend/public. Vite copies it to dist. A catch-all
-    # that always returns React index.html previously made every preview of the
-    # supplied design display the different React UI instead.
+    # Studio is the sole interface. Its static builder copies these assets.
     studio_html = dist_dir / "studio-edition.html"
     studio_bridge = dist_dir / "studio-live-bridge.js"
 
@@ -966,16 +954,9 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     def index(full_path: str, request: Request):
         if full_path.startswith(("api/", "assets/", "static/")):
             raise HTTPException(404)
-        if full_path in {"legacy", "legacy/"}:
-            if (static_legacy / "index.html").is_file():
-                return FileResponse(static_legacy / "index.html")
-            raise HTTPException(404, "Legacy UI not found")
-
-        # A debug-only escape hatch; the previous React UX must never become
-        # the default at /, /studio, /projects or a deep project link.
-        if full_path == "react-debug" and (dist_dir / "index.html").is_file():
-            return FileResponse(dist_dir / "index.html", headers={"Cache-Control": "no-cache"})
-        if full_path in {"studio-edition.html", "studio-edition-reference.html"}:
+        if full_path in {"legacy", "legacy/", "react-debug", "studio-edition-reference.html"}:
+            raise HTTPException(404, "Этот интерфейс удалён; используйте KADR Studio")
+        if full_path == "studio-edition.html":
             filename = full_path
             target = dist_dir / filename
             if target.is_file():

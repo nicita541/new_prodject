@@ -11,6 +11,20 @@ def analysis(duration=200):
 
 
 class PlannerTests(unittest.TestCase):
+    def test_count_preference_is_soft_and_never_breaks_processing_ceiling(self):
+        data=analysis(570)
+        data['preferred_part_count']=5
+        plan=build_plan(data)
+        self.assertLessEqual(len(plan['parts']),5)
+        self.assertTrue(all(p['duration']<=120 for p in plan['parts']))
+        self.assertAlmostEqual(sum(p['duration'] for p in plan['parts']),570)
+        data=analysis(610)
+        data['preferred_part_count']=5
+        plan=build_plan(data)
+        self.assertGreater(len(plan['parts']),5)
+        self.assertTrue(all(p['duration']<=120 for p in plan['parts']))
+        self.assertAlmostEqual(sum(p['duration'] for p in plan['parts']),610)
+
     def test_confirmed_title_removal_survives_dialogue_restoration_and_padding(self):
         data=analysis(30)
         data['events'][0].update(selected_ranges=[{'start':1,'end':3},{'start':20,'end':22}],

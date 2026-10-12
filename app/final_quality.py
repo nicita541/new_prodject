@@ -11,7 +11,7 @@ from .selection_adjudication import _source_text
 from .source_roles import merge_ranges, confirmed_exclusions
 from .titles import _subtract
 
-VERSION = 3
+VERSION = 4
 POLICY = {'max_recovery_passes':3, 'word_tolerance':.002,
           'uncertainty_retention':False, 'required_production_passes':['story_structure','dialogue_relations']}
 
@@ -34,6 +34,7 @@ def _confidence(value):
 def _source_part_endings(events,transcript,parts,arcs):
     """Resolve each actual part end from original source proofs, never plan claims."""
     from .story_structure_pass import source_units,_quote_in
+    from .speech_handles import ending_matches
     try:
         nodes,_,_=source_units(events,transcript)
     except (ValueError,KeyError,TypeError):
@@ -54,7 +55,7 @@ def _source_part_endings(events,transcript,parts,arcs):
                 for s in supports for p in node['proofs']))
             pieces=[{'start':max(node['start'],r['start']),'end':min(node['end'],r['end'])}
                 for r in arc.get('source_ranges',[]) if node and node['start']<r['end'] and node['end']>r['start']]
-            if (abs(arc['end']-boundary)<=.002 and arc.get('complete_ending') is True
+            if ((abs(arc['end']-boundary)<=.002 or ending_matches(arc['end'],boundary,transcript,part['cuts'])) and arc.get('complete_ending') is True
                     and arc.get('ending_verified') is True and arc.get('uncertain') is False
                     and proof.get('supported') is True and _confidence(proof.get('confidence'))
                     and supported and pieces and _covers(part['cuts'],pieces)):
@@ -69,7 +70,8 @@ def _source_part_endings(events,transcript,parts,arcs):
             for ending in event.get('part_endings',[]):
                 proof=ending.get('verification') or {}
                 time=ending.get('time')
-                if (type(time) in (int,float) and math.isfinite(time) and abs(time-boundary)<=.002
+                if (type(time) in (int,float) and math.isfinite(time)
+                        and (abs(time-boundary)<=.002 or ending_matches(time,boundary,transcript,part['cuts']))
                         and ending.get('kind') in ('closure','cliffhanger','transition')
                         and _confidence(ending.get('confidence')) and proof.get('supported') is True
                         and _confidence(proof.get('confidence')) and proof.get('evidence')
@@ -156,6 +158,15 @@ def inspect_final_quality(analysis, plan=None):
             if any(cut['start'] < excluded['end'] and cut['end'] > excluded['start']
                    for event in events for excluded in confirmed_exclusions(event)):
                 add('retained_confirmed_exclusion','selection_adjudication',part=part['index'],range=cut)
+    # Small nonverbal margins protect actual consonants beyond ASR timestamps.
+    # They are independently recomputed, never accepted from plan metadata,
+    # and do not authorize a new spoken word or a semantic bridge.
+    if production:
+        from .speech_handles import semantic_ranges
+        try:
+            retained = semantic_ranges(plan,events,transcript,analysis['probe']['duration'])
+        except (ValueError,KeyError,TypeError):
+            add('invalid_speech_handles','planner')
     # Every retained source span needs specific positive proof, with ASR
     # reconstructed from original words rather than a cached unit description.
     proof_ranges = []
@@ -257,6 +268,19 @@ def inspect_final_quality(analysis, plan=None):
 
 def gate_identity(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False,allow_nan=False).encode()).hexdigest()
+
+
+def recovery_stalled(history):
+    return len(history) >= 2 and history[-1]['gate'] == history[-2]['gate']
+
+
+def quality_failure_message(gate, *, stalled=False):
+    from collections import Counter
+    counts = Counter(p['code'] for p in gate['problems'])
+    details = ', '.join(f'{code} ({count})' for code, count in sorted(counts.items()))
+    suffix = ('; повторная проверка не изменила результат. Сохранённые ответы требуют '
+              'уточнения, повтор того же кэша остановлен' if stalled else '')
+    return 'analysis_unresolved: final_quality_gate — '+details+suffix
 
 
 def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report, cancelled):

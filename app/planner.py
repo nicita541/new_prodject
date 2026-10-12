@@ -6,7 +6,7 @@ from .subtitles import make_cues, remap_words
 
 MAX_DURATION = 120.0
 TARGET_DURATION = 90.0
-PLANNER_VERSION = 16
+PLANNER_VERSION = 17
 SCHEMA_VERSION = 1
 SPEECH_TAIL = 0.55
 SPEECH_LEAD = 0.18
@@ -277,7 +277,28 @@ def build_plan(analysis: dict) -> dict:
                         intervals[-1]["event_ids"].append(event["id"])
                 else:
                     intervals.append({"start":left,"end":right,"event_ids":[event['id']]})
-    boundaries = _part_boundaries(intervals, events, segments, words, analysis.get('shots', []), probe['duration'])
+    from .speech_handles import expand_ranges, barriers
+    semantic_ranges = [{'start':r['start'],'end':r['end']} for r in intervals]
+    excluded_ranges = barriers(events,semantic_ranges)
+    expanded = []
+    for interval in intervals:
+        for piece in expand_ranges([interval], analysis['transcript'], probe['duration'], excluded_ranges):
+            if expanded and piece['start'] <= expanded[-1]['end'] + .002:
+                expanded[-1]['end'] = max(expanded[-1]['end'],piece['end'])
+                expanded[-1]['event_ids'] = list(dict.fromkeys([*expanded[-1]['event_ids'],*interval['event_ids']]))
+            else:
+                expanded.append({**piece,'event_ids':interval['event_ids']})
+    intervals = expanded
+    preferred = analysis.get('preferred_part_count')
+    if preferred is not None and (type(preferred) is not int or not 1 <= preferred <= 64):
+        raise ValueError('Некорректное предпочтительное количество частей')
+    if preferred is not None:
+        from .dramatic_planner import _build_dramatic_boundaries
+        boundaries = _build_dramatic_boundaries(intervals,events,segments,words,analysis.get('shots', []),
+                                               probe['duration'],preferred,arcs=arcs,count_preference=True,
+                                               max_part_duration=MAX_DURATION)
+    else:
+        boundaries = _part_boundaries(intervals, events, segments, words, analysis.get('shots', []), probe['duration'])
     parts, current = [], []
     current_duration, elapsed = 0.0, 0.0
     def finish():
@@ -324,7 +345,7 @@ def build_plan(analysis: dict) -> dict:
     plan = {"schema_version": SCHEMA_VERSION, "source": {key: probe[key] for key in ("duration", "width", "height")},
             "selected_event_ids": [e["id"] for e in events if e["id"] in selected],
             "events": [dict(e) for e in events if e["id"] in retained_ids],
-            "parts": parts, "warnings": list(dict.fromkeys(warnings))}
+            "parts": parts, "semantic_ranges":semantic_ranges, "warnings": list(dict.fromkeys(warnings))}
     from .planner_audit import planner_audit
     plan['planner_diagnostics'] = planner_audit({**analysis, 'events': events}, plan, arcs=arcs, continuity=continuity)
     validate_plan(plan, analysis)

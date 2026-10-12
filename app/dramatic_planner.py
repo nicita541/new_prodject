@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import copy
+from bisect import bisect_left
 from pathlib import Path
 
 from .planner import (
@@ -244,7 +245,7 @@ def _build_dramatic_boundaries(
     shots: list[dict],
     duration: float,
     target_part_count: int,
-    *, arcs=None, diagnostics=None
+    *, arcs=None, diagnostics=None, count_preference=False, max_part_duration=MAX_SHORT_DURATION
 ) -> list[tuple[float, dict | None]]:
     """Choose complete story exits; part count is a soft preference."""
     total = round(sum(r['end'] - r['start'] for r in intervals), 6)
@@ -318,8 +319,8 @@ def _build_dramatic_boundaries(
 
     # 5. Fallback grid
     ideal_len = total / max(1, target_part_count)
-    ideal_len = max(TARGET_SHORT_MIN, min(TARGET_SHORT_MAX, ideal_len))
-    step_count = max(1, round(total / ideal_len))
+    ideal_len = max(TARGET_SHORT_MIN, min(max_part_duration if count_preference else TARGET_SHORT_MAX, ideal_len))
+    step_count = max(1, round(total / ideal_len),math.ceil(total/max_part_duration))
     for i in range(1, step_count):
         target_out = (total * i) / step_count
         elapsed = 0.0
@@ -346,9 +347,9 @@ def _build_dramatic_boundaries(
             elapsed += span
 
     # Consider all useful counts; semantic cost decides before a weak count penalty.
-    max_k = max(1, math.ceil(total/MAX_SHORT_DURATION),
+    max_k = max(1, math.ceil(total/max_part_duration),
                 min(max(target_part_count + 3, len(arcs or [])), max(1, math.ceil(total/10))))
-    min_k = max(1, math.ceil(total/MAX_SHORT_DURATION))
+    min_k = max(1, math.ceil(total/max_part_duration))
 
     dp: dict[tuple[int, float], tuple[float, float]] = {(0, 0.0): (0.0, 0.0)}
 
@@ -358,11 +359,9 @@ def _build_dramatic_boundaries(
             min_allowed = 0.1 if total <= TARGET_SHORT_MIN else (10.0 if (has_ending and k > 1) else TARGET_SHORT_MIN * 0.55)
             best_tuple = None
 
-            for start in times:
-                if start >= end:
-                    break
+            for start in times[bisect_left(times,end-max_part_duration-1e-6):bisect_left(times,end)]:
                 length = end - start
-                if length > MAX_SHORT_DURATION + 1e-6:
+                if length > max_part_duration + 1e-6:
                     continue
                 if length < min_allowed:
                     continue
@@ -373,6 +372,8 @@ def _build_dramatic_boundaries(
                     length_cost = 0.0
                 elif length < TARGET_SHORT_MIN:
                     length_cost = ((TARGET_SHORT_MIN - length) / 5.0) ** 2 + (2.0 if has_ending else 10.0)
+                elif count_preference:
+                    length_cost = ((length - ideal_len) / 25.0) ** 2
                 elif length > TARGET_SHORT_MAX:
                     length_cost = ((length - TARGET_SHORT_MAX) / 10.0) ** 2 + 5.0
                 else:
@@ -394,12 +395,15 @@ def _build_dramatic_boundaries(
                 dp[(k, end)] = best_tuple
 
     valid_k = [k for k in range(min_k, max_k + 1) if (k, total) in dp]
-    chosen_k = min(valid_k, key=lambda k: dp[(k, total)][0] + .6*abs(k-target_part_count)) if valid_k else None
+    # Explicit preferences mean "try at most N", not "force exactly N".
+    # A strong-arc penalty (35) still outweighs one additional part (10).
+    count_penalty = lambda k: 10.0*max(0,k-target_part_count) if count_preference else .6*abs(k-target_part_count)
+    chosen_k = min(valid_k, key=lambda k: dp[(k, total)][0] + count_penalty(k)) if valid_k else None
     if diagnostics is not None:
         diagnostics.update(preferred_part_count=target_part_count, chosen_part_count=chosen_k,
             count_policy='semantic_cost_then_soft_count_penalty', rejected_boundaries=rejected,
             alternatives=[{'parts': k, 'semantic_and_length_cost': dp[(k,total)][0],
-                           'soft_count_penalty': .6*abs(k-target_part_count)} for k in valid_k])
+                           'soft_count_penalty': count_penalty(k)} for k in valid_k])
 
     if chosen_k is None:
         # Fallback if strict bounds failed
@@ -473,6 +477,16 @@ def build_dramatic_plan(analysis: dict) -> dict:
     budget_min, budget_optimal, budget_max = (_number(retention_budget[key]) for key in ('min','optimal','max'))
     if not 0 <= budget_min <= budget_optimal <= budget_max <= duration+.002:
         raise ValueError('Некорректный бюджет финального профиля серии')
+    preferred = analysis.get('preferred_part_count')
+    if preferred is not None:
+        if type(preferred) is not int or not 1 <= preferred <= 64:
+            raise ValueError('Некорректное предпочтительное количество частей')
+        # A count preference must influence retention before partitioning.
+        # Required context and indivisible source arcs can still exceed it.
+        retention_budget['max'] = min(budget_max,preferred*MAX_SHORT_DURATION)
+        retention_budget['optimal'] = min(budget_optimal,preferred*TARGET_SHORT_OPTIMAL,retention_budget['max'])
+        retention_budget['min'] = min(budget_min,retention_budget['optimal'])
+        retention_budget['preferred_part_count'] = preferred
     from .story_structure import build_story_arcs, resolve_continuity
     arcs = build_story_arcs(events, analysis['transcript'])
     arc_by_event = {identifier: [arc for arc in arcs if identifier in arc['event_ids']] for identifier in by_id}
@@ -538,6 +552,19 @@ def build_dramatic_plan(analysis: dict) -> dict:
     if not intervals:
         raise ValueError("После исключений не осталось фрагментов для монтажа")
 
+    from .speech_handles import expand_ranges, barriers
+    semantic_ranges = [{'start':r['start'],'end':r['end']} for r in intervals]
+    excluded_ranges = barriers(events,semantic_ranges)
+    expanded = []
+    for interval in intervals:
+        for piece in expand_ranges([interval],analysis['transcript'],duration,excluded_ranges):
+            if expanded and piece['start'] <= expanded[-1]['end']+.002:
+                expanded[-1]['end'] = max(expanded[-1]['end'],piece['end'])
+                expanded[-1]['event_ids'] = list(dict.fromkeys([*expanded[-1]['event_ids'],*interval['event_ids']]))
+            else:
+                expanded.append({**piece,'event_ids':interval['event_ids']})
+    intervals = expanded
+
     # 3. Target optimal parts
     total_retained = sum(r['end'] - r['start'] for r in intervals)
     if total_retained <= TARGET_SHORT_MIN:
@@ -551,7 +578,8 @@ def build_dramatic_plan(analysis: dict) -> dict:
     part_policy = {}
 
     boundaries = _build_dramatic_boundaries(
-        intervals, events, segments, words, shots, duration, target_parts, arcs=arcs, diagnostics=part_policy
+        intervals, events, segments, words, shots, duration, target_parts, arcs=arcs, diagnostics=part_policy,
+        count_preference='preferred_part_count' in analysis
     )
 
     # 4. Form parts and cuts
@@ -627,6 +655,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
         "selected_event_ids": [e["id"] for e in events if e["id"] in selected_ids],
         "events": [dict(e) for e in events if e["id"] in retained_ids],
         "parts": parts,
+        "semantic_ranges":semantic_ranges,
         "warnings": list(dict.fromkeys(warnings)),
         "dramatic_montage": True,
         "episode_profile": episode_profile,

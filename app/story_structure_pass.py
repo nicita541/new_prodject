@@ -542,9 +542,12 @@ def validate_structure(raw, nodes, current, registry=None):
             raise ValueError('Open arc cannot claim a closing source unit')
         arcs.append(copy.deepcopy(arc))
     limitations = [_text(t, 'limitation', maximum=600) for t in _list(raw['limitations'], 'limitations')]
-    accepted = raw['resolved'] and min(dimensions) >= .9 and all(r['roles'] != ['unknown'] for r in rows)
+    supported = raw['resolved'] and min(dimensions) >= .9
+    accepted_units = [r for r in rows if supported and r['roles'] and all(role in ROLES[:-1] for role in r['roles'])]
+    accepted = supported and len(accepted_units) == len(rows)
     return {'accepted': accepted, 'understanding_confidence': dimensions[0], 'structure_confidence': dimensions[1],
-            'units': rows, 'relations': relations, 'arcs': arcs, 'canonical_entities': entities, 'limitations': limitations}
+            'units': rows, 'accepted_units': accepted_units,
+            'relations': relations, 'arcs': arcs, 'canonical_entities': entities, 'limitations': limitations}
 
 
 def _model_identity(vision):
@@ -647,6 +650,22 @@ def _merge_arcs(arcs, nodes, relations, signature):
             'boundary_reason': ['inferred_supported_source_relations' if complete else 'partial_arc_context_unresolved'],
             'structure_pass_version': VERSION})
     return sorted(result, key=lambda arc: (arc['start'], arc['end'], arc['id']))
+
+
+def _merge_arc_groups(arcs, nodes, relations, signature):
+    """A contradictory anchor cannot invalidate unrelated accepted source arcs."""
+    merged, unresolved, history = [], [], []
+    for anchor, records in arcs.items():
+        try:
+            merged.extend(_merge_arcs({anchor: records}, nodes, relations, signature))
+        except (ValueError, KeyError, TypeError) as error:
+            refs = {_key(member['ref']): member['ref']
+                    for record in records for member in record['members']}
+            unresolved.extend(refs.values())
+            history.append({'status': 'failed', 'reason': 'conflicting_source_arc',
+                'CURRENT_refs': list(refs.values()), 'error_type': type(error).__name__,
+                'error': _clean(str(error))[:800]})
+    return sorted(merged, key=lambda arc: (arc['start'], arc['end'], arc['id'])), unresolved, history
 
 
 def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, progress=None):
@@ -762,14 +781,15 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                 history.append({'status': 'accepted' if decision['accepted'] else 'unresolved',
                     'CURRENT_refs': [n['ref'] for n in current], 'CONTEXT_refs': [n['ref'] for n in context],
                     'checkpoint': signature, 'decision': copy.deepcopy(raw)})
-                if decision['accepted']:
-                    assignments.update({_key(r['ref']): r for r in decision['units']})
+                accepted_rows = decision['accepted_units']
+                accepted_keys = {_key(r['ref']) for r in accepted_rows}
+                unresolved.extend(n['ref'] for n in current if _key(n['ref']) not in accepted_keys)
+                if accepted_rows:
+                    assignments.update({_key(r['ref']): r for r in accepted_rows})
                     relation_map.update({_hash(r): r for r in decision['relations']})
                     for arc in decision['arcs']:
                         arc_map.setdefault(_key(arc['anchor']), []).append(arc)
                     registry = decision['canonical_entities']
-                else:
-                    unresolved.extend(n['ref'] for n in current)
             except (OutputLimitExceeded, EmptyResponse) as error:
                 if size <= 1:
                     detail = '; CLI не ответил даже на один фрагмент. Нужна проверка пакета' if isinstance(error, EmptyResponse) else '; даже один фрагмент не помещается. Нужна проверка пакета'
@@ -797,17 +817,25 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
             cursor += size
         if progress:
             progress(cursor, len(nodes))
-        final_arcs = _merge_arcs(arc_map, nodes, list(relation_map.values()), _hash(signatures))
-        # Cross-batch context references must agree with their actual owner pass.
+        final_arcs, merge_unresolved, merge_history = _merge_arc_groups(
+            arc_map, nodes, list(relation_map.values()), _hash(signatures))
+        unresolved.extend(merge_unresolved)
+        history.extend(merge_history)
+        # CONTEXT members need a supported CURRENT owner. A role in another
+        # source arc is relative to that arc: a payoff can set up a later arc.
+        # An owner's role list is not an exhaustive denial of other functions.
+        # Conflicting roles inside the SAME anchor remain rejected above.
         for arc in final_arcs:
             for role in arc['roles']:
                 assignment = assignments.get(_key(role['ref']))
-                if assignment is None or role['role'] not in assignment['roles']:
+                if assignment is None:
                     unresolved.append(role['ref'])
-        partial = [ref for arc in final_arcs if not arc['complete_ending'] for ref in arc['source_unit_refs']]
-        unresolved.extend(partial)
-        covered_by_arcs = {_key(r) for a in final_arcs for r in a['source_unit_refs']}
-        unresolved.extend(n['ref'] for n in nodes if _key(n['ref']) not in covered_by_arcs)
+        # An evidenced setup/development can belong to an open story arc.
+        # The arc still cannot authorize a part ending, but its supported
+        # source roles are not an unresolved analysis result (see prompt).
+        # A supported development/transition need not invent an arc merely to
+        # satisfy coverage. Roles require their own proof; actual part endings
+        # still require an independently verified closure in final_quality.
     except Exception as error:
         if _control_failure(error):
             raise
@@ -827,7 +855,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
     for event in result_events:
         own = [u for u in units if u['ref']['event'] == event.get('id')]
         own_unresolved = [r for r in unresolved if r['event'] == event.get('id')]
-        event['story_structure'] = {'version': VERSION, 'status': 'unresolved' if own_unresolved or failed and not own else 'accepted',
+        event['story_structure'] = {'version': VERSION, 'status': 'unresolved' if own_unresolved else 'accepted',
             'units': [{k: copy.deepcopy(u.get(k)) for k in ('ref', 'roles', 'before', 'after', 'arc_ids', 'status')} for u in own],
             'unresolved_refs': own_unresolved}
         event['inferred_story_arcs'] = [copy.deepcopy(a) for a in final_arcs if event.get('id') in a['event_ids']]
@@ -849,6 +877,6 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
         'limitations': ['text_pass_inherits_visual_proof_and_does_not_independently_verify_video',
             'model_confidence_is_self_reported', 'canonical_identity_equivalence_is_model_inference',
             'far_relations_outside_bounded_context_require_targeted_verification',
-            'open_or_context_limited_arcs_are_explicitly_unresolved', 'selection_and_exclusions_are_unchanged']}
+            'open_or_context_limited_arcs_do_not_claim_verified_endings', 'selection_and_exclusions_are_unchanged']}
     _atomic(directory/'story_structure.json', _clean(result))
     return result

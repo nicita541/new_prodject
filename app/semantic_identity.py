@@ -28,11 +28,11 @@ _COMPONENTS = {
     'episode_profile': ('episode_profile', 'media_evidence', 'selection_gate'),
     'story_structure': ('story_structure_pass','dialogue_relations','selection_gate','source_roles'),
     'continuity': ('source_continuity','continuity_verification','selection_adjudication','bounded_storyboard','selection_gate','source_roles'),
-    'final_quality': ('final_quality','source_continuity','continuity_verification','selection_gate','pipeline'),
+    'final_quality': ('final_quality','speech_handles','source_continuity','continuity_verification','selection_gate','pipeline'),
     'story': ('story', 'scene_refinement', 'story_review', 'closing', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
     'pacing': ('pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'deepseek'),
-    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
-    'ending': ('endings', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek')}
+    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'speech_handles', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate'),
+    'ending': ('endings', 'speech_handles', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek')}
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
     'media_probe': ('SHOT_DETECTOR_VERSION', 'BASE_SCENE_THRESHOLD'),
@@ -47,6 +47,7 @@ _CONSTANTS = {
     'global_verification': ('GLOBAL_VERIFICATION_VERSION', 'GLOBAL_VISUAL_PROMPT'),
     'episode_profile': ('EPISODE_PROFILE_VERSION', 'EPISODE_PROFILE_POLICY'),
     'retention_allocation': ('VERSION',),
+    'speech_handles': ('VERSION','LEAD','TAIL'),
     'story_structure_pass': ('VERSION','POLICY','STORY_STRUCTURE_PROMPT','ROLES','RELATIONS'),
     'dialogue_relations': ('VERSION','POLICY','DIALOGUE_PROMPT'),
     'source_continuity': ('VERSION','FACTS'),

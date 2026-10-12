@@ -51,8 +51,13 @@ if ($Smoke) {
         $mentions += '@' + $page
     }
     # Inline the exact text contract: headless mode need not request a file-read
-    # permission just to obtain the prompt. Images use official @ attachments.
+    # permission just to obtain the prompt. Print-mode @ mentions are text;
+    # the restricted persona must open the exact images using view_file.
     $promptText = [IO.File]::ReadAllText((Join-Path $packet 'prompt.txt'), [Text.Encoding]::UTF8) + "`n`n" + ($mentions -join ' ') + ' Return the requested JSON. Do not run shell commands, use internet, modify files or inspect other directories.'
+    if (@($request.images).Count -gt 0) {
+        $imagePaths = @($request.images | ForEach-Object { Join-Path $packet $_ })
+        $promptText += "`nREQUIRED IMAGE RECEPTION: @ mentions in print mode are text, not attached pixels. Before answering, use view_file to open EACH of these exact original image paths: " + ($imagePaths -join ', ') + '. Only these image paths may be read. If any image cannot be viewed, report uncertainty; never guess from ASR or filenames.'
+    }
     # Gemini's generation schema omits unsupported numeric/boolean enums.
     # Explicitly supply the ORIGINAL values; native import remains strict.
     if (-not (Test-Path -LiteralPath (Join-Path $packet 'batch.json'))) {
@@ -102,7 +107,8 @@ if ($JsonText) {
     $promptText += "`nSource contract reminders: every arc.anchor MUST also appear in that arc.members with its evidenced role and its own support. A closed arc requires a DIRECT supported relation from anchor to closing_unit, a payoff closing role and an evidenced outcome; an indirect chain alone does not close it. Keep unsupported arcs open. A canonical before/after ID needs an observed mention from THAT EXACT unit ref; a neighboring unit's entity mention does not populate its states. Use null/[] for unsupported canonical facts, without suppressing separately evidenced story roles. Every non-unknown unit row cites its own inherited proof."
     $promptText += "`nEvery returned relation MUST have at least one endpoint in CURRENT. Do not return a relation only between MEMORY and CONTEXT_ONLY, or between two CONTEXT_ONLY refs. Relations follow source time from earlier to later. Every arc has at least one CURRENT member. Return entities/relations/arcs only when their actual supported confidence meets the native 0.9 minimum; omit unsupported claims, never inflate confidence to satisfy validation."
 }
-$cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath)
+$streamOutput = (-not $Smoke -and @($request.images).Count -gt 0)
+$cliArguments = @('--print', $promptText, '--output-format', $(if ($streamOutput) { 'stream-json' } else { 'json' }), '--json-schema', $schemaPath)
 $cliArguments += @('--print-timeout', '3m', '--disable-slash-commands', '--add-dir', $packet,
                   '--log-file', (Join-Path $attempt 'agy.log'))
 if ($Model) { $cliArguments += @('--model', $Model) }
@@ -133,6 +139,7 @@ if ($startInfo.FileName.Length + $startInfo.Arguments.Length + 3 -ge 32767) {
     # NO --print argument. Preserve the complete prompt and attachment text.
     # Do not mistake ordinary text stdin (unsupported) for this protocol.
     $streamInput = $true
+    $streamOutput = $true
     $streamArguments = @('--input-format','stream-json','--output-format','stream-json') + $cliArguments[4..($cliArguments.Length-1)]
     $startInfo.Arguments = ($streamArguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
     $inputMessage = @{event='user';message=@{role='user';content=@(@{type='text';text=$promptText})}} | ConvertTo-Json -Depth 10 -Compress
@@ -193,13 +200,19 @@ try {
     $process.Dispose()
 }
 $streamError = $null
-if ($streamInput) {
+$viewedImages = @()
+if ($streamOutput) {
     [IO.File]::WriteAllText((Join-Path $attempt 'agy.stream.jsonl'), $captured, (New-Object Text.UTF8Encoding($false)))
     $finalResults = @()
     try {
         foreach ($line in ($captured -split "`r?`n")) {
             if (-not $line.Trim()) { continue }
             $record = $line | ConvertFrom-Json
+            if ($record.event -eq 'step_update' -and $record.step_update.step_type -eq 'tool' -and
+                $record.step_update.state -eq 'DONE' -and $record.step_update.tool_name -eq 'view_file' -and
+                -not $record.step_update.error) {
+                $viewedImages += [string]$record.step_update.tool_info.parameters.AbsolutePath
+            }
         if ($record.event -eq 'result') { $finalResults += $line }
         }
         if ($finalResults.Count -ne 1) { throw 'Expected one final official stream result' }
@@ -217,7 +230,7 @@ $captured | Set-Content -LiteralPath (Join-Path $attempt $outputName) -Encoding 
 $reportedUsage = @{}
 try {
     $envelope = $captured | ConvertFrom-Json
-    if ($streamInput) { $envelope = $envelope.result }
+    if ($streamOutput) { $envelope = $envelope.result }
     foreach ($field in @('input_tokens','output_tokens','thinking_tokens','cache_read_tokens','total_tokens')) {
         $counter = $envelope.usage.$field
         if (($counter -is [int] -or $counter -is [long]) -and $counter -ge 0 -and $counter -le 1000000000000) {
@@ -241,7 +254,7 @@ if ($cliExit -ne 0) { Publish-Failure 'process_exit'; throw "agy failed (exit $c
 if ($streamError) { Publish-Failure 'invalid_json'; throw "$streamError; inspect $attempt" }
 try { $result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json }
 catch { Publish-Failure 'invalid_json'; throw "Antigravity returned invalid JSON; inspect $attempt" }
-if ($streamInput) { $result = $result.result }
+if ($streamOutput) { $result = $result.result }
 $hasAnswer = $null -ne $result.structured_output
 if ($JsonText -and $result.status -eq 'SUCCESS') {
     $hasAnswer = ($result.structured_output.kadr_answer_json -is [string]) -and
@@ -285,6 +298,22 @@ if ($result.status -ne 'SUCCESS' -or -not $hasAnswer) {
     throw "No successful structured result; do not import $attempt"
 }
 if ($Smoke -and $result.structured_output.ok -ne $true) { throw 'Smoke answer is not ok=true' }
+if (-not $Smoke -and @($request.images).Count -gt 0) {
+    foreach ($requiredImage in $imagePaths) {
+        if ($requiredImage -notin $viewedImages) {
+            Publish-Failure 'image_reception'
+            throw "Original image was not viewed; no result published: $requiredImage"
+        }
+    }
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { $responseDigest = [BitConverter]::ToString($sha256.ComputeHash([IO.File]::ReadAllBytes((Join-Path $attempt $outputName)))).Replace('-','').ToLowerInvariant() }
+    finally { $sha256.Dispose() }
+    $receipt = @{packet=$request.id;version=1;transport='official-view-file';
+        images=@($request.images);image_hashes=@($request.image_hashes);
+        response_sha256=$responseDigest;
+        attempt=(Split-Path $attempt -Leaf)}
+    [IO.File]::WriteAllText((Join-Path $packet 'image-reception.json'), ($receipt | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+}
 $destination = Join-Path $packet $outputName
 $pending = $destination + '.pending'
 Copy-Item -LiteralPath (Join-Path $attempt $outputName) -Destination $pending -Force

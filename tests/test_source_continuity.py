@@ -81,6 +81,85 @@ def dialogue_fixture(kept):
 
 
 class SourceContinuityTests(unittest.TestCase):
+    def test_omitted_tail_of_retained_unit_is_a_bounded_original_candidate(self):
+        value = single('left','u0',0,4,before=unknown(),after=unknown())
+        value['_continuity_selected'] = True
+        value['selected_ranges'] = [span(0,1)]
+        right = single('right','u0',4,8,before=unknown(),after=unknown())
+        left_node = selected_nodes([value],{'left'})[0]
+        right_node = selected_nodes([right],{'right'})[0]
+        omitted = omitted_units([value,right],left_node,right_node)
+        self.assertEqual(len(omitted),1)
+        self.assertEqual(omitted[0]['ref'],ref('left','u0'))
+        self.assertEqual(omitted[0]['ranges'],[span(1,4)])
+        self.assertEqual((omitted[0]['unit']['start'],omitted[0]['unit']['end']),(1,4))
+        self.assertEqual((value['units'][0]['start'],value['units'][0]['end']),(0,4))
+
+    def test_retained_consequential_action_restores_only_its_proved_span(self):
+        value = single('action','u0',0,4,before=unknown(),after=unknown())
+        value['action_units'] = ['u0']
+        value['selected_ranges'] = [span(1,2)]
+        result = self.resolve([value],['action'])
+        self.assertEqual(result['events'][0]['selected_ranges'],[span(0,4)])
+        self.assertEqual(result['bridges'][0]['reason'],'verified_consequential_action')
+        value['unit_evidence'][0].update(view_start=1,view_end=3)
+        result = self.resolve([value],['action'])
+        self.assertEqual(result['events'][0]['selected_ranges'],[span(1,3)])
+
+    def test_naked_action_id_does_not_restore_unproved_footage(self):
+        value = single('action','u0',0,4,before=unknown(),after=unknown())
+        value['action_units'] = ['u0']
+        value['selected_ranges'] = [span(1,2)]
+        value['unit_evidence'][0]['confidence'] = .5
+        result = self.resolve([value],['action'])
+        self.assertEqual(result['events'][0]['selected_ranges'],[span(1,2)])
+        self.assertEqual(result['bridges'],[])
+
+    def omission_fixture(self):
+        value = event('room', [('left',0,4,unknown(),unknown(),['development']),
+            ('gap',4,8,unknown(),unknown(),['transition']),('right',8,12,unknown(),unknown(),['development'])],
+            selected=['left','right'])
+        proof = value['unit_evidence'][1]
+        proof.update(decision='drop',kind='waiting',
+                     evidence='CURRENT shows a routine still pause without a new action, dialogue or emotional outcome.')
+        return value
+
+    def test_frame_verified_omission_is_reused_without_inventing_canonical_identity(self):
+        value = self.omission_fixture()
+        original = copy.deepcopy(value)
+        result = self.resolve([value],['room'])
+        row = result['transitions'][0]
+        self.assertEqual(row['status'],'consistent')
+        self.assertEqual(row['reason'],'accepted_source_omission_proofs')
+        self.assertTrue(row['unknown_dimensions'])
+        self.assertEqual(row['verification']['source_proofs'][0]['ref'],ref('room','gap'))
+        self.assertEqual(value,original)
+
+    def test_silence_or_invalid_incomplete_drop_evidence_cannot_resolve_gap(self):
+        for changes in ({'confidence':.89},{'frame_indices':[],'frame_times':[]},
+                        {'frame_times':[100]},{'checkpoint':None},{'view_start':5},
+                        {'kind':'physical_action'},{'evidence':'no'}):
+            value = self.omission_fixture()
+            value['unit_evidence'][1].update(changes)
+            with self.subTest(changes=changes):
+                self.assertEqual(self.resolve([value],['room'])['transitions'][0]['status'],'unresolved')
+
+    def test_drop_proof_cannot_erase_real_speech_or_known_state_change(self):
+        value = self.omission_fixture()
+        speech = {'words':[{'start':5,'end':6,'text':'Стой!'}]}
+        self.assertEqual(self.resolve([value],['room'],speech)['transitions'][0]['status'],'unresolved')
+        value['story_structure']['units'][0]['after'] = facts('free')
+        value['story_structure']['units'][-1]['before'] = facts('bound')
+        self.assertEqual(self.resolve([value],['room'])['transitions'][0]['status'],'unresolved')
+
+    def test_existing_positive_action_proof_blocks_negative_gap_shortcut(self):
+        value = self.omission_fixture()
+        positive = copy.deepcopy(value['unit_evidence'][1])
+        positive.update(decision='keep',kind='physical_action',
+                        evidence='The source character visibly ties the other character wrists with rope.')
+        value['unit_evidence'].append(positive)
+        self.assertEqual(self.resolve([value],['room'])['transitions'][0]['status'],'unresolved')
+
     def resolve(self, events, selected, transcript=EMPTY, duration=100):
         return resolve_source_continuity(events, selected, transcript, duration)
 

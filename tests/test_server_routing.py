@@ -144,11 +144,9 @@ def test_canonical_studio_is_not_silent_react_fallback():
                 assert c.get("/nothing").status_code == 404
 
 
-def test_legacy_route_serves_legacy_index():
-    response = client.get("/legacy")
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "app.js" in response.text or "library.js" in response.text
+def test_removed_interfaces_are_unavailable():
+    for path in ('/legacy','/react-debug','/studio-edition-reference.html'):
+        assert client.get(path).status_code == 404
 
 
 def test_api_404_returns_json_not_html():
@@ -159,5 +157,4 @@ def test_api_404_returns_json_not_html():
 
 def test_static_files():
     response = client.get("/static/style.css")
-    assert response.status_code == 200
-    assert "text/css" in response.headers["content-type"]
+    assert response.status_code == 404

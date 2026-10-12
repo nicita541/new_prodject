@@ -117,6 +117,17 @@ def analysis_passes(job, directory):
         for step in ANALYSIS_PASSES:
             if step not in seen and result[step]['status'] == 'pending':
                 result[step] = {'status': 'not_required', 'fraction': None}
+    # Returning from a provider pass only means its inputs were processed.
+    # A failed quality gate must expose the actual rejected pass, including
+    # failures discovered after its diagnostic `end` record.
+    if job.get('status') == 'failed':
+        for step, filename in (('story_structure_analysis', 'story_structure-result.json'),
+                               ('dialogue_relations', 'dialogue_relations-result.json')):
+            accepted = _read(directory / filename)
+            if isinstance(accepted, dict) and accepted.get('status') == 'unresolved':
+                refs = accepted.get('unresolved_refs')
+                result[step].update(status='failed', fraction=None,
+                    phase='Нужны уточнения', unresolved=len(refs) if isinstance(refs, list) else None)
     return result
 
 

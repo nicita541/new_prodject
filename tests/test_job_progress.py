@@ -15,6 +15,16 @@ from scripts import publish_job_progress as publisher
 
 
 class JobProgressTests(unittest.TestCase):
+    def test_failed_gate_does_not_show_rejected_passes_as_completed(self):
+        self.lines('timeline.jsonl', [{'stage': step, 'action': action, 'run_id': 'current'}
+                   for step in ('story_structure_analysis', 'dialogue_relations') for action in ('start', 'end')])
+        self.write(self.directory/'story_structure-result.json', {'status': 'unresolved', 'unresolved_refs': [{'event': 'e', 'unit': 'u'}]})
+        self.write(self.directory/'dialogue_relations-result.json', {'status': 'accepted', 'unresolved_refs': []})
+        rows = job_progress.analysis_passes({**self.job, 'status': 'failed', 'stage': 'analyze'}, self.directory)
+        self.assertEqual(rows['story_structure_analysis']['status'], 'failed')
+        self.assertEqual(rows['story_structure_analysis']['unresolved'], 1)
+        self.assertEqual(rows['dialogue_relations']['status'], 'completed')
+
     def setUp(self):
         config.TEMP.mkdir(exist_ok=True)
         # Normal mkdir preserves the workspace's Windows ACLs; mkdtemp's

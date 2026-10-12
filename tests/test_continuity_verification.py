@@ -98,6 +98,7 @@ class ValidateContinuityTests(unittest.TestCase):
         self.assertFalse(self.validate(decision(confidence=.89))['accepted'])
         self.assertTrue(self.validate(decision(confidence=.9))['accepted'])
         self.assertFalse(self.validate(decision(resolved=False))['accepted'])
+        self.assertFalse(self.validate(decision(resolved=False,coherent_without_bridges=False))['accepted'])
 
     def test_strict_fields_boolean_types_and_bridge_necessity_are_required(self):
         for raw in (decision(start=0), {k: v for k, v in decision().items() if k != 'resolved'},
@@ -109,6 +110,35 @@ class ValidateContinuityTests(unittest.TestCase):
 
 
 class OmittedContinuityMechanismTests(unittest.TestCase):
+    def test_endpoint_only_does_not_inspect_or_restore_unseen_bridge(self):
+        vision=FakeVision(continuity=lambda payload:decision())
+        with patch('app.continuity_verification.adjudicate_event') as inspect:
+            result,audit=verification.verify_omitted_continuity(self.source,self.events,
+                self.selected,EMPTY,[],self.transition,self.job,vision,lambda:False,endpoint_only=True)
+        inspect.assert_not_called()
+        self.assertEqual(audit['status'],'accepted')
+        self.assertEqual(audit['restored_refs'],[])
+        self.assertEqual(result[0]['selected_ranges'],self.events[0]['selected_ranges'])
+        self.assertEqual(vision.requests[0]['payload']['CURRENT_CANDIDATES'],[])
+        self.assertIn('inspection_scope',vision.requests[0]['payload'])
+
+    def test_endpoint_only_cannot_claim_unsupplied_bridge(self):
+        vision=FakeVision(continuity=lambda payload:decision([{'event':'room','unit':'u1'}]))
+        result,audit=verification.verify_omitted_continuity(self.source,self.events,
+            self.selected,EMPTY,[],self.transition,self.job,vision,lambda:False,endpoint_only=True)
+        self.assertEqual(audit['status'],'unresolved')
+        self.assertEqual(audit['restored_refs'],[])
+        self.assertEqual(result[0]['selected_ranges'],self.events[0]['selected_ranges'])
+
+    def test_targeted_candidate_filter_rejects_foreign_original_refs(self):
+        vision=FakeVision()
+        result,audit=verification.verify_omitted_continuity(self.source,self.events,
+            self.selected,EMPTY,[],self.transition,self.job,vision,lambda:False,
+            candidate_refs=[{'event':'foreign','unit':'u1'}])
+        self.assertEqual(audit['status'],'unresolved')
+        self.assertEqual(vision.requests,[])
+        self.assertEqual(result[0]['selected_ranges'],self.events[0]['selected_ranges'])
+
     def setUp(self):
         self.job = TEMP/('continuity-verification-mechanism-'+uuid.uuid4().hex)
         self.job.mkdir(parents=True)
@@ -271,6 +301,23 @@ class OmittedContinuityMechanismTests(unittest.TestCase):
         self.assertEqual(audit['status'], 'unresolved')
         self.assertEqual(result[0]['selected_ranges'], self.parent['selected_ranges'])
         self.assertEqual([r for r in vision.requests if r['stage'] == 'continuity'], [])
+
+    def test_manual_byte_bound_does_not_use_local_token_ceiling(self):
+        vision = FakeVision()
+        vision.cache_profile = {'provider':'antigravity_manual'}
+        vision.tokens = lambda prompt: len(prompt.encode('utf-8')) + verification.POLICY['input_tokens']
+        result, audit = self.verify(vision)
+        self.assertEqual(audit['status'], 'accepted')
+        self.assertTrue(any(r['stage']=='continuity' for r in vision.requests))
+
+    def test_manual_byte_budget_still_rejects_oversized_source_context(self):
+        vision = FakeVision()
+        vision.cache_profile = {'provider':'antigravity_manual'}
+        vision.tokens = lambda prompt: 0
+        with patch.dict(verification.POLICY,manual_input_bytes=1):
+            result, audit = self.verify(vision)
+        self.assertEqual(audit['status'], 'unresolved')
+        self.assertEqual([r for r in vision.requests if r['stage']=='continuity'], [])
 
 
 if __name__ == '__main__':

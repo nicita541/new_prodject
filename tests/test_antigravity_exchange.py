@@ -1,5 +1,6 @@
 """Manual transport boundaries: no cloud calls, preserved inputs, strict imports."""
 import json
+import hashlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,6 +37,37 @@ def prepare(vision, prompt='CURRENT u1 u2; PREVIOUS and NEXT are context only'):
 def envelope(answer):
     return json.dumps({'status': 'SUCCESS', 'structured_output': answer,
         'duration_seconds': 2.5, 'usage': {'input_tokens': 12, 'output_tokens': 4, 'total_tokens': 16}}).encode()
+
+
+def test_official_visual_reply_requires_bound_image_reception(tmp_path):
+    vision=session(tmp_path)
+    identifier=prepare(vision)
+    directory=packet_dir(tmp_path,identifier)
+    request=read_json(directory/'request.json')
+    raw=json.dumps({'conversation_id':'official-test-conversation','status':'SUCCESS',
+        'structured_output':{'keep_units':['u1']}}).encode()
+    with pytest.raises(ValueError,match='просмотра'):
+        import_result(tmp_path,identifier,raw)
+    receipt={'packet':identifier,'version':1,'transport':'official-view-file',
+        'images':request['images'],'image_hashes':request['image_hashes'],
+        'response_sha256':hashlib.sha256(raw).hexdigest()}
+    atomic_json(directory/'image-reception.json',receipt)
+    assert import_result(tmp_path,identifier,raw)['status']=='ready'
+    changed=raw.replace(b'u1',b'u2')
+    with pytest.raises(ValueError,match='просмотра'):
+        import_result(tmp_path,identifier,changed)
+    atomic_json(directory/'image-reception.json',{**receipt,'image_hashes':['foreign']})
+    with pytest.raises(ValueError,match='просмотра'):
+        import_result(tmp_path,identifier,raw)
+
+
+def test_visual_transport_change_keeps_text_packet_identity(tmp_path):
+    from app.antigravity_exchange import PROFILE,VISUAL_PROFILE
+    vision=session(tmp_path)
+    text=vision._prepare_request('text',schema=SCHEMA)[2]
+    visual=vision._prepare_request('text',tmp_path/'evidence.jpg',schema=SCHEMA)[2]
+    assert text['profile']==PROFILE
+    assert visual['profile']==VISUAL_PROFILE
 
 
 def test_official_stream_final_import_preserves_strict_json_and_usage(tmp_path):

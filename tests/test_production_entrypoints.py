@@ -25,9 +25,15 @@ def test_production_entrypoint_uses_portable_runtime_and_real_build():
     assert "create_studio_demo" not in launcher
 
 
-def test_development_proxy_matches_actual_backend_port():
-    vite_config = (ROOT / "frontend" / "vite.config.ts").read_text(encoding="utf-8")
-    assert "process.env.KADR_STUDIO_API_PORT || '8765'" in vite_config
+def test_studio_is_the_only_built_interface():
+    import json
+    package = json.loads((ROOT/'frontend/package.json').read_text('utf-8'))
+    assert package['scripts']['build'] == 'node scripts/build-studio.mjs'
+    assert not (ROOT/'frontend/src').exists()
+    assert not (ROOT/'app/static').exists()
+    source = (ROOT/'frontend/public/studio-edition-app.js').read_text('utf-8')
+    for name in ('DEMO_MP4_BASE64','function seed(', 'function examplePlan(', 'function handleRequest(', 'function mockFinishRoute('):
+        assert name not in source
 
 
 def test_no_synthetic_demo_is_shipped_as_startup_code():
@@ -58,10 +64,16 @@ const context=vm.createContext({console,URL,URLSearchParams,structuredClone,
  document:{getElementById:element,addEventListener(){},querySelector(){return null},querySelectorAll(){return []}},
  window:{KadrBridge:{},addEventListener(){}},location:{search:''},navigator:{},Blob,File,FormData,TextEncoder,atob});
 const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,processingRows,processingProgress,processingStageRows,renderPacketSummary,processingMessage,
- setup(){ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';},
+ setup(){
+  db.projects=[{id:'p1',title:'Project',created_at:1}];
+  db.episodes=[{id:'e1',project_id:'p1',number:1,settings:{analysis_provider:'local',layout:'cinema',caption_style:'accent'}}];
+  db.sources=[{id:'s1',name:'source.mp4',size:100}];
+  db.jobs=[{id:'j1',episode_id:'e1',source_id:'s1',status:'completed',stage:'completed',progress:1,created_at:1,outputs:[],files:[]}];
+  db.plans={j1:{duration:1420,events:[],parts:[{index:1,duration:10,cuts:[{start:0,end:10}],subtitles:[]}],quality_summary:{available:false},debug_timeline:{available:false}}};
+  ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';},
  job(){return currentJob();},data(){return db},entries(){return ui.apiEntries}};})();`;
 vm.runInContext(source.split('// Live Studio Edition: preserve')[0]+expose,context);
-const app=context.window.audit;app.setup();
+const app=context.window.audit;assert.equal(app.data().projects.length,0);assert.equal(app.data().jobs.length,0);app.setup();
 assert(!app.renderReview().includes('Демо: встроенные ролики'));
 assert(app.renderReview().includes('Реальные видео'));
 assert(!app.renderProcessing().includes('Имитация сообщений'));

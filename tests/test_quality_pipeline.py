@@ -92,15 +92,15 @@ class QualityPipelineTests(unittest.TestCase):
             finally:
                 self.sessions = session_count
 
-    def test_unresolved_source_stops_before_builder_and_render_after_three_recoveries(self):
+    def test_unchanged_source_stops_before_render_without_repeating_same_cache(self):
         analysis = self.unresolved_analysis()
         with self.assertRaisesRegex(ValueError, 'analysis_unresolved: final_quality_gate'):
             self.run_with_stubs(analysis, lambda source, value, *args: copy.deepcopy(value))
-        self.assertEqual(self.recovery.call_count, 3); self.assertEqual(len(self.sessions), 3)
+        self.assertEqual(self.recovery.call_count, 1); self.assertEqual(len(self.sessions), 1)
         self.builder.assert_not_called(); self.renderer.assert_not_called(); self.encoder.assert_not_called()
         gate = json.loads((self.job/'final_quality_gate.json').read_text('utf-8'))
         self.assertEqual(gate['status'], 'unresolved')
-        self.assertEqual([row['attempt'] for row in gate['history']], [0, 1, 2, 3])
+        self.assertEqual([row['attempt'] for row in gate['history']], [0, 1])
         self.assertTrue(all(row['gate']['phase'] == 'before_planner' for row in gate['history']))
         self.assertFalse((self.job/'output').exists())
         self.assertEqual(json.loads((self.job/'timings.json').read_text('utf-8'))['status'], 'failed')

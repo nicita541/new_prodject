@@ -7,7 +7,7 @@ from app.selection_gate import positive_ranges, selection_problems
 from app.source_roles import confirmed_exclusions, merge_ranges
 from app.titles import _subtract
 
-VERSION = 3
+VERSION = 4
 
 
 def _cost(ranges):
@@ -104,6 +104,11 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
     chosen = copy.deepcopy(mandatory)
     reasons = {i:['verified_mandatory_transition'] for i in chosen}
     by_arc = {i:arc for arc in arcs for i in arc['event_ids']}
+    from .speech_handles import expand_ranges, barriers
+
+    def actual_cost(ranges):
+        core = [r for pieces in ranges.values() for r in pieces]
+        return _cost(expand_ranges(core,transcript,duration,barriers(source,core)))
 
     def evaluate(ranges):
         prepared = copy.deepcopy(source)
@@ -130,7 +135,7 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
         {'id':identifier} for identifier in ranked_ids]
     for candidate in candidates:
         identifier = candidate['id']
-        if chosen and _cost([r for v in chosen.values() for r in v]) >= budget['optimal']:
+        if chosen and actual_cost(chosen) >= budget['optimal']:
             break
         if not source_scoped and identifier not in candidate_ranges:
             continue
@@ -148,7 +153,7 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
         for member in group:
             trial[member] = merge_ranges([*trial.get(member, []),*additions[member]])
         next_events, next_ranges, next_continuity = evaluate(trial)
-        cost = _cost([r for v in next_ranges.values() for r in v])
+        cost = actual_cost(next_ranges)
         history.append({'candidate':identifier, 'group':sorted(group), 'duration_including_context':cost,
             'accepted':not chosen or cost <= budget['max']+.002,
             'required_bridges':copy.deepcopy(next_continuity['bridges'])})
@@ -197,8 +202,8 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
         identifier = bridge['source_event']
         required[identifier] = merge_ranges([*required.get(identifier, []), *bridge['ranges']])
         reasons.setdefault(identifier, []).append('required_continuity_context')
-    required_cost = _cost([r for v in required.values() for r in v])
-    total = _cost([r for v in chosen.values() for r in v])
+    required_cost = actual_cost(required)
+    total = actual_cost(chosen)
     overflow = []
     if required_cost > budget['max']+.002:
         overflow.append({'reason':'mandatory_source_context_exceeds_max',

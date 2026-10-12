@@ -270,6 +270,20 @@ class DialogueCandidateTests(unittest.TestCase):
 
 
 class DialogueProviderTests(unittest.TestCase):
+    def test_partial_batch_preserves_independently_supported_dialogue_rows(self):
+        events, transcript = fixture(3)
+        current, _, _ = dialogue.source_units(events, transcript)
+        raw = provider_response({'CURRENT': current, 'CONTEXT_ONLY': [], 'INHERITED_RESPONSE_RELATIONS': []})
+        raw['coverage'][-1].update(decision='unresolved', support=[])
+        checked = dialogue.validate_dialogue(raw, current, current)
+        self.assertFalse(checked['accepted'])
+        self.assertEqual([r['ref'] for r in checked['accepted_coverage']], [n['ref'] for n in current[:-1]])
+        self.assertTrue(all(p['status'] == 'confirmed' for p in checked['pairs']))
+        raw['resolved'] = False
+        checked = dialogue.validate_dialogue(raw, current, current)
+        self.assertEqual(checked['accepted_coverage'], [])
+        self.assertTrue(all(p['status'] == 'ambiguous' for p in checked['pairs']))
+
     def test_generation_requires_a_row_for_the_answer_and_each_other_current_ref(self):
         events, transcript = fixture(5)
         source, _, _ = dialogue.source_units(events, transcript)

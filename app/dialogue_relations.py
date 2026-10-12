@@ -611,12 +611,15 @@ def validate_dialogue(raw, nodes, current):
     if seen != owned:
         raise ValueError('Incomplete CURRENT dialogue coverage')
     limitations = [_text(x, maximum=600) for x in raw['limitations']]
-    accepted = raw['resolved'] and min(dimensions) >= .9 and all(r['decision'] != 'unresolved' for r in rows)
-    if not accepted:
+    supported = raw['resolved'] and min(dimensions) >= .9
+    accepted = supported and all(r['decision'] != 'unresolved' for r in rows)
+    accepted_coverage = [r for r in rows if supported and r['decision'] != 'unresolved']
+    if not supported:
         for pair in pairs:
             pair.update(status='ambiguous', requires_answer=False, protect_bidirectional=False)
             pair['reasons'].append('provider_dialogue_result_unresolved')
-    return {'accepted': accepted, 'pairs': pairs, 'coverage': rows, 'limitations': limitations,
+    return {'accepted': accepted, 'pairs': pairs, 'coverage': rows,
+            'accepted_coverage': accepted_coverage, 'limitations': limitations,
             'understanding_confidence': dimensions[0], 'relation_confidence': dimensions[1]}
 
 
@@ -722,8 +725,11 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
             history.append({'status': 'accepted' if decision['accepted'] else 'unresolved', 'checkpoint': signature,
                 'CURRENT_refs': [n['ref'] for n in current], 'CONTEXT_refs': [n['ref'] for n in context],
                 'cache_hit': cache_hit, 'decision': copy.deepcopy(raw)})
-            if decision['accepted']:
-                ownership.update({_key(r['ref']): {**r, 'checkpoint': signature} for r in decision['coverage']})
+            accepted_rows = decision['accepted_coverage']
+            ownership.update({_key(r['ref']): {**r, 'checkpoint': signature} for r in accepted_rows})
+            accepted_keys = {_key(r['ref']) for r in accepted_rows}
+            unresolved.update({_key(n['ref']): n['ref'] for n in current if _key(n['ref']) not in accepted_keys})
+            if accepted_rows:
                 for pair in decision['pairs']:
                     identity = _hash({k: pair[k] for k in ('question_refs', 'answer_refs', 'question_ranges', 'answer_ranges')})
                     existing = pairs.get(identity)
@@ -731,8 +737,6 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                         existing['confidence'] = min(existing['confidence'], pair['confidence'])
                     else:
                         pairs[identity] = {**pair, 'checkpoint': signature}
-            else:
-                unresolved.update({_key(n['ref']): n['ref'] for n in current})
         except (OutputLimitExceeded, EmptyResponse) as error:
             if size <= 1:
                 detail = '; CLI не ответил даже на один фрагмент. Нужна проверка пакета' if isinstance(error, EmptyResponse) else '; даже один фрагмент не помещается. Нужна проверка пакета'

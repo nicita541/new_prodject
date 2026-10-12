@@ -24,7 +24,7 @@ if not exist "%~dp0frontend\dist\studio-edition.html" goto build_ui
 if not exist "%~dp0frontend\dist\studio-live-bridge.js" goto build_ui
 if not exist "%~dp0frontend\dist\studio-edition.css" goto build_ui
 if not exist "%~dp0frontend\dist\studio-edition-app.js" goto build_ui
-rem Vite copies these files verbatim. Compare source with dist so an old build
+rem Studio copies these files verbatim. Compare source with dist so an old build
 rem never silently survives a successful git update.
 fc /b "%~dp0frontend\public\studio-edition.html" "%~dp0frontend\dist\studio-edition.html" >nul 2>&1
 if errorlevel 1 goto build_ui
@@ -38,11 +38,6 @@ goto launch
 
 :build_ui
 echo Production Studio interface is not built; preparing it now.
-if not exist "%~dp0frontend\node_modules" (
-  echo [ERROR] Frontend dependencies are missing. Run setup.bat first.
-  pause
-  exit /b 1
-)
 where npm.cmd >nul 2>&1
 if errorlevel 1 (
   echo [ERROR] npm.cmd is not available. Provide portable Node/npm in tools\node or an existing npm on PATH.

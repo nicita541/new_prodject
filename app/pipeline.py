@@ -349,7 +349,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         except (ValueError, TypeError):
             pass
     planning_started = time.perf_counter()
-    from .final_quality import inspect_final_quality, recover_final_quality, POLICY as QUALITY_POLICY
+    from .final_quality import (inspect_final_quality, recover_final_quality, recovery_stalled,
+                                quality_failure_message, POLICY as QUALITY_POLICY)
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)
     quality_history = []
@@ -398,8 +399,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         _atomic_json(job_dir/'final_quality_gate.json',{'status':gate['status'],'history':quality_history,**gate})
         if gate['status'] == 'passed':
             break
-        if attempt == QUALITY_POLICY['max_recovery_passes']:
-            raise ValueError('analysis_unresolved: final_quality_gate — '+', '.join(sorted({p['code'] for p in gate['problems']})))
+        stalled = recovery_stalled(quality_history)
+        if stalled or attempt == QUALITY_POLICY['max_recovery_passes']:
+            raise ValueError(quality_failure_message(gate, stalled=stalled))
         report('quality_gate', .68, f'Финальная проверка: уточняем исходные доказательства, проход {attempt+1}')
         from .analysis import vision_session, analysis_provider
         from .config import STORY_MODEL, STORY_PROJECTOR

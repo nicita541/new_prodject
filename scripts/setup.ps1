@@ -29,7 +29,7 @@ if (-not (Test-Path -LiteralPath $projectPython)) {
 # A fresh checkout does not contain frontend/dist (it is gitignored).
 # Build React explicitly instead of silently falling back to the old UI.
 $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
-if (-not $npm) { throw 'Node.js / npm is required for the React UI. Provide portable Node/npm in tools/node or an existing npm on PATH.' }
+if (-not $npm) { throw 'Node.js / npm is required for KADR Studio. Provide portable Node/npm in tools/node or an existing npm on PATH.' }
 Push-Location -LiteralPath (Join-Path $projectRoot 'frontend')
 try {
     & $npm.Source ci --no-audit --no-fund
