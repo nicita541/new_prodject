@@ -3,8 +3,17 @@
   "scope": "four actual choose_units contracts from job00a9e488, isolated batch; not whole-pipeline speed",
   "model": "gemini-3.8-flash-low",
   "agent": "kadr-json",
-  "serial": {"physical_calls": 4, "wall_seconds": 24.2117201, "tokens": 17298},
-  "batch": {"physical_calls": 1, "wall_seconds": 10.7004559, "tokens": 11441, "pages": 4},
+  "serial": {
+    "physical_calls": 4,
+    "wall_seconds": 24.2117201,
+    "tokens": 17298
+  },
+  "batch": {
+    "physical_calls": 1,
+    "wall_seconds": 10.7004559,
+    "tokens": 11441,
+    "pages": 4
+  },
   "native_valid_children": 4,
   "matching_retained_unit_decisions": 3,
   "changed_decisions": "one batch answer retained all three units instead of only the middle unit; independent proof remains required",
@@ -37,10 +46,27 @@
     "pair_interval_seconds": 13.2737957,
     "individual_wall_seconds_sum": 22.9313321,
     "total_tokens_sum": 19198,
-    "early_vision_resume": {"run_id": "d311cc5b58a348c7a58e82dce313432f", "cache_hits": 129, "cache_misses": 0, "local_requests": 0},
+    "early_vision_resume": {
+      "run_id": "d311cc5b58a348c7a58e82dce313432f",
+      "cache_hits": 129,
+      "cache_misses": 0,
+      "local_requests": 0
+    },
     "packets": [
-      {"id": "a9f145866d4f1f85d6567a22f206143bc9d4b2a33385a1c846c3656351778edd", "started_at": "2026-10-12T08:16:45.8510512Z", "finished_at": "2026-10-12T08:16:59.1248469Z", "wall_seconds": 13.3191257, "total_tokens": 10020},
-      {"id": "ecfc86a0b4ae619bf8e1a030a1319e711b83dbce3d905a0a8f72486639d27570", "started_at": "2026-10-12T08:16:45.9011280Z", "finished_at": "2026-10-12T08:16:55.4687844Z", "wall_seconds": 9.6122064, "total_tokens": 9178}
+      {
+        "id": "a9f145866d4f1f85d6567a22f206143bc9d4b2a33385a1c846c3656351778edd",
+        "started_at": "2026-10-12T08:16:45.8510512Z",
+        "finished_at": "2026-10-12T08:16:59.1248469Z",
+        "wall_seconds": 13.3191257,
+        "total_tokens": 10020
+      },
+      {
+        "id": "ecfc86a0b4ae619bf8e1a030a1319e711b83dbce3d905a0a8f72486639d27570",
+        "started_at": "2026-10-12T08:16:45.9011280Z",
+        "finished_at": "2026-10-12T08:16:55.4687844Z",
+        "wall_seconds": 9.6122064,
+        "total_tokens": 9178
+      }
     ],
     "limitations": "Observed overlap of two real accepted official CLI attempts, not a paid serial A/B or whole-series speedup. Pair interval excludes PowerShell worker startup. Parallel execution does not reduce token use; batching does."
   },
@@ -51,10 +77,66 @@
     "wall_seconds_sum": 27.4150061,
     "tokens_sum": 45079,
     "packets": [
-      {"id": "1cf5c284491b5d8b19e26e280b58f3a6398abf6f67910e641bd38049e89f71bd", "children": 2, "wall_seconds": 8.9310838, "command_line_chars": 23033, "total_tokens": 13251},
-      {"id": "5a7e549b086c5fb16eb632480bdb838e7d4d17b0c7a49f93e59112dab2bacdab", "children": 2, "wall_seconds": 9.8179292, "command_line_chars": 28107, "total_tokens": 16481},
-      {"id": "5b9c0e065346c13b51f67550fd5f5c60689e193f6e27c30ac2fd37e685c69ccd", "children": 2, "wall_seconds": 8.6659931, "command_line_chars": 26266, "total_tokens": 15347}
+      {
+        "id": "1cf5c284491b5d8b19e26e280b58f3a6398abf6f67910e641bd38049e89f71bd",
+        "children": 2,
+        "wall_seconds": 8.9310838,
+        "command_line_chars": 23033,
+        "total_tokens": 13251
+      },
+      {
+        "id": "5a7e549b086c5fb16eb632480bdb838e7d4d17b0c7a49f93e59112dab2bacdab",
+        "children": 2,
+        "wall_seconds": 9.8179292,
+        "command_line_chars": 28107,
+        "total_tokens": 16481
+      },
+      {
+        "id": "5b9c0e065346c13b51f67550fd5f5c60689e193f6e27c30ac2fd37e685c69ccd",
+        "children": 2,
+        "wall_seconds": 8.6659931,
+        "command_line_chars": 26266,
+        "total_tokens": 15347
+      }
     ],
     "limitations": "Actual accepted responses during the full job; all six original child caches saved. No paid serial comparison was run. This does not establish whole-series speed or artistic equivalence."
+  },
+  "cloud_text_structure_six_units": {
+    "date": "2026-10-12",
+    "scope": "isolated real event_0003/event_0004 source evidence; no product writes",
+    "units": 6,
+    "physical_calls": 2,
+    "calls": [
+      {
+        "packet": "11c56cc0dfb44c42faa0928b2e501f4653eea13ecb40a9a3c07910ab21742f8a",
+        "duration_seconds": 18.8795711,
+        "usage": {
+          "input_tokens": 25064,
+          "output_tokens": 7485,
+          "thinking_tokens": 2186,
+          "cache_read_tokens": 16382,
+          "total_tokens": 32549
+        }
+      },
+      {
+        "packet": "648e063905c61c0f60ad5f0e35af54f756ebea606d645a1fcdcf120df79fa69b",
+        "duration_seconds": 16.8688178,
+        "usage": {
+          "input_tokens": 23894,
+          "output_tokens": 6950,
+          "thinking_tokens": 0,
+          "cache_read_tokens": 16381,
+          "total_tokens": 30844
+        }
+      }
+    ],
+    "native_history_status": "accepted",
+    "isolated_graph_status": "unresolved",
+    "limitations": [
+      "first answer rejected for unsupported closed arc",
+      "corrective native batch accepted; graph retains open arc",
+      "not a serial A/B or completed export",
+      "all original source-proof validators retained"
+    ]
   }
 }

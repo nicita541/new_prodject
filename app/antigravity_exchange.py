@@ -78,8 +78,26 @@ def cli_schema(schema):
         return [cli_schema(item) for item in schema]
     if not isinstance(schema, dict):
         return schema
-    return {key: cli_schema(value) for key, value in schema.items()
+    result = {key: cli_schema(value) for key, value in schema.items()
         if key != 'enum' or all(isinstance(item, str) for item in value)}
+    literals = schema.get('enum')
+    if (isinstance(literals, list) and literals and
+            all(isinstance(item, dict) and item and
+                all(isinstance(value, str) for value in item.values()) for item in literals)):
+        # Gemini's tool bridge supports string enums, not object enums.
+        # Enumerate complete pairs rather than losing the reference shape or
+        # allowing the Cartesian product of event IDs and unit IDs.
+        result['anyOf'] = [{'type': 'object', 'properties': {
+            key: {'type': 'string', 'enum': [value]} for key, value in item.items()},
+            'required': list(item), 'additionalProperties': False} for item in literals]
+    if isinstance(result.get('prefixItems'), list) and result['prefixItems']:
+        # agy's function-tool bridge requires arrays.items; tuple-only
+        # prefixItems was rejected before inference. Generate the common row
+        # shapes with every row's original bindings. Exact tuple order remains
+        # in the ORIGINAL textual contract and native validators.
+        rows = result.pop('prefixItems')
+        result['items'] = {'anyOf': rows}
+    return result
 
 
 def packet_dir(job_dir, identifier):
@@ -304,6 +322,51 @@ def preserve_provider_checkpoints(job_dir, old_provider, new_provider):
                 shutil.copy2(source, destination)
 
 
+class _CompleteTextContext:
+    """Native text planners use an explicit cloud transport guard, not local tokens.
+
+    Zero/60001 are planning sentinels, never reported Gemini usage. Oversize
+    native relation batches can shrink through their existing whole-unit logic.
+    """
+    def __init__(self, owner):
+        self.owner = owner
+
+    # Native text planners reserve output against this planning capacity. It
+    # is not a claimed Gemini context size or usage estimate.
+    text_budget = 64000
+
+    @property
+    def text_batch_limits(self):
+        if not self.owner.supports_query_batch:
+            return {}
+        config = read_json(self.owner.job_dir / 'antigravity' / 'text-batching.json', {})
+        if not isinstance(config, dict):
+            raise ValueError('Некорректный профиль облачных текстовых пакетов')
+        result = {}
+        for stage, default_units, default_output in (('story_structure', 6, 6400), ('dialogue_relations', 12, 4800)):
+            units = config.get(stage + '_units', default_units)
+            if type(units) is not int or not 1 <= units <= 12:
+                raise ValueError('Облачный текстовый пакет требует от1до12исходных units')
+            result[stage] = {'units': units, 'output_tokens': min(9600, max(default_output,
+                (default_output*units + default_units-1)//default_units))}
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self.owner, name)
+
+    def token_count(self, text):
+        if self.owner.cancelled():
+            raise InterruptedError('Обработка отменена')
+        return 0 if len(text.encode('utf-8')) <= 240000 else 60001
+
+    def query(self, prompt, *args, **kwargs):
+        if self.owner.cancelled():
+            raise InterruptedError('Обработка отменена')
+        if len(prompt.encode('utf-8')) > 240000:
+            raise AnalysisPending('Текстовый облачный пакет превышает безопасный размер; требуется разбиение без потери контекста')
+        return self.owner.query(prompt, *args, **kwargs)
+
+
 class ManualVision:
     supports_image_pages = True
     supports_thinking_override = True
@@ -328,6 +391,11 @@ class ManualVision:
         # Conservative planning bound, never presented as Gemini usage.
         # No tokenizer/model process is started for a manual exchange.
         return len(text.encode('utf-8'))
+
+    def complete_text_context(self):
+        # Only explicit text-only native passes opt in. Image planning retains
+        # its existing page/Windows bounds and every original cache contract.
+        return _CompleteTextContext(self)
 
     def review_global_story(self, events, editorial_profile=None):
         """Use full cloud input with native global validators, without a local5300-token gate.
@@ -418,6 +486,12 @@ class ManualVision:
             (directory / 'prompt.txt').write_text(SYSTEM + '\n\n' + prompt +
                 '\n\nImage pages (read every file): ' + ', '.join(request['images']), encoding='utf-8')
             atomic_json(directory / 'state.json', {'status': 'waiting', 'updated_at': now(), 'error': None})
+        else:
+            # Generation compatibility can be repaired without changing the
+            # original immutable contract, request hash or accepted results.
+            generated = cli_schema(schema or {'type': 'object'})
+            if read_json(directory / 'schema.json') != generated:
+                atomic_json(directory / 'schema.json', generated)
         return directory, identifier, request
 
     def _cached_answer(self, directory, identifier, request):

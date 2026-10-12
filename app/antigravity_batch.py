@@ -8,6 +8,18 @@ import threading
 import time
 
 
+def text_batch_limits(vision, stage, units, output_tokens):
+    """Only an explicit provider text scope opts in; legacy providers keep policy."""
+    profile = getattr(vision, 'text_batch_limits', None)
+    selected = profile.get(stage) if isinstance(profile, dict) else None
+    if not isinstance(selected, dict):
+        return units, output_tokens
+    count, budget = selected.get('units'), selected.get('output_tokens')
+    if type(count) is not int or not 1 <= count <= 12 or type(budget) is not int or not 1 <= budget <= 9600:
+        raise ValueError('Invalid bounded cloud text batch profile')
+    return count, budget
+
+
 class _QueryProducer:
     def __init__(self, vision, queue, stopped, cancelled):
         self.vision, self.queue, self.stopped, self.cancelled = vision, queue, stopped, cancelled

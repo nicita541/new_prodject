@@ -657,7 +657,9 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
     cursor = 0
     while cursor < len(nodes):
         _check(cancelled)
-        size = min(POLICY['max_current_units'], len(nodes)-cursor)
+        from app.antigravity_batch import text_batch_limits
+        batch_units, output_tokens = text_batch_limits(vision, 'dialogue_relations', POLICY['max_current_units'], POLICY['output_tokens'])
+        size = min(batch_units, len(nodes)-cursor)
         while size:
             current = nodes[cursor:cursor+size]
             context = nodes[max(0, cursor-POLICY['context_units_each_side']):cursor] + nodes[
@@ -680,7 +682,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
             context_size = getattr(vision, 'text_budget', 8192)
             if type(context_size) is not int:
                 context_size = 8192
-            reserve = POLICY['output_tokens']+POLICY['template_reserve']+(
+            reserve = output_tokens+POLICY['template_reserve']+(
                 POLICY['reasoning_reserve'] if getattr(vision, 'thinking', False) else 0)
             limit = min(POLICY['local_input_tokens'], context_size-reserve)
             if count <= limit:
@@ -706,7 +708,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
         try:
             _check(cancelled)
             if raw is None:
-                raw = vision.query(prompt, image=None, max_tokens=POLICY['output_tokens'], schema=schema)
+                raw = vision.query(prompt, image=None, max_tokens=output_tokens, schema=schema)
                 _check(cancelled)
                 decision = validate_dialogue(raw, allowed, current)
                 atomic_json(checkpoint, {'signature': signature, 'decision': raw, 'source_identity': _hash(snapshots)})

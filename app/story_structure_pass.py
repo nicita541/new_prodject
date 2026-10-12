@@ -569,7 +569,9 @@ def _tokens_count(vision, prompt):
 
 def _context_limit(vision):
     # LocalVision adds 512 output tokens for thinking within its 8192 context.
-    reserve = (POLICY['output_tokens']+POLICY['template_reserve']
+    from app.antigravity_batch import text_batch_limits
+    _, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
+    reserve = (output_tokens+POLICY['template_reserve']
                +(POLICY['reasoning_reserve'] if getattr(vision, 'thinking', False) else 0))
     text_budget = getattr(vision, 'text_budget', None)
     if type(text_budget) is int:
@@ -644,6 +646,8 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
     """Bounded genuine provider text pass; selection and exclusions stay unchanged."""
     from app.config import ROOT
     result_events = copy.deepcopy(events)
+    from app.antigravity_batch import text_batch_limits
+    batch_units, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
     history, assignments, relation_map, arc_map, registry = [], {}, {}, {}, {}
     coverage, nodes, snapshots, signatures = [], [], [], []
     unresolved, final_arcs = [], []
@@ -661,7 +665,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
         cursor = 0
         while cursor < len(nodes):
             _check(cancelled)
-            size = min(POLICY['max_current_units'], len(nodes)-cursor)
+            size = min(batch_units, len(nodes)-cursor)
             while size:
                 current = nodes[cursor:cursor+size]
                 context = [*nodes[max(0, cursor-POLICY['context_units_each_side']):cursor],
@@ -725,7 +729,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
                     retry_prompt = prompt
                     for attempt in range(2):
                         try:
-                            raw = vision.query(retry_prompt, image=None, max_tokens=POLICY['output_tokens'], schema=schema)
+                            raw = vision.query(retry_prompt, image=None, max_tokens=output_tokens, schema=schema)
                             _check(cancelled)
                             decision = validate_structure(raw, allowed, current, registry)
                             break

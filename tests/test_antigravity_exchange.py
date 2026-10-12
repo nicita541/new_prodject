@@ -166,7 +166,108 @@ def test_cloud_global_review_oversize_and_cancel_never_trim_or_call(tmp_path):
             vision.review_global_story(events)
 
 
-@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel'])
+def test_cloud_text_scope_fits_native_relation_instructions_and_bounds_chunks(tmp_path):
+    vision = session(tmp_path)
+    from app.story_structure_pass import STORY_STRUCTURE_PROMPT, _tokens_count, _context_limit
+    complete = vision.complete_text_context()
+    assert _tokens_count(complete, STORY_STRUCTURE_PROMPT) <= _context_limit(complete)
+    assert complete.token_count('x'*240000)==0
+    assert complete.token_count('x'*240001)>60000
+    with patch.object(vision, 'query', return_value={'ok':True}) as query:
+        assert complete.query('full text', schema={'type':'object'})=={'ok':True}
+        assert query.call_args.args==('full text',)
+        with pytest.raises(AnalysisPending, match='без потери контекста'):
+            complete.query('x'*240001)
+        assert query.call_count==1
+    vision.cancelled=lambda:True
+    with pytest.raises(InterruptedError):
+        complete.token_count('text')
+
+
+def test_native_structure_scope_prevents_cloud_byte_budget_cascade(tmp_path):
+    import copy
+    from app.story_structure_pass import infer_story_structure
+    from tests.test_story_structure_pass import fixture, FakeProvider
+    event,transcript=fixture()
+    original=copy.deepcopy((event,transcript))
+    vision=session(tmp_path,thinking=True)
+    authored=FakeProvider()
+    with patch.object(vision,'query',side_effect=authored.query) as query:
+        before=infer_story_structure([event],transcript,tmp_path/'before',vision,lambda:False)
+        assert before['status']=='unresolved' and query.call_count==0
+        assert all(row['reason']=='source_unit_exceeds_text_context' for row in before['history'])
+        after=infer_story_structure([event],transcript,tmp_path/'after',vision.complete_text_context(),lambda:False)
+    assert after['status']=='accepted' and query.call_count>0
+    assert (event,transcript)==original
+    assert authored.calls[0]['image'] is None
+
+
+@pytest.mark.parametrize('stage', ['story_structure', 'dialogue_relations'])
+def test_cloud_relation_batches_cover_every_current_ref_with_native_validation(tmp_path, stage):
+    import copy
+    if stage=='story_structure':
+        from tests.test_story_structure_pass import fixture,FakeProvider
+        from app.story_structure_pass import infer_story_structure as infer
+        count=12
+        native_units,cloud_units,native_budget,cloud_budget=3,6,3200,6400
+    else:
+        from tests.test_dialogue_relations import fixture,FakeProvider
+        from app.dialogue_relations import infer_dialogue_relations as infer
+        count=24
+        native_units,cloud_units,native_budget,cloud_budget=6,12,2400,4800
+    event,transcript=fixture(count=count)
+    original=copy.deepcopy((event,transcript))
+    events=event if isinstance(event,list) else [event]
+    authored=FakeProvider()
+    baseline=infer(events,transcript,tmp_path/'native',authored,lambda:False)
+    native_calls=len(authored.calls)
+    vision=session(tmp_path)
+    vision.supports_query_batch=True
+    complete=vision.complete_text_context()
+    cloud=FakeProvider()
+    with patch.object(vision,'query',side_effect=cloud.query):
+        accelerated=infer(events,transcript,tmp_path/'cloud',complete,lambda:False)
+    assert baseline['status']==accelerated['status']=='accepted'
+    assert len(cloud.calls)*2==native_calls
+    current=[n['ref'] for p in cloud.payloads for n in p['CURRENT']]
+    assert len(current)==count and len({(r['event'],r['unit']) for r in current})==count
+    assert all(len(p['CURRENT'])<=cloud_units for p in cloud.payloads)
+    assert all(call['max_tokens']==cloud_budget for call in cloud.calls)
+    assert all(call['max_tokens']==native_budget for call in authored.calls)
+    assert (event,transcript)==original
+    # Rollback keeps the fixed cloud text context but native batch/output policy.
+    vision.supports_query_batch=False
+    assert complete.text_batch_limits=={}
+
+
+def test_cloud_text_batch_config_is_bounded_and_opt_in(tmp_path):
+    vision=session(tmp_path)
+    vision.supports_query_batch=True
+    atomic_json(tmp_path/'antigravity/text-batching.json',{'story_structure_units':12,'dialogue_relations_units':1})
+    limits=vision.complete_text_context().text_batch_limits
+    assert limits['story_structure']=={'units':12,'output_tokens':9600}
+    atomic_json(tmp_path/'antigravity/text-batching.json',{'story_structure_units':13})
+    with pytest.raises(ValueError):
+        vision.complete_text_context().text_batch_limits
+
+
+def test_cloud_natural_endings_do_not_enter_fallback_due_to_local_byte_budget(tmp_path):
+    from app.endings import refine_endings
+    from tests.test_endings import fixture
+    data=fixture()
+    data['events'][0]['summary']='Important whole story context. ' * 500
+    vision=session(tmp_path)
+    with patch.object(vision,'query',return_value={'endings':[],'uncertain':False}) as query, \
+            patch('app.endings.recover_fallback_endings',side_effect=lambda result,*args:result):
+        result=refine_endings(data['events'],data['transcript'],data['shots'],data['probe'],tmp_path,
+            vision.complete_text_context(),lambda *args:None,lambda:False)
+    assert query.call_count>0
+    assert len(query.call_args.args[0].encode('utf-8'))>5300
+    assert data['events'][0]['summary'] in query.call_args.args[0]
+    assert not result[0].get('endings_degraded')
+
+
+@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize'])
 def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, mode):
     import os
     import subprocess
@@ -180,7 +281,9 @@ def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, 
     packet.mkdir()
     marker = 'Проверка полного русского контекста'
     prompt = marker + ' контекст ' * 5000
-    atomic_json(packet / 'request.json', {'images':[], 'schema':{'type':'object'}})
+    if mode == 'image_oversize':
+        (packet/'page_000.jpg').write_bytes(b'synthetic-not-decoded-before-guard')
+    atomic_json(packet / 'request.json', {'images':['page_000.jpg'] if mode=='image_oversize' else [], 'schema':{'type':'object'}})
     atomic_json(packet / 'schema.json', {'type':'object'})
     (packet / 'prompt.txt').write_text(prompt, encoding='utf-8')
     fake_cli = tmp_path / 'fake-cli.py'
@@ -221,6 +324,11 @@ else:
             stop.touch()
         stdout, stderr = process.communicate(timeout=20)
         assert process.returncode == (0 if mode=='success' else 1), stderr.decode(errors='replace')
+        if mode == 'image_oversize':
+            assert b'Stream image parity is not verified' in stderr
+            assert not (packet/'child-started').exists()
+            assert not (packet/'agy-result.json').exists()
+            return
         records = list((packet/'cli-attempts').glob('*/cli-run.json'))
         assert len(records)==1
         telemetry=json.loads(records[0].read_text(encoding='utf-8-sig'))
@@ -430,6 +538,52 @@ def test_cli_generation_schema_preserves_strict_backend_contract():
     assert 'enum' not in converted['properties']['flag']
     assert converted['properties']['id']['enum'] == ['u1']
     assert schema['properties']['flag']['enum'] == [True]
+
+
+def test_cli_tuple_generation_keeps_source_pairs_and_nonempty_proof_support():
+    from app.antigravity_exchange import cli_schema
+    from app.deepseek import _validate
+    refs = [{'event': 'e1', 'unit': 'u1'}, {'event': 'e2', 'unit': 'u2'}]
+    citations = {'type': 'array', 'items': {'oneOf': [
+        {'type': 'object', 'properties': {'ref': {'type': 'object', 'enum': [ref]},
+         'proof': {'type': 'string', 'enum': ['p'+str(i)]}},
+         'required': ['ref', 'proof'], 'additionalProperties': False}
+        for i, ref in enumerate(refs)]}}
+    schema = {'type': 'object', 'properties': {'units': {'type': 'array',
+        'prefixItems': [{'type': 'object', 'properties': {
+            'ref': {'type': 'object', 'enum': [ref]}, 'support': citations},
+            'required': ['ref', 'support'], 'additionalProperties': False} for ref in refs],
+        'minItems': 2, 'maxItems': 2}}, 'required': ['units']}
+    original = json.dumps(schema)
+    generated = cli_schema(schema)
+    answer = {'units': [{'ref': ref, 'support': [{'ref': ref, 'proof': 'p'+str(i)}]}
+                        for i, ref in enumerate(refs)]}
+    _validate(answer, generated)
+    _validate(answer, schema)
+    # Object enums used to become bare objects, then all oneOf alternatives
+    # matched: no nonempty support array could satisfy structured generation.
+    for row in answer['units']:
+        row['support'][0]['ref'] = {'event': 'e1', 'unit': 'u2'}
+        with pytest.raises(ValueError):
+            _validate(answer, generated)
+        row['support'][0]['ref'] = row['ref']
+    reordered = {'units': list(reversed(answer['units']))}
+    _validate(reordered, generated)
+    with pytest.raises(ValueError):
+        _validate(reordered, schema)
+    assert json.dumps(schema) == original
+
+
+def test_generation_schema_repair_preserves_original_request_and_answer(tmp_path):
+    from app.antigravity_exchange import cli_schema
+    vision = session(tmp_path)
+    packet, identifier, request = vision._prepare_request('repair generation', schema=SCHEMA)
+    import_result(tmp_path, identifier, envelope({'keep_units': ['u1']}))
+    originals = {name: (packet/name).read_bytes() for name in ('request.json', 'result.json')}
+    atomic_json(packet/'schema.json', {'type': 'object'})
+    assert vision.query('repair generation', schema=SCHEMA) == {'keep_units': ['u1']}
+    assert read_json(packet/'schema.json') == cli_schema(SCHEMA)
+    assert all((packet/name).read_bytes() == raw for name, raw in originals.items())
 
 
 def test_cancel_does_not_export_packet(tmp_path):

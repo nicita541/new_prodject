@@ -82,6 +82,9 @@ $startInfo = New-Object Diagnostics.ProcessStartInfo
 $startInfo.FileName = $AgyExe
 $startInfo.Arguments = ($cliArguments | ForEach-Object { ConvertTo-NativeArgument $_ }) -join ' '
 if ($startInfo.FileName.Length + $startInfo.Arguments.Length + 3 -ge 32767) {
+    if (-not $Smoke -and @($request.images).Count -gt 0) {
+        throw 'Image packet exceeds Windows command-line limit; split without truncating input. Stream image parity is not verified.'
+    }
     # Official1.3.3 stream-json takes NDJSON user messages from stdin, with
     # NO --print argument. Preserve the complete prompt and attachment text.
     # Do not mistake ordinary text stdin (unsupported) for this protocol.
