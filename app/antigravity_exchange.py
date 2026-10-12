@@ -63,6 +63,69 @@ class AnalysisPending(InterruptedError):
     """Control flow, never a degraded model answer or ordinary cancellation."""
 
 
+class OutputLimitExceeded(AnalysisPending):
+    """A confirmed CLI output limit; native text passes may split whole units."""
+
+
+_FAILURE_MESSAGES = {
+    'output_limit': 'Antigravity превысил лимит длины ответа; результат не принят',
+    'context_limit': 'Antigravity отклонил размер входного контекста',
+    'quota': 'Antigravity: исчерпана квота или действует ограничение частоты запросов',
+    'authentication': 'Antigravity: требуется восстановить авторизацию в официальном CLI',
+    'timeout': 'Antigravity не ответил в пределах времени одного запроса',
+    'invalid_json': 'Antigravity вернул повреждённый JSON или некорректный поток ответа',
+    'process_exit': 'Процесс Antigravity завершился с ненулевым кодом',
+    'cli_error': 'Antigravity вернул ERROR без корректного завершения ответа',
+}
+
+
+def packet_failure(directory, identifier):
+    """Read only bounded failure diagnostics, never convert ERROR into an answer."""
+    directory = Path(directory)
+    path = directory/'failure.json'
+    try:
+        record = read_json(path, {})
+    except (OSError, ValueError):
+        record = {}
+    if isinstance(record, dict) and record.get('packet') == identifier and record.get('code') in _FAILURE_MESSAGES:
+        return record
+    # Existing attempts predate failure.json. Recognize the saved official
+    # envelope without launching the same failed paid request again.
+    attempts = directory/'cli-attempts'
+    if not attempts.is_dir():
+        return None
+    candidates = sorted(attempts.glob('*/agy-result.json'), key=lambda item: item.stat().st_mtime, reverse=True)
+    if not candidates:
+        return None
+    source = candidates[0]
+    if not source.resolve().is_relative_to(directory.resolve()):
+        return None
+    try:
+        with source.open('rb') as stream:
+            raw = stream.read(MAX_RESULT_BYTES+1)
+        if len(raw) > MAX_RESULT_BYTES:
+            return None
+        result = _strict_json(raw.decode('utf-8-sig'))
+        if isinstance(result, dict) and result.get('event') == 'result':
+            result = result.get('result')
+        if not isinstance(result, dict) or result.get('status') != 'ERROR':
+            return None
+        error = result.get('error')
+        if not isinstance(error, str):
+            return None
+        lowered = error.lower()
+        code = ('output_limit' if 'exceeded the output token limit' in lowered else
+                'context_limit' if 'context' in lowered and ('exceed' in lowered or 'too long' in lowered) else
+                'quota' if any(value in lowered for value in ('quota', 'rate limit', 'resource_exhausted', '429')) else
+                'authentication' if any(value in lowered for value in ('not logged in', 'unauthenticated', 'authentication')) else
+                'timeout' if 'timed out' in lowered or 'deadline exceeded' in lowered else 'cli_error')
+        record = {'packet': identifier, 'code': code, 'attempt': source.parent.name}
+        atomic_json(path, record)
+        return record
+    except (ValueError, OSError, UnicodeError):
+        return None
+
+
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
         separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
@@ -96,7 +159,19 @@ def cli_schema(schema):
         # shapes with every row's original bindings. Exact tuple order remains
         # in the ORIGINAL textual contract and native validators.
         rows = result.pop('prefixItems')
-        result['items'] = {'anyOf': rows}
+        if all(isinstance(row, dict) and isinstance(row.get('properties'), dict)
+               and 'ref' in row['properties'] for row in rows):
+            shapes = copy.deepcopy(rows)
+            for shape in shapes:
+                shape['properties'].pop('ref')
+            if all(shape == shapes[0] for shape in shapes):
+                common = copy.deepcopy(rows[0])
+                common['properties']['ref'] = {'anyOf': [row['properties']['ref'] for row in rows]}
+                result['items'] = common
+            else:
+                result['items'] = {'anyOf': rows}
+        else:
+            result['items'] = {'anyOf': rows}
     return result
 
 
@@ -262,6 +337,13 @@ def snapshot(job_dir):
     for path in sorted(root.glob('*/request.json')):
         request, state = read_json(path), read_json(path.parent / 'state.json', {})
         if request:
+            try:
+                failure = read_json(path.parent/'failure.json', {})
+            except (OSError, ValueError):
+                failure = {}
+            if (state.get('status') != 'ready' and isinstance(failure, dict)
+                    and failure.get('packet') == request['id'] and failure.get('code') in _FAILURE_MESSAGES):
+                state = {'status': 'error', 'error': _FAILURE_MESSAGES[failure['code']]}
             packets.append({'id': request['id'], 'purpose': request['purpose'],
                 'status': state.get('status', 'waiting'), 'error': state.get('error'),
                 'batch_size': len(read_json(path.parent / 'batch.json', {}).get('members', [])),
@@ -334,6 +416,7 @@ class _CompleteTextContext:
     # Native text planners reserve output against this planning capacity. It
     # is not a claimed Gemini context size or usage estimate.
     text_budget = 64000
+    split_invalid_text_batches = True
 
     @property
     def text_batch_limits(self):
@@ -426,6 +509,19 @@ class ManualVision:
         if not automation.get('enabled'):
             raise AnalysisPending('Ожидается ручной анализ Antigravity: пакет ' + identifier[:12])
         pending = list(packets or [identifier])
+        def check_failure():
+            failure = packet_failure(directory, identifier)
+            if failure:
+                message = _FAILURE_MESSAGES[failure['code']] + ' · пакет ' + identifier[:12]
+                if failure['code'] == 'process_exit' and type(failure.get('exit_code')) is int:
+                    message += ' · код ' + str(failure['exit_code'])
+                if failure['code'] == 'output_limit':
+                    raise OutputLimitExceeded(message)
+                runner = _runner_state(root/'runner.json')
+                if runner.get('status') == 'error' and runner.get('packet') == identifier:
+                    raise AnalysisPending(message + '. Готовые результаты сохранены')
+        if not (directory/'agy-result.json').exists():
+            check_failure()
         def publish(status):
             remaining = [key for key in pending if not (packet_dir(self.job_dir, key) / 'result.json').is_file()]
             atomic_json(root / 'exchange.json', {'status': status if status == 'error' else ('waiting' if remaining else 'ready'),
@@ -446,9 +542,11 @@ class ManualVision:
                     import_result(self.job_dir, identifier, raw)
                 except (ValueError, OSError) as error:
                     publish('error')
-                    raise AnalysisPending('Ответ Antigravity отклонён; проверьте пакет ' + identifier[:12]) from error
+                    raise AnalysisPending('Ответ Antigravity отклонён · пакет ' + identifier[:12] +
+                        ' · ' + str(error)[:200]) from error
                 publish('ready')
                 return read_json(directory / 'result.json')
+            check_failure()
             runner = _runner_state(root / 'runner.json')
             if runner.get('status') == 'budget_exhausted':
                 raise AnalysisPending('Лимит времени сценария agy исчерпан. Результаты сохранены; для продолжения запустите сценарий снова')

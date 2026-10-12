@@ -414,7 +414,8 @@ def validate_structure(raw, nodes, current, registry=None):
                 raise ValueError('Source ASR quote is outside the cited proof interval')
             cited.add(key)
         if not set(owners) <= cited:
-            raise ValueError('Missing direct proof for source references')
+            raise ValueError('Missing direct proof for source references: '+
+                ', '.join(event+'/'+unit for event, unit in sorted(set(owners)-cited)))
 
     entities = copy.deepcopy(registry)
     fresh = set()
@@ -485,7 +486,8 @@ def validate_structure(raw, nodes, current, registry=None):
                             _key(m['ref']) == key and (not m['field'].startswith('state_')
                                                      or m['field'].startswith('state_'+side+'.'))
                             for m in entity['mentions']):
-                        raise ValueError('Canonical fact lacks a source-unit mention')
+                        raise ValueError('Canonical fact lacks a source-unit mention: '+
+                            key[0]+'/'+key[1]+' field='+field+' entity='+str(ident))
             if roles == ['unknown'] and any(facts.values()):
                 raise ValueError('Unknown source role cannot invent canonical states')
         rows.append(copy.deepcopy(row))
@@ -647,6 +649,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
     from app.config import ROOT
     result_events = copy.deepcopy(events)
     from app.antigravity_batch import text_batch_limits
+    from app.antigravity_exchange import OutputLimitExceeded, AnalysisPending
     batch_units, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
     history, assignments, relation_map, arc_map, registry = [], {}, {}, {}, {}
     coverage, nodes, snapshots, signatures = [], [], [], []
@@ -757,9 +760,23 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled):
                     registry = decision['canonical_entities']
                 else:
                     unresolved.extend(n['ref'] for n in current)
+            except OutputLimitExceeded as error:
+                if size <= 1:
+                    raise AnalysisPending(str(error) + '; даже один фрагмент не помещается. Нужна проверка пакета') from error
+                batch_units = max(1, size//2)
+                history.append({'status': 'split', 'reason': 'cloud_output_limit',
+                    'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': batch_units})
+                continue
             except Exception as error:
                 if _control_failure(error):
                     raise
+                if (isinstance(error, (ValueError, TypeError, KeyError)) and size > 1
+                        and getattr(type(vision), 'split_invalid_text_batches', False) is True):
+                    batch_units = max(1, size//2)
+                    history.append({'status': 'split', 'reason': 'source_validation_split',
+                        'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': batch_units,
+                        'error': _clean(str(error))[:400]})
+                    continue
                 unresolved.extend(n['ref'] for n in current)
                 history.append({'status': 'failed', 'CURRENT_refs': [n['ref'] for n in current],
                     'reason': 'invalid_source_structure' if isinstance(error, (ValueError, TypeError, KeyError)) else 'model_failure',

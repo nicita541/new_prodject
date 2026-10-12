@@ -48,19 +48,29 @@ function Write-Runner([string]$Status, [string]$Detail) {
         }
     }
 }
+function Read-ExchangeJson([string]$Path) {
+    # Retry transient local sharing failures only; no model call is repeated.
+    for ($readAttempt=0; $readAttempt -lt 20; $readAttempt++) {
+        try { return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json) }
+        catch [IO.IOException], [UnauthorizedAccessException] {
+            if ($readAttempt -eq 19) { throw "Cannot read exchange file after transient retries: $(Split-Path $Path -Leaf)" }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
 try {
     Write-Runner 'waiting' 'User-started script waiting for independent packets'
     Write-Host 'Keep this separate script running. Cancel in KADR stops the current CLI request.'
     # Production has no overall deadline. Tests may opt into a bounded run.
     :processing while ($MaxMinutes -eq 0 -or $timer.Elapsed.TotalMinutes -lt $MaxMinutes) {
-        $state = Get-Content -LiteralPath (Join-Path $job 'job.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $state = Read-ExchangeJson (Join-Path $job 'job.json')
         if ($state.analysis_provider -ne 'antigravity_manual') { throw 'Job no longer uses Antigravity' }
         if ($state.status -eq 'completed') { Write-Runner 'completed' 'KADR finished'; return }
         if ($state.status -in @('failed','cancelled','interrupted','waiting_analysis') -or
             (Test-Path -LiteralPath (Join-Path $job '.cancel'))) {
             Write-Runner 'stopped' 'Job stopped; start/retry in KADR before running this script again'; return
         }
-        $automation = Get-Content -LiteralPath (Join-Path $root 'automation.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $automation = Read-ExchangeJson (Join-Path $root 'automation.json')
         if (-not $automation.enabled) { throw 'Enable automatic file reception in KADR first' }
         foreach ($completedId in @($workers.Keys)) {
             $worker = $workers[$completedId]
@@ -76,7 +86,7 @@ try {
         }
         $exchangePath = Join-Path $root 'exchange.json'
         if (Test-Path -LiteralPath $exchangePath) {
-            $exchange = Get-Content -LiteralPath $exchangePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $exchange = Read-ExchangeJson $exchangePath
             if ($exchange.status -eq 'error') { throw 'KADR rejected the result; inspect packet before retry' }
             if ($exchange.status -eq 'waiting') {
                 $queue = @($exchange.packet)
@@ -94,6 +104,15 @@ try {
                 $packet = Join-Path $root ('packets\' + $packetId)
                 if (-not (Resolve-Path -LiteralPath $packet).Path.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) {
                     throw 'Packet outside exchange folder'
+                }
+                $failurePath = Join-Path $packet 'failure.json'
+                if (Test-Path -LiteralPath $failurePath) {
+                    $packetFailure = Read-ExchangeJson $failurePath
+                    if ($packetFailure.packet -eq $packetId -and $packetFailure.code -eq 'output_limit') {
+                        # Backend splits whole units. Never relaunch the same
+                        # truncated paid request while it publishes new work.
+                        continue
+                    }
                 }
                 if (-not (Test-Path -LiteralPath (Join-Path $packet 'agy-result.json')) -and
                     -not (Test-Path -LiteralPath (Join-Path $packet 'result.json'))) {

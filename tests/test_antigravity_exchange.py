@@ -251,6 +251,86 @@ def test_cloud_text_batch_config_is_bounded_and_opt_in(tmp_path):
         vision.complete_text_context().text_batch_limits
 
 
+@pytest.mark.parametrize('stage', ['story_structure', 'dialogue_relations'])
+@pytest.mark.parametrize('failure_kind', ['output_limit', 'invalid_contract'])
+def test_output_limit_splits_whole_units_until_native_coverage_succeeds(tmp_path, stage, failure_kind):
+    from app.antigravity_exchange import OutputLimitExceeded
+    if stage == 'story_structure':
+        from tests.test_story_structure_pass import fixture, FakeProvider, response
+        from app.story_structure_pass import infer_story_structure as infer
+        count = 12
+    else:
+        from tests.test_dialogue_relations import fixture, FakeProvider, provider_response as response
+        from app.dialogue_relations import infer_dialogue_relations as infer
+        count = 24
+    events, transcript = fixture(count=count)
+    events = events if isinstance(events, list) else [events]
+    successful_refs, sizes = [], []
+    def callback(payload):
+        current = payload['CURRENT']
+        sizes.append(len(current))
+        if len(current) > 2:
+            if failure_kind == 'output_limit':
+                raise OutputLimitExceeded('confirmed output limit')
+            raise ValueError('Missing direct proof for source references')
+        successful_refs.extend((n['ref']['event'], n['ref']['unit']) for n in current)
+        return response(payload)
+    authored = FakeProvider(callback=callback)
+    vision = session(tmp_path)
+    vision.supports_query_batch = True
+    with patch.object(vision, 'query', side_effect=authored.query):
+        result = infer(events, transcript, tmp_path/'split', vision.complete_text_context(), lambda: False)
+    assert result['status'] == 'accepted'
+    assert len(successful_refs) == len(set(successful_refs)) == count
+    assert 1 <= len([h for h in result['history'] if h.get('status') == 'split']) <= 3
+    assert sizes[0] > min(sizes[1:])
+    assert max(sizes[-3:]) <= 2
+
+
+def test_confirmed_old_cli_output_failure_is_not_imported_or_relaunched(tmp_path):
+    from app.antigravity_exchange import OutputLimitExceeded
+    vision = session(tmp_path)
+    atomic_json(tmp_path/'antigravity/automation.json', {'enabled': True})
+    directory, identifier, _ = vision._prepare_request('overflow', schema=SCHEMA)
+    atomic_json(directory/'cli-attempts/old/agy-result.json', {'event': 'result', 'result': {
+        'status': 'ERROR', 'error': 'Your previous response was cut off because it exceeded the output token limit',
+        'structured_output': {'keep_units': ['u1']}}})
+    with patch('app.antigravity_exchange.time.sleep', side_effect=AssertionError('must not wait/relaunch')):
+        with pytest.raises(OutputLimitExceeded, match='лимит длины ответа'):
+            vision.query('overflow', schema=SCHEMA)
+    assert not (directory/'result.json').exists()
+    assert read_json(directory/'failure.json')['code'] == 'output_limit'
+    assert snapshot(tmp_path)['packets'][0]['status'] == 'error'
+    # Explicit valid manual correction can still be imported; ERROR is never promoted.
+    (directory/'agy-result.json').write_bytes(envelope({'keep_units': ['u2']}))
+    assert vision.query('overflow', schema=SCHEMA) == {'keep_units': ['u2']}
+
+
+@pytest.mark.parametrize('code,expected', [('quota','квота'), ('authentication','авторизацию'), ('timeout','времени')])
+def test_known_cli_failure_has_specific_message_without_raw_credentials(tmp_path, code, expected):
+    vision = session(tmp_path)
+    atomic_json(tmp_path/'antigravity/automation.json', {'enabled': True})
+    directory, identifier, _ = vision._prepare_request('specific failure', schema=SCHEMA)
+    atomic_json(directory/'failure.json', {'packet': identifier, 'code': code})
+    atomic_json(tmp_path/'antigravity/runner.json', {'packet': identifier, 'status':'error'})
+    with pytest.raises(AnalysisPending, match=expected) as caught:
+        vision.query('specific failure', schema=SCHEMA)
+    assert identifier[:12] in str(caught.value)
+
+
+def test_single_unit_output_limit_pauses_instead_of_retrying_forever(tmp_path):
+    from app.antigravity_exchange import OutputLimitExceeded
+    from tests.test_story_structure_pass import fixture, FakeProvider
+    from app.story_structure_pass import infer_story_structure
+    events, transcript = fixture(count=1)
+    def fail(payload):
+        raise OutputLimitExceeded('output limit')
+    authored = FakeProvider(callback=fail)
+    with pytest.raises(AnalysisPending, match='один фрагмент'):
+        infer_story_structure([events], transcript, tmp_path/'single', authored, lambda: False)
+    assert len(authored.calls) == 1
+
+
 def test_cloud_natural_endings_do_not_enter_fallback_due_to_local_byte_budget(tmp_path):
     from app.endings import refine_endings
     from tests.test_endings import fixture
@@ -267,7 +347,7 @@ def test_cloud_natural_endings_do_not_enter_fallback_due_to_local_byte_budget(tm
     assert not result[0].get('endings_degraded')
 
 
-@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize'])
+@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize', 'output_limit', 'quota'])
 def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, mode):
     import os
     import subprocess
@@ -283,7 +363,7 @@ def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, 
     prompt = marker + ' контекст ' * 5000
     if mode == 'image_oversize':
         (packet/'page_000.jpg').write_bytes(b'synthetic-not-decoded-before-guard')
-    atomic_json(packet / 'request.json', {'images':['page_000.jpg'] if mode=='image_oversize' else [], 'schema':{'type':'object'}})
+    atomic_json(packet / 'request.json', {'id':'a'*64, 'images':['page_000.jpg'] if mode=='image_oversize' else [], 'schema':{'type':'object'}})
     atomic_json(packet / 'schema.json', {'type':'object'})
     (packet / 'prompt.txt').write_text(prompt, encoding='utf-8')
     fake_cli = tmp_path / 'fake-cli.py'
@@ -299,6 +379,9 @@ if mode=='cancel':
     time.sleep(60)
 elif mode=='malformed':
     print('not JSON',flush=True)
+elif mode in ('output_limit','quota'):
+    error='Your previous response was cut off because it exceeded the output token limit' if mode=='output_limit' else 'RESOURCE_EXHAUSTED quota'
+    print(json.dumps({'event':'result','result':{'status':'ERROR','error':error,'structured_output':{'ok':True},'usage':{'input_tokens':7,'output_tokens':2,'total_tokens':9}}}),flush=True)
 else:
     print(json.dumps({'event':'init'}))
     print(json.dumps({'event':'result','result':{'status':'SUCCESS','structured_output':{'ok':True},'usage':{'input_tokens':7,'output_tokens':2,'total_tokens':9}}}),flush=True)
@@ -323,7 +406,7 @@ else:
             assert (packet/'child-started').exists()
             stop.touch()
         stdout, stderr = process.communicate(timeout=20)
-        assert process.returncode == (0 if mode=='success' else 1), stderr.decode(errors='replace')
+        assert process.returncode == (0 if mode in ('success','output_limit') else 1), stderr.decode(errors='replace')
         if mode == 'image_oversize':
             assert b'Stream image parity is not verified' in stderr
             assert not (packet/'child-started').exists()
@@ -340,6 +423,10 @@ else:
             assert telemetry['usage']['total_tokens']==9
         elif mode=='malformed':
             assert telemetry['stream_error'] and not telemetry['usage_reported']
+        elif mode in ('output_limit','quota'):
+            assert read_json(packet/'failure.json') == {'packet':'a'*64,'code':mode,'attempt':records[0].parent.name}
+            assert telemetry['usage']['total_tokens']==9
+            assert not (packet/'agy-result.json').exists()
         else:
             assert telemetry['abort_reason']
             child_id=int((packet/'child-started').read_text())
@@ -556,6 +643,7 @@ def test_cli_tuple_generation_keeps_source_pairs_and_nonempty_proof_support():
         'minItems': 2, 'maxItems': 2}}, 'required': ['units']}
     original = json.dumps(schema)
     generated = cli_schema(schema)
+    assert 'support' in generated['properties']['units']['items']['properties']
     answer = {'units': [{'ref': ref, 'support': [{'ref': ref, 'proof': 'p'+str(i)}]}
                         for i, ref in enumerate(refs)]}
     _validate(answer, generated)
@@ -812,7 +900,7 @@ def test_standalone_production_unlimited_and_test_budget_pause(tmp_path, limited
     assert read_json(exchange / 'runner.json')['status'] == ('budget_exhausted' if limited else 'completed')
 
 
-@pytest.mark.parametrize('mode', ['parallel', 'serial', 'cancel', 'failure', 'invalid'])
+@pytest.mark.parametrize('mode', ['parallel', 'serial', 'cancel', 'failure', 'invalid', 'output_limit'])
 def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode):
     import os
     import shutil
@@ -837,6 +925,10 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
                 throw 'cancelled owned worker'
             }
             if ((Test-Path -LiteralPath (Join-Path $PacketDirectory 'fail')) -and $i -eq 10) { throw 'simulated CLI failure' }
+            if ((Test-Path -LiteralPath (Join-Path $PacketDirectory 'limit')) -and $i -eq 10) {
+                [IO.File]::WriteAllText((Join-Path $PacketDirectory 'failure.json'), (@{packet=(Split-Path $PacketDirectory -Leaf);code='output_limit'} | ConvertTo-Json -Compress))
+                return
+            }
             Start-Sleep -Milliseconds 100
         }
         [IO.File]::WriteAllText((Join-Path $PacketDirectory 'agy-result.json'), '{}')
@@ -852,13 +944,17 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
     exchange.mkdir()
     atomic_json(exchange / 'automation.json', {'enabled': True})
     ids = ['a' * 64, 'b' * 64]
+    if mode == 'output_limit':
+        ids.append('c'*64)
     packets = [exchange / 'packets' / key for key in ids]
     for directory in packets:
         directory.mkdir(parents=True)
     if mode == 'failure':
         (packets[1] / 'fail').touch()
+    if mode == 'output_limit':
+        (packets[0]/'limit').touch()
     atomic_json(exchange / 'exchange.json', {'status': 'waiting', 'packet': ids[0],
-        'packets': [ids[0], '../outside'] if mode == 'invalid' else ids})
+        'packets': [ids[0], '../outside'] if mode == 'invalid' else ids[:2]})
     command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         str(scripts / 'run_antigravity_job.ps1'), '-JobDirectory', str(job),
         '-MaxConcurrent', '1' if mode == 'serial' else '2']
@@ -870,6 +966,10 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
                 (job / '.cancel').touch()
             elif mode in ('parallel', 'serial') and all((path / 'agy-result.json').exists() for path in packets):
                 atomic_json(job / 'job.json', {'analysis_provider': PROVIDER, 'status': 'completed'})
+            elif mode == 'output_limit' and (packets[0]/'failure.json').exists():
+                atomic_json(exchange/'exchange.json', {'status':'waiting','packet':ids[1],'packets':ids[1:]})
+                if all((path/'agy-result.json').exists() for path in packets[1:]):
+                    atomic_json(job/'job.json', {'analysis_provider':PROVIDER,'status':'completed'})
             time.sleep(.05)
         stdout, stderr = process.communicate(timeout=10)
         assert process.returncode == (1 if mode in ('failure', 'invalid') else 0), stderr.decode(errors='replace')
@@ -879,6 +979,11 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
             assert not any((path / 'started.json').exists() for path in packets)
             return
         assert all((path / 'ended.json').exists() for path in packets)
+        if mode == 'output_limit':
+            assert not (packets[0]/'agy-result.json').exists()
+            assert all((path/'agy-result.json').exists() for path in packets[1:])
+            assert 'Attempt already finished' not in stderr.decode(errors='replace')
+            return
         if mode in ('parallel', 'serial'):
             starts = [json.loads((path / 'started.json').read_text()) for path in packets]
             ends = [json.loads((path / 'ended.json').read_text()) for path in packets]

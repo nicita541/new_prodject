@@ -641,6 +641,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
     from app.global_verification import _model_identity
     from app.scene_understanding import _control_failure
     from app.media_probe import atomic_json
+    from app.antigravity_exchange import OutputLimitExceeded, AnalysisPending
     _check(cancelled)
     nodes, source_coverage, snapshots = source_units(events, transcript)
     candidates = dialogue_pairs(transcript, events, relations)
@@ -655,10 +656,12 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
             for ref in [*candidate['question_refs'], *candidate['answer_refs']]:
                 unresolved[_key(ref)] = ref
     cursor = 0
+    output_batch_cap = 12
     while cursor < len(nodes):
         _check(cancelled)
         from app.antigravity_batch import text_batch_limits
         batch_units, output_tokens = text_batch_limits(vision, 'dialogue_relations', POLICY['max_current_units'], POLICY['output_tokens'])
+        batch_units = min(batch_units, output_batch_cap)
         size = min(batch_units, len(nodes)-cursor)
         while size:
             current = nodes[cursor:cursor+size]
@@ -726,9 +729,23 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                         pairs[identity] = {**pair, 'checkpoint': signature}
             else:
                 unresolved.update({_key(n['ref']): n['ref'] for n in current})
+        except OutputLimitExceeded as error:
+            if size <= 1:
+                raise AnalysisPending(str(error) + '; даже один фрагмент не помещается. Нужна проверка пакета') from error
+            output_batch_cap = max(1, size//2)
+            history.append({'status': 'split', 'reason': 'cloud_output_limit',
+                'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': output_batch_cap})
+            continue
         except Exception as error:
             if _control_failure(error):
                 raise
+            if (isinstance(error, (ValueError, TypeError, KeyError)) and size > 1
+                    and getattr(type(vision), 'split_invalid_text_batches', False) is True):
+                output_batch_cap = max(1, size//2)
+                history.append({'status': 'split', 'reason': 'source_validation_split',
+                    'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': output_batch_cap,
+                    'error': str(error)[:400]})
+                continue
             unresolved.update({_key(n['ref']): n['ref'] for n in current})
             history.append({'status': 'failed', 'CURRENT_refs': [n['ref'] for n in current],
                 'reason': 'invalid_dialogue_contract' if isinstance(error, (ValueError, TypeError, KeyError)) else 'model_failure',

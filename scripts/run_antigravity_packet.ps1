@@ -58,6 +58,23 @@ if ($Smoke) {
     $promptText += "`nBefore returning any keep_units/preserve_silent_units/omit_units answer: their selected union and omitted unit IDs must be DISJOINT and together cover ALL allowed unit IDs. A preserved silent unit is retained and must never also appear in omit_units. Check this separately for every independent task; do not transfer unit IDs between tasks."
     $outputName = 'agy-result.json'
 }
+function Publish-Failure([string]$Code) {
+    if ($Smoke) { return }
+    $failure = Join-Path $packet 'failure.json'
+    $failurePending = $failure + '.pending'
+    $failureRecord = @{packet=$request.id;code=$Code;attempt=(Split-Path $attempt -Leaf)}
+    if ($Code -eq 'process_exit') { $failureRecord.exit_code = $cliExit }
+    [IO.File]::WriteAllText($failurePending, ($failureRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    if (Test-Path -LiteralPath $failure) { [IO.File]::Replace($failurePending,$failure,[NullString]::Value) }
+    else { [IO.File]::Move($failurePending,$failure) }
+}
+if (-not $Smoke -and (Test-Path -LiteralPath (Join-Path $packet 'failure.json'))) {
+    $previousFailure = Get-Content -LiteralPath (Join-Path $packet 'failure.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($previousFailure.packet -eq $request.id -and $previousFailure.code -eq 'output_limit') {
+        Write-Host 'Output limit already confirmed; waiting for a smaller native packet.'
+        return
+    }
+}
 $cliArguments = @('--print', $promptText, '--output-format', 'json', '--json-schema', $schemaPath,
                   '--print-timeout', '3m', '--disable-slash-commands', '--add-dir', $packet,
                   '--log-file', (Join-Path $attempt 'agy.log'))
@@ -186,12 +203,29 @@ $usageReported = $reportedUsage.ContainsKey('total_tokens') -or (
 @{exit_code=$cliExit;wall_seconds=$started.Elapsed.TotalSeconds;started_at=$cliStartedAt;finished_at=$cliFinishedAt;official_cli=$true;model_requested=$Model;agent_requested=$agentRequested;abort_reason=$abortReason;command_line_chars=$startInfo.FileName.Length+$startInfo.Arguments.Length+3;
     input_format=$(if ($streamInput) { 'stream-json' } else { 'text' });stream_error=$streamError;usage_reported=$usageReported;usage=$reportedUsage} |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $attempt 'cli-run.json') -Encoding UTF8
-if ($abortReason) { throw "$abortReason; inspect $attempt" }
-if ($cliExit -ne 0) { throw "agy failed (exit $cliExit); inspect $attempt" }
-if ($streamError) { throw "$streamError; inspect $attempt" }
-$result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json
+if ($abortReason) {
+    if (-not ($StopFile -and (Test-Path -LiteralPath $StopFile)) -and
+        -not ($RunnerStopFile -and (Test-Path -LiteralPath $RunnerStopFile))) { Publish-Failure 'timeout' }
+    throw "$abortReason; inspect $attempt"
+}
+if ($cliExit -ne 0) { Publish-Failure 'process_exit'; throw "agy failed (exit $cliExit); inspect $attempt" }
+if ($streamError) { Publish-Failure 'invalid_json'; throw "$streamError; inspect $attempt" }
+try { $result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json }
+catch { Publish-Failure 'invalid_json'; throw "Antigravity returned invalid JSON; inspect $attempt" }
 if ($streamInput) { $result = $result.result }
 if ($result.status -ne 'SUCCESS' -or $null -eq $result.structured_output) {
+    $reason = [string]$result.error
+    if ($result.status -eq 'ERROR' -and $reason -match 'exceeded the output token limit') {
+        Publish-Failure 'output_limit'
+        Write-Host 'Antigravity output limit: partial response retained; waiting for a smaller native packet.'
+        return
+    }
+    $failureCode = 'cli_error'
+    if ($reason -match 'quota|rate.limit|RESOURCE_EXHAUSTED|429') { $failureCode = 'quota' }
+    elseif ($reason -match 'not.logged.in|UNAUTHENTICATED|authentication') { $failureCode = 'authentication' }
+    elseif ($reason -match 'timed.out|deadline.exceeded') { $failureCode = 'timeout' }
+    elseif ($reason -match 'context.*(exceed|too.long)') { $failureCode = 'context_limit' }
+    Publish-Failure $failureCode
     throw "No successful structured result; do not import $attempt"
 }
 if ($Smoke -and $result.structured_output.ok -ne $true) { throw 'Smoke answer is not ok=true' }
