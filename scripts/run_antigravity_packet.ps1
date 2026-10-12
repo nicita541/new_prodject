@@ -257,7 +257,7 @@ if ($result.status -ne 'SUCCESS' -or -not $hasAnswer) {
         if (-not $reportedUsage.ContainsKey($field) -or $reportedUsage[$field] -ne 0) { $emptySuccess = $false }
     }
     if ($emptySuccess) {
-        Publish-Failure 'empty_response'
+        if ($Smoke) { throw 'Smoke returned empty SUCCESS' }
         $remaining = [int][Math]::Floor($TimeLimitSeconds - $started.Elapsed.TotalSeconds)
         if (-not $Smoke -and -not $EmptyResponseRetryUsed -and $remaining -ge 15 -and
             -not ($StopFile -and (Test-Path -LiteralPath $StopFile)) -and
@@ -266,7 +266,9 @@ if ($result.status -ne 'SUCCESS' -or -not $hasAnswer) {
             & $PSCommandPath -PacketDirectory $packet -AgyExe $AgyExe -Model $Model -DefaultAgent:$DefaultAgent -JsonText:$JsonText -StopFile $StopFile -RunnerStopFile $RunnerStopFile -TimeLimitSeconds $remaining -EmptyResponseRetryUsed
             return
         }
-        throw "Antigravity returned empty SUCCESS; single retry exhausted or unavailable; inspect $attempt"
+        Publish-Failure 'empty_response'
+        Write-Host 'Antigravity returned empty SUCCESS twice; waiting for a smaller native packet.'
+        return
     }
     $reason = [string]$result.error
     if ($result.status -eq 'ERROR' -and $reason -match 'exceeded the output token limit') {

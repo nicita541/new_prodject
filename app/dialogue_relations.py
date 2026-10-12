@@ -641,7 +641,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
     from app.global_verification import _model_identity
     from app.scene_understanding import _control_failure
     from app.media_probe import atomic_json
-    from app.antigravity_exchange import OutputLimitExceeded, AnalysisPending
+    from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse, AnalysisPending
     _check(cancelled)
     nodes, source_coverage, snapshots = source_units(events, transcript)
     candidates = dialogue_pairs(transcript, events, relations)
@@ -733,12 +733,13 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                         pairs[identity] = {**pair, 'checkpoint': signature}
             else:
                 unresolved.update({_key(n['ref']): n['ref'] for n in current})
-        except OutputLimitExceeded as error:
+        except (OutputLimitExceeded, EmptyResponse) as error:
             if size <= 1:
-                raise AnalysisPending(str(error) + '; даже один фрагмент не помещается. Нужна проверка пакета') from error
+                detail = '; CLI не ответил даже на один фрагмент. Нужна проверка пакета' if isinstance(error, EmptyResponse) else '; даже один фрагмент не помещается. Нужна проверка пакета'
+                raise AnalysisPending(str(error) + detail) from error
             split_until = max(split_until, cursor+size)
             output_batch_cap = max(1, size//2)
-            history.append({'status': 'split', 'reason': 'cloud_output_limit',
+            history.append({'status': 'split', 'reason': 'cloud_empty_response' if isinstance(error, EmptyResponse) else 'cloud_output_limit',
                 'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': output_batch_cap})
             continue
         except Exception as error:

@@ -654,7 +654,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
     from app.config import ROOT
     result_events = copy.deepcopy(events)
     from app.antigravity_batch import text_batch_limits
-    from app.antigravity_exchange import OutputLimitExceeded, AnalysisPending
+    from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse, AnalysisPending
     batch_units, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
     configured_batch_units, split_until = batch_units, 0
     history, assignments, relation_map, arc_map, registry = [], {}, {}, {}, {}
@@ -770,12 +770,13 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                     registry = decision['canonical_entities']
                 else:
                     unresolved.extend(n['ref'] for n in current)
-            except OutputLimitExceeded as error:
+            except (OutputLimitExceeded, EmptyResponse) as error:
                 if size <= 1:
-                    raise AnalysisPending(str(error) + '; даже один фрагмент не помещается. Нужна проверка пакета') from error
+                    detail = '; CLI не ответил даже на один фрагмент. Нужна проверка пакета' if isinstance(error, EmptyResponse) else '; даже один фрагмент не помещается. Нужна проверка пакета'
+                    raise AnalysisPending(str(error) + detail) from error
                 split_until = max(split_until, cursor+size)
                 batch_units = max(1, size//2)
-                history.append({'status': 'split', 'reason': 'cloud_output_limit',
+                history.append({'status': 'split', 'reason': 'cloud_empty_response' if isinstance(error, EmptyResponse) else 'cloud_output_limit',
                     'CURRENT_refs': [n['ref'] for n in current], 'next_batch_units': batch_units})
                 continue
             except Exception as error:

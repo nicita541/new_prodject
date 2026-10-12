@@ -309,9 +309,9 @@ def test_cloud_text_batch_config_is_bounded_and_opt_in(tmp_path):
 
 
 @pytest.mark.parametrize('stage', ['story_structure', 'dialogue_relations'])
-@pytest.mark.parametrize('failure_kind', ['output_limit', 'invalid_contract'])
+@pytest.mark.parametrize('failure_kind', ['output_limit', 'invalid_contract', 'empty_response'])
 def test_output_limit_splits_whole_units_until_native_coverage_succeeds(tmp_path, stage, failure_kind):
-    from app.antigravity_exchange import OutputLimitExceeded
+    from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse
     if stage == 'story_structure':
         from tests.test_story_structure_pass import fixture, FakeProvider, response
         from app.story_structure_pass import infer_story_structure as infer
@@ -327,6 +327,8 @@ def test_output_limit_splits_whole_units_until_native_coverage_succeeds(tmp_path
         current = payload['CURRENT']
         sizes.append(len(current))
         if len(current) > 2:
+            if failure_kind == 'empty_response':
+                raise EmptyResponse('confirmed empty response')
             if failure_kind == 'output_limit':
                 raise OutputLimitExceeded('confirmed output limit')
             raise ValueError('Missing direct proof for source references')
@@ -408,13 +410,14 @@ def test_known_cli_failure_has_specific_message_without_raw_credentials(tmp_path
     assert identifier[:12] in str(caught.value)
 
 
-def test_single_unit_output_limit_pauses_instead_of_retrying_forever(tmp_path):
-    from app.antigravity_exchange import OutputLimitExceeded
+@pytest.mark.parametrize('kind', ['output_limit', 'empty_response'])
+def test_single_unit_output_limit_pauses_instead_of_retrying_forever(tmp_path, kind):
+    from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse
     from tests.test_story_structure_pass import fixture, FakeProvider
     from app.story_structure_pass import infer_story_structure
     events, transcript = fixture(count=1)
     def fail(payload):
-        raise OutputLimitExceeded('output limit')
+        raise (EmptyResponse('empty response') if kind == 'empty_response' else OutputLimitExceeded('output limit'))
     authored = FakeProvider(callback=fail)
     with pytest.raises(AnalysisPending, match='один фрагмент'):
         infer_story_structure([events], transcript, tmp_path/'single', authored, lambda: False)
@@ -509,7 +512,7 @@ else:
             assert (packet/'child-started').exists()
             stop.touch()
         stdout, stderr = process.communicate(timeout=20)
-        assert process.returncode == (0 if mode in ('success','output_limit','json_string','empty_once') else 1), stderr.decode(errors='replace')
+        assert process.returncode == (0 if mode in ('success','output_limit','json_string','empty_once','empty_twice') else 1), stderr.decode(errors='replace')
         if mode == 'image_oversize':
             assert b'Stream image parity is not verified' in stderr
             assert not (packet/'child-started').exists()
@@ -524,9 +527,11 @@ else:
         assert (records[0].parent/'agy.stream.jsonl').exists()
         if mode.startswith('empty_'):
             assert int((packet/'empty-count').read_text())==(2 if mode in ('empty_once','empty_twice') else 1)
-            assert read_json(packet/'failure.json')['code']==('cli_error' if mode=='empty_nonzero' else 'empty_response')
             if mode=='empty_once':
+                assert not (packet/'failure.json').exists()
                 assert json.loads((packet/'agy-result.json').read_text('utf-8-sig'))['result']['structured_output']=={'ok':True}
+            else:
+                assert read_json(packet/'failure.json')['code']==('cli_error' if mode=='empty_nonzero' else 'empty_response')
         elif mode=='success':
             assert json.loads((packet/'agy-result.json').read_text(encoding='utf-8-sig'))['result']['structured_output']=={'ok':True}
             assert telemetry['usage']['total_tokens']==9
@@ -1014,7 +1019,7 @@ def test_standalone_production_unlimited_and_test_budget_pause(tmp_path, limited
     assert read_json(exchange / 'runner.json')['status'] == ('budget_exhausted' if limited else 'completed')
 
 
-@pytest.mark.parametrize('mode', ['parallel', 'serial', 'cancel', 'failure', 'invalid', 'output_limit'])
+@pytest.mark.parametrize('mode', ['parallel', 'serial', 'cancel', 'failure', 'invalid', 'output_limit', 'empty_response'])
 def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode):
     import os
     import shutil
@@ -1040,7 +1045,8 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
             }
             if ((Test-Path -LiteralPath (Join-Path $PacketDirectory 'fail')) -and $i -eq 10) { throw 'simulated CLI failure' }
             if ((Test-Path -LiteralPath (Join-Path $PacketDirectory 'limit')) -and $i -eq 10) {
-                [IO.File]::WriteAllText((Join-Path $PacketDirectory 'failure.json'), (@{packet=(Split-Path $PacketDirectory -Leaf);code='output_limit'} | ConvertTo-Json -Compress))
+                $code=[IO.File]::ReadAllText((Join-Path $PacketDirectory 'limit'))
+                [IO.File]::WriteAllText((Join-Path $PacketDirectory 'failure.json'), (@{packet=(Split-Path $PacketDirectory -Leaf);code=$code} | ConvertTo-Json -Compress))
                 return
             }
             Start-Sleep -Milliseconds 100
@@ -1058,7 +1064,7 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
     exchange.mkdir()
     atomic_json(exchange / 'automation.json', {'enabled': True})
     ids = ['a' * 64, 'b' * 64]
-    if mode == 'output_limit':
+    if mode in ('output_limit','empty_response'):
         ids.append('c'*64)
     packets = [exchange / 'packets' / key for key in ids]
     for directory in packets:
@@ -1066,8 +1072,8 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
         atomic_json(directory/'request.json',{'schema':{'type':'object'},'images':[]})
     if mode == 'failure':
         (packets[1] / 'fail').touch()
-    if mode == 'output_limit':
-        (packets[0]/'limit').touch()
+    if mode in ('output_limit','empty_response'):
+        (packets[0]/'limit').write_text(mode,encoding='utf-8')
     atomic_json(exchange / 'exchange.json', {'status': 'waiting', 'packet': ids[0],
         'packets': [ids[0], '../outside'] if mode == 'invalid' else ids[:2]})
     command = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
@@ -1081,7 +1087,7 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
                 (job / '.cancel').touch()
             elif mode in ('parallel', 'serial') and all((path / 'agy-result.json').exists() for path in packets):
                 atomic_json(job / 'job.json', {'analysis_provider': PROVIDER, 'status': 'completed'})
-            elif mode == 'output_limit' and (packets[0]/'failure.json').exists():
+            elif mode in ('output_limit','empty_response') and (packets[0]/'failure.json').exists():
                 atomic_json(exchange/'exchange.json', {'status':'waiting','packet':ids[1],'packets':ids[1:]})
                 if all((path/'agy-result.json').exists() for path in packets[1:]):
                     atomic_json(job/'job.json', {'analysis_provider':PROVIDER,'status':'completed'})
@@ -1094,7 +1100,7 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
             assert not any((path / 'started.json').exists() for path in packets)
             return
         assert all((path / 'ended.json').exists() for path in packets)
-        if mode == 'output_limit':
+        if mode in ('output_limit','empty_response'):
             assert not (packets[0]/'agy-result.json').exists()
             assert all((path/'agy-result.json').exists() for path in packets[1:])
             assert 'Attempt already finished' not in stderr.decode(errors='replace')

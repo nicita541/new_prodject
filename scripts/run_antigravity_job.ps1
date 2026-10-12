@@ -108,6 +108,7 @@ try {
                 $failurePath = Join-Path $packet 'failure.json'
                 if (Test-Path -LiteralPath $failurePath) {
                     $packetFailure = Read-ExchangeJson $failurePath
+                    if ($packetFailure.packet -eq $packetId -and $packetFailure.code -eq 'empty_response') { continue }
                     if ($packetFailure.packet -eq $packetId -and $packetFailure.code -eq 'output_limit') {
                         # Backend splits whole units. Never relaunch the same
                         # truncated paid request while it publishes new work.

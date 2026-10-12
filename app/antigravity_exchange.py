@@ -67,6 +67,10 @@ class OutputLimitExceeded(AnalysisPending):
     """A confirmed CLI output limit; native text passes may split whole units."""
 
 
+class EmptyResponse(AnalysisPending):
+    """Confirmed empty completion after the standalone bounded retry."""
+
+
 _FAILURE_MESSAGES = {
     'output_limit': 'Antigravity превысил лимит длины ответа; результат не принят',
     'context_limit': 'Antigravity отклонил размер входного контекста',
@@ -547,6 +551,8 @@ class ManualVision:
                     if failure.get('response_mode') != 'json_string' and json_string_response(directory):
                         return # One distinct wire-mode repair; never repeat its failure.
                     raise OutputLimitExceeded(message)
+                if failure['code'] == 'empty_response':
+                    raise EmptyResponse(message)
                 runner = _runner_state(root/'runner.json')
                 if runner.get('status') == 'error' and runner.get('packet') == identifier:
                     raise AnalysisPending(message + '. Готовые результаты сохранены')
