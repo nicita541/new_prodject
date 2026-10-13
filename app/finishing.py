@@ -19,17 +19,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app import config
 from app.json_store import atomic_json, read_json
 from app.jobs import validate_id
+from app.finishing_profile import VideoFinish, profile_path
 
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
-
-
-class VideoFinish(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    layout: Literal["portrait", "cinema"] = "portrait"
-    zoom: int = Field(100, ge=90, le=160)
-    blur: int = Field(24, ge=0, le=45)
-    brightness: int = Field(100, ge=60, le=140)
-    vignette: int = Field(15, ge=0, le=60)
 
 
 class SubtitleFinish(BaseModel):
@@ -199,7 +191,7 @@ def _part(plan: dict, index: int):
 
 
 def _profile_file(request: Request, identifier: str) -> Path:
-    return _manager(request).root / "finishing" / "episodes" / (identifier + ".json")
+    return profile_path(_manager(request).root, identifier)
 
 
 def _caption_file(request: Request, job_id: str, part_index: int) -> Path:

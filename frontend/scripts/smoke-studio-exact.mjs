@@ -58,8 +58,8 @@ const jobs = [
   outputs:['part_001.mp4','part_001.srt'],files:[{name:'part_001.mp4',
     url:'/api/jobs/'+job+'/files/part_001.mp4',subtitle_url:'/api/jobs/'+job+'/files/part_001.srt',duration:4}]}
 ];
-const plan = {source:{duration:4},parts:[{index:7,duration:4,
-  cuts:[{start:0,end:4}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'},
+const plan = {source:{duration:40,width:640,height:360},parts:[{index:7,duration:4,
+  cuts:[{start:10,end:12},{start:20,end:22}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'},
     {start:3.8,end:4,text:'ДРУГАЯ РЕПЛИКА'}]}]};
 let saveCalls = 0;
 let savedProfileBody;
@@ -97,6 +97,10 @@ for(let i=0;i<60;i++){
 }
 assert(ready,window.document.querySelector('#main')?.textContent?.slice(0,500)||'not rendered');
 assert(window.document.querySelector('.sidebar'));
+assert.deepEqual([...window.document.querySelectorAll('.sidebar .navbtn')].map(button=>button.dataset.screen),
+  ['projects','trash'], 'only library and trash belong in global navigation');
+assert(!window.document.querySelector('[data-screen="api"]'), 'API console navigation must be removed');
+assert(!window.document.querySelector('#fcDownloadPresets'), 'developer JSON controls must be removed');
 assert(window.document.querySelector('.topbar'));
 assert(window.document.querySelector('#fcCanvas'));
 assert.equal(typeof window.document.querySelector('#fcVideo').ontimeupdate, 'function', 'finishing controls must finish binding');
@@ -196,6 +200,44 @@ const selectedAudio=window.document.querySelector('#fcAudio');
 assert(!selectedAudio.hasAttribute('src'),'per-part no-music must not request a fake track URL');
 assert(window.document.querySelector('#fcSoundTag')?.textContent.includes('выключена'),
   'no-music selection should be visible in the editor');
+assert(!window.document.querySelector('.fc-wave'), 'invented waveform must not appear');
+// Publication settings use the source cuts, not a previously baked 9:16 card.
+window.document.querySelector('[data-ftab="frame"]').click();
+window.document.querySelector('[data-flayout="social"]').click();
+assert(window.document.querySelector('#fcCanvas').classList.contains('social-mode'));
+let socialVideo=window.document.querySelector('#fcVideo');
+assert.equal(socialVideo.dataset.sourcePreview,'true');
+assert(socialVideo.getAttribute('src').endsWith('/source'));
+socialVideo.onloadedmetadata();
+assert.equal(socialVideo.currentTime,10);
+assert.equal(window.document.querySelector('#fcDuration').textContent,'0:04');
+const seek=window.document.querySelector('#fcSeek');
+seek.value=75;seek.dispatchEvent(new window.Event('input'));
+assert.equal(socialVideo.currentTime,21,'75% of output must map to second source cut');
+socialVideo.ontimeupdate();
+assert.equal(window.document.querySelector('#fcTime').textContent,'0:03');
+const variantControl=window.document.querySelector('#fcCardVariant');
+variantControl.value='post';variantControl.dispatchEvent(new window.Event('change'));
+assert(window.document.querySelector('#fcCanvas').classList.contains('post-card'));
+for(const [id,value] of [['fcChannel','Канал <b>100%</b>'],['fcHandle','@my_channel'],['fcPostCaption','Подпись: [x]; 100%']]){
+  const field=window.document.getElementById(id);field.value=value;
+  field.dispatchEvent(new window.Event('input',{bubbles:true}));
+}
+assert.equal(window.document.querySelector('#fcSocialChannel').textContent,'Канал <b>100%</b>');
+assert(!window.document.querySelector('#fcSocialChannel b'), 'channel must remain literal text');
+assert.equal(window.document.querySelector('#fcSocialHandle').textContent,'@my_channel');
+window.document.querySelector('#fcSave').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+assert.equal(savedProfileBody.video.card_variant,'post');
+assert.equal(savedProfileBody.video.channel_handle,'@my_channel');
+assert.equal(savedProfileBody.video.post_caption,'Подпись: [x]; 100%');
+socialVideo=window.document.querySelector('#fcVideo');
+socialVideo.dataset.renderedPreview='true';
+window.document.querySelector('#fcGuideToggle').click();
+assert(!window.document.querySelector('#fcCanvas').classList.contains('social-mode'),
+  'a baked server preview must not receive a second card');
+window.document.querySelector('#fcPreviewReset').click();
+assert(window.document.querySelector('#fcCanvas').classList.contains('social-mode'));
 const projectsNav = window.document.querySelector('button[data-action="nav"][data-screen="projects"]');
 assert(projectsNav, 'projects navigation missing');
 projectsNav.click();
@@ -204,9 +246,31 @@ assert(overview.includes('Готовых серий'), 'project summary not rend
 const stat = [...window.document.querySelectorAll('.stat-card')].find(el=>el.textContent.includes('Готовых серий'));
 assert(stat?.querySelector('strong')?.textContent.trim()==='1',
   'older completed Shorts must count as ready even if latest attempt failed');
-assert(window.document.body.textContent.includes('РЕАЛЬНЫЕ ПРОЕКТЫ'), 'demo label remained in live UI');
+assert(!window.document.body.textContent.includes('РЕАЛЬНЫЕ ПРОЕКТЫ'), 'developer reassurance copy must not appear in product');
+assert(!window.document.querySelector('main').textContent.includes('/api/'), 'project library must not display developer routes');
 const readyButton = window.document.querySelector('button[data-action="filter"][data-filter="ready"]');
 if(readyButton){readyButton.click();assert(window.document.body.textContent.includes('Проверка визуала'), 'ready filter lost project after failed retry');}
+
+// Follow the product flow from a selected project. A failed newer attempt
+// must not hide a ready montage or break the contextual editor navigation.
+window.document.querySelector('.project-card [data-action="go-project"]').click();
+assert(window.document.querySelector('.episodes-list'), 'project must open its own episodes');
+const shortsButton=window.document.querySelector('.episode-actions [data-action="open-review"]');
+assert(shortsButton, 'older ready Shorts must remain accessible after a failed retry');
+shortsButton.click();
+assert(window.document.querySelector('.rv2-head'), 'episode must open the Shorts review');
+assert(window.document.querySelector('#breadcrumbs').textContent.includes('Серия 1'), 'review must retain episode breadcrumbs');
+window.document.querySelector('.episode-navigation [data-screen="processing"]').click();
+assert(window.document.querySelector('#stageRows'), 'montage must be accessible from its episode');
+assert(window.document.querySelector('[data-action="retry-job"][data-id="'+failedJob+'"]'),
+  'contextual montage must show latest failed attempt after previous ready Shorts');
+assert(!window.document.querySelector('main').textContent.includes('/api/'), 'processing must not display developer routes');
+window.document.querySelector('.episode-navigation [data-screen="finishing"]').click();
+assert(window.document.querySelector('#fcCanvas'), 'finishing must remain accessible after processing');
+window.document.querySelector('.episode-navigation [data-screen="editor"]').click();
+assert(window.document.querySelector('#analysisSelect'), 'episode settings must remain accessible after finishing');
+window.document.querySelector('.sidebar [data-screen="trash"]').click();
+assert(window.document.querySelector('main').textContent.includes('Корзина'), 'global trash must remain available');
 
 dom.window.close();
 console.log('Exact Studio Edition DOM smoke: live API, reference layout, tabs, save passed');

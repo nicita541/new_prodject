@@ -209,22 +209,29 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     offset = 0.0
     cw, ch = crop_size(probe["width"], probe["height"])
     visual_config = (finishing or {}).get("video", {})
+    social = visual_config.get("frame_style") == "social"
+    social_box = None
+    if social:
+        from app.social_frame import write_card
+        social_box = write_card(workdir / "social-card.png", probe["width"], probe["height"], visual_config)
     blur_amount = max(0, round(float(visual_config.get("blur", 24)) / 2))
     background_blur = f",boxblur={blur_amount}:2" if blur_amount else ""
     for i, cut in enumerate(part["cuts"]):
         duration = cut["end"] - cut["start"]
         args.extend(["-ss", f"{cut['start']:.6f}", "-t", f"{duration:.6f}", "-i", str(source.resolve())])
         x, y = crop_expressions(cut, probe["width"], probe["height"])
-        if layout == 'cinema':
+        if layout == 'cinema' or social:
             filters.append(f"[{i}:v:0]trim=duration={duration:.6f},setpts=PTS-STARTPTS,split=2[bg{i}][fg{i}]")
             # Blur at a small resolution, then upscale: inexpensive background
             # while the sharp foreground preserves the entire source image.
             filters.append(f"[bg{i}]scale=270:480:force_original_aspect_ratio=increase,"
                            f"crop=270:480{background_blur},eq=brightness=-0.12:saturation=0.75,"
                            f"scale=1080:1920[back{i}]")
-            filters.append(f"[fg{i}]scale=1080:1080:force_original_aspect_ratio=decrease:"
-                           f"force_divisible_by=2,setsar=1[front{i}]")
-            filters.append(f"[back{i}][front{i}]overlay=(W-w)/2:(H-h)/2:shortest=1,"
+            foreground = (f"scale={social_box['width']}:{social_box['height']}" if social
+                          else "scale=1080:1080:force_original_aspect_ratio=decrease:force_divisible_by=2")
+            position = f"{social_box['x']}:{social_box['y']}" if social else "(W-w)/2:(H-h)/2"
+            filters.append(f"[fg{i}]{foreground},setsar=1[front{i}]")
+            filters.append(f"[back{i}][front{i}]overlay={position}:shortest=1,"
                            f"setsar=1,format=yuv420p,setpts=PTS+{offset:.6f}/TB[v{i}]")
         else:
             filters.append(f"[{i}:v:0]trim=duration={duration:.6f},setpts=PTS-STARTPTS,"
@@ -245,7 +252,9 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     video_effects = []
     visual = (finishing or {}).get("video", {})
     if visual:
-        zoom = float(visual.get("zoom", 100)) / 100
+        # Publication mode must keep the whole source, even if the previous
+        # plain/crop mode had a stored zoom. The card itself is never cropped.
+        zoom = 1.0 if social else float(visual.get("zoom", 100)) / 100
         if zoom < 1:
             # Scaling below 100% creates an image smaller than 1080x1920.
             # Cropping that smaller image fails in FFmpeg; pad the zoomed-out
@@ -261,11 +270,15 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
         vignette = float(visual.get("vignette", 0))
         if vignette:
             video_effects.append(f"vignette=angle=PI/{max(3.0, 28.0 - vignette / 2):.3f}")
+    base_label = "joined"
     if video_effects:
         filters.append("[joined]" + ",".join(video_effects) + "[graded]")
-        filters.append("[graded]ass=filename=captions.ass[video]")
-    else:
-        filters.append("[joined]ass=filename=captions.ass[video]")
+        base_label = "graded"
+    if social:
+        args.extend(["-loop", "1", "-i", str((workdir / "social-card.png").resolve())])
+        filters.append(f"[{base_label}][{len(part['cuts'])}:v:0]overlay=0:0:shortest=1[carded]")
+        base_label = "carded"
+    filters.append(f"[{base_label}]ass=filename=captions.ass[video]")
     audio_label = "[audio]"
     if background_music:
         music_path = background_music["path"]
@@ -274,7 +287,7 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
         duck_intervals = background_music.get("duck_intervals", [])
         fade_in = bool(background_music.get("fade_in", True))
         fade_out = bool(background_music.get("fade_out", True))
-        music_index = len(part["cuts"])
+        music_index = len(part["cuts"]) + int(social)
         args.extend(["-stream_loop", "-1", "-i", str(music_path.resolve())])
         fade_in_duration = min(float(background_music.get("fade_in_seconds", 1.0)), part["duration"] / 2.0)
         fade_out_duration = min(float(background_music.get("fade_out_seconds", 1.0)), part["duration"] / 2.0)

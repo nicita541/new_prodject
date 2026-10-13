@@ -186,6 +186,8 @@ Source hash — доказательство байтового совпаден
 | [editorial](../../app/editorial.py) | Job editorial intent и validated policy отдельно от render/provider |
 | [quality](../../app/quality.py) | Плановые quality_summary/debug_timeline для реально retained footage |
 | [finishing](../../app/finishing.py) | Versioned editor state/caption overrides, preview/export/music routes |
+| [finishing_profile](../../app/finishing_profile.py) | Общая валидация видеопрофиля и чтение профиля серии без HTTP/анализа |
+| [social_frame](../../app/social_frame.py) | Геометрия и растровая тёмная карточка публикации: канал, подпись, весь кадр; пользовательский текст не попадает в FFmpeg expression |
 | [studio_render](../../app/studio_render.py) | Isolated finishing threads/queue/semaphore/status и reuse base plan без ИИ |
 | [deepseek](../../app/deepseek.py) | Remote JSON/image adapter, successful content cache, до 2 retries, disabled monetary compatibility |
 | [hybrid](../../app/hybrid.py) | Local-first remote uncertainty review и job journal/fallback |
@@ -308,6 +310,7 @@ React/legacy/reference удалены вместе с их отдельными 
 | [test_fast_local_story.py](../../tests/test_fast_local_story.py) | Экспериментальная local 4B story routing; например `test_fast_story_routes_only_story_to_local_4b_no_network` |
 | [test_final_quality.py](../../tests/test_final_quality.py) | Контракты/регрессии [final_quality](../../app/final_quality.py); например `test_complete_production_proof_chain_before_render` |
 | [test_finishing.py](../../tests/test_finishing.py) | Контракты/регрессии [finishing](../../app/finishing.py); например `test_finishing_profile_persists_and_validates_without_touching_analysis` |
+| [test_social_frame.py](../../tests/test_social_frame.py) | Профиль, геометрия карточки, буквальный текст и повторный рендер без повторного анализа |
 | [test_flash_story_budgeted.py](../../tests/test_flash_story_budgeted.py) | Trial Flash budgeted compatibility и fallback; например `test_legacy_profile_is_opt_in_but_unrestricted` |
 | [test_flash_story_trial.py](../../tests/test_flash_story_trial.py) | Trial remote story routing; например `test_no_artificial_http_call_cap_for_remote_story` |
 | [test_framing.py](../../tests/test_framing.py) | Контракты/регрессии [framing](../../app/framing.py); например `test_reply_uses_word_midpoint_but_boundary_time_and_deduplicates_shot` |

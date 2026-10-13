@@ -79,7 +79,7 @@ const context=vm.createContext({console,URL,URLSearchParams,structuredClone,
  localStorage:{getItem(){return null},setItem(){}},
  document:{getElementById:element,addEventListener(){},querySelector(){return null},querySelectorAll(){return []}},
  window:{KadrBridge:{},addEventListener(){}},location:{search:''},navigator:{},Blob,File,FormData,TextEncoder,atob});
-const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,doAction,routes,exemplarRoute,request,tokenLabel,processingRows,processingProgress,processingStageRows,renderPacketSummary,processingMessage,
+const expose=`window.audit={renderReview,renderProcessing,bindReview,doAction,request,tokenLabel,processingRows,processingProgress,processingStageRows,renderPacketSummary,processingMessage,
  setup(){
   db.projects=[{id:'p1',title:'Project',created_at:1}];
   db.episodes=[{id:'e1',project_id:'p1',number:1,settings:{analysis_provider:'local',layout:'cinema',caption_style:'accent'}}];
@@ -87,11 +87,11 @@ const expose=`window.audit={renderReview,renderProcessing,renderApi,bindReview,d
   db.jobs=[{id:'j1',episode_id:'e1',source_id:'s1',status:'completed',stage:'completed',progress:1,created_at:1,outputs:[],files:[]}];
   db.plans={j1:{duration:1420,events:[],parts:[{index:1,duration:10,cuts:[{start:0,end:10}],subtitles:[]}],quality_summary:{available:false},debug_timeline:{available:false}}};
   ui.projectId='p1';ui.episodeId='e1';ui.jobId='j1';ui.reviewMode='compare';ui.reviewScrollNeeded=true;},
- job(){return currentJob();},data(){return db},entries(){return ui.apiEntries}};})();`;
+ job(){return currentJob();},data(){return db}};})();`;
 vm.runInContext(source.split('// Live Studio Edition: preserve')[0]+expose,context);
 const app=context.window.audit;assert.equal(app.data().projects.length,0);assert.equal(app.data().jobs.length,0);app.setup();
 assert(!app.renderReview().includes('Демо: встроенные ролики'));
-assert(app.renderReview().includes('Реальные видео'));
+assert(app.renderReview().includes('Сравнивайте исходник с готовыми Shorts'));
 assert(!app.renderProcessing().includes('Имитация сообщений'));
 assert(app.renderProcessing().includes('Сводка статуса'));
 assert.equal(app.processingMessage({message:'Обработка завершилась с ошибкой',error:'FFmpeg: отсутствует звуковой поток'}),'FFmpeg: отсутствует звуковой поток');
@@ -142,14 +142,7 @@ assert(packetSummary.includes('1 готовы · 0 ожидают · 1 с оши
 assert(packetSummary.includes('<details class="expand" id="manualPacketDetails">'));
 assert(!packetSummary.includes('id="manualPacketDetails" open'));
 assert(packetSummary.includes('Импортировать результат'));
-assert(!app.renderApi().includes('в демо'));
-assert(!app.renderApi().includes('демонстрационную базу'));
-for(const [method,path] of app.routes)assert(!/balance|recovery|spending|reset-budget/.test(path),path);
-assert(app.exemplarRoute(['POST','/api/import']).unavailable);
-assert(app.exemplarRoute(['GET','/api/jobs/{id}/previews/{preview_id}']).unavailable);
-assert(app.exemplarRoute(['GET','/api/exports/{export_id}']).unavailable);
-app.data().previews={selected:{preview_id:'selected',source_job_id:'j1'},other:{preview_id:'other',source_job_id:'j2'}};
-assert.equal(app.exemplarRoute(['GET','/api/jobs/{id}/previews/{preview_id}']).path,'/api/jobs/j1/previews/selected');
+for(const removed of ['renderApi','exemplarRoute','apiEntries','api-send','show-raw-job','download-plan','fcDownloadPresets'])assert(!source.includes(removed),removed);
 let selectedScrolled=false;
 element('rvStrip').querySelector=selector=>{
  assert.equal(selector,'.rv2-clip.active');
@@ -184,9 +177,9 @@ async function checkBridge(){
  assert.equal(status,202);assert.equal(db.previews['real-preview'].status,'queued');
  await context.window.KadrBridge.request('POST','/api/jobs/j1/exports',{part_indices:[1]},db,ui,v=>status=v);
  assert.equal(status,202);assert.equal(db.exports['real-export'].status,'queued');
- await app.request('POST','/api/jobs/j1/previews',{part_index:1});
- assert.equal(app.entries()[0].status,202);
- console.log('PASS: live copy, task catalog, HTTP status and media play/pause/ended');
+ const preview=await app.request('POST','/api/jobs/j1/previews',{part_index:1});
+ assert.equal(preview.preview_id,'real-preview');
+ console.log('PASS: product copy, no API console, HTTP status and media play/pause/ended');
 }
 checkBridge().catch(error=>{console.error(error);process.exitCode=1});
 '''

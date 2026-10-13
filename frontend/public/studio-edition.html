@@ -2,21 +2,16 @@
 </head><body>
 <div class="application">
  <aside class="sidebar">
-  <div class="brand" data-action="nav" data-screen="projects"><div class="brand-mark">К<span>›</span></div><div class="brand-text">КАДР <b>STUDIO</b><small>CREATIVE WORKSPACE</small></div></div>
+  <div class="brand" data-action="nav" data-screen="projects"><div class="brand-mark">К<span>›</span></div><div class="brand-text">КАДР <b>STUDIO</b><small>Монтаж Shorts</small></div></div>
   <div class="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
   <nav class="navset" id="navset">
-   <button class="navbtn" data-action="nav" data-screen="projects"><span class="navicon">▦</span><span>Проекты</span><i id="nav-project-count"></i></button>
-   <button class="navbtn" data-action="nav" data-screen="episodes"><span class="navicon">▤</span><span>Серии</span></button>
-   <button class="navbtn" data-action="nav" data-screen="editor"><span class="navicon">⚙</span><span>Настройки</span></button>
-   <button class="navbtn" data-action="nav" data-screen="processing"><span class="navicon">◷</span><span>Монтаж</span></button>
-   <button class="navbtn" data-action="nav" data-screen="finishing" title="Редактор оформления"><span class="navicon">✎</span><span>Оформление</span></button>
-    <button class="navbtn" data-action="nav" data-screen="review"><span class="navicon">▷</span><span>Проверка Shorts</span></button>
+   <button class="navbtn" data-action="nav" data-screen="projects" aria-label="Проекты"><span class="navicon">▦</span><span>Проекты</span><i id="nav-project-count"></i></button>
   </nav>
-  <div class="nav-caption separated">СИСТЕМА</div>
-  <nav class="navset"><button class="navbtn" data-action="nav" data-screen="trash"><span class="navicon">♲</span><span>Корзина</span><i id="nav-trash-count"></i></button><button class="navbtn" data-action="nav" data-screen="api"><span class="navicon">{ }</span><span>Ответы API</span></button></nav>
-  <div class="navbottom"><div class="status-tile"><span class="pulse"></span><div><strong>Локальный сервер</strong><small>FastAPI · реальные данные</small></div><span class="ok">ONLINE</span></div><div class="side-help">STUDIO EDITION / 03 <button data-action="reset" title="Обновить данные с сервера">↻ Обновить</button></div></div>
+
+  <nav class="navset"><button class="navbtn" data-action="nav" data-screen="trash" aria-label="Корзина"><span class="navicon">♲</span><span>Корзина</span><i id="nav-trash-count"></i></button></nav>
+  <div class="navbottom"><div class="side-help"><button data-action="reset" title="Обновить проекты">↻ Обновить</button></div></div>
  </aside>
- <div class="workspace"><header class="topbar"><div class="breadcrumbs" id="breadcrumbs"></div><div class="toptools"><button class="iconbutton top-api" data-action="nav" data-screen="api" title="Посмотреть HTTP-запросы">⌘</button><div class="live-indicator"><span class="pulse"></span> API · LOCAL</div><div class="avatar">K</div></div></header><main id="main" class="main"></main></div>
+ <div class="workspace"><header class="topbar"><div class="breadcrumbs" id="breadcrumbs"></div><div class="toptools"><div class="live-indicator"><span class="pulse"></span> КАДР STUDIO</div><div class="avatar">K</div></div></header><main id="main" class="main"></main></div>
 </div>
 <div id="toast" role="status" aria-live="polite"></div><div id="modalHost"></div><input type="file" id="uploadFile" accept="video/mp4,video/x-matroska,.mp4,.mkv" hidden>
 <script src="/studio-live-bridge.js"></script><script src="/studio-edition-app.js"></script></body></html>

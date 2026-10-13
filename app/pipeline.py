@@ -126,7 +126,7 @@ def _run_identity(job_dir: Path) -> dict:
     from .config import ASR_MODEL, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
     provider = analysis_provider(job_dir)
     profile = load_profile(job_dir)
-    modules = ("pipeline", "media", "analysis", "story", "closing", "pacing", "planner", "dramatic_planner",
+    modules = ("pipeline", "media", "finishing_profile", "social_frame", "analysis", "story", "closing", "pacing", "planner", "dramatic_planner",
                "part_context", "production_sequence", "source_roles", "editorial", "titles", "framing",
                "deepseek", "endings")
     semantic = derived_story_identity("recorded-in-events.meta.json", provider, profile)
@@ -199,7 +199,7 @@ def _archive_obsolete_outputs(job_dir: Path, previous: dict | None, current: dic
             saved = json.loads(checkpoint.read_text(encoding="utf-8"))
             if not isinstance(saved, dict):
                 continue
-            if (saved.get("fingerprint") != previous["fingerprint"] or not video.is_file()
+            if (saved.get("fingerprint") != previous.get("render_fingerprint", previous["fingerprint"]) or not video.is_file()
                     or saved.get("size") != video.stat().st_size
                     or saved.get("mtime_ns") != video.stat().st_mtime_ns
                     or not subtitles.is_file()
@@ -435,6 +435,19 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         generate_part_context(plan, job_dir, report, cancelled)
         _atomic_json(plan_path, plan)
     workdir, output_dir = job_dir / "render", job_dir / "output"
+    # Appearance is a render-only input: changing the publication caption
+    # invalidates MP4 checkpoints, never ASR/scene/story/planning checkpoints.
+    from .finishing_profile import load_video_finish
+    job_record = json.loads((job_dir / "job.json").read_text(encoding="utf-8")) if (job_dir / "job.json").is_file() else {}
+    video_finish = load_video_finish(ROOT, job_record["episode_id"]) if job_record.get("episode_id") else {}
+    finishing = {"video": video_finish} if video_finish.get("frame_style") == "social" else None
+    render_fingerprint = fingerprint
+    if finishing:
+        render_fingerprint = hashlib.sha256(json.dumps(
+            {"plan": fingerprint, "appearance": finishing, "social_card_version": 3},
+            sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    plan["render_fingerprint"] = render_fingerprint
+    plan["render_video"] = video_finish if finishing else None
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
     missing = []
@@ -476,7 +489,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         name = f"part_{part['index']:03}.mp4"
         path = output_dir / name
         checkpoint = workdir / f"part_{part['index']:03}.json"
-        saved = _validated_cached_render(path, checkpoint, fingerprint, part, workdir, cancelled)
+        saved = _validated_cached_render(path, checkpoint, render_fingerprint, part, workdir, cancelled)
         import logging
         logging.getLogger("app.pipeline").info(
             "Render checkpoint: part=%s, cache=%s", part["index"],
@@ -517,7 +530,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                                         "fade_out": music_config.get("fade_out", True)}
                 path = render_part(source, part, analysis["probe"], output_dir,
                                    workdir / f"part_{part['index']:03}", encoder, task_cancelled,
-                                   background_music=background_music)
+                                   background_music=background_music, finishing=finishing)
                 metadata = workdir / f"part_{part['index']:03}" / "render-info.json"
                 actual_encoder = json.loads(metadata.read_text(encoding="utf-8")).get("encoder") if metadata.is_file() else None
                 return {"path": path, "encoder": actual_encoder,
@@ -527,7 +540,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 nonlocal completed
                 path = result["path"]
                 checkpoint = workdir / f"part_{part['index']:03}.json"
-                _atomic_json(checkpoint, {"fingerprint": fingerprint, "size": path.stat().st_size,
+                _atomic_json(checkpoint, {"fingerprint": render_fingerprint, "size": path.stat().st_size,
                                           "mtime_ns": path.stat().st_mtime_ns,
                                           "encoder": result["encoder"], "requested_encoder": encoder,
                                           "run_id": timings["run_id"],

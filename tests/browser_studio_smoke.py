@@ -55,7 +55,8 @@ def main():
             display = page.locator(".sidebar").evaluate("(el) => getComputedStyle(el).display")
             assert display == "flex", f"Studio sidebar not styled, display={display}"
             assert page.evaluate("Boolean(window.KadrBridge)"), "Missing live API JavaScript bridge"
-            assert page.locator(".navbtn").count() >= 7
+            assert page.locator(".sidebar .navbtn").count() == 2
+            assert page.locator('[data-screen="api"]').count() == 0
             assert page.locator("main").inner_text().strip(), "Studio application did not render projects"
             page.locator('button[data-action="nav"][data-screen="trash"]').click()
             assert "Корзина" in page.locator("main").inner_text()

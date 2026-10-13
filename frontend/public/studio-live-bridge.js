@@ -133,6 +133,11 @@
     }
   }
   async function loadSelected(db, ui) {
+    if (ui.episodeId && !db.finishing[ui.episodeId]) {
+      db.finishing[ui.episodeId] = await get(
+        "/api/episodes/" + encodeURIComponent(ui.episodeId) + "/finishing",
+      );
+    }
     const job = db.jobs.find((j) => j.id === ui.jobId);
     if (!job || job.status !== "completed") return;
     if (!db.plans[job.id])

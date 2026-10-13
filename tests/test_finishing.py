@@ -77,6 +77,29 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.client.put(path, json=bad).status_code, 422)
         self.assertEqual((self.directory / "plan.json").read_bytes(), before)
 
+    def test_publication_frame_saves_real_text_and_old_profiles_remain_valid(self):
+        path = "/api/episodes/" + self.episode_id + "/finishing"
+        profile = self.client.get(path).json()
+        self.assertEqual(profile["video"]["frame_style"], "plain")
+        profile.pop("episode_id")
+        before = (self.directory / "plan.json").read_bytes()
+        profile["video"].update(frame_style="social", layout="cinema", card_variant="post", channel_handle="@канал",
+                                channel_name="Мой канал", post_caption="Подпись: [x]; '100%' \\ текст")
+        response = self.client.put(path, json=profile)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.client.get(path).json()["video"]["channel_name"], "Мой канал")
+        self.assertEqual(self.client.get(path).json()["video"]["post_caption"], profile["video"]["post_caption"])
+        self.assertEqual((self.directory / "plan.json").read_bytes(), before)
+        invalid = {**profile, "video": {**profile["video"], "post_caption": "x" * 181}}
+        self.assertEqual(self.client.put(path, json=invalid).status_code, 422)
+        invalid["video"]["post_caption"] = "bad\x00text"
+        self.assertEqual(self.client.put(path, json=invalid).status_code, 422)
+        legacy = {**profile, "revision": 1, "video": {k: v for k, v in profile["video"].items()
+                  if k not in {"frame_style", "card_variant", "channel_name", "channel_handle", "post_caption"}}}
+        old = self.client.put(path, json=legacy)
+        self.assertEqual(old.status_code, 200, old.text)
+        self.assertEqual(old.json()["video"]["frame_style"], "plain")
+
     def test_legacy_episode_captions_are_backed_up_not_shared_with_other_jobs(self):
         path = "/api/episodes/" + self.episode_id + "/finishing"
         saved = self.client.get(path).json()

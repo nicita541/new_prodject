@@ -6,6 +6,8 @@ Keep this document focused on stable system structure.
 
 The only interface is **Studio Edition**: four assets under `frontend/public` are copied to `frontend/dist` by `frontend/scripts/build-studio.mjs` using native Node, and served through `app.studio_routes`. The bridge loads real backend data; there are no seeded catalogs, fake plans or demo media. React, legacy static UI and the reference demo have been removed. The detailed hierarchical map and storage registry are in [the application audit](../audit/README.md).
 
+Global navigation contains Projects and Trash. Episode settings, processing, Shorts review and finishing are contextual screens under the selected project and episode. The developer API console and raw response links are removed; diagnostic inspection belongs to the separate development MCP connection.
+
 Launcher identity covers every `app/*.py` module and all four active Studio assets, so a changed backend is not silently reused. `POST /api/studio/shutdown` verifies this identity, refuses active processing/exports and blocks new tasks while shutting down; `остановить_Кадр.bat` invokes the idle-only launcher. See [decision 0027](decisions/0027-idle-studio-shutdown.md).
 
 ## System overview
@@ -72,6 +74,8 @@ The planner restores recognized dialogue for legacy/fallback selection, while va
 Project/episode deletion archives catalog records only. The trash screen restores them after checking current ownership conflicts; deleting a project hides its children without altering their individual archive flags. Job/source/export storage remains independent and untouched; runtime does not use historical monetary ledgers. Active processing blocks archiving its episode or parent.
 
 Finishing profiles are stored outside `data`, in `finishing/episodes/<episode_id>.json`; caption overrides and isolated preview/export task files live in `data/jobs/<job_id>/finishing`, with export pointers under `finishing/exports-index`. Backup must include both trees and original media. Finishing reuses completed source plans without model inference, never replaces base outputs, and uses revisions for editor saves. It allows at most three queued/active tasks and one finishing render at a time; active finishing blocks new analysis and vice versa. See [storage registry](../audit/storage-and-modules.md).
+
+`finishing_profile` owns shared validation and read-only loading of the video profile. Optional `frame_style=social` adds a dark publication card with channel, caption and the full source frame on a blurred background. `social_frame` rasterizes the card and literal user text; `media` composes it for both initial and finishing exports. A separate render fingerprint includes appearance, while analysis and planning fingerprints retain their own scope: changing the channel/caption rerenders video without repeating ASR or model analysis. `plan.json` records the applied `render_video` profile. See [ADR-0035](decisions/0035-publication-card-render-scope.md).
 
 Automatic ManualVision refinement uses app.antigravity_batch to collect up to four independent child contracts into one file exchange. Only the coordinator receives files/reports progress; child selection precedes its own independent omission proof. Each answer returns to its original strict schema and request cache. The separately user-started official CLI script remains outside KADR. Local/DeepSeek and manual import retain their existing sequential flow. See decisions/0030-antigravity-independent-batches.md for limits and rollback.
 
