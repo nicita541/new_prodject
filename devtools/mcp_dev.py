@@ -235,8 +235,10 @@ class Development:
 
     async def git(self, arguments):
         def execute():
+            # The JSON-RPC input pipe belongs only to the MCP transport.
+            # Inheriting it can hang Git's Windows launcher and block replies.
             result = subprocess.run(['git', '--no-pager', *arguments], cwd=self.root,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10,
                 creationflags=subprocess.CREATE_NO_WINDOW if __import__('os').name == 'nt' else 0)
             if result.returncode: raise MCPError('git_error', 'Команда чтения Git завершилась ошибкой')
             if len(result.stdout) > 3 * 1024 * 1024: raise MCPError('result_too_large', 'Git diff слишком велик; выберите меньший файл')

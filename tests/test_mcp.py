@@ -401,6 +401,13 @@ def test_actual_stdio_sdk_handshake_and_tool_isolation(module, prefix, tool, arg
                 jsonschema.validate(response.structuredContent, OUTPUT_SCHEMA)
                 if prefix == 'kadr_': assert response.isError and response.structuredContent['error']['code'] == 'invalid_arguments'
                 else: assert not response.isError and response.structuredContent['data']['items']
+                if prefix == 'kadr_dev_':
+                    # Git must not inherit the active JSON-RPC stdin pipe:
+                    # on Windows that can block the child/response forever.
+                    status = await asyncio.wait_for(session.call_tool('kadr_dev_get_workspace_status', {}), 10)
+                    assert not status.isError
+                    assert status.structuredContent['data']['branch']
+                    assert len(status.structuredContent['data']['sha']) == 40
                 wrong = await session.call_tool('kadr_dev_get_architecture' if prefix == 'kadr_' else 'kadr_create_project', {})
                 assert wrong.isError and wrong.structuredContent['error']['code'] == 'unknown_tool'
                 resources = await session.list_resources()
