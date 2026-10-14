@@ -64,7 +64,10 @@ def snapshot_identity(directory: Path, source: Path, analysis: dict) -> dict:
     settings = read_json(directory/'analysis-settings.json', {})
     check_policy = ({'economy_mode': read_json(directory/'analysis-settings.json', {}).get('economy_mode', True)}
                     if 'check_policy' in analysis else {})
-    return {**check_policy, 'version': 1, 'source_sha256': source_digest(source),
+    from .confirmed_selection import enabled,identity as selection_identity
+    selection_policy = ({'selection_policy':selection_identity(directory)}
+                        if analysis.get('selection_scope') or enabled(directory) else {})
+    return {**check_policy, **selection_policy, 'version': 1, 'source_sha256': source_digest(source),
             'analysis_sha256': _digest(analysis), 'provider': _snapshot_provider(analysis_provider(directory)),
             'layout': load_options(directory)['layout'], 'editorial_profile': load_profile(directory),
             'transcript_settings': {key: settings[key] for key in
@@ -102,7 +105,7 @@ def cached_analysis(directory: Path, source: Path) -> dict:
             # Old completed jobs predate snapshot manifests. Still bind their
             # actual source bytes and provider/layout to the inherited settings.
             meta = read_json(directory / 'analysis.meta.json', {})
-            if (meta.get('source') != expected['source_sha256']
+            if (analysis.get('selection_scope') or meta.get('source') != expected['source_sha256']
                     or _snapshot_provider(analysis.get('provider')) != expected['provider']):
                 raise ValueError()
         elif (not isinstance(saved,dict)

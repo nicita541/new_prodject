@@ -77,8 +77,8 @@ class FinalQualityTests(unittest.TestCase):
         gate = {'status': 'unresolved', 'problems': [{'code': 'dialogue_relations_unresolved'}]}
         history = [{'gate': copy.deepcopy(gate)}, {'gate': copy.deepcopy(gate)}]
         self.assertTrue(recovery_stalled(history))
-        self.assertIn('повтор того же кэша остановлен', quality_failure_message(gate, stalled=True))
-        self.assertIn('dialogue_relations_unresolved (1)', quality_failure_message(gate))
+        self.assertIn('Повторные запросы по тем же данным остановлены', quality_failure_message(gate, stalled=True))
+        self.assertIn('связи реплик (1)', quality_failure_message(gate))
         history[-1]['gate'] = {'status': 'passed', 'problems': []}
         self.assertFalse(recovery_stalled(history))
 

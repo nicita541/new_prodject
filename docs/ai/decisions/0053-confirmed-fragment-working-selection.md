@@ -1,0 +1,15 @@
+# Confirmed-fragment working selection
+
+The user explicitly chose to assemble confirmed fragments and omit uncertain material after a real additional review remained below the native confidence threshold. Strict whole-analysis acceptance remains the default. A per-job `selection-policy.json` with `version:1, mode:confirmed_only` opts into a working projection; `mode:strict` reverses this policy.
+
+`confirmed_selection` runs locally before final-quality recovery. Only existing source-ready, positively selected event fragments are eligible. No confidence, acceptance flags or raw model replies are repaired. A fixed-point closure removes consumers whose original `requires` or causal source endpoints are unavailable; confirmed mandatory dialogue pairs cannot retain only one endpoint. Unresolved dependency ownership and ambiguous source boundaries are excluded. Current implementation operates on existing word-safe event fragments, conservatively omitting a whole owner with unresolved source selection.
+
+Before projection, full source events, scenes and relation records are archived with source SHA/ASR/shot context and a content digest. The audit records every omission and original requirements remain unchanged on surviving events. The active projection enters ordinary native relation, ending, continuity and render gates. It does not authorize restoration of omitted uncertain events. Unresolved downstream flags remain until their own pass succeeds.
+
+Pipeline owns the bounded retry loop. At its normal stop, only implicated retained owners may be removed, followed by dependency closure and finite local replanning; this path grants no additional model allowance. If nothing independently confirmed remains, report that honestly. Pure projection/pruning never contacts a model. Only surviving material may dispatch native necessary checks.
+
+The projection implementation hash, version and selected policy enter each plan identity explicitly. Changes invalidate plans while existing upstream perception/story stage identities remain qualified normally. Actual plan metadata carries the omission audit. Final-analysis snapshots also bind the policy and implementation; a projected snapshot cannot be reused as strict full-source analysis or as an unqualified legacy snapshot. Full source archives and original stage/reply banks preserve rollback/provenance. The mode is job-local and is not silently inherited by unrelated jobs.
+
+Source-selection and relation-only failures are now separate diagnostic codes. The human error explains unresolved evidence instead of claiming that all failures are the same source check or that a real fresh review merely replayed cache.
+
+This policy can yield much shorter output and does not promise model accuracy. Existing final gates still reject broken dependencies, missing semantic endings or unverifiable continuity. Regression mechanisms exercise original-data immutability, mandatory closure, source-only filtering, preservation of downstream failures and native pipeline/export boundaries without paid inference.

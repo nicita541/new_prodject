@@ -118,7 +118,9 @@ def inspect_final_quality(analysis, plan=None):
                     and 'story_structure_unresolved' in reasons else (
                 'dialogue_relations' if reasons and reasons <= {'dialogue_relations_unresolved'} else 'selection_adjudication')
             ))
-            add('unresolved_source_selection', stage, **row)
+            code = ('unresolved_relation_selection' if stage in ('story_structure','dialogue_relations')
+                    and not source_selection_problems(owner) else 'unresolved_source_selection')
+            add(code, stage, **row)
     if production:
         from .story_structure_pass import ROLES
         for scene in analysis.get('scenes', []):
@@ -315,7 +317,12 @@ def recovery_stalled(history):
 def quality_failure_message(gate, *, stalled=False):
     from collections import Counter
     counts = Counter(p['code'] for p in gate['problems'])
-    details = ', '.join(f'{code} ({count})' for code, count in sorted(counts.items()))
-    suffix = ('; повторная проверка не изменила результат. Сохранённые ответы требуют '
-              'уточнения, повтор того же кэша остановлен' if stalled else '')
+    labels={'unresolved_source_selection':'неподтверждённые исходные фрагменты',
+        'unresolved_relation_selection':'фрагменты с нерешёнными связями',
+        'story_structure_unresolved':'сюжетные связи','dialogue_relations_unresolved':'связи реплик',
+        'unexplained_dialogue_unit':'реплики без подтверждённой связи',
+        'unexplained_story_structure_unit':'фрагменты без подтверждённой сюжетной роли'}
+    details = ', '.join(f'{labels.get(code,code)} ({count})' for code, count in sorted(counts.items()))
+    suffix = ('; дополнительная проверка не разрешила оставшиеся вопросы. '
+              'Повторные запросы по тем же данным остановлены' if stalled else '')
     return 'analysis_unresolved: final_quality_gate — '+details+suffix

@@ -29,6 +29,23 @@ def snapshot(directory,provider='antigravity_manual'):
 
 
 class CloudSnapshotCompatibilityTests(unittest.TestCase):
+    def test_confirmed_projection_cannot_be_reused_as_an_unfiltered_strict_snapshot(self):
+        from app.confirmed_selection import project
+        with workspace_directory('confirmed-policy-snapshot-') as directory:
+            directory=Path(directory)
+            source,analysis=snapshot(directory)
+            atomic_json(directory/'selection-policy.json',{'version':1,'mode':'confirmed_only'})
+            selected=project(analysis,directory)
+            processing.save_snapshot(directory,source,selected)
+            self.assertEqual(processing.cached_analysis(directory,source),selected)
+            (directory/'selection-policy.json').unlink()
+            with self.assertRaisesRegex(ValueError,'сохранённого анализа'):
+                processing.cached_analysis(directory,source)
+            atomic_json(directory/'selection-policy.json',{'version':1,'mode':'confirmed_only'})
+            (directory/'analysis-final.meta.json').unlink()
+            with self.assertRaisesRegex(ValueError,'сохранённого анализа'):
+                processing.cached_analysis(directory,source)
+
     def switch(self,directory,provider):
         atomic_json(directory/'analysis-settings.json',{**read_json(directory/'analysis-settings.json'),'provider':provider})
 

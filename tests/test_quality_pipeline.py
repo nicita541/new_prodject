@@ -70,7 +70,7 @@ class QualityPipelineTests(unittest.TestCase):
             return make_plan(value, [[{'start': 0, 'end': 8}]])
         def render(source, part, probe, output_dir, workdir, encoder, cancelled, **kwargs):
             self.trace.append('renderer')
-            self.assertEqual(probe, valid['probe'])
+            self.assertEqual(probe, analysis['probe'])
             self.assertFalse(cancelled())
             output = output_dir/f"part_{part['index']:03}.mp4"
             output.write_bytes(b'authored stub render output; not encoded video')
@@ -119,7 +119,7 @@ class QualityPipelineTests(unittest.TestCase):
             changed=copy.deepcopy(value)
             changed['events'][0]['dialogue_relations']={'status':'unresolved','coverage':[]}
             return changed
-        with self.assertRaisesRegex(ValueError,'повтор той|повтор того'):
+        with self.assertRaisesRegex(ValueError,'Повторные запросы по тем же данным остановлены'):
             self.run_with_stubs(analysis,recover)
         self.assertEqual(self.recovery.call_count,1)
         self.assertEqual(len(self.sessions),1)
@@ -196,6 +196,44 @@ class QualityPipelineTests(unittest.TestCase):
             outputs=self.run_with_stubs(self.unresolved_analysis(),recover)
         self.assertEqual(outputs,['part_001.mp4','part_001.srt'])
         self.assertEqual(framing.call_count,1)
+
+    def test_confirmed_mode_omits_uncertain_source_before_any_model_session(self):
+        analysis,_=fixture();analysis['probe']['duration']=analysis['duration']=16
+        analysis['events'].append({'id':'bad','scene_id':'bad','start':8,'end':16,
+            'kind':'story','importance':1,'summary':'Неподтверждённый фрагмент','requires':[],
+            'units':[{'id':'bad_unit','start':8,'end':16,'text':''}],
+            'selected_ranges':[{'start':8,'end':16}],'selection_status':'unresolved',
+            'selection_uncertain':True,'selection_confidence':.6,'understanding_confidence':.6})
+        (self.job/'analysis.meta.json').write_text(json.dumps({'source':'a'*64}),'utf-8')
+        (self.job/'selection-policy.json').write_text(json.dumps({'version':1,'mode':'confirmed_only'}),'utf-8')
+        outputs=self.run_with_stubs(analysis,lambda *a:self.fail('Uncertain source is omitted, not rechecked'))
+        self.assertEqual(outputs,['part_001.mp4','part_001.srt'])
+        self.assertEqual(len(self.sessions),0)
+        scoped=self.builder.call_args.args[0]
+        self.assertEqual([e['id'] for e in scoped['events']],['e'])
+        saved=json.loads((self.job/'plan.json').read_text('utf-8'))
+        self.assertEqual(saved['selection_scope']['kept_event_ids'],['e'])
+        archive=json.loads((self.job/saved['selection_scope']['archive']).read_text('utf-8'))
+        self.assertEqual(len(archive['full']['events']),2)
+
+    def test_confirmed_mode_prunes_stalled_relation_owner_and_plans_without_extra_session(self):
+        from tests.test_confirmed_selection import world
+        analysis,_=fixture();other=world()
+        analysis['probe']['duration']=analysis['duration']=16
+        analysis['transcript']={k:[r for r in rows if r['end']<=16] for k,rows in other['transcript'].items()}
+        bad=other['events'][1]
+        bad.update(analysis_unresolved=True,analysis_unresolved_reasons=['story_structure_unresolved'])
+        bad['story_structure']['status']='unresolved'
+        analysis['events'].append(bad);analysis['scenes'].append(other['scenes'][1])
+        (self.job/'analysis.meta.json').write_text(json.dumps({'source':'a'*64}),'utf-8')
+        (self.job/'selection-policy.json').write_text(json.dumps({'version':1,'mode':'confirmed_only'}),'utf-8')
+        outputs=self.run_with_stubs(analysis,lambda source,value,*a:copy.deepcopy(value))
+        self.assertEqual(outputs,['part_001.mp4','part_001.srt'])
+        self.assertEqual(len(self.sessions),1)
+        self.assertEqual(self.recovery.call_count,1)
+        saved=json.loads((self.job/'plan.json').read_text('utf-8'))
+        self.assertEqual(saved['selection_scope']['kept_event_ids'],['e'])
+        self.assertEqual(saved['quality_gate']['status'],'passed')
 
     def test_pending_framing_on_resume_finishes_before_an_already_passed_gate(self):
         valid,_=fixture()

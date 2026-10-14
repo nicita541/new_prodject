@@ -369,6 +369,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             analysis = apply_feedback(analysis, correction_plan, correction_request, job_dir, report, cancelled)
     check()
     from .editorial import load_profile
+    from .confirmed_selection import project as confirmed_project, prune_failed, identity as confirmed_identity
+    analysis = confirmed_project(analysis,job_dir,report)
     editorial_prof = load_profile(job_dir)
     stat = source.stat()
     from .semantic_identity import scoped_identity
@@ -395,8 +397,10 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         check()
         analysis = finish_pending_framing(source,analysis,job_dir,report,cancelled,
                                          allow_new_session=processing_mode!='plan_only')
+        analysis = confirmed_project(analysis,job_dir,report)
         plan = None
         identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+                    "selection_policy": confirmed_identity(job_dir),
                     "semantic_components": scoped_identity('planning'),
                     "planner_version": PLANNER_VERSION, "editing": options,
                     "editorial_profile": editorial_prof,
@@ -443,6 +447,36 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             raise ValueError('Сохранённый анализ требует уточнения. Запустите «Обновить по изменениям». ' + quality_failure_message(gate))
         stalled = recovery_stalled(quality_history)
         if stalled or attempt == QUALITY_POLICY['max_recovery_passes']:
+            reduced = prune_failed(analysis,gate,plan,job_dir,report)
+            while reduced is not None:
+                # Finite local shrinking only; no extra model allowance.
+                analysis = reduced
+                final_gate = inspect_final_quality(analysis)
+                if final_gate['status'] == 'passed':
+                    if editorial_prof.get('dramatic_condensation', False):
+                        from .dramatic_planner import build_dramatic_plan
+                        plan = build_dramatic_plan(analysis)
+                    else:
+                        plan = build_plan(analysis)
+                    plan['editing'] = options
+                    for part in plan['parts']:
+                        part.update(options)
+                        if options['caption_style'] == 'accent':
+                            part['subtitles'] = make_cues(remap_words(analysis['transcript']['words'],part['cuts']),'accent')
+                    validate_plan(plan,analysis)
+                    final_gate = inspect_final_quality(analysis,plan)
+                    if final_gate['status'] == 'passed':
+                        gate = final_gate
+                        break
+                gate = final_gate
+                reduced = prune_failed(analysis,gate,plan,job_dir,report)
+            if gate['status'] == 'passed':
+                identity = {**identity,'analysis':analysis}
+                fingerprint = hashlib.sha256(json.dumps(identity,sort_keys=True,ensure_ascii=False).encode('utf-8')).hexdigest()
+                plan['source']['name'] = source_info.get('name',source.name)
+                diagnostics.write('final_quality_gate.json',{'status':'passed','history':quality_history,**gate})
+                _atomic_json(job_dir/'final_quality_gate.json',{'status':'passed','history':quality_history,**gate})
+                break
             raise ValueError(quality_failure_message(gate, stalled=stalled))
         report('quality_gate', .68, f'Финальная проверка: уточняем исходные доказательства, проход {attempt+1}')
         from app.vision import vision_session
@@ -456,6 +490,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)
         planning_cache_hit = False
     plan['quality_gate'] = gate
+    if analysis.get('selection_scope'):
+        plan['selection_scope'] = analysis['selection_scope']
     if correction_request:
         from .review_feedback import verify_changed_plan
         verify_changed_plan(job_dir, correction_plan, plan)
