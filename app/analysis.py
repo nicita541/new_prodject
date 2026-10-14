@@ -318,7 +318,7 @@ def _analyze(job_dir: Path, source: Path, report, cancelled, sessions) -> dict:
     focus_key = derived_key + f':pacing-v{PACING_VERSION}:endings-v{ENDINGS_VERSION}:ending-recovery-v{ENDING_RECOVERY_VERSION}:' + layout + ':' + pacing_provider
     # These consumers run after the story checkpoint. Code changes here must
     # repeat their own checks without discarding upstream scene/story results.
-    late_files = ('framing', 'editorial_pipeline', 'analysis_result', 'eyecatch')
+    late_files = ('framing', 'editorial_pipeline', 'analysis_result', 'eyecatch', 'scoped_recovery_state')
     late_identity = {'components': scoped_identity('late_analysis'),
                      'code': {name: hashlib.sha256((ROOT/'app'/(name+'.py')).read_bytes()).hexdigest()
                               for name in late_files}}

@@ -72,7 +72,7 @@ def _prompt(units, prior, vision, anchored, editorial_profile=None, input_limit=
         + ('This window is within/after established ending credits. ' if anchored else
            'This is a late episode window; whether it is ending montage is UNCONFIRMED. ')
         + 'Retain current episode causes, consequences, decisions, information and relationship changes. '
-        +reaction_instruction(editorial_profile or DEFAULT_PROFILE)+
+        +reaction_instruction(editorial_profile or DEFAULT_PROFILE,typed=False)+
         'Routine locations and familiar character actions alone do not prove either novelty or production montage. '
         'Exact restatement without any distinct story/reaction/humor may be omitted only when the applied profile permits it. '
         'Credits may contain NEW narrative and silent consequences: retain those. '

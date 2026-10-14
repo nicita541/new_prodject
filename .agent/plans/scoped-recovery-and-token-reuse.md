@@ -29,7 +29,7 @@ Dependency closure may need more owners than the directly changed one; every add
 # Progress
 
 - [x] Read relevant skills and capture stopped-job/current-code baseline.
-- [ ] Scoped boundaries.
-- [ ] Dependency-aware relations.
-- [ ] Framing/request and concrete policy bugs.
-- [ ] Integration, regression, offline continuation and live verification.
+- [x] Scoped boundaries and derived ownership overlay.
+- [x] Dependency-aware relations; packed initial requests and stable recovery cohorts.
+- [x] Per-sample framing reuse, persistent pending focus, targeted endings, typed policy, bounded retries and compatible cloud snapshots.
+- [x] Integration,901tests/379subtests, source-native guard replay,7-stage/77reply-hit/0dispatch offline continuation, explicit backed-up migration and live Studio3548 identity/idle/cancelled-job verification.

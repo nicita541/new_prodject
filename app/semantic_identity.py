@@ -38,6 +38,12 @@ _COMPONENTS = {
 # to the same semantic scopes as their model adapters.
 _COMPONENTS = {name: (*modules, 'request_payload') if 'vision' in modules or 'deepseek' in modules else modules
                for name, modules in _COMPONENTS.items()}
+_COMPONENTS = {name: (*modules, 'editorial_reactions') if any(module in modules
+    for module in ('story','story_review','pacing','closing')) else modules
+    for name,modules in _COMPONENTS.items()}
+_COMPONENTS['story_structure'] += ('scoped_relations',)
+_COMPONENTS['final_quality'] += ('scoped_relations','scoped_boundary_recovery','scoped_ending_recovery',
+                              'scoped_owner_refresh','scoped_recovery_state')
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
     'media_probe': ('SHOT_DETECTOR_VERSION', 'BASE_SCENE_THRESHOLD'),

@@ -87,13 +87,14 @@ def test_focus_cache_requires_exact_actual_source_evidence_and_contract(tmp_path
     assert len(vision.calls)==expected
 
 
-def test_corrupt_sample_requeries_only_that_sample(tmp_path):
+@pytest.mark.parametrize('invalid_x',[float('nan'),.31])
+def test_corrupt_sample_requeries_only_that_sample(tmp_path,invalid_x):
     source,data=focus_fixture(tmp_path)
     focus_run(source,data,tmp_path,[GOOD,{**GOOD,'x':.7}])
     for path in (tmp_path/'focus'/'samples').glob('*.json'):
         saved=json.loads(path.read_text('utf-8'))
         if saved['answer']['x']==.3:
-            saved['answer']['x']=float('nan')
+            saved['answer']['x']=invalid_x
             path.write_text(json.dumps(saved),'utf-8')
     for event in data[0]:
         event['summary']='Force sample lookup.'
@@ -217,3 +218,17 @@ def test_closing_only_uses_accepted_typed_source_proof_to_disambiguate_legacy_fl
         assert preserve_unit_reaction(DRAMATIC_PROFILE,{**event,**changes},'u0',flagged=True)
     event['unit_evidence'][0]['kind']='comedic_payoff'
     assert preserve_unit_reaction(DRAMATIC_PROFILE,event,'u0',flagged=True)
+
+
+def test_condense_flag_cannot_bypass_independent_story_or_enabled_reaction_protection():
+    for protection in ({'verified_current_story_ranges':[{'start':0,'end':10}]},
+                       {'reaction':True}):
+        event={'start':0,'end':10,'selected_ranges':[{'start':0,'end':10}]}
+        item={'unit':'A','keep':True,'reason':'setup','story_change':False,'condense':True,
+              'reaction_or_humor':False,'evidence':'A held interval between visible beats.'}
+        if 'reaction' in protection:
+            item.update(reaction_or_humor=True,reaction_kind='comedic_payoff')
+        else:
+            event.update(protection)
+        apply_review(event,[{'id':'A','start':0,'end':10}],{'uncertain':False,'decisions':[item]},DRAMATIC_PROFILE)
+        assert event['selected_ranges']==[{'start':0,'end':10}]

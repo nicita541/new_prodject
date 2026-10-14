@@ -122,7 +122,7 @@ assert.equal(app.processingRows(titles).story_refinement.status,'completed');
 assert.equal(app.processingRows(titles).titles.status,'running');
 assert.equal(app.processingProgress(titles).percent,null);
 assert(app.processingProgress(titles).label.includes('Проверка титров и заставок'));
-const globalCheck={...titles,stage:'global_verify',analysis_passes:{...titles.analysis_passes,titles:{status:'completed',fraction:1},global_visual_verification:{status:'running',fraction:null}}};
+const globalCheck={...titles,economy_mode:false,stage:'global_verify',analysis_passes:{...titles.analysis_passes,titles:{status:'completed',fraction:1},global_visual_verification:{status:'running',fraction:null}}};
 assert.equal(app.processingRows(globalCheck).visual_analysis.status,'completed');
 assert.equal(app.processingRows(globalCheck).global_visual_verification.status,'running');
 const countedGlobal={...globalCheck,analysis_passes:{...globalCheck.analysis_passes,global_visual_verification:{status:'running',fraction:null,completed:6,total:129}}};

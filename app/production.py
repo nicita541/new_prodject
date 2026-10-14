@@ -132,7 +132,8 @@ def clean_sequences(events, transcript, shots, job_dir, vision, report, cancelle
                 event.setdefault('story_warnings', []).append('Граница заставки не проверена: источник недоступен')
         return result
     duration = max((e['end'] for e in events), default=0)
-    anchors = [i for i, e in enumerate(events) if e.get('contains_credits') or e.get('credit_montage')]
+    anchors = [i for i, e in enumerate(events) if e.get('contains_credits') or e.get('credit_montage')
+               or e.get('source_credit_candidate') is True]
     closing = next((i for i in anchors if _credit_kind(events[i], duration) == 'ending'), None)
     models = {'files': [], 'profile': getattr(vision, 'cache_profile', None),
               'thinking': bool(getattr(vision, 'thinking', False))}
@@ -153,9 +154,10 @@ def clean_sequences(events, transcript, shots, job_dir, vision, report, cancelle
         if len(context_times)>6:
             context_times=[context_times[round(i*(len(context_times)-1)/5)] for i in range(6)]
         context_ids = {f'K{i}' for i in range(len(context_times))}
-        kind = _credit_kind(events[context_index], duration)
+        kind = events[context_index].get('source_credit_kind') or _credit_kind(events[context_index], duration)
         all_units = candidate_units(event['start'], event['end'], transcript, shots)
-        own_anchor = bool(events[index].get('contains_credits') or events[index].get('credit_montage'))
+        own_anchor = bool(events[index].get('contains_credits') or events[index].get('credit_montage')
+                          or events[index].get('source_credit_candidate') is True)
         protected = [u for u in all_units if _protected_speech(u, transcript) or (
             not own_anchor and any(w.get('probability',1) >= .6 for w in _spoken_words(u, transcript)))]
         units = [u for u in all_units if u not in protected]

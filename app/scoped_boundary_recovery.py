@@ -183,7 +183,8 @@ def recover_scoped_boundaries(source, analysis, problems, job_dir, vision, repor
     original_events=copy.deepcopy(analysis['events'])
     result={'status':'not_required','events':original_events,'scenes':copy.deepcopy(analysis.get('scenes',[])),
             'changed_ranges':[],'changed_event_ids':[],'reassociated_event_ids':[],
-            'removed_event_ids':[],'ownership':{},'scene_ownership':{},'reviewed_boundaries':[],'unresolved':[]}
+            'removed_event_ids':[],'framing_required_event_ids':[],
+            'ownership':{},'scene_ownership':{},'reviewed_boundaries':[],'unresolved':[]}
     if not any(p.get('recovery_stage')=='semantic_boundary' for p in problems):return result
     try:
         scenes=_catalog(analysis)
@@ -241,6 +242,7 @@ def recover_scoped_boundaries(source, analysis, problems, job_dir, vision, repor
                                           vision,report,cancelled,source_key=source_key,event_id=identifier)
                 children.append(child)
                 result['changed_event_ids'].append(identifier)
+                result['framing_required_event_ids'].append(identifier)
             events.extend(children)
             result['ownership'][event['id']]=[e['id'] for e in children]
         if source_identity(source,cancelled)!=source_key:raise ValueError('Source changed during boundary recovery')
@@ -254,6 +256,11 @@ def recover_scoped_boundaries(source, analysis, problems, job_dir, vision, repor
         result.update(events=copy.deepcopy(analysis['events']),scenes=copy.deepcopy(analysis.get('scenes',[])),
                       changed_ranges=[],changed_event_ids=[],reassociated_event_ids=[],ownership={},scene_ownership={})
         result['removed_event_ids']=[]
+        result['framing_required_event_ids']=[]
         result['unresolved'].append({'reason':str(error)})
     result['status']='unresolved' if result['unresolved'] else 'accepted'
+    from .json_store import atomic_json
+    atomic_json(job_dir/'boundary-recovery'/'last-repair.json',{'version':1,'source':source_key,
+        'original_owners':[{'id':e['id'],'start':e['start'],'end':e['end']} for e in analysis['events']],
+        **result})
     return result

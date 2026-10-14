@@ -689,7 +689,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
     result_events = copy.deepcopy(events)
     from app.antigravity_batch import text_batch_limits
     from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse, AnalysisPending
-    from app.scoped_relations import accepted_contract, contract_record, request_identity
+    from app.scoped_relations import accepted_contract, contract_record, request_identity, extra_context_nodes, prior_batch_size
     batch_units, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
     configured_batch_units, split_until = batch_units, 0
     history, assignments, relation_map, arc_map, registry = [], {}, {}, {}, {}
@@ -713,10 +713,12 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
             if cursor >= split_until:
                 batch_units = configured_batch_units
             size = min(batch_units, len(nodes)-cursor)
+            size = prior_batch_size(previous,nodes,cursor,size)
             while size:
                 current = nodes[cursor:cursor+size]
                 context = [*nodes[max(0, cursor-POLICY['context_units_each_side']):cursor],
                            *nodes[cursor+size:cursor+size+POLICY['context_units_each_side']]]
+                extras = extra_context_nodes(previous,current,nodes)
                 current_terms = set(_tokens(' '.join(n['ASR']+' '+' '.join(
                     p['evidence'] for p in n['proofs']) for n in current)))
                 current_refs = {_key(n['ref']) for n in current}
@@ -732,6 +734,8 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                            'latest_members': arc_map[k][-1]['members'][-2:],
                            'confidence': min(a['confidence'] for a in arc_map[k]),
                            'source': next(n for n in nodes if _key(n['ref']) == k)} for k in anchors]
+                existing = {_key(n['ref']) for n in [*current,*context,*(m['source'] for m in memory)]}
+                context.extend(n for n in extras if _key(n['ref']) not in existing)
                 allowed = list({_key(n['ref']): n for n in [*current, *context, *(m['source'] for m in memory)]}.values())
                 relevant_registry = {k:v for k,v in registry.items() if any(
                     _key(m['ref']) in {_key(n['ref']) for n in allowed}
@@ -767,7 +771,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                 cursor += 1
                 continue
             schema = structure_schema(allowed, current)
-            identity = request_identity(implementation,POLICY,prompt,schema,allowed,current)
+            identity = request_identity(implementation,POLICY,prompt,schema,allowed,current,job_dir)
             signature = _hash(identity)
             checkpoint = directory/(signature+'.json')
             cached = accepted_contract(checkpoint,identity,previous)
@@ -902,6 +906,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
             if not event['analysis_unresolved_reasons']:
                 event['analysis_unresolved'] = False
     result = {'version': VERSION, 'status': status, 'events': result_events, 'units': units,
+        'context_bindings':copy.deepcopy((previous or {}).get('context_bindings',[])),
         'relations': list(relation_map.values()), 'arcs': final_arcs, 'canonical_facts': list(registry.values()),
         'coverage': coverage, 'unresolved_refs': unresolved, 'history': history,
         'understanding_confidence': min((h['decision']['understanding_confidence'] for h in history if 'decision' in h), default=0),

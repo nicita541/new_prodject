@@ -27,7 +27,7 @@ DIRECTORIES = {
     'global_verification', 'production_sequences', 'title_units', 'closing_novelty',
     'credit_edges', 'source_roles', 'pacing', 'pacing_sequences', 'endings', 'story-structure',
     'dialogue-relations', 'selection-adjudication', 'continuity-verification',
-    'part-context', 'clean',
+    'part-context', 'clean', 'boundary-recovery',
 }
 
 
@@ -52,6 +52,11 @@ def source_digest(source: Path, cancelled=lambda: False) -> str:
     return source_identity(source, cancelled)['sha256']
 
 
+def _snapshot_provider(provider):
+    """These interchangeable transports share accepted plan analysis semantics."""
+    return 'cloud_story' if provider in ('deepseek_plan','antigravity_manual') else provider
+
+
 def snapshot_identity(directory: Path, source: Path, analysis: dict) -> dict:
     from .editorial import load_profile
     from .editing import load_options
@@ -60,7 +65,7 @@ def snapshot_identity(directory: Path, source: Path, analysis: dict) -> dict:
     check_policy = ({'economy_mode': read_json(directory/'analysis-settings.json', {}).get('economy_mode', True)}
                     if 'check_policy' in analysis else {})
     return {**check_policy, 'version': 1, 'source_sha256': source_digest(source),
-            'analysis_sha256': _digest(analysis), 'provider': analysis_provider(directory),
+            'analysis_sha256': _digest(analysis), 'provider': _snapshot_provider(analysis_provider(directory)),
             'layout': load_options(directory)['layout'], 'editorial_profile': load_profile(directory),
             'transcript_settings': {key: settings[key] for key in
                                     ('transcript_mode', 'transcript_source_sha256') if key in settings},
@@ -97,9 +102,11 @@ def cached_analysis(directory: Path, source: Path) -> dict:
             # Old completed jobs predate snapshot manifests. Still bind their
             # actual source bytes and provider/layout to the inherited settings.
             meta = read_json(directory / 'analysis.meta.json', {})
-            if meta.get('source') != expected['source_sha256'] or analysis.get('provider') != expected['provider']:
+            if (meta.get('source') != expected['source_sha256']
+                    or _snapshot_provider(analysis.get('provider')) != expected['provider']):
                 raise ValueError()
-        elif saved != expected:
+        elif (not isinstance(saved,dict)
+                or {**saved,'provider':_snapshot_provider(saved.get('provider'))} != expected):
             raise ValueError()
         from .planner import validate_analysis
         validate_analysis(analysis)

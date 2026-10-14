@@ -85,6 +85,8 @@ flowchart TD
 | `shots.json`, соседние shot metadata/evidence | Accepted cuts и raw/suppressed candidates | Да |
 | `media-evidence.json`, `.meta.json`, `media-evidence/` | Визуальные/звуковые measured features, frames, PCM | Да; cache проверяет содержимое source frames |
 | `scenes.json`, `scenes.meta.json`, `scene-features.json`, `scene-features.meta.json` | Группировка и свойства исходных scene intervals | Да |
+| `boundary-recovery/` | Точечные исходные rebuild/proof caches, last-repair audit и exact derived-ownership overlay; raw perception отдельно | Да |
+| `focus/samples/` | Исходные ответы отдельных focus samples; held/fallback пересчитываются локально | Да |
 | `boundary-frames/`, `boundary-verification/` | Current-source boundary картинки и проверенные ответы | Да |
 | `visual/event_*.json`, `*_chunk_*.checkpoint.json`, images/storyboard JSON | Completed scene/chunk understanding | Да; изображения входят в validation |
 | `story_refinement/`, `credit_edges/`, production/title/source-role и другие signed proof каталоги | Детальные решения selection/credit/novelty и original evidence | Да; не отдельные «старые версии кода» |
@@ -198,7 +200,7 @@ Source hash — доказательство байтового совпаден
 | [finishing_avatar](../../app/finishing_avatar.py) | Валидация и декодирование иконок, принадлежность серии, локальные пресеты и круговая маска с сохранением alpha |
 | [social_frame](../../app/social_frame.py) | Геометрия и растровая тёмная карточка публикации: канал, подпись, весь кадр; пользовательский текст не попадает в FFmpeg expression |
 | [studio_render](../../app/studio_render.py) | Isolated finishing threads/queue/semaphore/status и reuse base plan без ИИ |
-| [deepseek](../../app/deepseek.py) | Remote JSON/image adapter, successful content cache, до 2 retries, disabled monetary compatibility |
+| [deepseek](../../app/deepseek.py) | Remote JSON/image adapter, successful content cache, одна коррекция формата без автоматического HTTP/transport resend, disabled monetary compatibility |
 | [hybrid](../../app/hybrid.py) | Local-first remote uncertainty review и job journal/fallback |
 | [flash_story_trial](../../app/flash_story_trial.py) | Opt-in local early vision + remote story trial routing; название не означает offline |
 | [semantic_identity](../../app/semantic_identity.py) | Import-free hashes code/prompts/constants/policy для semantic cache |
@@ -218,6 +220,12 @@ Compatibility reexports `analysis` и `planner` не следует удалят
 | [analysis_result](../../app/analysis_result.py) | Сборка сохранённого результата и diagnostics |
 | [editorial_pipeline](../../app/editorial_pipeline.py) | Отбор, финал, сюжет и связи реплик |
 | [quality_recovery](../../app/quality_recovery.py) | Адресное восстановление анализа по проблемам quality gate |
+| [scoped_boundary_recovery](../../app/scoped_boundary_recovery.py) | Только спорные реальные границы и разделённые CURRENT окна |
+| [scoped_owner_refresh](../../app/scoped_owner_refresh.py) | Specialist/dependency/focus refresh изменённых владельцев; безопасная смена модельной сессии |
+| [scoped_relations](../../app/scoped_relations.py) | Точные native dependency contracts и полный локальный merge отношений |
+| [scoped_ending_recovery](../../app/scoped_ending_recovery.py) | Существующая проверка фактического неподтверждённого конца части |
+| [scoped_recovery_state](../../app/scoped_recovery_state.py) | Source/ASR/shots/events/code-qualified overlay исправленных сцен |
+| [editorial_reactions](../../app/editorial_reactions.py) | Отдельные предпочтения типизированной реакции и юмора без изменения source evidence |
 | [source_text](../../app/source_text.py) | Текст в исходных временных границах и доказательные цитаты |
 | [cancellation](../../app/cancellation.py) | Кооперативная проверка отмены |
 | [content_identity](../../app/content_identity.py) | Строгие JSON hashes с сохранением existing encoding |

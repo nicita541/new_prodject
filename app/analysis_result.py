@@ -25,6 +25,9 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
         'audio_stream': probe.get('audio_stream', 0),
         'story_warnings': sorted({w for e in events for w in e.get('story_warnings', [])})
     }
+    pending_focus=[e['id'] for e in events if e.get('framing_refresh',{}).get('status')=='pending']
+    if pending_focus:
+        record['scoped_framing_pending_event_ids']=pending_focus
     scenes_path = job_dir / 'scenes.json'
     handles_path = job_dir/'speech-handle-overrides.json'
     if handles_path.is_file():
@@ -34,6 +37,10 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
         record['scenes'] = scenes
     elif scenes_path.is_file():
         record['scenes'] = load_json(scenes_path)
+    from .scoped_recovery_state import repaired_scenes
+    restored_scenes = repaired_scenes(job_dir,events,transcript,shots,record.get('scenes'))
+    if restored_scenes is not None:
+        record['scenes'] = restored_scenes
     for name in ('story_structure', 'dialogue_relations'):
         path = job_dir/(name+'-result.json')
         if path.is_file():

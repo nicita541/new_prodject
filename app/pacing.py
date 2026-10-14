@@ -204,7 +204,7 @@ def apply_review(event, units, raw, editorial_profile=None):
     selections = _subtract(event.get('selected_ranges', [event]), excluded)
     condensed_removals = []
     for item in decisions:
-        if item.get('condense') and item.get('keep', True):
+        if item.get('condense') and item.get('keep', True) and item['unit'] not in blocked:
             u_info = known[item['unit']]
             dur = u_info['end'] - u_info['start']
             if dur > 3.0:

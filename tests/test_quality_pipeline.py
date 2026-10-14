@@ -50,10 +50,15 @@ class QualityPipelineTests(unittest.TestCase):
         """Keep the real final gate, validators, cache loop, audit and run_job."""
         valid, _ = fixture()
         session_count = []
+        self.active_model_sessions = 0
         @contextmanager
         def session(*args, **kwargs):
             session_count.append(kwargs)
-            yield NeverQueryProvider()
+            self.active_model_sessions += 1
+            try:
+                yield NeverQueryProvider()
+            finally:
+                self.active_model_sessions -= 1
         def analyze(*args, **kwargs):
             self.trace.append('analysis')
             return copy.deepcopy(analysis)
@@ -161,6 +166,34 @@ class QualityPipelineTests(unittest.TestCase):
         self.assertEqual(roles.call_args.kwargs,{'retry_unresolved':True,'event_ids':{'e'},'episode_duration':analysis['probe']['duration']})
         finalize.assert_not_called()
         adjudicate.assert_not_called()
+
+    def test_changed_window_framing_starts_after_recovery_model_session_closes(self):
+        valid,_=fixture()
+        def recover(*args):
+            return {**copy.deepcopy(valid),'scoped_framing_pending_event_ids':['e']}
+        def focus(source,analysis,events,event_ids,*args,**kwargs):
+            self.assertEqual(self.active_model_sessions,0)
+            self.assertEqual(event_ids,['e'])
+            self.assertTrue(kwargs['allow_new_session'])
+            return {'events':events,'pending_event_ids':[]}
+        with patch('app.scoped_owner_refresh.finish_scoped_framing',side_effect=focus) as framing:
+            outputs=self.run_with_stubs(self.unresolved_analysis(),recover)
+        self.assertEqual(outputs,['part_001.mp4','part_001.srt'])
+        self.assertEqual(framing.call_count,1)
+
+    def test_pending_framing_on_resume_finishes_before_an_already_passed_gate(self):
+        valid,_=fixture()
+        valid['events'][0]['framing_refresh']={'status':'pending','provider':'local'}
+        def focus(source,analysis,events,event_ids,*args,**kwargs):
+            self.assertEqual(self.active_model_sessions,0)
+            updated=copy.deepcopy(events)
+            updated[0]['framing_refresh']['status']='complete'
+            return {'events':updated,'pending_event_ids':[]}
+        with patch('app.scoped_owner_refresh.finish_scoped_framing',side_effect=focus) as framing:
+            outputs=self.run_with_stubs(valid,lambda *a:self.fail('No source recovery is needed'))
+        self.assertEqual(outputs,['part_001.mp4','part_001.srt'])
+        self.assertEqual(framing.call_count,1)
+        self.assertEqual(framing.call_args.args[3],['e'])
 
 
 if __name__ == '__main__':

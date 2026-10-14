@@ -48,7 +48,7 @@ def preserve_unit_reaction(profile, event, ident, *, flagged):
         'reaction_kind': unit_reaction_kind(event, ident)})
 
 
-def reaction_instruction(profile):
+def reaction_instruction(profile, *, typed=True):
     parts = []
     if profile['preserve_reactions']:
         parts.append('Preserve specific visible character reactions and emotional pauses even without plot progress.')
@@ -59,6 +59,7 @@ def reaction_instruction(profile):
         parts.append('Preserve jokes, comic timing and comedic setup/payoff.')
     else:
         parts.append('Humor alone is not a retention reason; causal and source-evidence safeguards still apply.')
-    parts.append('When reporting reaction_or_humor=true, distinguish reaction_kind=character_reaction, '
-                 'emotional_pause or comedic_payoff; do not call an ordinary reaction comedy.')
+    if typed:
+        parts.append('When reporting reaction_or_humor=true, distinguish reaction_kind=character_reaction, '
+                     'emotional_pause or comedic_payoff; do not call an ordinary reaction comedy.')
     return ' '.join(parts)+' '

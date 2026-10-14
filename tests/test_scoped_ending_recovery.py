@@ -60,3 +60,16 @@ def test_unsafe_word_boundary_does_not_launch_checks(tmp_path):
         tmp_path,vision,Mock(),lambda:False)
     vision.query.assert_not_called()
     assert audit[0]['reason']=='unsafe_source_boundary' and not events[0].get('part_endings')
+
+
+def test_ending_proof_cannot_survive_changed_exact_dialogue_with_same_reply_ids(tmp_path):
+    analysis,plan=fixture();analysis['events'][0].pop('part_endings');vision=provider()
+    problems=[{'code':'missing_original_semantic_ending','part':1}]
+    events,_=recover_missing_endings(analysis,plan,problems,tmp_path,vision,Mock(),lambda:False)
+    assert 1 in _source_part_endings(events,analysis['transcript'],plan['parts'],[])
+    changed=copy.deepcopy(analysis)
+    changed['events']=events
+    changed['transcript']['segments'][1]['text']='Ответ изменился при тех же временах и ID.'
+    assert 1 not in _source_part_endings(events,changed['transcript'],plan['parts'],[])
+    _,audit=recover_missing_endings(changed,plan,problems,tmp_path,vision,Mock(),lambda:False)
+    assert vision.query.call_count==4 and not audit[0]['cache_hit']

@@ -1,4 +1,4 @@
-"""Image/text analysis with successful-response caching and at most two retries.
+"""Image/text analysis with successful caching and one format-correction retry.
 
 The user retired local monetary accounting on 2026-10-05. Historical spending
 files are deliberately neither read nor modified by this runtime.

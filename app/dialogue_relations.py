@@ -633,7 +633,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
     from app.scene_understanding import _control_failure
     from app.json_store import analysis_json as atomic_json
     from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse, AnalysisPending
-    from app.scoped_relations import accepted_contract, contract_record, request_identity
+    from app.scoped_relations import accepted_contract, contract_record, request_identity, extra_context_nodes, prior_batch_size
     _check(cancelled)
     nodes, source_coverage, snapshots = source_units(events, transcript)
     _hash(snapshots)  # Reject non-finite local evidence without global cache coupling.
@@ -659,10 +659,13 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
         batch_units, output_tokens = text_batch_limits(vision, 'dialogue_relations', POLICY['max_current_units'], POLICY['output_tokens'])
         batch_units = min(batch_units, output_batch_cap)
         size = min(batch_units, len(nodes)-cursor)
+        size = prior_batch_size(previous,nodes,cursor,size)
         while size:
             current = nodes[cursor:cursor+size]
             context = nodes[max(0, cursor-POLICY['context_units_each_side']):cursor] + nodes[
                 cursor+size:cursor+size+POLICY['context_units_each_side']]
+            existing = {_key(n['ref']) for n in [*current,*context]}
+            context.extend(n for n in extra_context_nodes(previous,current,nodes) if _key(n['ref']) not in existing)
             allowed = [*current, *context]
             inherited = [p for p in candidates if p['method'] == 'inherited_structure_response'
                          and all(_key(r) in {_key(n['ref']) for n in allowed}
@@ -693,7 +696,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
             cursor += 1
             continue
         schema = dialogue_schema(allowed, current)
-        identity = request_identity(implementation,POLICY,prompt,schema,allowed,current)
+        identity = request_identity(implementation,POLICY,prompt,schema,allowed,current,job_dir)
         signature = _hash(identity)
         checkpoint = directory/(signature+'.json')
         raw, cache_hit = None, False
@@ -776,6 +779,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                 ownership.get(_key(row['ref']), {}).get('decision', 'not_selected')}
                 for row in source_coverage]
     result = {'version': VERSION, 'status': 'unresolved' if unresolved else 'accepted',
+        'context_bindings':copy.deepcopy((previous or {}).get('context_bindings',[])),
         'pairs': sorted(pairs.values(), key=lambda p: p['question_ranges'][0]['start']),
         'candidates': candidates, 'units': nodes, 'coverage': coverage, 'unresolved_refs': list(unresolved.values()),
         'history': history, 'understanding_confidence': min((h['decision']['understanding_confidence']

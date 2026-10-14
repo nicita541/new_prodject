@@ -72,12 +72,21 @@ def _source_part_endings(events,transcript,parts,arcs,*,speech_overrides=()):
             for ending in event.get('part_endings',[]):
                 proof=ending.get('verification') or {}
                 time=ending.get('time')
+                context_matches=True
+                if ending.get('context_signature'):
+                    from .endings import _ending_context, _ending_context_hash
+                    try:
+                        context_matches=ending['context_signature']==_ending_context_hash(
+                            _ending_context(ending,transcript,retained))
+                    except (KeyError,TypeError,ValueError):
+                        context_matches=False
                 if (type(time) in (int,float) and math.isfinite(time)
                         and (abs(time-boundary)<=.002 or ending_matches(time,boundary,transcript,part['cuts'],overrides=speech_overrides))
                         and ending.get('kind') in ('closure','cliffhanger','transition')
                         and _confidence(ending.get('confidence')) and proof.get('supported') is True
                         and _confidence(proof.get('confidence')) and proof.get('evidence')
                         and ending.get('id') and proof.get('boundary')==ending['id']
+                        and context_matches
                         and proof.get('last_reply')==(before[-1]['id'] if before else 'none')
                         and proof.get('next_reply')==(after[0]['id'] if after else 'none')):
                     verified[part['index']]=copy.deepcopy(ending)

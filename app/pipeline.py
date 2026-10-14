@@ -384,7 +384,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         except (ValueError, TypeError):
             pass
     planning_started = time.perf_counter()
-    from .quality_recovery import recover_final_quality
+    from .quality_recovery import recover_final_quality, needs_model_recovery, finish_pending_framing
     from .final_quality import (inspect_final_quality, recovery_stalled,
                                 quality_failure_message, POLICY as QUALITY_POLICY)
     from .pipeline_diagnostics import Diagnostics
@@ -393,6 +393,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     planning_cache_hit = False
     for attempt in range(QUALITY_POLICY['max_recovery_passes']+1):
         check()
+        analysis = finish_pending_framing(source,analysis,job_dir,report,cancelled,
+                                         allow_new_session=processing_mode!='plan_only')
         plan = None
         identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
                     "semantic_components": scoped_identity('planning'),
@@ -444,7 +446,11 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         from app.vision import vision_session
         from app.analysis_provider import analysis_provider
         from .config import STORY_MODEL, STORY_PROJECTOR
-        with vision_session(job_dir,cancelled,analysis_provider(job_dir),model=STORY_MODEL,projector=STORY_PROJECTOR,thinking=True) as vision:
+        from contextlib import nullcontext
+        session = (vision_session(job_dir,cancelled,analysis_provider(job_dir),model=STORY_MODEL,
+                                  projector=STORY_PROJECTOR,thinking=True)
+                   if needs_model_recovery(gate) else nullcontext(None))
+        with session as vision:
             analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)
         planning_cache_hit = False
     plan['quality_gate'] = gate

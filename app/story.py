@@ -203,6 +203,7 @@ def verify_omissions(units, selected, omissions, collage, frame_map, vision, pro
     approved=[]
     for d in decisions:
         if (any(type(d.get(k)) is not bool for k in ('keep','story_change','reaction_or_humor','current_episode_story'))
+                or ('reaction_kind' in d and d['reaction_kind'] not in ('none', *REACTION_KINDS))
                 or type(d.get('confidence')) not in (int,float) or not math.isfinite(d['confidence'])
                 or not 0<=d['confidence']<=1
                 or not isinstance(d.get('evidence'),str) or not d['evidence'].strip()

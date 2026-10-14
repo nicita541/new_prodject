@@ -325,9 +325,47 @@ def boundary_batch_schema(ids):
 def verify_scoped_boundary(source, time, before, after, transcript, measured, job_dir, vision, cancelled):
     """Qualify a native boundary reply with its actual source/frame/ASR proof."""
     from .source_identity import source_identity
+    from .content_identity import evidence_digest
     source, job_dir = Path(source).resolve(), Path(job_dir).resolve()
     stamp = source_identity(source, cancelled)
-    raw = verify_boundary(source,time,before,after,transcript,measured,job_dir,vision,cancelled)
+    speech=[row for row in transcript.get('segments',[]) if row['start']<min(after,time+2)
+            and row['end']>max(before,time-2)]
+    request=evidence_digest({'version':1,'source':stamp,'time':time,
+        'frames':[max(before,time-.75),time,min(after-.001,time+.75)],'speech':speech,
+        'measured':measured,'producer':_identity(vision),'prompt':BOUNDARY_PROMPT,
+        'recovery_prompt':BOUNDARY_RECOVERY_PROMPT,'schema':boundary_schema()})
+    checkpoint=job_dir/'boundary-verification'/('scoped-'+request+'.json')
+    if checkpoint.is_file():
+        try:
+            saved=load_json(checkpoint)
+        except (ValueError,OSError):
+            saved={}
+        if saved.get('request')==request:
+            if saved.get('status')=='unresolved':
+                raise ValueError(saved['reason'])
+            if isinstance(saved.get('native_response'),dict):
+                try:
+                    return _qualify_scoped_boundary(saved['native_response'],source,time,before,after,
+                                                   transcript,measured,job_dir,vision,cancelled,stamp)
+                except ValueError:
+                    # Regenerate missing/torn source frames through the native
+                    # checkpoint path; never approve an artifact-less reply.
+                    pass
+    raw=verify_boundary(source,time,before,after,transcript,measured,job_dir,vision,cancelled)
+    try:
+        result=_qualify_scoped_boundary(raw,source,time,before,after,transcript,measured,job_dir,vision,cancelled,stamp)
+    except ValueError as error:
+        if source_identity(source,cancelled)==stamp:
+            atomic_json(checkpoint,{'request':request,'status':'unresolved','reason':str(error)})
+        raise
+    # Uncertain native answers are reusable too: an unchanged rejected request
+    # must not repeatedly consume tokens in later quality rounds or resumes.
+    atomic_json(checkpoint,{'request':request,'status':'native_response','native_response':raw})
+    return result
+
+
+def _qualify_scoped_boundary(raw,source,time,before,after,transcript,measured,job_dir,vision,cancelled,stamp):
+    from .source_identity import source_identity
     decision = validate_boundary(raw)
     frames = raw.get('frames')
     if (not isinstance(frames,list) or len(frames)<2 or not raw.get('signature')

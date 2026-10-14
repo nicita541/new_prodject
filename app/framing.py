@@ -280,6 +280,7 @@ def _valid_checkpoint(data: dict, signature: str, event: dict) -> bool:
 def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
     """Reuse an exact model answer, never a previous/held derived focus."""
     from .json_store import atomic_json
+    from .deepseek import _validate
     if cancelled():
         raise InterruptedError('Обработка отменена')
     inputs = {'version': 1, 'settings': settings, 'prompt': prompt, 'schema': FOCUS_SCHEMA,
@@ -295,6 +296,7 @@ def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
             if (saved.get('version') == 1 and saved.get('signature') == signature
                     and isinstance(raw, dict) and set(raw) == set(FOCUS_SCHEMA['required'])
                     and type(raw.get('visible_speaker')) is bool):
+                _validate(raw, FOCUS_SCHEMA)
                 _coordinates(raw)
                 return raw
         except (OSError, ValueError, KeyError, TypeError):
@@ -305,6 +307,10 @@ def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
     _coordinates(raw)
     if (isinstance(raw, dict) and set(raw) == set(FOCUS_SCHEMA['required'])
             and type(raw.get('visible_speaker')) is bool):
+        try:
+            _validate(raw, FOCUS_SCHEMA)
+        except ValueError:
+            return raw
         if cancelled():
             raise InterruptedError('Обработка отменена')
         atomic_json(checkpoint, {'version': 1, 'signature': signature, 'answer': raw})
@@ -340,9 +346,10 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
     if getattr(vision, 'cache_profile', None) is not None:
         settings['provider_profile'] = vision.cache_profile
     from .source_identity import source_identity
+    settings['source_sha256'] = source_identity(source, cancelled)['sha256']
     sample_settings = {key: value for key, value in settings.items()
                        if key not in ('source_identity', 'source_size', 'source_mtime_ns')}
-    sample_settings['source_identity'] = {'sha256': source_identity(source, cancelled)['sha256'],
+    sample_settings['source_identity'] = {'sha256': settings['source_sha256'],
                                           'declared_source': identity.get('source')}
     focus_dir = job_dir / "focus"
     focus_dir.mkdir(parents=True, exist_ok=True)

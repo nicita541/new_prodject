@@ -47,13 +47,14 @@ class CapturedProvider:
             *(m['source'] for m in payload.get('MEMORY',[]))]}
         ordered = sorted(nodes.values(),key=lambda n:n['start'])
         pairs=[]
-        for left,right in zip(ordered,ordered[1:]):
+        spoken=[n for n in ordered if n['ASR']]
+        for left,right in zip(spoken,spoken[1:]):
             if (left['ASR'].startswith('Где') and right['ASR'].startswith('Она')
                     and any(tuple(n['ref'].values()) in current for n in (left,right))):
                 pairs.append((left,right))
         if 'canonical_entities' in schema.get('properties',{}):
             return {'resolved':True,'understanding_confidence':.95,'structure_confidence':.95,
-                'units':[{'ref':n['ref'],'roles':['setup' if n['ASR'].startswith('Где') else 'payoff'],
+                'units':[{'ref':n['ref'],'roles':['transition' if not n['ASR'] else 'setup' if n['ASR'].startswith('Где') else 'payoff'],
                     'before':facts(),'after':facts(),'confidence':.95,'viewer_interest':[],
                     'evidence':'Exact independently accepted source speech supplies this story function.',
                     'support':[citation(n)]} for n in payload['CURRENT']],
@@ -83,6 +84,42 @@ def initial(events,transcript,directory,vision):
 
 
 class ScopedRelationsTests(unittest.TestCase):
+    def test_known_far_causal_endpoint_is_current_source_context_and_warm_reusable(self):
+        class FarProvider(CapturedProvider):
+            def query(self,prompt,image=None,max_tokens=None,schema=None):
+                raw=super().query(prompt,image,max_tokens,schema)
+                if 'canonical_entities' not in schema.get('properties',{}):
+                    return raw
+                payload=self.calls[-1]['payload']
+                supplied={n['ref']['event']:n for n in [*payload['CURRENT'],*payload['CONTEXT_ONLY'],
+                    *(m['source'] for m in payload.get('MEMORY',[]))]}
+                if {'owner_002','owner_008'} <= supplied.keys() and any(
+                        n['ref']['event'] in ('owner_002','owner_008') for n in payload['CURRENT']):
+                    left,right=supplied['owner_002'],supplied['owner_008']
+                    raw['relations'].append({'type':'cause','from':left['ref'],'to':right['ref'],
+                        'confidence':.95,'evidence':'Both independent source proofs establish this concrete causal dependency.',
+                        'support':[citation(left),citation(right)]})
+                return raw
+        events,transcript=episode(12)
+        with workspace_directory('scoped-far-') as directory:
+            directory=Path(directory)
+            previous=initial(events,transcript,directory,FarProvider())
+            self.assertTrue(any(r['type']=='cause' for r in previous['story_structure']['relations']))
+            changed=copy.deepcopy(previous['events'])
+            changed[2]['unit_evidence'][0]['checkpoint']='b'*64
+            vision=FarProvider()
+            result=recover_relations(changed,transcript,previous,{'owner_002'},directory,vision,lambda:False)
+            query=next(c['payload'] for c in vision.calls if 'MEMORY' in c['payload']
+                and any(n['ref']['event']=='owner_002' for n in c['payload']['CURRENT']))
+            self.assertIn('owner_008',{n['ref']['event'] for n in query['CONTEXT_ONLY']})
+            warm=FarProvider()
+            repeated=recover_relations(result['events'],transcript,result,set(),directory,warm,lambda:False)
+        self.assertEqual(result['story_structure']['status'],'accepted')
+        self.assertTrue(any(r['type']=='cause' and r['from']['event']=='owner_002'
+                            and r['to']['event']=='owner_008' for r in result['story_structure']['relations']))
+        self.assertEqual(warm.calls,[])
+        self.assertEqual(repeated['story_structure']['status'],'accepted')
+
     def test_one_changed_proof_dispatches_only_dependent_owners_and_merges_episode(self):
         events,transcript = episode()
         with workspace_directory('scoped-relations-') as directory:
@@ -153,22 +190,56 @@ class ScopedRelationsTests(unittest.TestCase):
         self.assertEqual(vision.calls,[])
 
     def test_replaced_owner_rechecks_surviving_endpoints_without_stale_references(self):
-        events,transcript=episode(12)
+        events,transcript=episode(24)
         with workspace_directory('scoped-replacement-') as directory:
             directory=Path(directory)
             previous=initial(events,transcript,directory,CapturedProvider())
             changed=copy.deepcopy(previous['events'])
-            changed[6]['id']='replacement'
-            changed[6]['scene_id']='replacement-scene'
+            changed[12]['id']='replacement'
+            changed[12]['scene_id']='replacement-scene'
             vision=CapturedProvider()
             result=recover_relations(changed,transcript,previous,{'replacement'},directory,vision,lambda:False)
         self.assertEqual(result['story_structure']['status'],'accepted')
         self.assertEqual(result['dialogue_relations']['status'],'accepted')
         sent={n['ref']['event'] for call in vision.calls for n in call['payload']['CURRENT']}
         self.assertIn('replacement',sent)
-        self.assertIn('owner_007',sent)
+        self.assertIn('owner_013',sent)
         self.assertNotIn('owner_000',sent)
-        self.assertNotIn('owner_006',json.dumps(result))
+        self.assertNotIn('owner_012',json.dumps(result))
+
+    def test_actual_split_keeps_later_cohort_grouping_and_initial_packing(self):
+        events,transcript=episode(30)
+        with workspace_directory('scoped-insert-') as directory:
+            directory=Path(directory)
+            initial_vision=CapturedProvider()
+            previous=initial(events,transcript,directory,initial_vision)
+            self.assertEqual(len(initial_vision.calls),10+5)
+            changed=copy.deepcopy(previous['events'])
+            left,right=copy.deepcopy(changed[12]),copy.deepcopy(changed[12])
+            boundary=left['start']+2.5
+            left.update(id='split_left',scene_id='split_left',end=boundary,
+                        selected_ranges=[{'start':left['start'],'end':boundary}])
+            left['units'][0]['end']=boundary
+            left['unit_evidence'][0].update(view_end=boundary,checkpoint='b'*64)
+            right.update(id='split_right',scene_id='split_right',start=boundary,
+                         selected_ranges=[{'start':boundary,'end':right['end']}])
+            right['units'][0].update(id='silent_new_unit',start=boundary)
+            right['unit_evidence']=[{'unit':'silent_new_unit','decision':'keep','kind':'physical_action',
+                'confidence':.95,'evidence':'A concrete source action is independently proved inside this new whole source unit.',
+                'speech_quote':'','frame_count':1,'frame_indices':[1],
+                'frame_times':[(boundary+right['end'])/2],'view_start':boundary,'view_end':right['end'],'checkpoint':'c'*64}]
+            changed[12:13]=[left,right]
+            vision=CapturedProvider()
+            result=recover_relations(changed,transcript,previous,{'split_left','split_right'},directory,vision,lambda:False)
+        sent={n['ref']['event'] for c in vision.calls for n in c['payload']['CURRENT']}
+        self.assertIn('split_left',sent)
+        self.assertIn('split_right',sent)
+        self.assertNotIn('owner_000',sent)
+        self.assertNotIn('owner_029',sent)
+        self.assertEqual(result['story_structure']['status'],'accepted')
+        self.assertEqual(result['dialogue_relations']['status'],'accepted')
+        self.assertEqual(len(result['story_structure']['coverage']),31)
+        self.assertEqual(len(result['dialogue_relations']['coverage']),31)
 
     def test_unrelated_unselected_source_asr_does_not_invalidate_native_requests(self):
         events,transcript=episode(8)
@@ -203,3 +274,25 @@ class ScopedRelationsTests(unittest.TestCase):
         self.assertTrue(vision.calls)
         self.assertEqual(result['story_structure']['status'],'accepted')
         self.assertNotIn('foreign',json.dumps(result['story_structure']['units']))
+
+    def test_inherited_source_images_are_verified_before_cached_relation_reuse(self):
+        import hashlib
+        events,transcript=episode(2)
+        with workspace_directory('scoped-image-proof-') as directory:
+            directory=Path(directory)
+            (directory/'analysis.meta.json').write_text(json.dumps({'source':'1'*64}),'utf-8')
+            native=directory/'selection-adjudication'
+            native.mkdir()
+            image=directory/'original-frame.jpg'
+            image.write_bytes(b'original immutable source frame')
+            (native/('a'*64+'.json')).write_text(json.dumps({'source_evidence':{
+                'source':{'sha256':'1'*64},'images':{str(image):hashlib.sha256(image.read_bytes()).hexdigest()}}}),'utf-8')
+            first=initial(events,transcript,directory,CapturedProvider())
+            self.assertEqual(first['story_structure']['status'],'accepted')
+            image.write_bytes(b'changed source frame')
+            vision=CapturedProvider()
+            result=structure.infer_story_structure(first['events'],transcript,directory,vision,lambda:False,
+                previous=first['story_structure'],dispatch_refs=set())
+        self.assertEqual(vision.calls,[])
+        self.assertEqual(result['status'],'unresolved')
+        self.assertIn('image changed',result['history'][-1]['error'])
