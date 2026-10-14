@@ -49,8 +49,10 @@ def refine_in_batches(events, transcript, shots, job_dir, vision, report, cancel
         return refiner([event], transcript, shots, job_dir, proxy, lambda *args: None,
             stop_check, episode_duration=duration)[0]
     def progress(completed, total):
+        # The native child discovers cache misses and dynamic follow-ups.
+        # Full worker count is not its model-review queue.
         report('condense', .47+.019*completed/total,
-            f'Сокращение по репликам: сцена {min(total, completed+1)} из {total}')
+            'Сокращение по репликам: обрабатываем необходимые фрагменты')
     return run_independent_batches(events, vision, cancelled, work, progress)
 
 
@@ -58,21 +60,26 @@ def adjudicate_in_batches(source, events, transcript, shots, job_dir, vision, re
                          *, refiner, source_only=False):
     """Batch independent events through the unchanged native per-event gate.
 
-    Native exclusions and readiness operate only on each event. Keeping the
-    gate module untouched preserves early-vision semantic cache identities.
+    Native exclusions and readiness operate only on each event. Progress scope
+    never filters workers: unchanged events still need native local metadata.
     """
     if not getattr(vision, 'supports_query_batch', False):
         return refiner(source, events, transcript, shots, job_dir, vision, report,
                        cancelled, source_only=source_only)
     import copy
+    from .selection_gate import source_selection_problems, selection_problems
+    predicate = source_selection_problems if source_only else selection_problems
+    eligible = tuple(index for index, event in enumerate(events) if predicate(event))
     if len({event['id'] for event in events}) != len(events):
         raise ValueError('Пакетная проверка требует уникальных событий')
     def work(event, proxy, stop_check):
         return refiner(source, [copy.deepcopy(event)], transcript, shots, job_dir,
             proxy, lambda *args: None, stop_check, source_only=source_only)[0]
     def progress(completed, total):
-        report('analyze', .5, f'Проверка конкретного выбора · обработано событий: {completed} из {total}')
-    return run_independent_batches(events, vision, cancelled, work, progress)
+        message = (f'Проверка конкретного выбора · обработано событий: {completed} из {total}'
+                   if total else 'Проверка конкретного выбора: новые проверки не требуются')
+        report('analyze', .5, message)
+    return run_independent_batches(events, vision, cancelled, work, progress, progress_indices=eligible)
 
 
 def review_events_in_batches(events, transcript, shots, job_dir, vision, report, cancelled,
@@ -87,6 +94,8 @@ def review_events_in_batches(events, transcript, shots, job_dir, vision, report,
     if len({event['id'] for event in events}) != len(events):
         raise ValueError('Пакетная проверка требует уникальных событий')
     import copy
+    from .progress_targets import review_indices
+    eligible = review_indices(events, transcript, shots, job_dir, refiner)
     def work(index, proxy, stop_check):
         if full_context:
             return refiner(events, transcript, shots, job_dir, proxy,
@@ -94,12 +103,19 @@ def review_events_in_batches(events, transcript, shots, job_dir, vision, report,
         return refiner([copy.deepcopy(events[index])], transcript, shots, job_dir,
             proxy, lambda *args: None, stop_check)[0]
     def progress(completed, total):
-        report('condense', .49, f'{label} · обработано событий: {completed} из {total}')
+        if eligible is None:
+            message = f'{label}: обрабатываем необходимые фрагменты'
+        elif total:
+            message = f'{label} · обработано событий: {completed} из {total}'
+        else:
+            message = f'{label}: новые проверки не требуются'
+        report('condense', .49, message)
     spans = sorted((event['start'], event['end']) for event in events)
     if any(right > following for (_, right), (following, _) in zip(spans, spans[1:])):
         # Legacy overlapping events can name the same native image/cache files.
         return refiner(events, transcript, shots, job_dir, vision, report, cancelled)
-    return run_independent_batches(list(range(len(events))), vision, cancelled, work, progress)
+    return run_independent_batches(list(range(len(events))), vision, cancelled, work, progress,
+                                   progress_indices=eligible)
 
 
 def closing_in_batches(events, transcript, shots, job_dir, vision, report, cancelled, *, refiner):
@@ -112,7 +128,7 @@ def closing_in_batches(events, transcript, shots, job_dir, vision, report, cance
         cancelled, refiner=refiner, label='Проверка новых событий в финале', full_context=True)
 
 
-def run_independent_batches(items, vision, cancelled, work, progress):
+def run_independent_batches(items, vision, cancelled, work, progress, *, progress_indices=None):
     """Preserve item logic/order; only the coordinator drives physical queries."""
     if not items:
         return []
@@ -120,10 +136,13 @@ def run_independent_batches(items, vision, cancelled, work, progress):
     proxy = _QueryProducer(vision, queue, stopped, cancelled)
     stop_check = lambda: stopped.is_set() or cancelled()
     results, completed = [None] * len(items), set()
+    targets = set(range(len(items))) if progress_indices is None else set(progress_indices)
+    if any(type(index) is not int or not 0 <= index < len(items) for index in targets):
+        raise ValueError('Invalid progress item indices')
     pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='kadr-contract')
     futures = [pool.submit(copy_context().run, work, item, proxy, stop_check) for item in items]
     try:
-        progress(0, len(items))
+        progress(0, len(targets))
         reported = 0
         while len(completed) < len(items):
             if cancelled():
@@ -132,9 +151,10 @@ def run_independent_batches(items, vision, cancelled, work, progress):
                 if index not in completed and future.done():
                     results[index] = future.result()
                     completed.add(index)
-            if len(completed) != reported:
-                reported = len(completed)
-                progress(reported, len(items))
+            target_completed = len(completed & targets)
+            if target_completed != reported:
+                reported = target_completed
+                progress(reported, len(targets))
             if len(completed) == len(items):
                 break
             try:

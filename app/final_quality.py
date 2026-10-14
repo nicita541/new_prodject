@@ -7,7 +7,7 @@ import math
 
 from app.content_identity import evidence_digest as gate_identity
 
-from .selection_gate import selection_readiness, positive_ranges, _covers
+from .selection_gate import selection_readiness, source_selection_problems, positive_ranges, _covers
 from .selection_adjudication import _source_text
 from app.source_ranges import merge_ranges
 from .source_roles import confirmed_exclusions
@@ -110,12 +110,14 @@ def inspect_final_quality(analysis, plan=None):
 
     if production or analysis.get('selection_gate') is not None:
         for row in selection_readiness(events)['unresolved']:
-            reasons = set(next(e for e in events if e['id'] == row['event']).get('analysis_unresolved_reasons', []))
+            owner = next(e for e in events if e['id'] == row['event'])
+            reasons = set(owner.get('analysis_unresolved_reasons', []))
             stage = 'source_roles' if 'source_role_unresolved' in set(row['problems']) | reasons else (
+                'selection_adjudication' if source_selection_problems(owner) else (
                 'story_structure' if reasons and reasons <= {'story_structure_unresolved', 'dialogue_relations_unresolved'}
                     and 'story_structure_unresolved' in reasons else (
                 'dialogue_relations' if reasons and reasons <= {'dialogue_relations_unresolved'} else 'selection_adjudication')
-            )
+            ))
             add('unresolved_source_selection', stage, **row)
     if production:
         from .story_structure_pass import ROLES
@@ -279,8 +281,35 @@ def inspect_final_quality(analysis, plan=None):
             'retained_duration':sum(p['duration'] for p in plan['parts'])}
 
 
+def source_recovery_identity(analysis):
+    """Changing diagnostic/relationship metadata cannot authorize another source review."""
+    return gate_identity({'transcript':analysis.get('transcript',{}),
+        'source':{key:analysis.get('probe',{}).get(key) for key in ('duration','width','height','fps')},
+        'events':[{'id':event.get('id'),'start':event.get('start'),'end':event.get('end'),
+            # A failed model's fallback changes the proposed selection but not
+            # the full CURRENT units already reviewed. It is not new evidence.
+            'selected_ranges':None if source_selection_problems(event) else event.get('selected_ranges'),
+            'units':[{key:unit.get(key) for key in ('id','start','end','text')} for unit in event.get('units',[])],
+            'exclusions':confirmed_exclusions(event)} for event in analysis.get('events',[])],
+        'scenes':[{key:scene.get(key) for key in ('id','start','end')} for scene in analysis.get('scenes',[])]})
+
+
 def recovery_stalled(history):
-    return len(history) >= 2 and history[-1]['gate'] == history[-2]['gate']
+    if len(history) < 2:
+        return False
+    previous,current=history[-2],history[-1]
+    if current.get('source_recovery_identity') != previous.get('source_recovery_identity'):
+        return False
+    if current['gate'] == previous['gate']:
+        return True
+    # Source selection blocks relation recovery. Different downstream coverage
+    # counts are not progress when exactly the same source owners still fail.
+    def blockers(gate):
+        return {(row.get('event'),row.get('recovery_stage')) for row in gate.get('problems',[])
+            if row.get('code') == 'unresolved_source_selection' and row.get('event')
+            and row.get('recovery_stage') in ('selection_adjudication','source_roles')}
+    before,after=blockers(previous['gate']),blockers(current['gate'])
+    return bool(before) and before == after
 
 
 def quality_failure_message(gate, *, stalled=False):

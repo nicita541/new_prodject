@@ -256,7 +256,7 @@ def prepare_review_scope(events, transcript, shots, probe, directory, source, jo
                                   'check_units':{task:sum(len(w['units']) for w in windows if task in w['review_targets'])
                                     for task in ('credits','titles','closing','source_roles')}})
     diagnostics.event('review_scope','selected',**counters)
-    report('analyze',.48,f"Проверяем выбранные фрагменты: {counters['review_units']} из {counters['source_units']}")
+    report('analyze',.48,f"Выбрано фрагментов для проверки: {counters['review_units']}")
     projected = project_events(baseline,windows,directory=directory if 'story_refinement' not in prepared else None,
                                source=source,cancelled=cancelled)
     checks.prepared = prepared

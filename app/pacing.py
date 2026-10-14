@@ -452,12 +452,17 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
     # sequentially, with fresh retained witnesses after each complete batch.
     rows_per_batch = (16 if getattr(vision, 'supports_query_batch', False) is True
                       and getattr(vision, 'supports_image_pages', False) is True else 8)
+    planned = {index: pacing_targets(event, transcript, shots)
+               for index, event in enumerate(result)
+               if not event.get('credit_montage') and not event.get('global_excluded')}
+    planned = {index: units for index, units in planned.items() if units}
+    positions = {index: position for position, index in enumerate(planned, 1)}
     for index, event in enumerate(result):
         if cancelled():
             raise InterruptedError('Обработка отменена')
         if event.get('credit_montage') or event.get('global_excluded'):
             continue
-        units = pacing_targets(event, transcript, shots)
+        units = planned.get(index, [])
         if not units:
             continue
         # Bound collage/context size. Unexamined material is preserved.
@@ -495,7 +500,7 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                         'profile': getattr(vision, 'cache_profile', str(vision.projector))}
             digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             checkpoint, image = directory / (digest+'.json'), directory / (digest+'.jpg')
-            report('condense', .60 + .04*index/max(1,len(result)), f'Проверяем темп и титры: сцена {index+1} из {len(result)}')
+            report('condense', .60 + .04*(positions[index]-1)/len(planned), f'Проверяем темп и титры: сцена {positions[index]} из {len(planned)}')
             try:
                 review_from_cache = checkpoint.is_file()
                 if checkpoint.is_file():
@@ -606,6 +611,8 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                 event.setdefault('story_warnings', []).append('Проверка темпа не завершена; контекст сохранён: '+str(error)[:180])
             batch_index += len(batch)
             batch_size = rows_per_batch
+    if planned:
+        report('condense', .64, f'Проверка темпа завершена: {len(planned)} из {len(planned)}')
     excluded = {e['id'] for e in result if e.get('pacing_excluded')}
     for event in result:
         event['requires'] = [identifier for identifier in event.get('requires', []) if identifier not in excluded]

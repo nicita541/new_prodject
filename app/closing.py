@@ -185,6 +185,10 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                       if path.is_file() else {'path': str(path)})
     if getattr(vision, 'cache_profile', None) is not None:
         models.append({'provider_profile': vision.cache_profile})
+    queue = [index for index in sorted(candidates)
+             if (event_ids is None or result[index]['id'] in event_ids) and all_units[index]
+             and (job_dir/'visual'/(str(result[index]['id'])+'.jpg')).is_file()]
+    positions = {index: position for position, index in enumerate(queue, 1)}
     for index in range(len(result)):
         if event_ids is not None and result[index]['id'] not in event_ids:
             continue
@@ -201,6 +205,7 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
         units = all_units[index]
         if not units:
             continue
+        report('condense', .4895, f'Проверка новых событий в финале: {positions[index]}/{len(queue)}')
         views = [(image,units)]
         scoped = units[0]['start'] > event['start'] or units[-1]['end'] < event['end'] or any(
             b['start']-a['end'] > .002 for a,b in zip(units,units[1:]))
@@ -269,7 +274,6 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                         title_checks = {}
             except (ValueError, TypeError, AttributeError):
                 pass
-        report('condense', .4895, f'Проверка новых событий в финале: {index+1}/{len(result)}')
         try:
             if raw is None:
                 decisions = []
@@ -363,4 +367,6 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
             os.replace(temporary, checkpoint)
         except (ValueError, KeyError, TypeError, RuntimeError, TimeoutError, urllib.error.URLError) as error:
             event.setdefault('story_warnings', []).append(warning + str(error)[:180] + '; материал сохранён')
+    if queue:
+        report('condense', .4895, f'Проверка финальных событий завершена: {len(queue)}/{len(queue)}')
     return result

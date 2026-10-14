@@ -379,12 +379,30 @@ def verify_global_visual(source, events, transcript, shots, job_dir, vision, rep
         'diagnostics': LockedDiagnostics(), 'original': copy.deepcopy(events),
         'model_identity': _model_identity(vision),
         'implementation': hashlib.sha256(Path(__file__).read_text('utf-8').replace('\r\n','\n').encode()).hexdigest()}
+    # Match the native setdefault below without mutating caller-owned events.
+    eligible = {index for index, event in enumerate(events)
+                if _reasons({'local_summary': event['summary'], **event})}
+    completed_eligible = set()
+    last_reported = None
     def work(index, proxy, stop_check):
-        return _verify_global_visual(source, events, transcript, shots, job_dir, proxy,
+        checked_event = _verify_global_visual(source, events, transcript, shots, job_dir, proxy,
             lambda *args: None, stop_check, _context=context, _index=index)
+        if index in eligible:
+            with lock:
+                completed_eligible.add(index)
+        return checked_event
     def progress(completed, total):
-        report('global_verify', .485+.01*completed/total,
-            f'Независимая проверка · обработано событий: {completed} из {total}')
+        nonlocal last_reported
+        with lock:
+            checked_count = len(completed_eligible)
+        if checked_count == last_reported:
+            return
+        last_reported = checked_count
+        if eligible:
+            report('global_verify', .485+.01*checked_count/len(eligible),
+                f'Независимая проверка · проверено фрагментов: {checked_count} из {len(eligible)}')
+        else:
+            report('global_verify', .495, 'Независимая визуальная проверка не требуется')
     checked = run_independent_batches(list(range(len(events))), vision, cancelled, work, progress)
     result = [item[0][0] for item in checked]
     audit = {'version': GLOBAL_VERIFICATION_VERSION,
@@ -427,6 +445,8 @@ def _verify_global_visual(source, events, transcript, shots, job_dir, vision, re
     checkpoint_dir.mkdir(exist_ok=True)
     visual_dir = job_dir / 'visual'
     audit = {'version': GLOBAL_VERIFICATION_VERSION, 'events': {}}
+    eligible_total = sum(bool(_reasons({'local_summary': event['summary'], **event})) for event in result)
+    eligible_position = 0
     for position, event in enumerate(result):
         index = position if _index is None else _index
         if cancelled():
@@ -449,7 +469,9 @@ def _verify_global_visual(source, events, transcript, shots, job_dir, vision, re
                 'summary_source': event['summary_source'], 'changed': False})
             audit['events'][event['id']] = event_audit
             continue
-        report('global_verify', .485 + .01 * index / max(1, len(result)), f'Независимая визуальная проверка {index+1} из {len(result)}')
+        eligible_position += 1
+        report('global_verify', .485 + .01 * (eligible_position-1) / eligible_total,
+               f'Независимая визуальная проверка {eligible_position} из {eligible_total}')
         exclusions = confirmed_exclusions(event)
         ownership = verified_story_ranges(event)
         pure_credit = event.get('credit_montage') is True and event.get('contains_credits') is True

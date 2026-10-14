@@ -187,20 +187,28 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
     if getattr(vision, 'cache_profile', None) is not None:
         models.append({'provider_profile': vision.cache_profile})
     identity = {'path':str(source),'size':source.stat().st_size,'mtime_ns':source.stat().st_mtime_ns} if source else None
+    from .review_scope import target_units
+    planned = {}
+    for event_index, event in enumerate(result):
+        if not event.get('credit_montage'):
+            units = title_units(event['start'],event['end'],transcript,shots)
+            candidates = target_units(event,_candidates(event,units,transcript),'titles')
+            if candidates:
+                planned[event_index] = candidates
+    positions = {index: position for position, index in enumerate(planned, 1)}
     for event_index, event in enumerate(result):
         if cancelled():
             raise InterruptedError('Обработка отменена')
         if event.get('credit_montage'):
             continue
-        units = title_units(event['start'],event['end'],transcript,shots)
-        candidates = _candidates(event,units,transcript)
-        from .review_scope import target_units
-        candidates = target_units(event,candidates,'titles')
+        candidates = planned.get(event_index, [])
         if not candidates:
             continue
         if source is None:
             event.setdefault('story_warnings',[]).append('Промежуточный титр не проверен: источник недоступен; сцена сохранена')
             continue
+        position = positions[event_index]
+        report('condense',.4893,f'Поиск титров: событие {position} из {len(planned)}')
         screened=[]
         for group in _groups(candidates):
             if cancelled():
@@ -222,7 +230,6 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
                     except (ValueError,TypeError,AttributeError):
                         pass
                 if raw is None:
-                    report('condense',.4893,f'Поиск титров: событие {event_index+1} из {len(result)}')
                     schema={'type':'object','properties':{'visible_production_title':{'type':'boolean'},
                         'confidence':{'type':'number','enum':[round(i/20,2) for i in range(21)]}},
                         'required':['visible_production_title','confidence'],'additionalProperties':False}
@@ -254,7 +261,7 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
                 raise InterruptedError('Обработка отменена')
             label = hashlib.sha256(json.dumps([event['id'],unit['id'],unit['start'],unit['end']]).encode()).hexdigest()[:24]
             image, checkpoint = directory/(label+'.jpg'), directory/(label+'.json')
-            report('condense',.4893,f'Подтверждение титра: событие {event_index+1} из {len(result)}')
+            report('condense',.4893,f'Подтверждение титра: событие {position} из {len(planned)}')
             try:
                 storyboard(source,unit['start'],unit['end'],shots,transcript,image,cancelled)
                 signature = hashlib.sha256(json.dumps({'version':TITLES_VERSION,'source':identity,'models':models,
@@ -306,4 +313,6 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
                 event['selected_ranges'] = ranges
             else:
                 event.update(credit_montage=True,contains_credits=True,credits_kind='title',kind='filler',importance=1,requires=[])
+    if source is not None and planned:
+        report('condense',.4893,f'Проверка титров завершена: {len(planned)} из {len(planned)}')
     return result

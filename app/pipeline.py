@@ -432,7 +432,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 validate_plan(plan, analysis)
                 plan["source"]["name"] = source_info.get("name", source.name)
             gate = inspect_final_quality(analysis,plan)
-        quality_history.append({'attempt':attempt,'fingerprint':fingerprint,'gate':gate})
+        from .final_quality import source_recovery_identity
+        quality_history.append({'attempt':attempt,'fingerprint':fingerprint,'gate':gate,
+                                'source_recovery_identity':source_recovery_identity(analysis)})
         diagnostics.write('final_quality_gate.json',{'status':gate['status'],'history':quality_history,**gate})
         _atomic_json(job_dir/'final_quality_gate.json',{'status':gate['status'],'history':quality_history,**gate})
         if gate['status'] == 'passed':

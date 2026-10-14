@@ -129,12 +129,16 @@ def adjudicate_selections(source, events, transcript, shots, job_dir, vision, re
     from .selection_adjudication import adjudicate_event, issues
     from .source_roles import apply_exclusions
     result = []
+    predicate = source_selection_problems if source_only else selection_problems
+    queued = {index for index, event in enumerate(events) if predicate(event)}
+    processed = 0
     for index, event in enumerate(events):
         if cancelled():
             raise InterruptedError('Обработка отменена')
         problems = source_selection_problems(event) if source_only else selection_problems(event)
         if problems:
-            report('analyze', .5, f'Проверка конкретного выбора: событие {index+1} из {len(events)}')
+            queued.add(index)
+            report('analyze', .5, f'Проверка конкретного выбора: событие {processed+1} из {len(queued)}')
             event = adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled,
                 questions=[*issues(event), 'Проверить спорные решения: '+', '.join(problems)])
             if event.get('selection_status') == 'accepted' and event.get('selected_ranges'):
@@ -144,7 +148,12 @@ def adjudicate_selections(source, events, transcript, shots, job_dir, vision, re
                 if any(r.get('kind') == 'state_transition' and r.get('decision') == 'keep'
                        for r in event.get('unit_evidence', [])):
                     event['narrative_bridge'] = True
+            processed += 1
         result.append(event)
+    if processed:
+        report('analyze', .5, f'Проверка конкретного выбора · обработано событий: {processed} из {len(queued)}')
+    else:
+        report('analyze', .5, 'Проверка конкретного выбора: новые проверки не требуются')
     result = apply_exclusions(result)
     for event in result:
         if source_only and not source_selection_problems(event) and selection_problems(event):

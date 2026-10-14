@@ -149,7 +149,10 @@ def _event_metrics(events, duration, speech, transcript):
         if span is None:
             continue
         key = (str(event.get('id', '')), *span)
-        importance = _number(event.get('importance', 3), 'event.importance', minimum=1, maximum=5)
+        # Native eyecatch exclusion deliberately assigns zero and no selections.
+        excluded_eyecatch = event.get('kind') == 'eyecatch' and event.get('selected_ranges') == []
+        importance = _number(event.get('importance', 3), 'event.importance',
+                             minimum=0 if excluded_eyecatch else 1, maximum=5)
         if type(event.get('narrative_bridge', False)) is not bool:
             raise ValueError('Некорректный narrative_bridge события')
         confirmed = _confirmed(event)

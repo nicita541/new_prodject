@@ -112,6 +112,22 @@ class QualityPipelineTests(unittest.TestCase):
         self.assertFalse((self.job/'output').exists())
         self.assertEqual(json.loads((self.job/'timings.json').read_text('utf-8'))['status'], 'failed')
 
+    def test_relation_metadata_churn_cannot_repeat_the_same_failed_source_check(self):
+        analysis=self.unresolved_analysis()
+        analysis['events'][0]['selection_uncertain']=True
+        def recover(source,value,*args):
+            changed=copy.deepcopy(value)
+            changed['events'][0]['dialogue_relations']={'status':'unresolved','coverage':[]}
+            return changed
+        with self.assertRaisesRegex(ValueError,'повтор той|повтор того'):
+            self.run_with_stubs(analysis,recover)
+        self.assertEqual(self.recovery.call_count,1)
+        self.assertEqual(len(self.sessions),1)
+        self.renderer.assert_not_called()
+        history=json.loads((self.job/'final_quality_gate.json').read_text('utf-8'))['history']
+        self.assertNotEqual(history[0]['gate'],history[1]['gate'])
+        self.assertEqual(history[0]['source_recovery_identity'],history[1]['source_recovery_identity'])
+
     def test_valid_recovered_analysis_resumes_building_and_rendering_after_gate(self):
         valid, _ = fixture()
         outputs = self.run_with_stubs(self.unresolved_analysis(), lambda *args: copy.deepcopy(valid))

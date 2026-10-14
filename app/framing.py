@@ -277,7 +277,7 @@ def _valid_checkpoint(data: dict, signature: str, event: dict) -> bool:
         return False
 
 
-def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
+def _sample_query(vision, prompt, image, directory, settings, times, cancelled, *, progress=None):
     """Reuse an exact model answer, never a previous/held derived focus."""
     from .json_store import atomic_json
     from .deepseek import _validate
@@ -289,6 +289,7 @@ def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
     signature = hashlib.sha256(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     directory.mkdir(exist_ok=True)
     checkpoint = directory/(signature+'.json')
+    cached_answer = None
     if checkpoint.is_file():
         try:
             saved = json.loads(checkpoint.read_text('utf-8'))
@@ -298,9 +299,15 @@ def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
                     and type(raw.get('visible_speaker')) is bool):
                 _validate(raw, FOCUS_SCHEMA)
                 _coordinates(raw)
-                return raw
+                cached_answer = raw
         except (OSError, ValueError, KeyError, TypeError):
             pass
+    if cached_answer is not None:
+        if progress:
+            progress(True)
+        return cached_answer
+    if progress:
+        progress(False)
     raw = vision.query(prompt, image, max_tokens=120, schema=FOCUS_SCHEMA)
     # A valid uncertain answer may be reused, but still takes the ordinary
     # current-shot/current-selection fallback path below on every invocation.
@@ -356,6 +363,17 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
     result = copy.deepcopy(events)
     retained = _retained_ids(result)
     relevant = [event for event in result if event["id"] in retained]
+    reviewed_samples = 0
+    def sample_progress(cached):
+        nonlocal reviewed_samples
+        if cached:
+            message = 'Кадрирование: восстановлен сохранённый результат кадра'
+        else:
+            reviewed_samples += 1
+            message = f'Кадрирование: проверка кадра {reviewed_samples}'
+        # Later samples and their exact cache identities depend on earlier
+        # answers. A catalogue-sized denominator would promise work we may skip.
+        report('framing', .51+.14*position/max(1, len(relevant)), message)
     previous_subject = None
     previous_shot_id = None
     previous_selection = None
@@ -390,14 +408,16 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
                         cached = saved
                 except (ValueError, TypeError):
                     pass
-            report("framing", 0.51 + 0.14 * position / max(1, len(relevant)),
-                   f"Кадрирование: сцена {position + 1} из {len(relevant)}")
             if cached is not None:
+                report('framing', .51+.14*position/max(1, len(relevant)),
+                       'Кадрирование: восстановлен сохранённый результат сцены')
                 event["focus"], event["focus_warnings"] = cached["focus"], cached["warnings"]
                 previous_subject = cached.get("previous_subject")
                 previous_shot_id = cached.get("previous_shot_id")
                 previous_selection = cached.get("previous_selection")
                 continue
+            report('framing', .51+.14*position/max(1, len(relevant)),
+                   'Кадрирование: подготовка нужных кадров')
             anchors, warnings = [], []
             if reader is None:
                 reader = _FrameReader(source, probe, cancelled)
@@ -411,7 +431,8 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
                 prompt = _focus_prompt(sample)
                 reason = None
                 try:
-                    raw = _sample_query(vision, prompt, frame, focus_dir/'samples', sample_settings, times, cancelled)
+                    raw = _sample_query(vision, prompt, frame, focus_dir/'samples', sample_settings, times, cancelled,
+                                        progress=sample_progress)
                     coordinates = _coordinates(raw)
                     if sample["phrase"] and raw.get("visible_speaker") is not True:
                         coordinates["confidence"] = min(coordinates["confidence"], 0.5)
@@ -441,7 +462,8 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
                                 'Locate the MAIN VISIBLE ACTION, gesture or object interaction center in this CURRENT single frame, '
                                 'rather than automatically a face. If no action is visible, use the main visible person or meaningful scene. '
                                 'x,y normalized 0..1. Set visible_speaker=false. Return coordinate schema.',
-                                current_frame, focus_dir/'samples', sample_settings, [times[0]], cancelled))
+                                current_frame, focus_dir/'samples', sample_settings, [times[0]], cancelled,
+                                progress=sample_progress))
                             if fallback["confidence"] >= MIN_CONFIDENCE:
                                 coordinates = {**fallback, "main_fallback": True}
                                 previous_subject = dict(fallback)

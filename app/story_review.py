@@ -157,7 +157,12 @@ def apply_global_selection(events, decisions, editorial_profile=None):
     if 'omit' in decisions:
         validate_global_omissions(decisions, {e['id'] for e in events})
     omissions = {item['event']:item for item in decisions.get('omit', [])}
+    bridges = set(decisions.get('narrative_bridges', []))
     for event in events:
+        # Stage-cache hits return decisions without the reviewer's mutations.
+        # Restore the same accepted bridge flags on fresh and cached paths.
+        if event['id'] in bridges:
+            event['narrative_bridge'] = True
         event.pop('global_excluded', None)
         event.pop('global_omission', None)
         omission = omissions.get(event['id'])
@@ -182,7 +187,30 @@ def apply_global_selection(events, decisions, editorial_profile=None):
             event['selection_uncertain'] = True
 
 
-def global_story_review(vision: LocalVision, events: list[dict], editorial_profile=None) -> dict:
+def global_story_review(vision: LocalVision, events: list[dict], editorial_profile=None, *, _compact_ids=None) -> dict:
+    if len(events)>24 and _compact_ids is None:
+        import hashlib
+        actual=[event['id'] for event in events]
+        if len(set(actual))!=len(actual):
+            raise ValueError('Повтор исходного идентификатора события')
+        aliases={identifier:f'e{i}' for i,identifier in enumerate(actual)}
+        original={short:identifier for identifier,short in aliases.items()}
+        binding=hashlib.sha256(json.dumps(actual,ensure_ascii=False).encode()).hexdigest()
+        encoded=[{**event,'id':aliases[event['id']]} for event in events]
+        decisions=global_story_review(vision,encoded,editorial_profile,_compact_ids=binding)
+        for key in ('keep','narrative_bridges','incomplete_event_ids'):
+            if key in decisions:
+                decisions[key]=[original[identifier] for identifier in decisions[key]]
+        for row in decisions.get('omit',[]):
+            row['event']=original[row['event']]
+        for row in decisions.get('dependencies',[]):
+            row['event']=original[row['event']]
+            row['requires']=[original[identifier] for identifier in row['requires']]
+        validate_global_omissions(decisions,set(actual))
+        for event in events:
+            if event['id'] in decisions.get('narrative_bridges',[]):
+                event['narrative_bridge']=True
+        return decisions
     from .deepseek import DeepSeekVision
     if isinstance(vision, DeepSeekVision):
         # A complete episode description is only tens of KB. The scene-sized
@@ -219,7 +247,11 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
             '(e.g. capture, departure, sudden accident, transport, handover) where omitting it would cause '
             'an unexplained jump or broken causal continuity between surrounding events. '
         )
-    instruction = (policy_instruction(profile)+' '+mode_instruction+
+    compact_output = (f'Catalogue binding {_compact_ids}. Use exactly the short event IDs in Events. '
+        'Return compact JSON. Dependencies must be sparse: include only events with actual nonempty requires; '
+        'never repeat an entry for an empty dependency list. Summary at most 80 words; omission evidence at most 12 words each. '
+        if _compact_ids else '')
+    instruction = (policy_instruction(profile)+' '+mode_instruction+compact_output+
         'For each removed event supply a concrete explanation of redundancy/nonstory evidence and confidence; '
         'Uncertainty and summary_complete=false require targeted verification, never keep-all. '
         'Use only resolved source-grounded choices; do not turn missing facts into a retention reason. '

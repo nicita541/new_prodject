@@ -43,7 +43,8 @@ def validate_analysis(analysis: dict, *, draft=False) -> None:
             raise ValueError("Идентификаторы событий должны быть уникальны")
         if event["kind"] not in {"story", "opening", "ending", "recap", "filler", "eyecatch"}:
             raise ValueError("Неизвестный тип события")
-        if not (0 if draft else 1) <= _number(event["importance"]) <= 5:
+        excluded_eyecatch = event['kind'] == 'eyecatch' and event.get('selected_ranges') == []
+        if not (0 if draft or excluded_eyecatch else 1) <= _number(event["importance"]) <= 5:
             raise ValueError("Некорректная важность события")
         if any(dep not in seen for dep in event.get("requires", [])):
             raise ValueError("Событие ссылается на неизвестное или последующее событие")

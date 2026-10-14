@@ -149,7 +149,7 @@ def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report,
                          for p in gate['problems'] if event['id'] in problem_owners([p],events,'selection_adjudication')]
             if questions:
                 events[index] = adjudicate_event(source,event,analysis['transcript'],analysis['shots'],
-                    job_dir,vision,cancelled,questions=questions)
+                    job_dir,vision,cancelled,questions=questions,retry_unresolved=True)
     # Source changes invalidate only their real relation owners/dependencies.
     # The native passes reconstruct the complete aggregate locally while the
     # scoped adapter permits only missing dependent requests to dispatch.

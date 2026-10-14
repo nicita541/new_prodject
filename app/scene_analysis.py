@@ -352,6 +352,7 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
         return timestamps, load_json(spec['image'].with_suffix('.storyboard.json'))
 
     from .scene_preparation import CurrentPreparation
+    pending_total, pending_position = len(pending), 0
     with CurrentPreparation(pending, prepare_current, cancelled) as preparation:
         events, storyboards = [], []
         for index, scene in enumerate(scenes):
@@ -361,8 +362,9 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
             checkpoint = visual_dir / f'{event_id}.json'
             plan = plans[index]
             saved, semantic_cache = plan['saved'], plan['semantic_cache']
-            report('analyze', .22+.26*index/max(1, len(scenes)), f'Смысловая сцена {index+1} из {len(scenes)}')
             if plan['cached']:
+                report('analyze', .22+.26*pending_position/max(1, pending_total),
+                       'Смысловой анализ: восстановлен сохранённый результат сцены')
                 event = saved['event']
                 storyboards.extend(saved.get('storyboards', []))
                 diagnostics.event('scene_analysis', 'cache_hit', scene_id=scene['id'], event_id=event_id)
@@ -384,12 +386,17 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                     image, units = spec['image'], spec['units']
                     piece, piece_key, saved_piece = spec['piece'], spec['piece_key'], spec['saved_piece']
                     if spec['cached']:
+                        report('analyze', .22+.26*pending_position/max(1, pending_total),
+                               'Смысловой анализ: восстановлен сохранённый результат фрагмента')
                         all_units.extend(saved_piece['units'])
                         scene_boards.extend(saved_piece['boards'])
                         chunk_results.append(saved_piece['result'])
                         diagnostics.event('scene_analysis', 'chunk_cache_hit',
                                           scene_id=scene['id'], chunk_id=chunk['id'])
                         continue
+                    pending_position += 1
+                    report('analyze', .22+.26*(pending_position-1)/pending_total,
+                           f'Смысловой анализ: фрагмент {pending_position} из {pending_total}')
                     diagnostics.event('scene_analysis', 'chunk_cache_miss',
                                       scene_id=scene['id'], chunk_id=chunk['id'])
                     board_start = len(scene_boards)

@@ -452,6 +452,12 @@ def _views(units, transcript, shots, cancelled, max_frames=None):
                     edges = [w[k] for w in _words(transcript) for k in ('start', 'end')
                              if start < w[k] <= half and _safe(w[k], transcript)]
                     if not edges:
+                        # Keep an indivisible original word when its complete
+                        # dense evidence fits one physical18-frame page. The
+                        # ordinary12-frame batching remains unchanged.
+                        from .bounded_storyboard import MAX_INFERENCE_FRAMES
+                        if len(_sample_times(start,target,[unit],shots)) <= MAX_INFERENCE_FRAMES:
+                            break
                         raise ValueError('Indivisible word exceeds frame page bound')
                     half = max(edges)
                 if half-start < .001:
@@ -575,7 +581,140 @@ def _accepted_prior_view(vision, source, view, view_units, frames, event, questi
     return None
 
 
-def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled, questions=None):
+def _native_view_from_audit(event, source_key, units, frames, directory, exclusions, transcript, shots, current_hashes):
+    """Reuse original view contracts, preserving their checkpoint/provenance."""
+    audit = event.get('selection_adjudication', {})
+    same_source=lambda value: isinstance(value,dict) and all(value.get(k)==source_key[k] for k in ('sha256','size'))
+    if audit.get('version') != VERSION or not same_source(audit.get('source')):
+        return None
+    from .content_identity import digest
+    context=audit.get('source_context')
+    if context is None:
+        # Explicitly audited legacy continuation binds unchanged source/ASR.
+        context=load_json(directory.parent/'continuation/control.json').get('legacy_context',{}) if (directory.parent/'continuation/control.json').is_file() else {}
+    geometry = lambda rows: [{k:u.get(k) for k in ('id','start','end','text')} for u in rows]
+    candidates = []
+    for row in [*audit.get('decisions', []),*audit.get('prior_views',[])]:
+        binding=row.get('source_context',context) or {}
+        if (binding.get('source') != source_key['sha256'] or binding.get('transcript') != digest(transcript)
+                or binding.get('shots') != digest(shots)):
+            continue
+        key = row.get('checkpoint')
+        if not isinstance(key,str) or not re.fullmatch('[0-9a-f]{64}',key):
+            continue
+        try:
+            native = load_json(directory/(key+'.json'))
+            proof = native['source_evidence']
+            current = proof['CURRENT']
+            if (native.get('identity') != key or not same_source(proof.get('source'))
+                    or geometry(current['units']) != geometry(units)
+                    or [f['time'] for f in current['frames']] != [f['time'] for f in frames]
+                    or current.get('confirmed_exclusions',[]) != exclusions):
+                continue
+            images=proof.get('images',{})
+            if not images or any(not Path(name).resolve().is_relative_to(directory.resolve())
+                    or not Path(name).is_file() or hashlib.sha256(Path(name).read_bytes()).hexdigest()!=expected
+                    for name,expected in images.items()):
+                continue
+            board_path=(directory.parent/row['storyboard']).resolve()
+            if not board_path.is_relative_to(directory.resolve()):
+                continue
+            board=load_json(board_path)
+            if ([f['time'] for f in board['frames']] != [f['time'] for f in frames]
+                    or [images[str(Path(p).resolve())] for p in board['pages']] != list(current_hashes.values())):
+                continue
+            raw=native['decision']
+            checked=validate_adjudication(raw,units,frames,exclusions)
+            candidates.append({'checkpoint':key,'decision':checked,'raw':raw,'storyboard':row['storyboard']})
+        except (OSError,ValueError,TypeError,KeyError):
+            continue
+    return max(candidates,key=lambda c:_decision_rank(c['decision']),default=None)
+
+
+def _prior_native_view(event, source_key, units, frames, directory, exclusions, transcript, shots, current_hashes, stored_audit=None):
+    candidates=[]
+    for audit in (event.get('selection_adjudication',{}),stored_audit or {}):
+        candidate=_native_view_from_audit({'selection_adjudication':audit},source_key,units,frames,
+                                         directory,exclusions,transcript,shots,current_hashes)
+        if candidate is not None:candidates.append(candidate)
+    return max(candidates,key=lambda c:_decision_rank(c['decision']),default=None)
+
+
+def _decision_rank(decision):
+    return (bool(decision['accepted']),min(decision['understanding_confidence'],
+        decision['selection_confidence'],*(r['confidence'] for r in decision['unit_evidence'])))
+
+
+def _reassess_view(vision, payload, images, hashes, source_key, units, frames, directory,
+                   exclusions, prior, cancelled):
+    """One persisted additional CURRENT review; never splice semantic answers."""
+    schema=adjudication_schema(units,frames)
+    # Hypotheses/old confidence/question wording cannot create a new allowance.
+    packet={k:copy.deepcopy(payload[k]) for k in
+            ('CURRENT','CONTEXT_ONLY','CONTEXT_ASR_ONLY','image_roles')}
+    packet['questions']=['Повторно оцени только неподтверждённый выбор CURRENT по исходным доказательствам.']
+    stable_source={k:source_key[k] for k in ('sha256','size')}
+    contract={'reassessment_version':1,'native_version':VERSION,'source':stable_source,
+        'evidence':packet,'image_hashes':list(hashes.values()),'schema':schema,
+        'policy':POLICY,
+        'instruction_sha256':hashlib.sha256(_normalized(ADJUDICATION_PROMPT).encode()).hexdigest()}
+    key=_hash(contract)
+    checkpoint=directory/(key+'.json')
+    receipt=directory/(key+'.reassessment.json')
+    try:
+        saved=load_json(receipt) if receipt.is_file() else None
+    except (OSError,ValueError,TypeError):
+        raise ValueError('Повреждена запись дополнительной проверки; автоматический повтор запрещён')
+    fresh=None
+    if saved is not None:
+        if saved.get('contract') != contract or saved.get('identity') != key:
+            raise ValueError('Изменилась запись дополнительной проверки')
+        if saved.get('status') == 'started':
+            if checkpoint.is_file():
+                saved={**saved,'status':'valid'}  # Validate persisted answer below; never resend.
+            else:
+                raise RuntimeError('Исход предыдущего дополнительного запроса неизвестен; повторная отправка остановлена')
+        if saved.get('status') == 'valid':
+            native=load_json(checkpoint)
+            if (native.get('identity') != key or native.get('decision_hash') != _hash(native.get('decision'))
+                    or {k:native.get('source_evidence',{}).get('source',{}).get(k) for k in stable_source} != stable_source
+                    or native.get('reassessment_contract') != contract
+                    or native.get('source_evidence',{}).get('CURRENT') != payload['CURRENT']):
+                raise ValueError('Повреждён ответ дополнительной проверки; автоматический повтор запрещён')
+            raw=native['decision']
+            fresh={'checkpoint':key,'raw':raw,'decision':validate_adjudication(raw,units,frames,exclusions)}
+        elif saved.get('status') != 'invalid':
+            raise ValueError('Неизвестный статус дополнительной проверки')
+    else:
+        _check(cancelled)
+        atomic_json(receipt,{'identity':key,'contract':contract,'status':'started','producer_model':_model_identity(vision)})
+        prompt=(_normalized(ADJUDICATION_PROMPT)+'\n'+json.dumps(packet,ensure_ascii=False,sort_keys=True)+
+            '\nIndependent reassessment of unresolved CURRENT evidence, round 1. '
+            'Inspect original media; do not copy a previous verdict or inflate confidence to pass. '
+            'If the original evidence is insufficient, keep resolved=false or honest low confidence.')
+        # A transport/cancellation failure intentionally leaves started: the
+        # server may already have processed the request. No blind paid resend.
+        raw=vision.query(prompt,images if len(images)>1 else images[0],max_tokens=2400,schema=schema)
+        _check(cancelled)
+        try:
+            checked=validate_adjudication(raw,units,frames,exclusions)
+        except (ValueError,TypeError,KeyError) as error:
+            atomic_json(receipt,{'identity':key,'contract':contract,'status':'invalid',
+                                'error_type':type(error).__name__})
+        else:
+            atomic_json(checkpoint,{'identity':key,'decision':raw,'decision_hash':_hash(raw),
+                'source_evidence':{'source':source_key,'CURRENT':payload['CURRENT'],'images':hashes},
+                'producer_model':_model_identity(vision),
+                'reassessment_contract':contract,'actual_prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest()})
+            atomic_json(receipt,{'identity':key,'contract':contract,'status':'valid'})
+            fresh={'checkpoint':key,'raw':raw,'decision':checked}
+    choices=[candidate for candidate in (prior,fresh) if candidate is not None]
+    if not choices:
+        raise ValueError('Дополнительный ответ не прошёл проверку исходных доказательств')
+    return max(choices,key=lambda c:_decision_rank(c['decision']))
+
+
+def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled, questions=None, *, retry_unresolved=False):
     """Return a new event; actual frames and complete evidence gate replacement."""
     _check(cancelled)
     source, job_dir = Path(source).resolve(), Path(job_dir).resolve()
@@ -588,18 +727,31 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
     if (not isinstance(questions, list) or not 1 <= len(questions) <= 20
             or any(not isinstance(q, str) or not q.strip() or len(q)>1000 for q in questions)):
         raise ValueError('Adjudication requires factual questions')
-    history, units, source_key = [], [], None
+    history, units, source_key, stored_audit = [], [], None, {}
     try:
         if any(type(event.get(k)) not in (int, float) or not math.isfinite(event[k]) for k in ('start', 'end')) or not 0 <= event['start'] < event['end']:
             raise ValueError('Некорректные исходные границы события')
         units = _units(event, transcript, shots)
         result['units'] = copy.deepcopy(units)
         source_key = _source_identity(source, directory, cancelled)
+        saved_audit=directory/(_hash({'event':event.get('id'),'start':event.get('start'),'end':event.get('end')})+'.audit.json')
+        if saved_audit.is_file():
+            try:stored_audit=load_json(saved_audit)
+            except (ValueError,OSError):pass
         media = inspect_media(source, directory, cancelled)
         video = next((s for s in media.get('streams', []) if s.get('codec_type') == 'video'), None)
         first = float(video.get('start_time', 0)) if video else 0
         last = first+float(video.get('duration', media.get('format', {}).get('duration', 0))) if video else 0
-        if not video or event['start'] < first or event['end'] > last+.000001:
+        leading_frame=False
+        if video and event['start']==0 and first>0:
+            try:
+                numerator,denominator=map(int,video.get('avg_frame_rate','0/1').split('/'))
+                leading_frame=numerator>0 and denominator>0 and first<=denominator/numerator
+            except (ValueError,TypeError):
+                pass
+        if (not video or not math.isfinite(first) or not math.isfinite(last)
+                or event['start']<first and not leading_frame
+                or event['end'] <= first or event['end'] > last+.000001):
             raise ValueError('CURRENT вышел за фактические границы исходного видео')
         exclusions = confirmed_exclusions(event)
         implementation = hashlib.sha256(_normalized(Path(__file__).read_text('utf-8')).encode()).hexdigest()
@@ -614,14 +766,19 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 unit['text'] = _source_text(transcript, unit['start'], unit['end'])
             board_key = _hash({**base, 'view': view})
             pages, frames, image_hashes = _board(source, view, shots, transcript, directory, board_key, cancelled)
+            proof_board=str((directory/(board_key+'.storyboard.json')).relative_to(job_dir))
             for unit in view_units:
                 unit['frame_indices'] = [i+1 for i,frame in enumerate(frames) if unit['start'] <= frame['time'] < unit['end']]
-            prior = _accepted_prior_view(vision,source,view,view_units,frames,event,questions,transcript,shots,
-                directory,base,cancelled,first,last,pages,exclusions)
-            if prior is not None:
-                history.append({'view':number,'start':view['start'],'end':view['end'],**prior,
+            prior = (_prior_native_view(event,source_key,view_units,frames,directory,exclusions,transcript,shots,image_hashes,stored_audit)
+                     if retry_unresolved else None)
+            if prior is None:
+                prior = _accepted_prior_view(vision,source,view,view_units,frames,event,questions,transcript,shots,
+                    directory,base,cancelled,first,last,pages,exclusions)
+            if prior is not None and (not retry_unresolved or prior['decision']['accepted']):
+                history.append({'view':number,'start':view['start'],'end':view['end'],
+                    **{k:v for k,v in prior.items() if k != 'raw'},
                     'source_units':[u['id'] for u in view_units],
-                    'storyboard':str((directory/(board_key+'.storyboard.json')).relative_to(job_dir)),
+                    'storyboard':prior.get('storyboard',proof_board),
                     'frame_times':[f['time'] for f in frames]})
                 continue
             context, images, image_roles = [], list(pages), ['CURRENT']*len(pages)
@@ -678,7 +835,31 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                     decision = validate_adjudication(raw, view_units, frames, exclusions)
                 except (ValueError, TypeError, KeyError):
                     raw = None
-            if raw is None:
+            if retry_unresolved and raw is None:
+                replies=getattr(vision,'_continuation_replies',None)
+                if replies is not None:
+                    bank_key,bank_raw=replies.find(prompt,images if len(images)>1 else images[0],adjudication_schema(view_units,frames))
+                    if bank_raw is not None:
+                        try:
+                            bank_decision=validate_adjudication(bank_raw,view_units,frames,exclusions)
+                        except (ValueError,TypeError,KeyError):
+                            pass
+                        else:
+                            raw,decision=bank_raw,bank_decision
+                            atomic_json(checkpoint,{'identity':identity,'decision':raw,
+                                'source_evidence':{'source':source_key,'CURRENT':payload['CURRENT'],'images':image_hashes},
+                                'accepted_reply':bank_key,'actual_prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest()})
+            if retry_unresolved and (raw is None or not decision['accepted']):
+                if raw is not None:
+                    candidate={'checkpoint':identity,'raw':raw,'decision':decision}
+                    if prior is None or _decision_rank(candidate['decision']) > _decision_rank(prior['decision']):
+                        prior=candidate
+                chosen=_reassess_view(vision,payload,images,image_hashes,source_key,view_units,frames,
+                                     directory,exclusions,prior,cancelled)
+                identity,decision=chosen['checkpoint'],chosen['decision']
+                proof_board=chosen.get('storyboard',proof_board)
+                raw=chosen.get('raw') or {k:decision[k] for k in adjudication_schema(view_units)['required']}
+            elif raw is None:
                 retry_prompt=prompt
                 for attempt in range(2):
                     try:
@@ -710,7 +891,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
             history.append({'view': number, 'start': view['start'], 'end': view['end'],
                             'checkpoint': identity, 'decision': decision,
                             'source_units': [u['id'] for u in view_units],
-                            'storyboard': str((directory/(board_key+'.storyboard.json')).relative_to(job_dir)),
+                            'storyboard': proof_board,
                             'frame_times': [f['time'] for f in frames]})
     except Exception as error:
         if _control_failure(error):
@@ -776,6 +957,22 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         'limitations': ['model_confidence_is_self_reported', 'validation_does_not_prove_semantic_truth',
                        'dimension_aliases_share_understanding_confidence',
                        'cross_view_causal_links_are_not_inferred']}
+    from .content_identity import digest
+    if source_key is not None:
+        result['selection_adjudication']['source_context']={'source':source_key['sha256'],
+            'transcript':digest(transcript),'shots':digest(shots)}
+    inherited={}
+    for previous in (event.get('selection_adjudication',{}),stored_audit):
+        binding=previous.get('source_context')
+        if binding is None and (directory.parent/'continuation/control.json').is_file():
+            legacy=load_json(directory.parent/'continuation/control.json').get('legacy_context',{})
+            if (legacy.get('source')==(previous.get('source') or {}).get('sha256')
+                    and legacy.get('transcript')==digest(transcript) and legacy.get('shots')==digest(shots)):
+                binding=legacy
+        inherited.update({row['checkpoint']:{**copy.deepcopy(row),'source_context':row.get('source_context',binding)}
+            for row in [*previous.get('decisions',[]),*previous.get('prior_views',[])] if row.get('checkpoint')})
+    checked={row.get('checkpoint') for row in history}
+    result['selection_adjudication']['prior_views']=[row for key,row in inherited.items() if key not in checked]
     audit_name = _hash({'event': event.get('id'), 'start': event.get('start'), 'end': event.get('end')})
     atomic_json(directory/(audit_name+'.audit.json'), result['selection_adjudication'])
     return result

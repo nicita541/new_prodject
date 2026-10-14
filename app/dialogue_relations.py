@@ -647,12 +647,18 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
         if 'source_selection_or_proof_unresolved' in candidate['reasons']:
             for ref in [*candidate['question_refs'], *candidate['answer_refs']]:
                 unresolved[_key(ref)] = ref
+    # Count only CURRENT refs admitted to this recovery scope; episode
+    # reconstruction and surrounding source context are local work.
+    progress_prefix = [0]
+    for node in nodes:
+        progress_prefix.append(progress_prefix[-1]+int(
+            dispatch_refs is None or _key(node['ref']) in dispatch_refs))
     cursor = 0
     output_batch_cap, split_until = 12, 0
     while cursor < len(nodes):
         _check(cancelled)
         if progress:
-            progress(cursor, len(nodes))
+            progress(progress_prefix[cursor], progress_prefix[-1])
         if cursor >= split_until:
             output_batch_cap = 12
         from app.antigravity_batch import text_batch_limits
@@ -763,7 +769,7 @@ def infer_dialogue_relations(events, transcript, job_dir, vision, cancelled, *, 
                 'error_type': type(error).__name__})
         cursor += size
     if progress:
-        progress(cursor, len(nodes))
+        progress(progress_prefix[cursor], progress_prefix[-1])
     # CONTEXT participation needs its owning pass to agree; local acceptance alone
     # cannot grant authority to an unexamined episode tail or contradictory batch.
     for pair in pairs.values():

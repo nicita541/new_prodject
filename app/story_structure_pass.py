@@ -705,11 +705,17 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
         _hash(snapshots)  # Validate finite local evidence; not a request dependency.
         unresolved.extend(r['ref'] for r in coverage if r['status'] == 'unresolved_source_proof')
         implementation = hashlib.sha256(_normalized(Path(__file__).read_text('utf-8')).encode()).hexdigest()
+        # Count only CURRENT refs admitted to this recovery scope; episode
+        # reconstruction and surrounding source context are local work.
+        progress_prefix = [0]
+        for node in nodes:
+            progress_prefix.append(progress_prefix[-1]+int(
+                dispatch_refs is None or _key(node['ref']) in dispatch_refs))
         cursor = 0
         while cursor < len(nodes):
             _check(cancelled)
             if progress:
-                progress(cursor, len(nodes))
+                progress(progress_prefix[cursor], progress_prefix[-1])
             if cursor >= split_until:
                 batch_units = configured_batch_units
             size = min(batch_units, len(nodes)-cursor)
@@ -851,7 +857,7 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                     'error_type': type(error).__name__, 'error': _clean(str(error))[:800]})
             cursor += size
         if progress:
-            progress(cursor, len(nodes))
+            progress(progress_prefix[cursor], progress_prefix[-1])
         final_arcs, merge_unresolved, merge_history = _merge_arc_groups(
             arc_map, nodes, list(relation_map.values()), _hash(signatures))
         unresolved.extend(merge_unresolved)

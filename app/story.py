@@ -385,6 +385,7 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                                "mtime_ns": model.stat().st_mtime_ns} if model.is_file() else {"path": str(model)})
     if getattr(vision, 'cache_profile', None) is not None:
         model_identity.append({'provider_profile': vision.cache_profile})
+    pending = []
     for index, event in enumerate(result):
         if cancelled():
             raise InterruptedError("Обработка отменена")
@@ -430,8 +431,20 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
                     continue
             except (TypeError, ValueError):
                 pass
-        report("condense", 0.47 + 0.019 * index / max(1, len(result)),
-               f"Сокращение по репликам: сцена {index + 1} из {len(result)}")
+        pending.append((index, event, initial, units, words, candidate_credit, collage,
+                        image_pages, frame_times, board, signature, checkpoint))
+    # The queue excludes exact native cache hits and unavailable CURRENT media;
+    # missing-media warnings still follow the native preservation path below.
+    queued = [item[0] for item in pending if item[6].is_file()]
+    positions = {index: position for position, index in enumerate(queued, 1)}
+    for (index, event, initial, units, words, candidate_credit, collage,
+         image_pages, frame_times, board, signature, checkpoint) in pending:
+        if cancelled():
+            raise InterruptedError("Обработка отменена")
+        if index in positions:
+            position = positions[index]
+            report("condense", 0.47 + 0.019 * (position-1) / len(queued),
+                   f"Сокращение по репликам: сцена {position} из {len(queued)}")
         warnings = []
         event['selection_uncertain'] = False
         event.pop('unit_selection_version', None)
@@ -622,6 +635,8 @@ def refine_story(events: list, transcript: dict, shots: list, job_dir: Path, vis
         temporary = checkpoint.with_suffix(".tmp")
         temporary.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, checkpoint)
+    if queued:
+        report("condense", .489, f"Сокращение по репликам завершено: {len(queued)} из {len(queued)}")
     return result
 
 

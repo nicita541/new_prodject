@@ -71,7 +71,7 @@ def analysis_passes(job, directory):
                             'phase': 'Не потребовалось' if record.get('reason')=='not_needed' else 'Экономный режим'}
         elif action == 'targeted':
             result[step] = {'status':'running','fraction':None,
-                            'phase':f"Выбрано фрагментов: {record.get('selected',0)} из {record.get('total',0)}"}
+                            'phase':f"Выбрано фрагментов: {record.get('selected',0)}"}
         elif action == 'cache_hit' and record.get('scope') == 'stage':
             label = {'antigravity_manual': 'Antigravity', 'deepseek_plan': 'DeepSeek',
                      'deepseek': 'DeepSeek', 'local': 'на компьютере'}.get(record.get('producer'), '')
@@ -87,24 +87,29 @@ def analysis_passes(job, directory):
     if current is None and stage in ('analyze', 'condense'):
         if 'проверка конкретного выбора' in message:
             current = 'selection_adjudication'
-        elif 'темп и титры' in message:
+        elif 'темп и титры' in message or 'проверка темпа' in message:
             current = 'pacing'
         elif 'безречевую последовательность' in message:
             current = 'silent_sequences'
         elif 'сюжетную речь' in message:
             current = 'source_roles'
-        elif 'новых событий в финале' in message:
+        elif 'новых событий в финале' in message or 'проверка финальных событий' in message:
             current = 'closing_novelty'
-        elif any(text in message for text in ('поиск титров', 'подтверждение титра', 'подтверждённой заставкой')):
+        elif any(text in message for text in ('поиск титров', 'подтверждение титра', 'подтверждённой заставкой', 'проверка титров')):
             current = 'titles'
         elif 'проверка концовок' in message:
             current = 'endings'
-        elif 'обработано событий' in message or job.get('stage') == 'global_verify':
+        elif 'сюжетные связи' in message:
+            current = 'story_structure_analysis'
+        elif 'связи реплик' in message:
+            current = 'dialogue_relations'
+        elif (any(text in message for text in ('независимая проверка', 'независимая визуальная проверка'))
+              or 'обработано событий' in message or job.get('stage') == 'global_verify'):
             current = 'global_visual_verification'
+        elif any(text in message for text in ('анализ смысловых сцен', 'смысловая сцена', 'смысловой анализ', 'смысловой фрагмент')):
+            current = 'visual_analysis'
         elif stage == 'condense':
             current = 'story_refinement'
-        elif 'анализ смысловых сцен' in message or 'смысловая сцена' in message:
-            current = 'visual_analysis'
     if current in result:
         # Earlier mandatory passes completed before this pass could start.
         # Conditional downstream passes need their own diagnostic evidence.
@@ -117,14 +122,12 @@ def analysis_passes(job, directory):
         result[current].update(status=state if state in ('failed', 'cancelled', 'interrupted', 'waiting_analysis') else 'running', fraction=None)
         if quota_wait:
             result[current]['status'] = 'waiting_analysis'
-        processed = re.search(r'обработано (?:событий|фрагментов|окон):\s*(\d+)\s+из\s+(\d+)', message)
-        counter = processed or re.search(r'(?:сцена|событие|фрагмент|проверка)\s+(\d+)\s+из\s+(\d+)', message)
-        counter = counter or re.search(r'в финале:\s*(\d+)\s*/\s*(\d+)', message)
+        counter = _message_counter(message)
         relevant = {
-            'visual_analysis': ('сцена',), 'story_refinement': ('сцена', 'фрагмент'),
-            'titles': ('титр', 'заставк'), 'closing_novelty': ('в финале',),
+            'visual_analysis': ('сцена', 'смысловой анализ', 'смысловой фрагмент'), 'story_refinement': ('сцена', 'фрагмент', 'сокращение по репликам'),
+            'titles': ('титр', 'заставк'), 'closing_novelty': ('в финале', 'финальных событий'),
             'source_roles': ('сюжетную речь',), 'endings': ('проверка концовок',),
-            'global_visual_verification': ('независимая проверка', 'проверка изображения'),
+            'global_visual_verification': ('независимая проверка', 'независимая визуальная проверка', 'проверка изображения'),
             'selection_adjudication': ('проверка конкретного выбора',),
             'final_selection_adjudication': ('проверка конкретного выбора',),
             'ending_selection_adjudication': ('проверка конкретного выбора',),
@@ -132,8 +135,8 @@ def analysis_passes(job, directory):
             'story_structure_analysis': ('сюжетные связи',),
             'dialogue_relations': ('связи реплик',)}
         if counter and any(text in message for text in relevant.get(current, ())):
-            value, total = map(int, counter.groups())
-            _counter(result[current], value if processed else value-1, total, '', 'обработано')
+            completed, total = counter
+            _counter(result[current], completed, total, '', 'обработано')
     if stage in ('framing', 'plan', 'render') or job.get('status') == 'completed':
         for step in ANALYSIS_PASSES:
             if step not in seen and result[step]['status'] == 'pending':
@@ -275,6 +278,21 @@ def _feature_count(path):
         return None
 
 
+def _message_counter(message):
+    """Completed reports and before-item indices have distinct native semantics."""
+    completed = re.search(
+        r'(?:обработано (?:целевых )?(?:событий|фрагментов|окон)|проверено фрагментов|'
+        r'завершено|завершена|завершены):\s*(\d+)\s*(?:из|/)\s*(\d+)', message, re.I)
+    if completed:
+        return tuple(map(int, completed.groups()))
+    indexed = re.search(r'(?:сцена|событие|фрагмент|кадрирование|проверка)\s+(\d+)\s+из\s+(\d+)', message, re.I)
+    indexed = indexed or re.search(r'в финале:\s*(\d+)\s*/\s*(\d+)', message, re.I)
+    if indexed:
+        value, total = map(int, indexed.groups())
+        return value-1, total
+    return None
+
+
 def _counter(row, completed, total, phase, detail):
     if type(total) is not int or total <= 0 or type(completed) is not int:
         return
@@ -398,19 +416,18 @@ def stage_progress(job, directory):
                      and isinstance(row.get('decision'), dict)}
             _counter(current, len(times), total, 'Проверка границ сцен', 'границ проверено')
     elif stage in ('analyze', 'condense', 'framing'):
-        # These coordinator reports are issued BEFORE processing the indexed
-        # item. N-1 is the work already completed, never N/total as if accepted.
+        # Native reports distinguish completed work from a before-item index.
+        # Neither convention grants acceptance to the processed model results.
         message = job.get('message', '')
         message = message if isinstance(message, str) else ''
-        processed = re.search(r'обработано событий:\s*(\d+)\s+из\s+(\d+)', message, re.I)
-        match = processed or re.search(r'(?:сцена|событие|кадрирование|проверка)\s+(\d+)\s+из\s+(\d+)', message, re.I)
-        if match:
-            completed, total = map(int, match.groups())
+        counter = _message_counter(message)
+        if counter:
+            completed, total = counter
             # Presentation never echoes free text from a provider/log/source.
             phase = PHASES.get(stage, '')
             if stage == 'condense' and 'темп' in message.lower():
                 phase = 'Проверка темпа и титров'
-            _counter(current, completed if processed else completed - 1, total, phase, 'обработано')
+            _counter(current, completed, total, phase, 'обработано')
     elif stage == 'render':
         plan = _read(directory / 'plan.json')
         counter = _render_count(directory, plan) if isinstance(plan, dict) else None
