@@ -15,6 +15,60 @@ from scripts import publish_job_progress as publisher
 
 
 class JobProgressTests(unittest.TestCase):
+    def test_quota_wait_preserves_completed_passes_and_the_actual_counter(self):
+        self.lines('timeline.jsonl',[
+            {'run_id':'current','stage':stage,'action':action}
+            for stage in ('visual_analysis','story_refinement','titles') for action in ('start','end')]+[
+            {'run_id':'current','stage':'selection_adjudication','action':'start'}])
+        job={**self.job,'stage':'analyze','message':'Лимит Antigravity; автоматически продолжим позже',
+            'provider_wait':{'reason':'quota','previous_message':'Проверка конкретного выбора · обработано событий: 50 из 129'}}
+        rows=job_progress.analysis_passes(job,self.directory)
+        self.assertEqual(rows['titles']['status'],'completed')
+        self.assertEqual(rows['selection_adjudication']['status'],'waiting_analysis')
+        self.assertEqual(rows['selection_adjudication']['completed'],50)
+        self.assertEqual(rows['selection_adjudication']['total'],129)
+        cancelled=job_progress.analysis_passes({**job,'status':'cancelled'},self.directory)
+        self.assertEqual(cancelled['selection_adjudication']['status'],'cancelled')
+
+    def test_independent_batch_messages_show_their_own_pass_and_counter(self):
+        for step,label in [('titles','Поиск титров'),
+                           ('closing_novelty','Проверка новых событий в финале'),
+                           ('source_roles','Проверяем сюжетную речь'),
+                           ('endings','Проверка концовок')]:
+            with self.subTest(step=step):
+                noun='окон' if step=='endings' else 'событий'
+                rows=job_progress.analysis_passes({**self.job,'stage':'condense',
+                    'message':f'{label} · обработано {noun}: 3 из 12'},self.directory)
+                self.assertEqual(rows[step]['status'],'running')
+                self.assertEqual(rows[step]['completed'],3)
+                self.assertEqual(rows[step]['total'],12)
+                self.assertEqual(rows[step]['fraction'],.25)
+
+    def test_legacy_waiting_stage_preserves_finished_stages_from_current_run(self):
+        self.lines('timeline.jsonl', [
+            {'run_id':'current','stage':step,'action':action}
+            for step in ('prepare','transcribe','scenes') for action in ('start','end')]+[
+            {'run_id':'current','stage':'analyze','action':'start'},
+            {'run_id':'current','stage':'analyze','action':'exception','error_type':'AnalysisPending'},
+            {'run_id':'current','stage':'analyze','action':'end'}])
+        rows=self.result(status='waiting_analysis',stage='waiting_analysis')
+        for step in ('prepare','transcribe','scenes'):
+            self.assertEqual(rows[step],{'status':'completed','fraction':1.0})
+        self.assertEqual(rows['analyze']['status'],'waiting_analysis')
+        self.assertIsNone(rows['analyze']['fraction'])
+        self.assertEqual(rows['render']['status'],'pending')
+
+    def test_preserved_waiting_milestone_and_previous_runs_do_not_fake_completion(self):
+        self.lines('timeline.jsonl',[
+            {'run_id':'old','stage':'render','action':'start'},
+            {'run_id':'current','stage':'prepare','action':'start'},
+            {'run_id':'current','stage':'prepare','action':'end'},
+            {'run_id':'current','stage':'transcribe','action':'start'}])
+        rows=self.result(status='waiting_analysis',stage='waiting_analysis',waiting_stage='transcribe')
+        self.assertEqual(rows['prepare']['status'],'completed')
+        self.assertEqual(rows['transcribe']['status'],'waiting_analysis')
+        self.assertEqual(rows['scenes']['status'],'pending')
+
     def test_failed_gate_does_not_show_rejected_passes_as_completed(self):
         self.lines('timeline.jsonl', [{'stage': step, 'action': action, 'run_id': 'current'}
                    for step in ('story_structure_analysis', 'dialogue_relations') for action in ('start', 'end')])

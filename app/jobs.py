@@ -453,30 +453,144 @@ class JobManager:
             raise ValueError("DeepSeek не настроен. Доступен локальный анализ.")
 
     def create(self, source_id: str, analysis_provider: str = "local",
-               layout: str = "portrait", caption_style: str = "classic", episode_id: str | None = None) -> dict:
+               layout: str = "portrait", caption_style: str = "classic", episode_id: str | None = None,
+               processing_mode: str = "full", reuse_job_id: str | None = None,
+               correction_request: dict | None = None, economy_mode: bool = True) -> dict:
         with self.mutex:
+            from .processing import validate_mode, inherit_checkpoints, cached_analysis, source_digest
+            if type(economy_mode) is not bool:
+                raise ValueError('Экономный режим должен быть включён или выключен')
+            validate_mode(processing_mode)
             from .editing import validate_options
             options = validate_options(layout, caption_style)
             if episode_id is not None:
                 validate_id(episode_id)
             self._assert_available()
-            self._check_analysis_provider(analysis_provider)
+            if processing_mode != 'plan_only':
+                self._check_analysis_provider(analysis_provider)
             source = self.source(source_id)
+            previous = None
+            if processing_mode != 'full':
+                candidates = [self.get(reuse_job_id)] if reuse_job_id else self.list_jobs()
+                digest = source_digest(Path(source['path']))
+                legacy_owners = read_json(self.data/'library.json', {}).get('legacy_jobs', {})
+                for candidate in candidates:
+                    old_dir = self.job_dir(candidate['id'])
+                    old_source = read_json(old_dir / 'source.json', {})
+                    candidate_owner = candidate.get('episode_id', legacy_owners.get(candidate['id']))
+                    same_owner = (candidate_owner == episode_id if episode_id else
+                                  candidate.get('episode_id') is None)
+                    if not same_owner or old_source.get('path') != source['path']:
+                        if reuse_job_id:
+                            raise ValueError('Задание кэша принадлежит другой серии или исходнику')
+                        continue
+                    if candidate['status'] not in TERMINAL:
+                        continue
+                    try:
+                        if read_json(old_dir / 'analysis.meta.json', {}).get('source') != digest:
+                            continue
+                        if processing_mode == 'plan_only':
+                            if (candidate.get('analysis_provider', 'local') != analysis_provider
+                                    or candidate.get('layout', 'portrait') != layout):
+                                continue
+                            cached_analysis(old_dir, Path(source['path']))
+                    except (ValueError, OSError, TypeError):
+                        continue
+                    previous = candidate
+                    break
+                if processing_mode == 'plan_only' and previous is None:
+                    raise ValueError('Нет подходящего сохранённого анализа. Сначала выполните полный монтаж или обновление по изменениям.')
             identifier = str(uuid.uuid4())
             directory = self.jobs / identifier
             directory.mkdir()
+            copied = []
+            if previous:
+                copied = inherit_checkpoints(self.job_dir(previous['id']), directory,
+                                             plan_only=processing_mode == 'plan_only')
             atomic_json(directory / "source.json", source)
-            atomic_json(directory / "analysis-settings.json", {"provider": analysis_provider})
+            previous_settings = read_json(self.job_dir(previous['id']) / 'analysis-settings.json', {}) if previous else {}
+            if previous and processing_mode == 'plan_only':
+                economy_mode = previous_settings.get('economy_mode', True)
+            # Preserve supplied transcript provenance, never manual exchange state.
+            analysis_settings = {key: previous_settings[key] for key in
+                                 ('transcript_mode', 'transcript_source_sha256') if key in previous_settings}
+            atomic_json(directory / "analysis-settings.json", {**analysis_settings, "provider": analysis_provider,
+                                                               "economy_mode": economy_mode})
             atomic_json(directory / "render-settings.json", options)
+            previous_processing = read_json(self.job_dir(previous['id'])/'processing-settings.json', {}) if previous else {}
+            response_cache_jobs = previous_processing.get('response_cache_jobs', [])
+            if previous and previous_processing.get('mode') == 'full':
+                response_cache_jobs = [previous['id'], *response_cache_jobs]
+            atomic_json(directory / 'processing-settings.json', {
+                'mode': processing_mode, 'reuse_job_id': previous['id'] if previous else None,
+                'response_cache_jobs': response_cache_jobs, 'inherited_files': copied})
             job = {"id": identifier, "source_name": source["name"], "status": "queued",
                    "stage": "queued", "progress": 0.0, "message": "Ожидание запуска",
                    "created_at": now(), "updated_at": now(), "error": None,
-                   "outputs": [], "cancel_requested": False, "analysis_provider": analysis_provider,
-                   **options}
+                   "outputs": [], "cancel_requested": False, "analysis_provider": analysis_provider, "economy_mode": economy_mode,
+                   'processing_mode': processing_mode,
+                   'reuse_job_id': previous['id'] if previous else None, **options}
             if episode_id is not None:
                 job['episode_id'] = episode_id
+            if correction_request is not None:
+                job['feedback_parent_job_id'] = correction_request['parent_job_id']
+                job['feedback_operation_id'] = correction_request['operation_id']
+                atomic_json(directory/'correction-request.json', correction_request)
+                from .processing import cached_analysis
+                atomic_json(directory/'correction-base-analysis.json', cached_analysis(directory, Path(source['path'])))
+                atomic_json(directory/'correction-base-plan.json', read_json(directory/'plan.json'))
+                journal = self.job_dir(correction_request['parent_job_id'])/'feedback'/(
+                    validate_id(correction_request['operation_id'])+'.json')
+                atomic_json(journal, {**correction_request, 'job_id': identifier, 'created_at': now()})
             atomic_json(directory / "job.json", job)
             return self._start(job)
+
+    def create_feedback(self, identifier: str, operation_id: str, text: str,
+                        part_index: int, source_time: float | None = None) -> dict:
+        with self.mutex:
+            from .processing import cached_analysis
+            from .review_feedback import validate_request, digest, history
+            directory = self.job_dir(identifier)
+            parent = self.get(identifier)
+            if parent['status'] != 'completed':
+                raise ValueError('Замечание можно отправить к завершённому монтажу')
+            operation_id = validate_id(operation_id)
+            plan = read_json(directory/'plan.json')
+            if not isinstance(plan, dict) or not plan.get('parts'):
+                raise ValueError('Сохранённый план монтажа не найден')
+            request = {**validate_request(text, part_index, source_time, plan),
+                       'operation_id': operation_id, 'parent_job_id': identifier}
+            journal = directory/'feedback'/(operation_id+'.json')
+            existing = read_json(journal)
+            if existing is not None:
+                if any(existing.get(key) != value for key, value in request.items()):
+                    raise ValueError('Идентификатор замечания уже использован для другого запроса')
+                return self.get(existing['job_id'])
+            self._assert_available()
+            catalog = read_json(self.data/'library.json', {})
+            owner = parent.get('episode_id') or catalog.get('legacy_jobs', {}).get(identifier)
+            episode = catalog.get('episodes', {}).get(owner, {})
+            project = catalog.get('projects', {}).get(episode.get('project_id'), {})
+            if episode.get('archived_at') or project.get('archived_at'):
+                raise ValueError('Сначала восстановите серию или проект из корзины')
+            source = read_json(directory/'source.json')
+            source_id = next((i for i, row in self.sources.items() if row['path'] == source['path']), None)
+            if source_id is None:
+                raise ValueError('Исходник этого монтажа больше не зарегистрирован')
+            registered = self.source(source_id)
+            analysis = cached_analysis(directory, Path(registered['path']))
+            from .planner import validate_plan
+            validate_plan(plan, analysis)
+            from .processing import source_digest
+            request.update(base_analysis_digest=digest(analysis), base_plan_digest=digest(plan),
+                           source_sha256=source_digest(Path(source['path'])))
+            request['context_messages'] = [{'text': item['text'][:300], 'reply': item['reply'][:300],
+                                            'part_index': item['part_index']}
+                                           for item in history(self, identifier)['messages'][-4:]]
+            return self.create(source_id, parent.get('analysis_provider', 'local'),
+                parent.get('layout', 'portrait'), parent.get('caption_style', 'classic'),
+                episode_id=owner, processing_mode='incremental',
+                reuse_job_id=identifier, correction_request=request)
 
     def _assert_available(self):
         if self.closed or self.shutdown_requested:
@@ -490,6 +604,8 @@ class JobManager:
 
     def _start(self, job: dict) -> dict:
         directory = self.job_dir(job["id"])
+        from .antigravity_runner import configure_default
+        configure_default(directory,job.get('analysis_provider','local'))
         (directory / ".cancel").unlink(missing_ok=True)
         job.update(status="running", error=None, outputs=[], cancel_requested=False,
                    message="Запуск обработки", updated_at=now())
@@ -540,10 +656,10 @@ class JobManager:
                     if self.active and self.active[1] is child:
                         self.active = None
 
-    def cancel(self, identifier: str) -> dict:
+    def cancel(self, identifier: str, *, stop_terminal=False) -> dict:
         with self.mutex:
             job = self.get(identifier)
-            if job["status"] in TERMINAL:
+            if job["status"] in TERMINAL and (not stop_terminal or job['status'] == 'completed'):
                 return job
             try:
                 (self.job_dir(identifier) / ".cancel").touch()
@@ -572,6 +688,87 @@ class JobManager:
                     self.pending_states[identifier] = dict(job)
                     LOGGER.exception("Отмена выполнена, но не удалось сохранить статус задания %s", identifier)
             return job
+
+    def change_analysis_provider(self, identifier: str, provider: str, *, resume=False, remember=None) -> dict:
+        """Stop only the owned worker before banking/switching and optional resume."""
+        with self.mutex:
+            job = self.get(identifier)
+            if job['status'] == 'completed':
+                raise BusyError('Готовое задание менять нельзя; создайте новое обновление')
+            if self.closed or self.shutdown_requested:
+                raise BusyError('Приложение завершает работу')
+            if self.active and self.active[0] != identifier:
+                raise BusyError('Сейчас обрабатывается другая серия')
+            if any(self.finishing_tasks.values()):
+                raise BusyError('Дождитесь завершения предпросмотра или экспорта')
+            if not resume and job['status'] not in TERMINAL:
+                raise BusyError('Сначала остановите обработку или выберите переключение с продолжением')
+            # A missing key/unsupported destination cannot cancel healthy work.
+            self._check_analysis_provider(provider)
+            directory = self.job_dir(identifier)
+            if resume:
+                source = read_json(directory / 'source.json', {})
+                if not source.get('path') or not contained(Path(source['path']), self.root).is_file():
+                    raise ValueError('Исходная серия больше недоступна')
+            old = job.get('analysis_provider', 'local')
+            if old == provider:
+                if resume and job['status'] in TERMINAL and self.active and self.active[0] == identifier:
+                    self.cancel(identifier, stop_terminal=True)
+                return self.retry(identifier) if resume and job['status'] in TERMINAL else job
+            if job['status'] not in TERMINAL or (self.active and self.active[0] == identifier):
+                job = self.cancel(identifier, stop_terminal=True)
+                # Completion can race the request; never mutate a finished run.
+                if job['status'] == 'completed':
+                    raise BusyError('Монтаж уже завершён; создайте новое обновление')
+            from .antigravity_exchange import preserve_provider_checkpoints
+            preserve_provider_checkpoints(directory, old, provider)
+            from .analysis_continuation import enable_continuation
+            enable_continuation(directory, old, provider)
+            settings = read_json(directory / 'analysis-settings.json', {})
+            atomic_json(directory / 'analysis-settings.json', {**settings, 'provider': provider})
+            job.update(analysis_provider=provider, provider_wait=None, error=None,
+                       updated_at=now(), message='Способ анализа изменён. Сохранённые этапы доступны для продолжения.')
+            atomic_json(directory / 'job.json', job)
+            if remember is not None:
+                remember()
+            return self.retry(identifier) if resume else job
+
+    def change_analysis_economy(self, identifier: str, enabled: bool, *, resume=False, remember=None) -> dict:
+        """Change pass policy only after draining this job's owned worker."""
+        with self.mutex:
+            if type(enabled) is not bool:
+                raise ValueError('Экономный режим должен быть включён или выключен')
+            job = self.get(identifier)
+            if job['status'] == 'completed' or job.get('processing_mode') == 'plan_only':
+                raise BusyError('Режим проверок меняется только для незавершённого анализа')
+            if self.closed or self.shutdown_requested:
+                raise BusyError('Приложение завершает работу')
+            if self.active and self.active[0] != identifier:
+                raise BusyError('Сейчас обрабатывается другая серия')
+            if any(self.finishing_tasks.values()):
+                raise BusyError('Дождитесь завершения предпросмотра или экспорта')
+            if job['status'] not in TERMINAL and not resume:
+                raise BusyError('Сначала остановите обработку или выберите продолжение')
+            directory = self.job_dir(identifier)
+            if not Path(read_json(directory / 'source.json')['path']).is_file():
+                raise ValueError('Исходное видео недоступно')
+            if resume:
+                self._check_analysis_provider(job.get('analysis_provider', 'local'))
+            if job['status'] not in TERMINAL or (self.active and self.active[0] == identifier):
+                job = self.cancel(identifier, stop_terminal=True)
+                if job['status'] == 'completed':
+                    raise BusyError('Монтаж уже завершён')
+            settings = read_json(directory / 'analysis-settings.json', {})
+            atomic_json(directory / 'analysis-settings.json', {**settings, 'economy_mode': enabled})
+            from .analysis_continuation import enable_continuation
+            provider = job.get('analysis_provider', 'local')
+            enable_continuation(directory, provider, provider)
+            job.update(economy_mode=enabled, updated_at=now(),
+                       message='Экономный режим включён.' if enabled else 'Включены все проверки.')
+            atomic_json(directory / 'job.json', job)
+            if remember is not None:
+                remember()
+            return self.retry(identifier) if resume else job
 
     def retry(self, identifier: str) -> dict:
         with self.mutex:

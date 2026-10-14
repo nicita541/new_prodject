@@ -200,14 +200,10 @@ def _reasons(event):
             or event.get('understanding_status') in ('unresolved', 'needs_review', 'recovery_required')
             or event.get('confidence_status') in ('needs_review', 'recovery_required')):
         reasons.append('recovery_required')
-    if event.get('narrative_bridge'):
-        reasons.append('narrative_bridge')
     if (event.get('local_conflict') or event.get('conflicting_decisions') or event.get('local_conflicting_decisions')
             or event.get('recovery_summary') and event.get('local_summary')
             and event['recovery_summary'] != event['local_summary']):
         reasons.append('conflicting_local_decisions')
-    if event.get('importance', 0) >= 4:
-        reasons.append('high_importance')
     return reasons
 
 
@@ -367,8 +363,8 @@ def verify_global_visual(source, events, transcript, shots, job_dir, vision, rep
     if len(set(ids)) != len(ids):
         raise ValueError('Повторяющиеся события независимой проверки')
     stat = source.stat()
-    with source.open('rb') as stream:
-        source_digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+    from .source_identity import source_identity as cached_source_identity
+    source_digest = cached_source_identity(source, cancelled)['sha256']
     diagnostics = Diagnostics(job_dir)
     lock = threading.RLock()
     class LockedDiagnostics:
@@ -414,8 +410,8 @@ def _verify_global_visual(source, events, transcript, shots, job_dir, vision, re
         raise InterruptedError('Обработка отменена')
     if _context is None:
         stat = source.stat()
-        with source.open('rb') as stream:
-            source_digest = hashlib.file_digest(stream,'sha256').hexdigest()
+        from .source_identity import source_identity as cached_source_identity
+        source_digest = cached_source_identity(source, cancelled)['sha256']
         source_identity = {'path': str(source), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
                            'ctime_ns':stat.st_ctime_ns,'sha256':source_digest}
         diagnostics = Diagnostics(job_dir)
@@ -483,16 +479,27 @@ def _verify_global_visual(source, events, transcript, shots, job_dir, vision, re
                 stem = f'{event["id"]}_chunk_{number:03d}' if event.get('analysis_chunks') else event['id']
                 image, pages, board = _board(stem, visual_dir)
                 contexts, context_images = {}, []
+                context_reasons = set(event.get('uncertainty_reasons', []))
+                needs_context = bool(context_reasons &
+                                     {'missing_context', 'location_unclear', 'transition_unclear', 'asr_conflict'})
+                needs_context_images = bool(context_reasons &
+                                            {'missing_context', 'location_unclear', 'transition_unclear'})
                 for neighbor_index, label, filename in ((index-1, 'BEFORE', 'previous'), (index+1, 'AFTER', 'next')):
-                    if not 0 <= neighbor_index < len(original):
+                    if not needs_context or not 0 <= neighbor_index < len(original):
                         contexts[label] = None
                         continue
                     neighbor = original[neighbor_index]
+                    if ((label == 'BEFORE' and abs(neighbor['end']-event['start']) > .002)
+                            or (label == 'AFTER' and abs(event['end']-neighbor['start']) > .002)):
+                        contexts[label] = None
+                        continue
                     a, b = ((max(neighbor['start'], neighbor['end']-8), neighbor['end']) if label == 'BEFORE'
                             else (neighbor['start'], min(neighbor['end'], neighbor['start']+8)))
                     contexts[label] = {'role': 'context_only', 'event_id': neighbor['id'],
                                        'transcript': _transcript(transcript, a, b)}
                     context_image = visual_dir / f'{event["id"]}_{filename}.jpg'
+                    if not needs_context_images:
+                        continue
                     if context_image.is_file():
                         _, context_pages, _ = _board(f'{event["id"]}_{filename}', visual_dir)
                         context_images.append((label, context_pages[-1] if label == 'BEFORE' else context_pages[0]))
@@ -520,16 +527,21 @@ def _verify_global_visual(source, events, transcript, shots, job_dir, vision, re
                     chunk_analysis = local_chunks[number] if number < len(local_chunks) else event
                     payload = {'HYPOTHESES': {'local_summary': chunk_analysis.get('local_summary',hypothesis),
                                'recovery_summary': chunk_analysis.get('recovery_summary'), 'current_chunk': hypothesis,
-                               'prior_selected_ranges':[r for r in original[index].get('selected_ranges',[])
-                                   if r['start'] < chunk['end'] and r['end'] > chunk['start']],
+                               'prior_selected_ranges':[{'start':max(r['start'],u['start']),
+                                   'end':min(r['end'],u['end'])}
+                                   for r in original[index].get('selected_ranges',[]) for u in visible_units
+                                   if r['start'] < u['end'] and r['end'] > u['start']],
                                'prior_unit_evidence':[r for r in original[index].get('unit_evidence',[])
                                    if r.get('unit') in {u['id'] for u in visible_units}],
-                               'reassessment_required_units':proven},
+                               'reassessment_required_units':{u['id']:proven[u['id']] for u in visible_units
+                                                              if u['id'] in proven}},
                                'BEFORE': contexts.get('BEFORE'), 'CURRENT': {'role': 'verify',
                                'event_id': event['id'], 'scene_id': event.get('scene_id'), 'chunk': chunk,
                                'units': visible_units, 'frames': visible,
-                               'transcript': _transcript(transcript, chunk['start'], chunk['end']),
-                               'confirmed_nonstory_ranges': exclusions}, 'AFTER': contexts.get('AFTER'),
+                               'transcript': _transcript(transcript, min(u['start'] for u in visible_units),
+                                                         max(u['end'] for u in visible_units)),
+                               'confirmed_nonstory_ranges': [r for r in exclusions if
+                                   any(r['start'] < u['end'] and u['start'] < r['end'] for u in visible_units)]}, 'AFTER': contexts.get('AFTER'),
                                'image_order': ['CURRENT'] * len(current_pages) + [label+' CONTEXT ONLY' for label, _ in context_images]}
                     prompt = GLOBAL_VISUAL_PROMPT + '\n' + json.dumps(payload, ensure_ascii=False)
                     images = [*current_pages, *(p for _, p in context_images)]

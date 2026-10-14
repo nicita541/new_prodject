@@ -63,6 +63,8 @@ class ClosingTests(unittest.TestCase):
 
     def test_recaps_removed_only_after_ending_anchor_and_office_unchanged(self):
         directory, events, source = fixture()
+        events[2]['closing_candidate'] = True
+        events[2]['requires'] = ['office']
         original = copy.deepcopy(events)
         result, vision = self.run_closing(directory, events,
             [decision(['u001'], ['u000']), decision(['u000','u001'], [])], shots=[{'start':85}, {'start':95}])
@@ -142,12 +144,13 @@ class ClosingTests(unittest.TestCase):
         prior = [{**events[0], 'id':f'fact_{i}', 'start':i, 'end':i+1,
                   'summary':f'Chronological new event {i} ' + 'long detail '*80} for i in range(50)]
         events = prior + [{**events[1], 'start':50,'end':60,'selected_ranges':[{'start':50,'end':60}]}]
+        events[-1]['requires'] = ['fact_0','fact_49']
         result, vision = self.run_closing(directory, events, [decision(['u000'], [])])
         self.assertTrue(result[-1]['credit_montage'])
         prompt = vision.calls[0][0]
         self.assertLessEqual(vision.token_count(prompt), 5300)
         self.assertLess(prompt.index('fact_0'), prompt.index('fact_49'))
-        self.assertGreater(vision.counts[0], 5300)
+        self.assertNotIn('fact_25', prompt)
 
     def test_cached_decisions_invalidate_prior_image_source_and_thinking(self):
         directory, events, source = fixture()
@@ -230,6 +233,7 @@ class ClosingTests(unittest.TestCase):
         directory, events, source = fixture()
         events[1].pop('contains_credits')
         events[1].pop('credits_kind')
+        events[2]['closing_candidate'] = True
         title = {**events[2], 'id':'title', 'start':100, 'end':110,
                  'selected_ranges':[{'start':100, 'end':110}]}
         events.append(title)

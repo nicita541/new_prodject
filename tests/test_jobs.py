@@ -101,7 +101,7 @@ class JobTests(unittest.TestCase):
         with patch.dict(sys.modules, {"app.deepseek": client}):
             job = self.manager.create(self.source_id)
         self.assertEqual(job["analysis_provider"], "local")
-        self.assertEqual(read_json(self.manager.job_dir(job["id"]) / "analysis-settings.json"), {"provider": "local"})
+        self.assertEqual(read_json(self.manager.job_dir(job["id"]) / "analysis-settings.json"), {"provider": "local", "economy_mode": True})
         client.public_status.assert_not_called()
         client.check_connection.assert_not_called()
 
@@ -125,7 +125,7 @@ class JobTests(unittest.TestCase):
                     job = self.manager.create(self.source_id, "hybrid")
                     directory = self.manager.job_dir(job["id"])
                     self.assertEqual(job["analysis_provider"], "hybrid")
-                    self.assertEqual(read_json(directory / "analysis-settings.json"), {"provider": "hybrid"})
+                    self.assertEqual(read_json(directory / "analysis-settings.json"), {"provider": "hybrid", "economy_mode": True})
                     self.manager.cancel(job["id"])
                     # Recovery must retain the chosen provider across a server restart.
                     self.manager.close()
@@ -133,7 +133,7 @@ class JobTests(unittest.TestCase):
                     retried = self.manager.retry(job["id"])
                     self.assertEqual(retried["analysis_provider"], "hybrid")
                     self.assertEqual(retried["status"], "running")
-                    self.assertEqual(read_json(directory / "analysis-settings.json"), {"provider": "hybrid"})
+                    self.assertEqual(read_json(directory / "analysis-settings.json"), {"provider": "hybrid", "economy_mode": True})
                     self.manager.cancel(job["id"])
                 client.public_status.assert_not_called()
                 client.check_connection.assert_not_called()
@@ -143,7 +143,7 @@ class JobTests(unittest.TestCase):
         with patch.dict(sys.modules, {'app.deepseek':client}):
             job=self.manager.create(self.source_id,'deepseek_plan')
             directory=self.manager.job_dir(job['id'])
-            self.assertEqual(read_json(directory/'analysis-settings.json'),{'provider':'deepseek_plan'})
+            self.assertEqual(read_json(directory/'analysis-settings.json'),{'provider':'deepseek_plan','economy_mode':True})
             self.manager.cancel(job['id'])
             self.assertEqual(self.manager.retry(job['id'])['analysis_provider'],'deepseek_plan')
         client.check_connection.assert_not_called()

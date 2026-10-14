@@ -464,18 +464,30 @@ def _select_boundary_verifications(candidates: list[dict], window_seconds=SEMANT
         target = strong if important else weak
         if slot not in target or priority > target[slot][0]:
             target[slot] = (priority, round(timestamp, 6))
-    selected = {value[1] for value in strong.values()}
+    protected = {round(float(row['time']), 6) for row in candidates
+                 if row['measured']['classification'] == 'ambiguous_boundary'
+                 and ('state_probe' in (row['proposal'].get('origins') or [])
+                      or (row['measured'].get('asr_continuity') or {}).get('dialogue_break'))}
+    selected = {timestamp for _, timestamp in strong.values() if timestamp in protected}
+    # Bucket edges are arbitrary: two almost coincident candidates must not
+    # each trigger a verification just because their bucket numbers differ.
+    for _, timestamp in sorted(strong.values(), reverse=True):
+        if not any(abs(timestamp-evidence) < window_seconds-1e-6 for evidence in selected):
+            selected.add(timestamp)
     # A strong transition already supplies local visual evidence; don't also
     # send a neighbouring weak camera-cut hypothesis to the same model.
-    for _, timestamp in weak.values():
-        if not any(abs(timestamp - evidence) < window_seconds for evidence in selected):
+    weak_selected = set()
+    for _, timestamp in sorted(weak.values(), reverse=True):
+        if (not any(abs(timestamp - evidence) < window_seconds-1e-6 for evidence in selected)
+                and not any(abs(timestamp-evidence) < weak_window_seconds-1e-6 for evidence in weak_selected)):
+            weak_selected.add(timestamp)
             selected.add(timestamp)
     return selected
 
 
 def production_boundaries(source, source_shots, features, transcript, job_dir, vision, cancelled, config,
                           audio_features=None):
-    from .semantic_boundary import classify_boundary, embedding_distance, verify_boundary
+    from .semantic_boundary import classify_boundary, embedding_distance, verify_boundaries
     from .pipeline_diagnostics import Diagnostics
     intervals = _candidate_segments(source_shots)
     proofs = {}
@@ -516,6 +528,10 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
                       high_signal=sum(_high_signal_boundary(row) for row in candidates),
                       interval_seconds=SEMANTIC_VLM_WINDOW_SECONDS,
                       weak_interval_seconds=SEMANTIC_VLM_WEAK_WINDOW_SECONDS)
+    checked = (verify_boundaries(source,[row for row in assessments
+               if row['measured']['classification'] == 'ambiguous_boundary'
+               and round(row['time'],6) in selected],transcript,job_dir,vision,cancelled)
+               if vision is not None else {})
     for row in assessments:
         if cancelled():
             raise InterruptedError('Обработка отменена')
@@ -539,8 +555,7 @@ def production_boundaries(source, source_shots, features, transcript, job_dir, v
                      'source': 'triage_deferred', 'level_a': measured,
                      'reasons': ['deferred_for_scene_analysis']}
         else:
-            proof = verify_boundary(source, current_time, row['before'], row['after'], transcript,
-                                    measured, job_dir, vision, cancelled)
+            proof = checked[round(current_time,6)]
             trusted = not proof.get('uncertain', True) and proof.get('confidence', 0) >= .88
             physical = any(proof.get(key) for key in ('physical_transition', 'character_state_changed', 'object_state_changed'))
             proof['accepted'] = trusted and bool(proof.get('location_changed') or physical)
@@ -884,8 +899,9 @@ def scene_checkpoint(source: Path, fingerprint: str, duration: float, shots: lis
                 'semantic_component': component_identity('scene_detector'),
                 'boundary_model': None}
     if perception is not None and vision is not None:
-        from .semantic_boundary import _identity
+        from .semantic_boundary import _identity, _batch_capacity
         identity['boundary_model'] = _identity(vision)
+        identity['boundary_batch_capacity'] = _batch_capacity(vision)
     path, meta = job_dir / 'scenes.json', job_dir / 'scenes.meta.json'
     scenes = None if force_boundary_review else _cached(path, meta, identity)
     scene_hit = scenes is not None

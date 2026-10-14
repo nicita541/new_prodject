@@ -10,14 +10,14 @@ from app.source_roles import confirmed_exclusions
 from app.source_ranges import merge_ranges
 from app.source_ranges import subtract_ranges as _subtract
 
-VERSION = 4
+VERSION = 5
 
 
 def _cost(ranges):
     return sum(r['end']-r['start'] for r in merge_ranges(ranges))
 
 
-def _source_candidates(events, candidate_ranges, ranked_ids, arcs, budget):
+def _source_candidates(events, candidate_ranges, ranked_ids, arcs, budget, transcript):
     """Rank real arc ranges rather than duplicating their shared parent scene."""
     rank = {identifier:index for index,identifier in enumerate(ranked_ids)}
     candidates, assigned = [], {}
@@ -43,7 +43,12 @@ def _source_candidates(events, candidate_ranges, ranked_ids, arcs, budget):
             if pieces:
                 candidates.append({'id':identifier+':'+unit['id'], 'ranges':{identifier:pieces},
                     'reason':'ranked_verified_source_unit', 'rank':rank[identifier], 'start':unit['start']})
-    return sorted(candidates, key=lambda row:(row['rank'], row['start'], row['id']))
+    from app.viewer_interest import score_source, interest_index
+    interest = interest_index(events, transcript)
+    for row in candidates:
+        row['score_components'] = score_source(events, row['ranges'], transcript, index=interest)
+    return sorted(candidates, key=lambda row:(-row['score_components']['total'],
+                                              row['rank'], row['start'], row['id']))
 
 
 def mandatory_ranges(events):
@@ -90,7 +95,7 @@ def _covers_positive(event, pieces):
 
 
 def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, duration,
-                       budget, resolve_continuity):
+                       budget, resolve_continuity, *, speech_overrides=()):
     """Evaluate each optional addition including its required continuity cost.
 
     Actual compressed ranges are supplied by the planner. This helper never
@@ -106,7 +111,7 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
 
     def actual_cost(ranges):
         core = [r for pieces in ranges.values() for r in pieces]
-        return _cost(expand_ranges(core,transcript,duration,barriers(source,core)))
+        return _cost(expand_ranges(core,transcript,duration,barriers(source,core),overrides=speech_overrides))
 
     def evaluate(ranges):
         prepared = copy.deepcopy(source)
@@ -129,7 +134,7 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
     seed_overflow = False
     oversized_seed = None
     source_scoped = any(arc.get('source_unit_refs') for arc in arcs)
-    candidates = _source_candidates(source, candidate_ranges, ranked_ids, arcs, budget) if source_scoped else [
+    candidates = _source_candidates(source, candidate_ranges, ranked_ids, arcs, budget, transcript) if source_scoped else [
         {'id':identifier} for identifier in ranked_ids]
     for candidate in candidates:
         identifier = candidate['id']
@@ -155,6 +160,8 @@ def allocate_retention(events, candidate_ranges, ranked_ids, arcs, transcript, d
         history.append({'candidate':identifier, 'group':sorted(group), 'duration_including_context':cost,
             'accepted':not chosen or cost <= budget['max']+.002,
             'required_bridges':copy.deepcopy(next_continuity['bridges'])})
+        if 'score_components' in candidate:
+            history[-1]['score_components'] = copy.deepcopy(candidate['score_components'])
         if source_scoped and not chosen and cost > budget['max']+.002:
             # Prefer another complete source arc that fits, including its real
             # continuity cost. Keep the indivisible first arc as a last seed.

@@ -10,6 +10,9 @@ from pathlib import Path
 
 class PartContextTests(unittest.TestCase):
     def setUp(self):
+        policy = patch('app.analysis_checks.economy_mode', return_value=False)
+        policy.start()
+        self.addCleanup(policy.stop)
         self.part = {'index': 1, 'cuts': [{'start': 10, 'end': 18}, {'start': 22, 'end': 30}],
                      'subtitles': [{'text': 'Герой приходит в магазин.'}, {'text': 'Кассир его приветствует.'}]}
         self.events = [
@@ -72,8 +75,10 @@ class PartContextTests(unittest.TestCase):
                 self.assertEqual(factory.call_args.args[2], 'deepseek_plan')
                 self.assertNotIn('Секрет', vision.query.call_args.args[0])
                 self.assertNotIn('Герой заходит в магазин после работы.', vision.query.call_args.args[0])
-                generate(plan, base, lambda *args: None, lambda: False)
+                with patch('app.analysis_checks.economy_mode', return_value=True):
+                    generate(plan, base, lambda *args: None, lambda: False)
                 self.assertEqual(vision.query.call_count, 1)
+                self.assertEqual(plan['parts'][0]['cover_context']['method'], 'model')
                 plan['parts'][0]['subtitles'][0]['text'] = 'Он ищет другой магазин.'
                 generate(plan, base, lambda *args: None, lambda: False)
                 self.assertEqual(vision.query.call_count, 2)
@@ -147,6 +152,7 @@ class PartContextTests(unittest.TestCase):
                     patch('app.vision.vision_session', return_value=session), \
                     patch('app.part_context.frames', return_value=None), \
                     patch('app.pipeline.render_part', side_effect=render) as renderer, \
+                    patch('app.pipeline.prepare_clean_part', side_effect=lambda s, p, pr, *a: (s, p, pr, False)), \
                     patch('app.pipeline.choose_encoder', return_value='libx264'), \
                     patch('app.pipeline.validate_export'):
                 run_job(base, lambda *args: None, lambda: False)

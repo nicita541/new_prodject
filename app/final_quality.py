@@ -33,7 +33,7 @@ def _confidence(value):
     return type(value) in (int,float) and math.isfinite(value) and .9<=value<=1
 
 
-def _source_part_endings(events,transcript,parts,arcs):
+def _source_part_endings(events,transcript,parts,arcs,*,speech_overrides=()):
     """Resolve each actual part end from original source proofs, never plan claims."""
     from .story_structure_pass import source_units,_quote_in
     from .speech_handles import ending_matches
@@ -57,7 +57,7 @@ def _source_part_endings(events,transcript,parts,arcs):
                 for s in supports for p in node['proofs']))
             pieces=[{'start':max(node['start'],r['start']),'end':min(node['end'],r['end'])}
                 for r in arc.get('source_ranges',[]) if node and node['start']<r['end'] and node['end']>r['start']]
-            if ((abs(arc['end']-boundary)<=.002 or ending_matches(arc['end'],boundary,transcript,part['cuts'])) and arc.get('complete_ending') is True
+            if ((abs(arc['end']-boundary)<=.002 or ending_matches(arc['end'],boundary,transcript,part['cuts'],overrides=speech_overrides)) and arc.get('complete_ending') is True
                     and arc.get('ending_verified') is True and arc.get('uncertain') is False
                     and proof.get('supported') is True and _confidence(proof.get('confidence'))
                     and supported and pieces and _covers(part['cuts'],pieces)):
@@ -73,7 +73,7 @@ def _source_part_endings(events,transcript,parts,arcs):
                 proof=ending.get('verification') or {}
                 time=ending.get('time')
                 if (type(time) in (int,float) and math.isfinite(time)
-                        and (abs(time-boundary)<=.002 or ending_matches(time,boundary,transcript,part['cuts']))
+                        and (abs(time-boundary)<=.002 or ending_matches(time,boundary,transcript,part['cuts'],overrides=speech_overrides))
                         and ending.get('kind') in ('closure','cliffhanger','transition')
                         and _confidence(ending.get('confidence')) and proof.get('supported') is True
                         and _confidence(proof.get('confidence')) and proof.get('evidence')
@@ -148,7 +148,8 @@ def inspect_final_quality(analysis, plan=None):
     if production:
         from .story_structure import build_story_arcs
         arcs=build_story_arcs(events,transcript)
-        source_endings=_source_part_endings(events,transcript,plan['parts'],arcs)
+        source_endings=_source_part_endings(events,transcript,plan['parts'],arcs,
+                                          speech_overrides=analysis.get('speech_handle_overrides', []))
         for part in plan['parts']:
             if part['index'] not in source_endings:
                 add('missing_original_semantic_ending','planner',part=part['index'],source_time=part['cuts'][-1]['end'])
@@ -166,7 +167,8 @@ def inspect_final_quality(analysis, plan=None):
     if production:
         from .speech_handles import semantic_ranges
         try:
-            retained = semantic_ranges(plan,events,transcript,analysis['probe']['duration'])
+            retained = semantic_ranges(plan,events,transcript,analysis['probe']['duration'],
+                                       overrides=analysis.get('speech_handle_overrides', []))
         except (ValueError,KeyError,TypeError):
             add('invalid_speech_handles','planner')
     # Every retained source span needs specific positive proof, with ASR

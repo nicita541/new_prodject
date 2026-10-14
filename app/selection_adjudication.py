@@ -179,8 +179,38 @@ def issues(event):
         questions.append('Какие CURRENT units показывают причину и переход между состояниями до и после действия?')
     if event.get('protected_atmosphere_units') or event.get('protected_atmosphere_ranges'):
         questions.append('Где видна конкретная реакция, эмоциональная пауза или развязка шутки, а где только нейтральное изображение?')
-    questions.append('Какие конкретные cause/question/response units нужны для понимания выбранного действия или ответа?')
+    if any(str(u.get('text', '')).strip() for u in event.get('units', [])):
+        questions.append('Какие конкретные cause/question/response units нужны для понимания выбранного действия или ответа?')
+    if not questions:
+        questions.append('Какие конкретные исходные доказательства разрешают спорный выбор CURRENT?')
     return list(dict.fromkeys(questions))
+
+
+def _context_speech(transcript, view, first, last):
+    """Nearest complete adjacent utterance, only for CURRENT spoken meaning."""
+    if not _source_text(transcript, view['start'], view['end']).strip():
+        return []
+    rows = transcript.get('segments') or transcript.get('words', [])
+    result = []
+    for role, start, end, before in (
+            ('BEFORE_CONTEXT_ONLY',max(first,view['start']-POLICY['context_asr_seconds']),view['start'],True),
+            ('AFTER_CONTEXT_ONLY',view['end'],min(last,view['end']+POLICY['context_asr_seconds']),False)):
+        candidates = sorted((r for r in rows if r['start'] < end and r['end'] > start),key=lambda r:r['start'])
+        if not candidates:
+            continue
+        selected = [candidates[-1] if before else candidates[0]]
+        if not transcript.get('segments'):
+            # Word-only ASR: retain the nearest contiguous phrase, including
+            # complete boundary-crossing words. No distant conversation rows.
+            for row in reversed(candidates[:-1]) if before else candidates[1:]:
+                gap = selected[0]['start']-row['end'] if before else row['start']-selected[-1]['end']
+                if gap > .75:
+                    break
+                selected.insert(0,row) if before else selected.append(row)
+        a,b=max(first,min(r['start'] for r in selected)),min(last,max(r['end'] for r in selected))
+        if a < b:
+            result.append({'role':role,'start':a,'end':b,'ASR':_transcript(transcript,a,b)})
+    return result
 
 
 def _concrete(record):
@@ -456,15 +486,12 @@ def _source_identity(source, directory, cancelled):
     if (isinstance(old, dict) and old.get('stamp') == stamp and isinstance(old.get('sha256'), str)
             and re.fullmatch('[0-9a-f]{64}', old['sha256'])):
         return {**stamp, 'sha256': old['sha256']}
-    digest = hashlib.sha256()
-    with source.open('rb') as handle:
-        while block := handle.read(1024*1024):
-            _check(cancelled)
-            digest.update(block)
-    if source.stat().st_mtime_ns != stamp['mtime_ns'] or source.stat().st_size != stamp['size']:
+    from .source_identity import source_identity
+    identity = source_identity(source, cancelled)
+    if {key: identity[key] for key in ('size', 'mtime_ns', 'ctime_ns')} != {key: stamp[key] for key in ('size', 'mtime_ns', 'ctime_ns')}:
         raise ValueError('Исходный файл изменился во время adjudication')
-    atomic_json(cache, {'stamp': stamp, 'sha256': digest.hexdigest()})
-    return {**stamp, 'sha256': digest.hexdigest()}
+    atomic_json(cache, {'stamp': stamp, 'sha256': identity['sha256']})
+    return {**stamp, 'sha256': identity['sha256']}
 
 
 def _board(source, view, shots, transcript, directory, key, cancelled, *, context=False):
@@ -497,6 +524,55 @@ def _board(source, view, shots, transcript, directory, key, cancelled, *, contex
     hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     atomic_json(manifest, {'images': hashes, 'metadata': hashlib.sha256(metadata.read_bytes()).hexdigest()})
     return paths, frames, hashes
+
+
+def _accepted_prior_view(vision, source, view, view_units, frames, event, questions,
+                         transcript, shots, directory, base, cancelled, first, last, pages, exclusions):
+    """Read the original wider contract for free; never dispatch or re-sign it."""
+    replies = getattr(vision, '_continuation_replies', None)
+    if replies is None:
+        return None
+    context, images, roles = [], list(pages), ['CURRENT']*len(pages)
+    if getattr(vision, 'supports_image_pages', False):
+        for role,a,b in [('BEFORE_CONTEXT_ONLY',max(first,view['start']-2),view['start']),
+                         ('AFTER_CONTEXT_ONLY',view['end'],min(last,view['end']+2))]:
+            if a >= b:
+                continue
+            paths, neighbor_frames, _ = _board(source,{'start':a,'end':b},[],{'words':[],'segments':[]},
+                directory,_hash({**base,'context':{'start':a,'end':b}}),cancelled,context=True)
+            images.extend(paths); roles.append(role)
+            context.append({'role':role,'frames':neighbor_frames,'ASR':_transcript(transcript,a,b)})
+    prior_questions = list(questions)
+    spoken_question = 'Какие конкретные cause/question/response units нужны для понимания выбранного действия или ответа?'
+    if spoken_question not in prior_questions and any(q.startswith('Проверить спорные решения:') for q in prior_questions):
+        prior_questions = [q for q in prior_questions if q != 'Какие конкретные исходные доказательства разрешают спорный выбор CURRENT?']
+        position = next(i for i,q in enumerate(prior_questions) if q.startswith('Проверить спорные решения:'))
+        prior_questions.insert(position,spoken_question)
+    payload = {'CURRENT':{'start':view['start'],'end':view['end'],'units':view_units,
+        'frames':[{'index':i+1,'time':f['time']} for i,f in enumerate(frames)],
+        'ASR':_transcript(transcript,view['start'],view['end']),'confirmed_exclusions':exclusions},
+        'CONTEXT_ONLY':context,'CONTEXT_ASR_ONLY':[
+            {'role':role,'start':a,'end':b,'ASR':_transcript(transcript,a,b)}
+            for role,a,b in [('BEFORE_CONTEXT_ONLY',max(first,view['start']-POLICY['context_asr_seconds']),view['start']),
+                             ('AFTER_CONTEXT_ONLY',view['end'],min(last,view['end']+POLICY['context_asr_seconds']))] if a < b],
+        'image_roles':roles,'questions':prior_questions,'HYPOTHESES':{
+            'summary':str(event.get('summary',''))[:1500],
+            'prior_decisions':[{k:d.get(k) for k in ('summary','uncertain','understanding_confidence','selection_confidence')}
+                for d in (event.get('local_decision'),event.get('recovery_decision'),event.get('global_decision')) if isinstance(d,dict)],
+            'previous_selected_ranges':[r for r in event.get('selected_ranges',[]) if r['start'] < view['end'] and r['end'] > view['start']]}}
+    prompt = _normalized(ADJUDICATION_PROMPT)+'\n'+json.dumps(payload,ensure_ascii=False,sort_keys=True,allow_nan=False)
+    key, raw = replies.find(prompt,images if len(images)>1 else images[0],adjudication_schema(view_units,frames))
+    if raw is not None:
+        try:
+            decision = validate_adjudication(raw,view_units,frames,exclusions)
+            # A valid earlier response may honestly be unresolved. Preserve
+            # that result too; an unchanged question is not permission to pay
+            # again. The ordinary aggregate gate below retains its failure.
+            return {'checkpoint':'accepted-reply:'+key,'decision':decision,
+                    'original_prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest()}
+        except (ValueError,TypeError,KeyError):
+            pass
+    return None
 
 
 def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled, questions=None):
@@ -540,10 +616,20 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
             pages, frames, image_hashes = _board(source, view, shots, transcript, directory, board_key, cancelled)
             for unit in view_units:
                 unit['frame_indices'] = [i+1 for i,frame in enumerate(frames) if unit['start'] <= frame['time'] < unit['end']]
+            prior = _accepted_prior_view(vision,source,view,view_units,frames,event,questions,transcript,shots,
+                directory,base,cancelled,first,last,pages,exclusions)
+            if prior is not None:
+                history.append({'view':number,'start':view['start'],'end':view['end'],**prior,
+                    'source_units':[u['id'] for u in view_units],
+                    'storyboard':str((directory/(board_key+'.storyboard.json')).relative_to(job_dir)),
+                    'frame_times':[f['time'] for f in frames]})
+                continue
             context, images, image_roles = [], list(pages), ['CURRENT']*len(pages)
             if getattr(vision, 'supports_image_pages', False):
-                for role, a, b in [('BEFORE_CONTEXT_ONLY', max(first, view['start']-2), view['start']),
-                                   ('AFTER_CONTEXT_ONLY', view['end'], min(last, view['end']+2))]:
+                contexts = [('BEFORE_CONTEXT_ONLY', max(first, view['start']-2), view['start'])]
+                if set(event.get('uncertainty_reasons', [])) & {'missing_context','location_unclear'} or event.get('local_conflict'):
+                    contexts.append(('AFTER_CONTEXT_ONLY', view['end'], min(last, view['end']+2)))
+                for role, a, b in contexts:
                     if a >= b:
                         continue
                     context_view = {'start': a, 'end': b}
@@ -559,20 +645,19 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 raise ValueError('Single-image adapter cannot adjudicate multiple CURRENT pages')
             if len(images) > 8:
                 raise ValueError('Adjudication exceeds provider image bound')
-            context_asr=[{'role':role,'start':a,'end':b,'ASR':_transcript(transcript,a,b)}
-                for role,a,b in [('BEFORE_CONTEXT_ONLY',max(first,view['start']-POLICY['context_asr_seconds']),view['start']),
-                                 ('AFTER_CONTEXT_ONLY',view['end'],min(last,view['end']+POLICY['context_asr_seconds']))]
-                if a < b]
+            context_asr = _context_speech(transcript,view,first,last)
+            conflict = event.get('local_conflict') or event.get('conflicting_decisions') or (
+                event.get('local_summary') and event.get('global_summary') and event['local_summary'] != event['global_summary'])
             payload = {'CURRENT': {'start': view['start'], 'end': view['end'], 'units': view_units,
                        'frames': [{'index': i+1, 'time': f['time']} for i, f in enumerate(frames)],
                        'ASR': _transcript(transcript, view['start'], view['end']),
                        'confirmed_exclusions': exclusions}, 'CONTEXT_ONLY': context,'CONTEXT_ASR_ONLY':context_asr,
                        'image_roles': image_roles, 'questions': questions,
-                       'HYPOTHESES': {'summary': str(event.get('summary',''))[:1500],
+                       'HYPOTHESES': {'summary': str(event.get('summary',''))[:1500] if conflict else '',
                           'prior_decisions': [{k: d.get(k) for k in ('summary','uncertain','understanding_confidence','selection_confidence')}
                                              for d in (event.get('local_decision'),event.get('recovery_decision'),event.get('global_decision'))
-                                             if isinstance(d,dict)],
-                          'previous_selected_ranges': [r for r in event.get('selected_ranges', [])
+                                             if conflict and isinstance(d,dict)],
+                          'previous_selected_ranges': [{'start':max(view['start'],r['start']),'end':min(view['end'],r['end'])} for r in event.get('selected_ranges', [])
                               if r['start'] < view['end'] and r['end'] > view['start']]}}
             prompt = _normalized(ADJUDICATION_PROMPT)+'\n'+json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
             identity = _hash({**base, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),

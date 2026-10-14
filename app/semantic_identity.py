@@ -21,19 +21,23 @@ _COMPONENTS = {
     'scene_detector': ('scene_detection', 'semantic_boundary', 'media_evidence', 'episode_profile', 'media_probe', 'source_text', 'content_identity', 'json_store'),
     'scene_grouping': ('scene_detection', 'semantic_boundary', 'content_identity', 'json_store'),
     'visual_features': ('scene_detection', 'media_evidence', 'media_probe', 'content_identity', 'json_store'),
-    'storyboard': ('vision', 'bounded_storyboard', 'story_review', 'media_probe', 'cancellation', 'json_store'),
-    'local_prompt': ('scene_analysis', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'content_identity'),
-    'recovery': ('scene_understanding', 'story_review', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges'),
-    'global_story': ('global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'content_identity'),
+    'storyboard': ('vision', 'analysis_continuation', 'bounded_storyboard', 'source_identity', 'story_review', 'media_probe', 'cancellation', 'json_store'),
+    'local_prompt': ('viewer_interest', 'scene_analysis', 'scene_preparation', 'scene_understanding', 'scene_detection', 'story_review', 'source_roles', 'editorial', 'vision', 'analysis_continuation', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'source_identity', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'content_identity'),
+    'recovery': ('scene_understanding', 'story_review', 'vision', 'analysis_continuation', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'source_identity', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges'),
+    'global_story': ('viewer_interest', 'global_verification', 'scene_understanding', 'story_review', 'source_roles', 'editorial', 'vision', 'analysis_continuation', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'source_identity', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'content_identity'),
     'episode_profile': ('episode_profile', 'media_evidence', 'selection_gate', 'source_text', 'content_identity', 'json_store', 'source_ranges'),
-    'story_structure': ('story_structure_pass', 'dialogue_relations', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity', 'json_store', 'source_ranges'),
-    'continuity': ('source_continuity', 'continuity_verification', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity', 'source_ranges', 'json_store'),
+    'story_structure': ('viewer_interest', 'story_structure_pass', 'dialogue_relations', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity', 'json_store', 'source_ranges'),
+    'continuity': ('source_continuity', 'continuity_verification', 'selection_adjudication', 'bounded_storyboard', 'source_identity', 'selection_gate', 'source_roles', 'source_text', 'cancellation', 'content_identity', 'source_ranges', 'json_store'),
     'final_quality': ('final_quality', 'speech_handles', 'source_continuity', 'continuity_verification', 'selection_gate', 'pipeline', 'content_identity', 'quality_recovery', 'editorial_pipeline', 'analysis_result', 'source_text', 'cancellation', 'json_store', 'source_ranges', 'analysis_provider'),
-    'story': ('story', 'scene_refinement', 'story_review', 'closing', 'editorial', 'source_roles', 'production', 'vision', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges'),
-    'pacing': ('pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'deepseek', 'source_text', 'json_store', 'source_ranges'),
-    'planner': ('planner', 'dramatic_planner', 'retention_allocation', 'speech_handles', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'selection_gate', 'source_text', 'cancellation', 'content_identity', 'json_store', 'source_ranges'),
-    'ending': ('endings', 'speech_handles', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'deepseek', 'source_text', 'json_store', 'source_ranges'),
+    'story': ('analysis', 'analysis_checks', 'review_scope', 'eyecatch', 'viewer_interest', 'story', 'scene_refinement', 'story_review', 'closing', 'editorial', 'source_roles', 'production', 'vision', 'analysis_continuation', 'deepseek', 'selection_adjudication', 'bounded_storyboard', 'source_identity', 'selection_gate', 'source_text', 'cancellation', 'json_store', 'source_ranges'),
+    'pacing': ('viewer_interest', 'pacing', 'editorial', 'source_roles', 'speech_context', 'titles', 'planner', 'vision', 'analysis_continuation', 'deepseek', 'source_text', 'json_store', 'source_ranges'),
+    'planner': ('viewer_interest', 'planner', 'dramatic_planner', 'retention_allocation', 'speech_handles', 'episode_profile', 'story_structure', 'source_continuity', 'final_quality', 'planner_audit', 'endings', 'pacing', 'source_roles', 'titles', 'subtitles', 'media_probe', 'selection_adjudication', 'bounded_storyboard', 'source_identity', 'selection_gate', 'source_text', 'cancellation', 'content_identity', 'json_store', 'source_ranges'),
+    'ending': ('viewer_interest', 'endings', 'speech_handles', 'planner', 'dramatic_planner', 'episode_profile', 'story_structure', 'source_roles', 'titles', 'subtitles', 'vision', 'analysis_continuation', 'deepseek', 'source_text', 'json_store', 'source_ranges'),
 }
+# Wire instructions are shared by provider routes; code changes must be visible
+# to the same semantic scopes as their model adapters.
+_COMPONENTS = {name: (*modules, 'request_payload') if 'vision' in modules or 'deepseek' in modules else modules
+               for name, modules in _COMPONENTS.items()}
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
     'media_probe': ('SHOT_DETECTOR_VERSION', 'BASE_SCENE_THRESHOLD'),
@@ -48,6 +52,7 @@ _CONSTANTS = {
     'global_verification': ('GLOBAL_VERIFICATION_VERSION', 'GLOBAL_VISUAL_PROMPT'),
     'episode_profile': ('EPISODE_PROFILE_VERSION', 'EPISODE_PROFILE_POLICY'),
     'retention_allocation': ('VERSION',),
+    'viewer_interest': ('VERSION', 'INTEREST_WEIGHTS', 'INTEREST_KINDS', 'MAX_INTEREST_BONUS', 'PROOF_INTEREST', 'INTEREST_INSTRUCTION'),
     'speech_handles': ('VERSION','LEAD','TAIL'),
     'story_structure_pass': ('VERSION','POLICY','STORY_STRUCTURE_PROMPT','ROLES','RELATIONS'),
     'dialogue_relations': ('VERSION','POLICY','DIALOGUE_PROMPT'),
@@ -185,4 +190,22 @@ def component_identity(name):
 def semantic_identity():
     result = {'version': SEMANTIC_IDENTITY_VERSION,
               'components': {name: component_identity(name) for name in _COMPONENTS}}
+    return {**result, 'digest': _hash(result)}
+
+
+def scoped_identity(scope: str):
+    """Upstream caches cannot depend on arbitrary downstream components.
+
+    The late analysis scope retains planner consumers (endings and pacing),
+    whose real imports must still invalidate those stages after planner edits.
+    """
+    scopes = {
+        'perception': ('shot_detector', 'scene_detector', 'scene_grouping',
+                       'visual_features', 'storyboard', 'local_prompt', 'recovery'),
+        'story': ('global_story', 'story', 'episode_profile'),
+        'late_analysis': ('pacing', 'ending', 'story_structure', 'continuity'),
+        'planning': ('planner', 'final_quality'),
+    }
+    components = {name: component_identity(name) for name in scopes[scope]}
+    result = {'version': SEMANTIC_IDENTITY_VERSION, 'components': components}
     return {**result, 'digest': _hash(result)}

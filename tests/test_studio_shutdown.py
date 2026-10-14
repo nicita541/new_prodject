@@ -116,6 +116,6 @@ class StudioShutdownTests(unittest.TestCase):
             instance.run.side_effect = lambda: server_module.app.state.shutdown_callback()
             server_module.main()
             configuration.assert_called_once_with(server_module.app, host='127.0.0.1',
-                                                  port=8765, access_log=False)
+                                                  port=8765, access_log=False, timeout_graceful_shutdown=5)
             self.assertTrue(instance.should_exit)
             self.assertIsNone(server_module.app.state.shutdown_callback)

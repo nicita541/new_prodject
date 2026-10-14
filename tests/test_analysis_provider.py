@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
-import tempfile
+import shutil
+import uuid
+from contextlib import contextmanager
 import unittest
 from unittest.mock import Mock, patch
 
@@ -10,6 +12,18 @@ from app.vision import vision_session
 from app.analysis import _visual_checkpoint_signature, _recoverable_checkpoint
 from app.config import TEMP
 from app.deepseek import DeepSeekVision, RemoteError, provider_identity
+
+
+@contextmanager
+def checkpoint_directory():
+    # Ordinary inherited ACLs match the repository's Windows test fixtures.
+    directory = TEMP / ('analysis-provider-' + uuid.uuid4().hex)
+    directory.mkdir(parents=True)
+    try:
+        yield directory
+    finally:
+        directory.resolve().relative_to(TEMP.resolve())
+        shutil.rmtree(directory)
 
 
 class AnalysisProviderTests(unittest.TestCase):
@@ -22,7 +36,7 @@ class AnalysisProviderTests(unittest.TestCase):
                              (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR))
 
     def test_existing_visual_cache_keeps_legacy_signature_only_when_well_formed(self):
-        with tempfile.TemporaryDirectory() as root:
+        with checkpoint_directory() as root:
             directory = Path(root)
             original = 'a' * 64
             changed_story = 'b' * 64
@@ -38,7 +52,7 @@ class AnalysisProviderTests(unittest.TestCase):
             self.assertEqual(_visual_checkpoint_signature(directory, changed_story), changed_story)
 
     def test_recoverable_stage_metadata_ignores_torn_and_wrong_type_json(self):
-        with tempfile.TemporaryDirectory() as root:
+        with checkpoint_directory() as root:
             checkpoint = Path(root) / 'story-events.json'
             self.assertIsNone(_recoverable_checkpoint(checkpoint))
             checkpoint.write_text('{"signature":', encoding='utf-8')

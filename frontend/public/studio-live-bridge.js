@@ -44,7 +44,9 @@
       await Promise.all([
         get("/api/library"),
         get("/api/sources"),
-        get("/api/jobs"),
+        get("/api/jobs?summary=true" +
+          (ui.screen === "processing" && ui.jobId
+            ? "&progress_job_id=" + encodeURIComponent(ui.jobId) : "")),
         get("/api/music").then(
           (value) => ({ value }),
           (error) => ({ error }),
@@ -307,7 +309,7 @@
       // Retrying the SAME job may regenerate plan.json. Drop the old browser
       // snapshot so review/finishing never show cuts from an earlier attempt.
       const retry =
-        method === "POST" && path.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+        method === "POST" && path.match(/^\/api\/jobs\/([^/]+)\/(?:retry|analysis-provider|analysis-checks)$/);
       if (retry) {
         delete db.plans[retry[1]];
       }

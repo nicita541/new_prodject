@@ -9,8 +9,8 @@ import math
 from app.json_store import atomic_json
 from .planner import build_plan, _safe, _speech_tail
 
-VERSION = 6
-RECOVERY_VERSION = 3
+VERSION = 7
+RECOVERY_VERSION = 4
 KINDS = ('closure', 'cliffhanger', 'transition')
 
 
@@ -69,20 +69,57 @@ def validate_endings(raw, candidates, *, min_confidence=.85):
     return result
 
 
+def _pending_endings(events, transcript, shots, probe):
+    plan = build_plan({'events': events, 'transcript': transcript, 'shots': shots, 'probe': probe})
+    elapsed, pending = 0.0, []
+    for index, part in enumerate(plan['parts'][:-1]):
+        elapsed += part['duration']
+        if not part.get('ending'):
+            pending.append({'part': index, 'time': part['cuts'][-1]['end'], 'output_time': elapsed})
+    return pending
+
+
+def _boundary_speech(candidates, transcript, retained):
+    speech = [{k: s[k] for k in ('start', 'end', 'text') if k in s}
+              for s in transcript.get('segments', [])
+              if any(r['start'] <= s['start'] and s['end'] <= r['end'] for r in retained)]
+    wanted = set()
+    for candidate in candidates:
+        before = [i for i, s in enumerate(speech) if s['end'] <= candidate['time']+.002][-4:]
+        after = [i for i, s in enumerate(speech) if s['start'] >= candidate['time']-.002][:4]
+        wanted.update([*before, *after])
+    return [s for i, s in enumerate(speech) if i in wanted]
+
+
+def _wire_candidates(candidates):
+    return [{k: ({p: c[k][p] for p in ('start', 'end', 'text') if p in c[k]}
+                 if k in ('last_reply', 'next_reply') and c[k] else c[k])
+             for k in ('id', 'time', 'output_time', 'last_reply', 'next_reply') if k in c}
+            for c in candidates]
+
+
+def _ending_context(ending, transcript, retained):
+    speech = [{**{k: s[k] for k in ('start', 'end', 'text') if k in s}, 'id': f'r{i:04}'}
+              for i, s in enumerate(transcript.get('segments', []))
+              if any(r['start'] <= s['start'] and s['end'] <= r['end'] for r in retained)]
+    before = [s for s in speech if s['end'] <= ending['time']+.002][-4:]
+    after = [s for s in speech if s['start'] >= ending['time']-.002][:4]
+    return {'boundary': ending['id'], 'source_time': ending['time'], 'kind': ending['kind'],
+            'proposed_reason': ending['evidence'], 'BEFORE': before, 'AFTER': after,
+            'last_reply': before[-1]['id'] if before else 'none',
+            'next_reply': after[0]['id'] if after else 'none'}
+
+
+def _ending_context_hash(context):
+    return hashlib.sha256(json.dumps({k: v for k, v in context.items() if k != 'proposed_reason'},
+                                     ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
 def verify_endings(approved, transcript, retained, vision, *, classify=False, min_confidence=.9):
     """Independently check local BEFORE/AFTER evidence, not the broad summary."""
     if not approved:
         return approved
-    speech = [{**s, 'id': f'r{i:04}'} for i, s in enumerate(transcript.get('segments', []))
-              if any(r['start'] <= s['start'] and s['end'] <= r['end'] for r in retained)]
-    contexts = []
-    for ending in approved:
-        before = [s for s in speech if s['end'] <= ending['time'] + .002][-4:]
-        after = [s for s in speech if s['start'] >= ending['time'] - .002][:4]
-        contexts.append({'boundary': ending['id'], 'source_time': ending['time'], 'kind': ending['kind'],
-                         'proposed_reason': ending['evidence'], 'BEFORE': before, 'AFTER': after,
-                         'last_reply': before[-1]['id'] if before else 'none',
-                         'next_reply': after[0]['id'] if after else 'none'})
+    contexts = [_ending_context(ending, transcript, retained) for ending in approved]
     ids = [e['id'] for e in approved]
     schema = {'type': 'object', 'properties': {'decisions': {'type': 'array', 'items': {
         'type': 'object', 'properties': {'boundary': {'type': 'string', 'enum': ids},
@@ -138,6 +175,7 @@ def verify_endings(approved, transcript, retained, vision, *, classify=False, mi
             if classify and decision.get('kind') not in KINDS:
                 raise ValueError('Неизвестный тип проверенной концовки')
             result.append({**ending, 'verification': decision,
+                           'context_signature': _ending_context_hash(context),
                            'proposal_confidence': ending['confidence'], 'confidence': decision['confidence'],
                            **({'kind': decision['kind'], 'evidence': decision['evidence']} if classify else {})})
     return result
@@ -145,17 +183,19 @@ def verify_endings(approved, transcript, retained, vision, *, classify=False, mi
 
 def recover_fallback_endings(result, candidates, retained, transcript, shots, probe,
                             directory, vision, report, cancelled):
-    """Assess all alternatives for actual unverified part ends, including replies
-    missed by a proposal. Safe IDs and independent local evidence remain required.
-    """
+    """Repair the actual unverified part end, stopping when its proof is used."""
     from .semantic_identity import component_identity
     semantic_component = component_identity('ending')
-    plan = build_plan({'events': result, 'transcript': transcript, 'shots': shots, 'probe': probe})
-    elapsed = 0.0
     visited = set()
-    for part in plan['parts'][:-1]:
-        start = elapsed
-        elapsed += part['duration']
+    part_index = -1
+    while True:
+        part_index += 1
+        plan = build_plan({'events': result, 'transcript': transcript, 'shots': shots, 'probe': probe})
+        if part_index >= len(plan['parts'])-1:
+            break
+        part = plan['parts'][part_index]
+        start = sum(p['duration'] for p in plan['parts'][:part_index])
+        elapsed = start+part['duration']
         if part.get('ending'):
             continue
         by_reply = {}
@@ -165,19 +205,23 @@ def recover_fallback_endings(result, candidates, retained, transcript, shots, pr
                 key = (reply['start'], reply['end']) if reply else ('silent', candidate['time'])
                 if key not in by_reply or candidate['time'] < by_reply[key]['time']:
                     by_reply[key] = candidate
-        choices = sorted(by_reply.values(), key=lambda c: c['time'])
-        for offset in range(0, len(choices), 12):
-            batch = choices[offset:offset + 12]
+        actual = part['cuts'][-1]['end']
+        choices = sorted(by_reply.values(), key=lambda c: (abs(c['time']-actual), c['time']))
+        for offset in range(0, len(choices), 3):
+            pending = _pending_endings(result, transcript, shots, probe)
+            if not any(target['part'] == part_index for target in pending):
+                break
+            batch = choices[offset:offset + 3]
             identity = {'version': RECOVERY_VERSION, 'candidates': batch,
                         'semantic_component': semantic_component,
-                        'transcript': transcript['segments'], 'retained': retained,
+                        'neighboring_dialogue': _boundary_speech(batch, transcript, retained),
                         'provider': getattr(vision, 'cache_profile', str(vision.projector))}
             digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             if digest in visited:
                 continue
             visited.add(digest)
             checkpoint = directory / (digest + '.recovered.json')
-            report('condense', .647, 'Перепроверяем все варианты неподтверждённой концовки')
+            report('condense', .647, 'Проверяем ближайшие варианты неподтверждённой концовки')
             try:
                 if cancelled():
                     raise InterruptedError('Обработка отменена')
@@ -212,52 +256,66 @@ def recover_fallback_endings(result, candidates, retained, transcript, shots, pr
     return result
 
 
-def refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled):
+def refine_endings(events, transcript, shots, probe, job_dir, vision, report, cancelled,
+                   *, _windows=None, _recover=True):
     from .semantic_identity import component_identity
     semantic_component = component_identity('ending')
     result = copy.deepcopy(events)
+    existing = {e['id']: e.get('part_endings', []) for e in result}
     for event in result:
         event.pop('part_endings', None)
         event.pop('endings_degraded', None)
     candidates, retained = boundary_candidates({'events': result, 'transcript': transcript,
                                                'shots': shots, 'probe': probe})
+    for event in result:
+        for ending in existing[event['id']]:
+            context = _ending_context(ending, transcript, retained)
+            proof = ending.get('verification', {})
+            if (any(c['id'] == ending['id'] and c['time'] == ending['time'] for c in candidates)
+                    and ending.get('context_signature') == _ending_context_hash(context)
+                    and proof.get('supported') is True and type(proof.get('confidence')) in (int, float)
+                    and proof['confidence'] >= .9 and ending.get('confidence') == proof['confidence']
+                    and proof.get('last_reply') == context['last_reply']
+                    and proof.get('next_reply') == context['next_reply']
+                    and isinstance(proof.get('evidence'), str) and proof['evidence'].strip()):
+                event.setdefault('part_endings', []).append(ending)
     directory = job_dir / 'endings'
     directory.mkdir(exist_ok=True)
     active = [e for e in result if any(e['start'] < r['end'] and e['end'] > r['start'] for r in retained)]
-    total = sum(r['end'] - r['start'] for r in retained)
-    # A global list of hundreds of IDs lets a model attach a later payoff to
-    # the wrong earlier boundary. Review a bounded neighborhood of each soft
-    # output-time target instead, including several possible lengths.
-    windows = []
-    for target in range(90, math.ceil(total), 90):
-        nearby = [c for c in candidates if target - 45 <= c['output_time'] <= target + 45]
+    # Search only actual unverified part ends. Alternatives are sequential:
+    # a verified candidate is useful only if the real planner selects it.
+    initial_plan = build_plan({'events': result, 'transcript': transcript, 'shots': shots, 'probe': probe})
+    elapsed, windows = 0.0, []
+    for part in initial_plan['parts'][:-1]:
+        elapsed += part['duration']
+        if part.get('ending'):
+            continue
+        nearby = [c for c in candidates if elapsed-45 <= c['output_time'] <= elapsed+45]
         by_reply = {}
         for candidate in nearby:
             reply = candidate.get('last_reply')
             key = (reply['start'], reply['end']) if reply else ('silent', candidate['time'])
-            # Collapse many shot IDs following the same completed reply to
-            # its first safe ending; keep the actual reply tail when present.
             if key not in by_reply or candidate['time'] < by_reply[key]['time']:
                 by_reply[key] = candidate
-        # Inspect the whole neighborhood in bounded chronological pages.
-        # Keeping only the twelve nearest options lost completed responses at
-        # its edges, leaving the planner to end on an unfinished exchange.
-        choices = sorted(by_reply.values(), key=lambda c: c['time'])
-        windows.extend(choices[i:i + 12] for i in range(0, len(choices), 12))
+        actual = part['cuts'][-1]['end']
+        choices = sorted(by_reply.values(), key=lambda c: (abs(c['time']-actual), c['time']))
+        # First inspect the actual disputed boundary, then only its nearest
+        # alternatives. No speculative dispatch of later pages.
+        windows.extend(choices[i:i+3] for i in range(0, len(choices), 3))
+    if _windows is not None:
+        windows = _windows
     for choices in windows:
         if cancelled():
             raise InterruptedError('Обработка отменена')
-        left, right = choices[0]['time'], choices[-1]['time']
-        indexes = [i for i, e in enumerate(active) if e['start'] <= right and e['end'] >= left]
-        batch = active[indexes[0]:indexes[-1] + 1]
-        context = active[max(0, indexes[0] - 1):indexes[-1] + 2]
-        summaries = [{'id': e['id'], 'start': e['start'], 'end': e['end'],
-                      'summary': e.get('summary', ''),
-                      'retained_ranges': [r for r in retained if e['start'] < r['end'] and e['end'] > r['start']]}
-                     for e in context]
-        speech = [s for s in transcript.get('segments', [])
-                  if context[0]['start'] < s['end'] and context[-1]['end'] > s['start']
-                  and any(r['start'] <= s['start'] and s['end'] <= r['end'] for r in retained)]
+        pending = _pending_endings(result, transcript, shots, probe)
+        if not pending:
+            break
+        if not any(abs(c['output_time']-target['output_time']) <= 45 for c in choices for target in pending):
+            continue
+        left, right = min(c['time'] for c in choices), max(c['time'] for c in choices)
+        batch = [e for e in active if e['start'] <= right and e['end'] >= left]
+        summaries = []
+        speech = _boundary_speech(choices, transcript, retained)
         identity = {'version': VERSION, 'summaries': summaries, 'speech': speech, 'candidates': choices,
                     'semantic_component': semantic_component,
                     'provider': getattr(vision, 'cache_profile', str(vision.projector))}
@@ -280,12 +338,12 @@ def refine_endings(events, transcript, shots, probe, job_dir, vision, report, ca
             'transition means a completed beat followed by a new location/topic. A camera cut or ASR sentence end alone is insufficient. '
             'Consider preceding AND following retained dialogue together. Only retained ranges will be visible. '
             'Each boundary carries its exact last_reply and next_reply: do not attach completion from a later reply to an earlier ID. '
-            'Summaries can include omitted visuals and are tentative: do not infer a payoff absent from retained material. '
+            'Only supplied exact neighboring retained replies establish completion. '
             'Return only well-supported endings, with concrete evidence and confidence. Do not invent times or pad the list. '
             'These are nearby options for ONE part ending. Choose the best one or two completed beats or deliberate cliffhangers; '
             'prefer completion after the response/farewell over an earlier step in the same exchange. '
             'If the context does not support a boundary, leave it out. '
-            + json.dumps({'context': summaries, 'retained_dialogue': speech, 'boundaries': choices}, ensure_ascii=False))
+            + json.dumps({'retained_dialogue': speech, 'boundaries': _wire_candidates(choices)}, ensure_ascii=False))
         identity['prompt_hash'] = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
         digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         checkpoint = directory / (digest + '.json')
@@ -332,5 +390,7 @@ def refine_endings(events, transcript, shots, probe, job_dir, vision, report, ca
                 event['endings_degraded'] = True
             batch[0].setdefault('story_warnings', []).append(
                 'Смысловые концовки не подтверждены; используются целые реплики/планы: ' + str(error)[:180])
+    if not _recover:
+        return result
     return recover_fallback_endings(result, candidates, retained, transcript, shots, probe,
                                     directory, vision, report, cancelled)

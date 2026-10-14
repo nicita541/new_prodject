@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .config import ROOT, MUSIC, setup_environment
 from .media import choose_encoder, render_part, validate_export
+from .clean_parts import prepare_clean_part
 from .planner import build_plan, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
 from .editing import load_options
@@ -116,6 +117,20 @@ def _validated_cached_render(path: Path, checkpoint: Path, fingerprint: str,
     return saved
 
 
+def _part_render_fingerprint(part, render_inputs, track, transcript):
+    """The rendered part depends on its actual inputs, not other plan parts."""
+    track_identity = None
+    if track is not None:
+        stat = track.stat()
+        track_identity = {'path': str(track.resolve()), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+    from .audio_analysis import detect_transcript_music_intervals, map_cuts_to_part_duck_intervals
+    ducking = (map_cuts_to_part_duck_intervals(part['cuts'], detect_transcript_music_intervals(transcript))
+               if track is not None and render_inputs['music'].get('smart_ducking', True) else [])
+    value = {'version': 1, 'inputs': render_inputs, 'track': track_identity, 'ducking': ducking,
+             'part': {key: part.get(key) for key in ('index', 'duration', 'cuts', 'subtitles', 'layout', 'caption_style')}}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+
+
 def _run_identity(job_dir: Path) -> dict:
     """Record code/settings provenance; never inspect private provider settings."""
     from .analysis import ANALYSIS_VERSION, derived_story_identity
@@ -126,7 +141,7 @@ def _run_identity(job_dir: Path) -> dict:
     from .config import ASR_MODEL, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
     provider = analysis_provider(job_dir)
     profile = load_profile(job_dir)
-    modules = ("pipeline", "media", "finishing_profile", "social_frame", "analysis", "story", "closing", "pacing", "planner", "dramatic_planner",
+    modules = ("pipeline", "processing", "review_feedback", "speech_handles", "clean_parts", "media", "finishing_profile", "finishing_avatar", "social_frame", "analysis", "story", "closing", "pacing", "planner", "dramatic_planner",
                "part_context", "production_sequence", "source_roles", "editorial", "titles", "framing",
                "deepseek", "endings")
     semantic = derived_story_identity("recorded-in-events.meta.json", provider, profile)
@@ -199,7 +214,7 @@ def _archive_obsolete_outputs(job_dir: Path, previous: dict | None, current: dic
             saved = json.loads(checkpoint.read_text(encoding="utf-8"))
             if not isinstance(saved, dict):
                 continue
-            if (saved.get("fingerprint") != previous.get("render_fingerprint", previous["fingerprint"]) or not video.is_file()
+            if (saved.get("fingerprint") != part.get('render_fingerprint', previous.get("render_fingerprint", previous["fingerprint"])) or not video.is_file()
                     or saved.get("size") != video.stat().st_size
                     or saved.get("mtime_ns") != video.stat().st_mtime_ns
                     or not subtitles.is_file()
@@ -265,11 +280,18 @@ def run_job(job_dir: Path, report, cancelled) -> list[str]:
         _atomic_json(manifest_path, timings)
         outputs = _run_job(job_dir, audited_report, cancelled, timings)
         timings["status"] = "completed"
+        from .review_feedback import finish
+        finish(job_dir, 'completed')
         return outputs
     except BaseException as error:
         failed = True
         timings["status"] = "cancelled" if isinstance(error, InterruptedError) else "failed"
         timings["error_type"] = type(error).__name__
+        from .review_feedback import finish
+        try:
+            finish(job_dir, timings['status'])
+        except OSError as feedback_error:
+            error.add_note('Feedback status write failed: '+str(feedback_error))
         try:
             diagnostics.event(active['stage'] or 'pipeline', 'exception', error_type=type(error).__name__, error=str(error))
             import logging
@@ -324,15 +346,32 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             raise InterruptedError("Обработка отменена")
     check()
     options = load_options(job_dir)
+    from .processing import load_mode, cached_analysis, save_snapshot
+    processing_mode = load_mode(job_dir)
+    correction_request = json.loads((job_dir/'correction-request.json').read_text('utf-8')) if (job_dir/'correction-request.json').is_file() else None
+    timings['processing_mode'] = processing_mode
+    report('prepare', .01, {'full': 'Полный монтаж: новый расчёт всех этапов',
+                           'incremental': 'Обновление: проверяем зависимости сохранённых этапов',
+                           'plan_only': 'Только план: используем сохранённый анализ без моделей и экспорта'}[processing_mode])
     music_config = load_settings()
     music_sources = music_library_identity(MUSIC) if music_config["enabled"] else []
+    correction_plan = None
     with _timed_stage(timings, "analysis"):
-        analysis = analyze(job_dir, source, report, cancelled)
+        if correction_request:
+            from .review_feedback import load_base
+            analysis, correction_plan = load_base(job_dir, source, correction_request)
+        else:
+            analysis = (cached_analysis(job_dir, source) if processing_mode == 'plan_only'
+                        else analyze(job_dir, source, report, cancelled))
+    if correction_request:
+        from .review_feedback import apply_feedback
+        with _timed_stage(timings, 'feedback'):
+            analysis = apply_feedback(analysis, correction_plan, correction_request, job_dir, report, cancelled)
     check()
     from .editorial import load_profile
     editorial_prof = load_profile(job_dir)
     stat = source.stat()
-    from .semantic_identity import semantic_identity
+    from .semantic_identity import scoped_identity
     plan_path = job_dir / "plan.json"
     plan = None
     previous_plan = None
@@ -356,15 +395,14 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         check()
         plan = None
         identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
-                    "semantic_components": semantic_identity(),
-                    "planner_version": PLANNER_VERSION, "renderer_version": 6, "editing": options,
-                    "editorial_profile": editorial_prof, "music": music_config,
-                    "music_sources": music_sources,
+                    "semantic_components": scoped_identity('planning'),
+                    "planner_version": PLANNER_VERSION, "editing": options,
+                    "editorial_profile": editorial_prof,
                     "subtitle_style": style_identity(options['caption_style'])}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
         gate = inspect_final_quality(analysis)
         if gate['status'] == 'passed':
-            if not attempt and plan_path.is_file():
+            if not attempt and not correction_request and processing_mode != 'plan_only' and plan_path.is_file():
                 try:
                     cached = json.loads(plan_path.read_text(encoding="utf-8"))
                     unfinished_plan = cached
@@ -374,6 +412,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                         validate_plan(cached, analysis)
                         plan = cached
                         planning_cache_hit = True
+                        report('planning', .67, 'План из кэша: проверяем готовые видео')
                 except (ValueError, KeyError, TypeError):
                     pass
             if plan is None:
@@ -396,6 +435,8 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         _atomic_json(job_dir/'final_quality_gate.json',{'status':gate['status'],'history':quality_history,**gate})
         if gate['status'] == 'passed':
             break
+        if processing_mode == 'plan_only':
+            raise ValueError('Сохранённый анализ требует уточнения. Запустите «Обновить по изменениям». ' + quality_failure_message(gate))
         stalled = recovery_stalled(quality_history)
         if stalled or attempt == QUALITY_POLICY['max_recovery_passes']:
             raise ValueError(quality_failure_message(gate, stalled=stalled))
@@ -407,8 +448,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)
         planning_cache_hit = False
     plan['quality_gate'] = gate
+    if correction_request:
+        from .review_feedback import verify_changed_plan
+        verify_changed_plan(job_dir, correction_plan, plan)
+        plan['feedback_parent_job_id'] = correction_request['parent_job_id']
     plan['fingerprint'] = fingerprint
-    _atomic_json(job_dir/'analysis-final.json',analysis)
+    save_snapshot(job_dir, source, analysis)
     _atomic_json(plan_path,plan)
     timings["stages_seconds"]["planning"] = round(time.perf_counter() - planning_started, 6)
     from .pipeline_diagnostics import Diagnostics
@@ -430,6 +475,12 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             diagnostics.append('decisions.jsonl', {'stage': 'planning', **decision})
     for warning in plan.get('warnings', []):
         diagnostics.warning('planning', str(warning))
+    if processing_mode == 'plan_only':
+        plan['processing_mode'] = processing_mode
+        plan['analysis_reused_from'] = json.loads((job_dir/'processing-settings.json').read_text('utf-8')).get('reuse_job_id')
+        _atomic_json(plan_path, plan)
+        report('completed', 1.0, f"План готов: {len(plan['parts'])} частей. Видео не экспортировалось; анализ взят из кэша.")
+        return []
     from .part_context import generate as generate_part_context
     with _timed_stage(timings, 'part_context'):
         generate_part_context(plan, job_dir, report, cancelled)
@@ -441,11 +492,22 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     job_record = json.loads((job_dir / "job.json").read_text(encoding="utf-8")) if (job_dir / "job.json").is_file() else {}
     video_finish = load_video_finish(ROOT, job_record["episode_id"]) if job_record.get("episode_id") else {}
     finishing = {"video": video_finish} if video_finish.get("frame_style") == "social" else None
-    render_fingerprint = fingerprint
     if finishing:
-        render_fingerprint = hashlib.sha256(json.dumps(
-            {"plan": fingerprint, "appearance": finishing, "social_card_version": 3},
-            sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+        from .finishing_avatar import resolve_avatar
+        finishing['avatar_path'] = resolve_avatar(ROOT, video_finish, job_record.get('episode_id'))
+    render_fingerprint = hashlib.sha256(json.dumps(
+        {"plan": fingerprint, "appearance": video_finish if finishing else None, "social_card_version": 4,
+         "music": music_config, "music_sources": music_sources, "renderer_version": 6,
+         "render_code": {name: hashlib.sha256((ROOT/'app'/(name+'.py')).read_bytes()).hexdigest()
+                         for name in ('media', 'clean_parts', 'social_frame', 'finishing_avatar', 'audio_analysis')}},
+        sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    render_inputs = {'source': identity['source'], 'probe': analysis['probe'],
+                     'appearance': video_finish if finishing else None, 'renderer_version': 6,
+                     'code': {name: hashlib.sha256((ROOT/'app'/(name+'.py')).read_bytes()).hexdigest()
+                              for name in ('media', 'clean_parts', 'social_frame', 'finishing_avatar', 'audio_analysis')},
+                     'subtitle_style': style_identity(options['caption_style']),
+                     'music': {key: value for key, value in music_config.items()
+                               if key not in ('part_tracks', 'track', 'mode', 'seed')}}
     plan["render_fingerprint"] = render_fingerprint
     plan["render_video"] = video_finish if finishing else None
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -489,7 +551,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         name = f"part_{part['index']:03}.mp4"
         path = output_dir / name
         checkpoint = workdir / f"part_{part['index']:03}.json"
-        saved = _validated_cached_render(path, checkpoint, render_fingerprint, part, workdir, cancelled)
+        part['render_fingerprint'] = _part_render_fingerprint(
+            part, render_inputs, music_tracks_assigned.get(part['index']), analysis['transcript'])
+        saved = _validated_cached_render(path, checkpoint, part['render_fingerprint'], part, workdir, cancelled)
         import logging
         logging.getLogger("app.pipeline").info(
             "Render checkpoint: part=%s, cache=%s", part["index"],
@@ -508,6 +572,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         else:
             missing.append(part)
         outputs.extend([name, path.with_suffix(".srt").name])
+    _atomic_json(plan_path, plan)
     try:
         if missing:
             encoder = choose_encoder(workdir, cancelled)
@@ -528,7 +593,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                                         "duck_intervals": duck_intervals,
                                         "fade_in": music_config.get("fade_in", True),
                                         "fade_out": music_config.get("fade_out", True)}
-                path = render_part(source, part, analysis["probe"], output_dir,
+                clean_source, clean_part, clean_probe, _ = prepare_clean_part(
+                    source, part, analysis['probe'], job_dir, task_cancelled)
+                path = render_part(clean_source, clean_part, clean_probe, output_dir,
                                    workdir / f"part_{part['index']:03}", encoder, task_cancelled,
                                    background_music=background_music, finishing=finishing)
                 metadata = workdir / f"part_{part['index']:03}" / "render-info.json"
@@ -540,7 +607,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 nonlocal completed
                 path = result["path"]
                 checkpoint = workdir / f"part_{part['index']:03}.json"
-                _atomic_json(checkpoint, {"fingerprint": render_fingerprint, "size": path.stat().st_size,
+                _atomic_json(checkpoint, {"fingerprint": part['render_fingerprint'], "size": path.stat().st_size,
                                           "mtime_ns": path.stat().st_mtime_ns,
                                           "encoder": result["encoder"], "requested_encoder": encoder,
                                           "run_id": timings["run_id"],

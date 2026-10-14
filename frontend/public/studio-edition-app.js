@@ -81,7 +81,8 @@
     localMedia: {},
     actionPending: false,
   };
-  let toastTimer, processTimer;
+  let toastTimer, processTimer, feedbackTimer, reviewDialogOpener;
+  const feedbackReading = new Set();
   function sourceBy(id) {
     return db.sources.find((s) => s.id === id);
   }
@@ -307,6 +308,8 @@
     return `<section class="headline"><div><div class="eyebrow">${eye}</div><h1>${title}</h1><p class="lede">${sub}</p></div><div class="headline-actions">${buttons}</div></section>`;
   }
   function render() {
+    clearTimeout(feedbackTimer);
+    closeReviewDialog(false);
     refreshCrumbs();
     const main = $("main");
     main.innerHTML = episodeNavigation() + (
@@ -335,7 +338,7 @@
     const ready = jobsFor(ui.episodeId).some((job) => job.status === "completed");
     return `<nav class="episode-navigation" aria-label="Работа с серией">${[
       ["editor", "Настройки", true], ["processing", "Монтаж", hasJob],
-      ["review", "Shorts", ready], ["finishing", "Оформление", true],
+      ["review", currentJob()?.processing_mode === 'plan_only' ? 'План' : "Shorts", ready], ["finishing", "Оформление", true],
     ].map(([screen, title, available]) => `<button class="btn sm ${ui.screen === screen ? "selected" : "clear"}" data-action="nav" data-screen="${screen}" ${ui.screen === screen ? 'aria-current="page"' : ""} ${available ? "" : 'disabled title="Сначала завершите монтаж"'}>${title}</button>`).join("")}</nav>`;
   }
   function episodeHasCompleted(eid) {
@@ -396,19 +399,30 @@
       )}</div>${eps.length ? "" : '<div class="empty"><strong>Серий пока нет</strong>Создайте первую серию — тогда появятся настройки исходного видео и монтажа.</div>'}`;
   }
   function currentEdit() {
+    const e = currE(), video = db.finishing[ui.episodeId]?.video || {};
+    const appearance = {
+      layout: video.layout || e?.settings?.layout || "cinema",
+      frame_style: video.frame_style || "plain", card_variant: video.card_variant || "compact",
+      channel_handle: video.channel_handle || "", channel_name: video.channel_name || "",
+      post_caption: video.post_caption || "",
+    };
     if (!ui.editing || ui.editing.episodeId !== ui.episodeId) {
-      const e = currE();
       ui.editing = {
         episodeId: ui.episodeId,
+        processing_mode: 'incremental',
         source_id: e?.source_id || "",
         ...e?.settings,
-        frame_style: db.finishing[ui.episodeId]?.video?.frame_style || "plain",
-        card_variant: db.finishing[ui.episodeId]?.video?.card_variant || "compact",
-        channel_handle: db.finishing[ui.episodeId]?.video?.channel_handle || "",
-        channel_name: db.finishing[ui.episodeId]?.video?.channel_name || "",
-        post_caption: db.finishing[ui.episodeId]?.video?.post_caption || "",
+        ...appearance,
       };
+      ui.editingAppearanceBase = { ...appearance };
       ui.draftMusic = structuredClone(db.music);
+    } else {
+      const base = ui.editingAppearanceBase || appearance;
+      for (const key of Object.keys(appearance)) {
+        // Rebase untouched fields; retain an intentional unsaved draft.
+        if (ui.editing[key] === base[key]) ui.editing[key] = appearance[key];
+      }
+      ui.editingAppearanceBase = { ...appearance };
     }
     return ui.editing;
   }
@@ -420,21 +434,45 @@
       m = ui.draftMusic,
       src = sourceBy(d.source_id),
       isRunning = jobsFor(e.id).some((x) => x.status === "running");
-    const sourceOptions = db.sources
-      .map((s) => {
-        const used = db.episodes.some(
-          (x) => x.id !== e.id && aliveE(x) && x.source_id === s.id,
-        );
-        return `<option value="${esc(s.id)}" ${s.id === d.source_id ? "selected" : ""} ${used ? "disabled" : ""}>${esc(s.name)}${used ? " (занят)" : ""}</option>`;
-      })
-      .join("");
-    return `${header(`СЕРИЯ ${String(e.number).padStart(2, "0")} / ПАРАМЕТРЫ`, "Настройка монтажа", `Проект «${esc(currP()?.title || "")}». Настройки сохраняются отдельно от запуска монтажа.`, `<button class="btn clear" data-action="nav" data-screen="episodes">← К сериям</button>${jobsFor(e.id).some((x) => x.status === "completed") ? '<button class="btn" data-action="open-review">▷ Проверить готовые</button>' : ""}`)}
-<div class="two-col"><div class="editor-left"><section class="panel setting-panel"><div class="section-heading"><div class="sym">▣</div><h2>Исходный видеофайл</h2><span>MP4 / MKV</span></div><label class="form-label" for="sourceSelect">Видео этой серии</label><div class="form-line"><select class="form-select" id="sourceSelect"><option value="">— Выберите видео —</option>${sourceOptions}</select><button class="btn" data-action="refresh-sources">↻</button></div><div class="field-hint" id="sourceInfo">${src ? `${esc(src.name)} · ${kb(src.size)}` : "Пока исходное видео не закреплено за серией."}</div><div class="divider"></div><div class="inline-controls"><button class="btn" data-action="upload-video">↥ Импортировать видео</button><span class="caption">До 20 ГБ · файл сохраняется в локальной библиотеке</span></div></section>
-<section class="panel setting-panel"><div class="section-heading"><div class="sym">▧</div><h2>Оформление Shorts</h2><span>1080 × 1920 · 9:16</span></div><label class="form-label">Расположение видео</label><div class="choice-row"><label class="option-card"><input name="layout" type="radio" value="cinema" ${d.layout === "cinema" && d.frame_style !== "social" ? "checked" : ""}><span class="mini-layout"></span><strong>Весь кадр + мягкий фон</strong><small>Всё действие видно. Фон — размытая копия кадра.</small></label><label class="option-card"><input name="layout" type="radio" value="portrait" ${d.layout === "portrait" && d.frame_style !== "social" ? "checked" : ""}><span class="mini-layout crop"></span><strong>Умное кадрирование</strong><small>Крупный план героя, фокус на движении.</small></label><label class="option-card"><input name="layout" type="radio" value="social" ${d.frame_style === "social" ? "checked" : ""}><span class="mini-layout social"></span><strong>Карточка публикации</strong><small>Весь кадр, мягкий фон, канал и подпись.</small></label></div><div id="socialFields" class="social-fields" ${d.frame_style === "social" ? "" : "hidden"}><label class="form-label" for="socialVariant">Стиль карточки</label><select class="form-select" id="socialVariant"><option value="compact" ${d.card_variant === "compact" ? "selected" : ""}>Компактная карточка</option><option value="post" ${d.card_variant === "post" ? "selected" : ""}>Пост · крупная подпись</option></select><label class="form-label" for="socialChannel">Название канала</label><input class="form-input" id="socialChannel" maxlength="60" value="${esc(d.channel_name)}" placeholder="Название вашего канала"><div id="socialHandleField" ${d.card_variant === "post" ? "" : "hidden"}><label class="form-label" for="socialHandle">Адрес канала</label><input class="form-input" id="socialHandle" maxlength="60" value="${esc(d.channel_handle)}" placeholder="@ваш_канал"></div><label class="form-label" for="socialCaption">Подпись к видео</label><textarea class="area" id="socialCaption" maxlength="180" rows="3" placeholder="Ваша подпись">${esc(d.post_caption)}</textarea><p class="field-hint">Рамка и текст будут встроены в готовый MP4.</p></div><div class="divider"></div><label class="form-label">Субтитры</label><div class="choice-row"><label class="option-card"><input name="caption" type="radio" value="accent" ${d.caption_style === "accent" ? "checked" : ""}><strong style="color:#ffe383;font-size:14px">Яркие · короткие</strong><small>Жёлтые с обводкой, крупные фразы.</small></label><label class="option-card"><input name="caption" type="radio" value="classic" ${d.caption_style === "classic" ? "checked" : ""}><strong style="font-size:14px">Классические</strong><small>Белый текст с мягкой тенью.</small></label></div></section>
-<section class="panel setting-panel"><div class="section-heading"><div class="sym">✧</div><h2>Анализ истории</h2></div><label class="form-label" for="analysisSelect">Способ анализа сцены и изображения</label><select class="form-select" id="analysisSelect"><option value="deepseek_plan" ${d.analysis_provider === "deepseek_plan" ? "selected" : ""}>DeepSeek · сюжет и план, кадрирование локально</option><option value="antigravity_manual">Antigravity CLI (ручной запуск)</option><option value="local" ${d.analysis_provider === "local" ? "selected" : ""}>На компьютере · без сети</option><option value="hybrid" ${d.analysis_provider === "hybrid" ? "selected" : ""}>Локально + DeepSeek при сомнениях</option><option value="deepseek" ${d.analysis_provider === "deepseek" ? "selected" : ""}>DeepSeek · анализ через облако</option></select><p id="providerHint" class="field-hint"></p><details class="expand"><summary>Подключение DeepSeek</summary><div class="expanded"><div class="data-row"><span>Настроен</span><b id="dConfigured">${db.deepseek.configured ? "Да" : "Нет"}</b></div><div class="data-row"><span>Модель</span><b>${esc(db.deepseek.model)}</b></div><div class="inline-controls spaced"><button class="btn sm" data-action="check-deepseek">Проверить подключение</button></div><p class="caption">Стоимость облачного анализа проверяйте в кабинете DeepSeek.</p></div></details></section>
-<section class="panel setting-panel"><div class="section-heading"><div class="sym">♫</div><h2>Фоновая музыка</h2><span>${db.music.tracks.length} трека</span></div><label class="switch-line"><span>Добавлять музыку в шортсы</span><input id="musicEnabled" type="checkbox" ${m.enabled ? "checked" : ""}></label><div id="musicSettings" style="${m.enabled ? "" : "opacity:.45;pointer-events:none"}"><div class="divider"></div><div class="range-header"><label class="form-label" for="musicVolume">Громкость</label><output id="volumeValue">${Math.round(m.volume * 100)}%</output></div><input type="range" id="musicVolume" min="0" max="100" value="${Math.round(m.volume * 100)}"><div class="spaced"><label class="form-label" for="musicMode">Режим подстановки</label><select class="form-select" id="musicMode"><option value="single" ${m.mode === "single" ? "selected" : ""}>Один трек на все части</option><option value="random_per_part" ${m.mode === "random_per_part" ? "selected" : ""}>Случайный для каждой части</option><option value="per_part" ${m.mode === "per_part" ? "selected" : ""}>Выбор трека по частям</option></select></div><div id="musicTrackOptions" class="spaced">${musicOptions()}</div></div><div class="inline-controls spaced"><button class="btn sm" data-action="music-folder">▣ Открыть папку</button><button class="btn sm" data-action="refresh-music">↻ Обновить</button><button class="btn sm clear" data-action="copy-music-path">⧉ Путь</button></div><div class="field-hint">Музыка — глобальные настройки /api/music, независимо от параметров серии.</div></section>
-<div class="sticky-bottom"><span class="form-status" id="editStatus"></span><button class="btn" data-action="save-settings">Сохранить настройки</button><button class="btn solid" data-action="launch" ${!d.source_id || isRunning ? "disabled" : ""}>▷ Запустить монтаж</button></div></div>
-<aside class="editor-right"><section class="panel preview-panel"><div class="preview-header"><h3>Живой предпросмотр</h3><span class="badge good">9:16 / SHORTS</span></div><div class="phone-wrap">${phoneHTML(d.layout, d.caption_style, 0, true)}</div><div class="preview-controls"><span>Предпросмотр выбранного исходника</span><span>Параметры исходного видео</span></div><div class="ready-info panel" style="background:#0e1723"><h3>Что получим при экспорте</h3><div class="data-row"><span>Видео</span><b>H.264 / MP4</b></div><div class="data-row"><span>Аудио</span><b>Оригинал + музыка</b></div><div class="data-row"><span>Субтитры</span><b>Встроенные + SRT</b></div><div class="data-row"><span>Максимальная длина части</span><b>120 сек.</b></div>${latest(e.id) ? `<button class="btn sm" data-action="open-job" data-id="${esc(latest(e.id).id)}">◷ История последнего монтажа →</button>` : ""}</div></section></aside></div>`;
+    return `${header(`СЕРИЯ ${String(e.number).padStart(2, "0")} / ПАРАМЕТРЫ`, "Настройка монтажа", `Проект «${esc(currP()?.title || "")}».`, `<button class="btn clear" data-action="nav" data-screen="episodes">← К сериям</button>${jobsFor(e.id).some((x) => x.status === "completed") ? '<button class="btn" data-action="open-review">▷ Проверить готовые</button>' : ""}`)}
+<div class="two-col montage-settings"><div class="editor-left">
+<section class="panel editor-source"><div class="editor-source-info"><h2>Исходное видео</h2><p id="sourceInfo" title="${esc(src?.name || "")}">${src ? `${esc(src.name)} · ${kb(src.size)}` : "Импортируйте MP4 или MKV"}</p></div><button class="btn" data-action="upload-video">↥ Импортировать видео</button></section>
+<section class="panel setting-panel editor-appearance"><div class="section-heading"><h2>Оформление Shorts</h2><span>9:16</span></div><div class="choice-row editor-layouts">${[
+  ["cinema", "Весь кадр", ""], ["portrait", "Крупный план", "crop"], ["social", "Карточка", "social"],
+].map(([value, label, cls]) => `<label class="option-card"><input name="layout" type="radio" value="${value}" ${(value === "social" ? d.frame_style === "social" : d.frame_style !== "social" && d.layout === value) ? "checked" : ""}><span class="mini-layout ${cls}"></span><strong>${label}</strong></label>`).join("")}</div>
+<div class="editor-appearance-tools"><label class="form-label" for="captionStyle">Субтитры</label><select class="form-select" id="captionStyle"><option value="accent" ${d.caption_style === "accent" ? "selected" : ""}>Яркие</option><option value="classic" ${d.caption_style === "classic" ? "selected" : ""}>Классические</option></select><button class="btn sm" id="editCardButton" data-action="editor-panel" data-id="editorCard" ${d.frame_style === "social" ? "" : "hidden"}>Настроить карточку</button></div></section>
+<section class="panel editor-options"><div class="editor-option-row"><label class="form-label" for="analysisSelect">Анализ</label><select class="form-select" id="analysisSelect"><option value="deepseek_plan" ${d.analysis_provider === "deepseek_plan" ? "selected" : ""}>DeepSeek · сюжет и план</option><option value="antigravity_manual" ${d.analysis_provider === "antigravity_manual" ? "selected" : ""}>Antigravity · автоматически</option><option value="local" ${d.analysis_provider === "local" ? "selected" : ""}>На компьютере</option><option value="hybrid" ${d.analysis_provider === "hybrid" ? "selected" : ""}>На компьютере + DeepSeek</option><option value="deepseek" ${d.analysis_provider === "deepseek" ? "selected" : ""}>DeepSeek · облако</option></select><button class="btn sm clear" data-action="editor-panel" data-id="editorAnalysis" aria-label="Настройки подключения анализа">⚙</button></div>
+<div class="editor-option-row"><label class="form-label" for="editEconomyMode">Экономный режим</label><input id="editEconomyMode" type="checkbox" role="switch" ${d.economy_mode !== false ? "checked" : ""}><span class="caption">Существующие проверки по необходимости</span></div>
+<div class="editor-option-row"><label class="form-label" for="musicEnabled">Музыка</label><input id="musicEnabled" type="checkbox" ${m.enabled ? "checked" : ""}><span id="musicSummary" class="caption"></span><button class="btn sm clear" data-action="editor-panel" data-id="editorMusic">Настроить</button></div></section>
+<div class="sticky-bottom editor-launch"><span class="form-status" id="editStatus"></span><button class="btn" data-action="save-settings">Сохранить</button>${processingModeHTML(d, !d.source_id || isRunning)}</div></div>
+<aside class="editor-right"><section class="panel preview-panel"><div class="preview-header"><h3>Предпросмотр</h3><span class="badge good">9:16</span></div><div class="phone-wrap">${phoneHTML(d.layout, d.caption_style, 0, true)}</div>${latest(e.id) ? `<button class="btn sm" data-action="open-job" data-id="${esc(latest(e.id).id)}">История монтажа</button>` : ""}</section></aside></div>
+${editorDialogHTML("editorCard", "Настроить карточку", `<div id="socialFields" class="social-fields"><label class="form-label" for="socialVariant">Стиль карточки</label><select class="form-select" id="socialVariant"><option value="compact" ${d.card_variant === "compact" ? "selected" : ""}>Компактная карточка</option><option value="post" ${d.card_variant === "post" ? "selected" : ""}>Пост · крупная подпись</option></select><label class="form-label" for="socialChannel">Название канала</label><input class="form-input" id="socialChannel" maxlength="60" value="${esc(d.channel_name)}" placeholder="Название вашего канала"><div id="socialHandleField"><label class="form-label" for="socialHandle">Адрес канала</label><input class="form-input" id="socialHandle" maxlength="60" value="${esc(d.channel_handle)}" placeholder="@ваш_канал"></div><label class="form-label" for="socialCaption">Подпись к видео</label><textarea class="area" id="socialCaption" maxlength="180" rows="3" placeholder="Ваша подпись">${esc(d.post_caption)}</textarea></div>`)}
+${editorDialogHTML("editorAnalysis", "Подключение анализа", `<p id="providerHint" class="field-hint"></p><div class="data-row"><span>DeepSeek настроен</span><b id="dConfigured">${db.deepseek.configured ? "Да" : "Нет"}</b></div><div class="data-row"><span>Модель</span><b>${esc(db.deepseek.model)}</b></div><button class="btn sm" data-action="check-deepseek">Проверить подключение</button>`)}
+${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="field-hint">Настройки музыки применяются ко всем сериям.</p><div id="musicSettings"><div class="range-header"><label class="form-label" for="musicVolume">Громкость</label><output id="volumeValue">${Math.round(m.volume * 100)}%</output></div><input type="range" id="musicVolume" min="0" max="100" value="${Math.round(m.volume * 100)}"><div class="spaced"><label class="form-label" for="musicMode">Подстановка</label><select class="form-select" id="musicMode"><option value="single" ${m.mode === "single" ? "selected" : ""}>Один трек на все части</option><option value="random_per_part" ${m.mode === "random_per_part" ? "selected" : ""}>Случайный для каждой части</option><option value="per_part" ${m.mode === "per_part" ? "selected" : ""}>Выбор по частям</option></select></div><div id="musicTrackOptions" class="spaced">${musicOptions()}</div></div><div class="inline-controls spaced"><button class="btn sm" data-action="music-folder">Открыть папку</button><button class="btn sm" data-action="refresh-music">Обновить</button><button class="btn sm clear" data-action="copy-music-path">Копировать путь</button></div>`)}
+`;
+  }
+  function processingModeLabel(mode) {
+    return {full: 'Полный монтаж', incremental: 'Обновить по изменениям', plan_only: 'Пересобрать план'}[mode] || 'Полный монтаж';
+  }
+  function processingModeHTML(d, disabled) {
+    return `<div class="launch-split"><button class="btn solid" data-action="launch" data-processing-mode="${d.processing_mode}" ${disabled ? "disabled" : ""}>${processingModeLabel(d.processing_mode)}</button><details id="processingMenu" class="launch-menu"><summary class="btn solid" aria-label="Выбрать режим обработки">▾</summary><div class="launch-menu-options" aria-label="Режим обработки">${['incremental', 'plan_only', 'full'].map(mode => `<button data-action="processing-mode" data-id="${mode}" aria-pressed="${d.processing_mode === mode}"><b>${processingModeLabel(mode)}</b><small>${{incremental: 'Использовать сохранённые этапы', plan_only: 'Без моделей и экспорта видео', full: 'Все этапы с начала'}[mode]}</small></button>`).join('')}<p id="processingModeHint" class="field-hint"></p></div></details></div>`;
+  }
+  function editorDialogHTML(id, title, body) {
+    return `<dialog id="${id}" class="editor-dialog" aria-labelledby="${id}Title"><div class="editor-dialog-head"><h2 id="${id}Title">${title}</h2><button class="btn sm clear" data-action="editor-panel-close" aria-label="Закрыть">✕</button></div>${body}<div class="editor-dialog-footer"><button class="btn solid" data-action="editor-panel-close">Готово</button></div></dialog>`;
+  }
+  let editorDialogOpener;
+  function closeEditorDialog() {
+    const dialog = document.querySelector('.editor-dialog[open]');
+    if (!dialog) return;
+    dialog.close();
+    editorDialogOpener?.focus();
+  }
+  function openEditorDialog(id, opener) {
+    const dialog = $(id);
+    if (!dialog?.matches('.editor-dialog')) return;
+    editorDialogOpener = opener;
+    dialog.showModal();
+    dialog.querySelector('input, select, textarea')?.focus();
   }
   function musicOptions() {
     const m = ui.draftMusic || db.music,
@@ -461,7 +499,7 @@
       preview && local
         ? `<video muted autoplay loop playsinline src="${local}"></video>`
         : "";
-    return `<div class="phone ${layout === "portrait" ? "crop" : ""} ${caption === "classic" ? "classic" : ""}" id="${preview ? "editorPhone" : "reviewPhone"}"><div class="phone-bg"></div><div class="part-label">ЧАСТЬ ${String(part + 1).padStart(2, "0")}</div><div class="phone-social-card"></div><div class="phone-social-header"><div><b></b><small class="phone-social-handle"></small></div><span>•••</span></div><div class="phone-scene">${video}</div><div class="phone-social-caption"></div><div class="subs" id="${preview ? "previewSubs" : "reviewSubs"}">${esc(db.plans[currentJob()?.id]?.parts?.[part]?.subtitles?.[0]?.text || "")}</div><div class="phone-bar"></div></div>`;
+    return `<div class="phone ${layout === "portrait" ? "crop" : ""} ${caption === "classic" ? "classic" : ""}" id="${preview ? "editorPhone" : "reviewPhone"}"><div class="phone-bg"></div><div class="part-label">ЧАСТЬ ${String(part + 1).padStart(2, "0")}</div><div class="phone-social-card"><small class="phone-social-footer">Видео</small></div><div class="phone-social-header"><img class="phone-social-avatar" alt="Иконка канала" src="${escAttr(avatarURL(getFinishing().video))}"><div><b></b><small class="phone-social-handle"></small></div><span>•••</span></div><div class="phone-scene">${video}</div><div class="phone-social-caption"></div><div class="subs" id="${preview ? "previewSubs" : "reviewSubs"}">${esc(db.plans[currentJob()?.id]?.parts?.[part]?.subtitles?.[0]?.text || "")}</div><div class="phone-bar"></div></div>`;
   }
   function fitPublicationText(element, maximum, minimum = 18) {
     if (!element?.clientWidth || !element.clientHeight) return;
@@ -469,6 +507,23 @@
       element.style.fontSize = (size / 1080 * 100) + "cqw";
       if (element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth) break;
     }
+  }
+  function applySocialGeometry(element, video, source = {}) {
+    const sw = Number(source.width) > 0 ? source.width : 1920;
+    const sh = Number(source.height) > 0 ? source.height : 1080;
+    const scale = Math.min(900 / sw, 800 / sh);
+    const width = Math.max(2, Math.floor(sw * scale / 2) * 2);
+    const height = Math.max(2, Math.floor(sh * scale / 2) * 2);
+    const padding = video.card_variant === "post" ? 460 : 340;
+    const videoTop = video.card_variant === "post" ? 400 : 280;
+    const top = Math.floor((1920 - height - padding) / 2);
+    const properties = {"--social-top": top / 1920 * 100,
+      "--social-height": (height + padding) / 1920 * 100,
+      "--social-video-top": (top + videoTop) / 1920 * 100,
+      "--social-video-height": height / 1920 * 100,
+      "--social-video-width": width / 1080 * 100,
+      "--social-caption-height": (videoTop - 145) / 1920 * 100};
+    for (const [name, value] of Object.entries(properties)) element.style.setProperty(name, value + "%");
   }
   function syncPreview() {
     const d = currentEdit(),
@@ -478,20 +533,33 @@
     ph.classList.toggle("classic", d.caption_style === "classic");
     ph.classList.toggle("social-mode", d.frame_style === "social");
     ph.querySelector(".phone-social-header b").textContent = d.channel_name;
+    ph.querySelector(".phone-social-avatar").src = avatarURL({...getFinishing().video, channel_name:d.channel_name});
     ph.classList.toggle("post-card", d.card_variant === "post");
-    ph.querySelector(".phone-social-handle").textContent = d.channel_handle ? "@" + d.channel_handle.replace(/^@+/, "") : "";
-    if ($("socialHandleField")) $("socialHandleField").hidden = d.card_variant !== "post";
+    applySocialGeometry(ph, d, db.plans[currentJob()?.id]?.source);
+    ph.querySelector(".phone-social-handle").textContent = d.channel_handle ? "@" + d.channel_handle.replace(/^@+/, "") : "Канал";
+    if ($("socialHandleField")) $("socialHandleField").hidden = false;
     ph.querySelector(".phone-social-caption").textContent = d.post_caption;
     fitPublicationText(ph.querySelector(".phone-social-header b"), 44, 12);
     fitPublicationText(ph.querySelector(".phone-social-caption"), d.card_variant === "post" ? 48 : 34);
-    const socialFields = $("socialFields");
-    if (socialFields) socialFields.hidden = d.frame_style !== "social";
+    if ($("editCardButton")) $("editCardButton").hidden = d.frame_style !== "social";
     const launch = document.querySelector("[data-action=launch]");
-    if (launch)
-      launch.textContent =
-        d.analysis_provider === "antigravity_manual"
-          ? "Подготовить данные"
-          : "▷ Запустить монтаж";
+    if (launch) {
+      launch.dataset.processingMode = d.processing_mode;
+      launch.textContent = d.processing_mode === 'plan_only' ? '↺ Пересобрать план'
+        : d.processing_mode === 'full' ? '▷ Полный монтаж'
+        : jobsFor(ui.episodeId).length ? '↺ Обновить монтаж' : '▷ Запустить монтаж';
+    }
+    document.querySelectorAll('[data-action="processing-mode"]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.id === d.processing_mode));
+    });
+    const music = ui.draftMusic;
+    if ($('musicSummary')) $('musicSummary').textContent = music.enabled
+      ? `${music.track || (music.mode === 'per_part' ? 'По частям' : 'Случайный трек')} · ${Math.round(music.volume * 100)}%` : 'Выключена';
+    if ($('processingModeHint')) $('processingModeHint').textContent = {
+      full: 'Заново: подготовка видео, речь, сцены, сюжет, план и экспорт. Предыдущий монтаж останется в истории.',
+      incremental: 'Берём кэш предыдущего запуска этой серии. Проверяем исходник, настройки и код; повторяем изменённые этапы и зависимые от них. Без кэша выполним полный расчёт.',
+      plan_only: 'Пересобираем только план из сохранённого анализа. Без моделей и экспорта видео. Способ анализа и кадрирование должны совпадать с кэшем; изменения правил анализа в этом режиме не применяются.',
+    }[d.processing_mode];
     const prov = $("providerHint");
     if (prov)
       prov.textContent =
@@ -509,25 +577,21 @@
         }[d.analysis_provider] || "";
   }
   function bindEditor() {
-    if (!$("sourceSelect")) return;
+    if (!$("editorPhone")) return;
     const d = currentEdit(),
       m = ui.draftMusic;
     $("socialVariant")?.addEventListener("change", (event) => { d.card_variant = event.target.value; syncPreview(); });
-    $("sourceSelect")?.addEventListener("change", (e) => {
-      d.source_id = e.target.value;
-      const s = sourceBy(d.source_id);
-      $("sourceInfo").textContent = s
-        ? `${s.name} · ${kb(s.size)}`
-        : "Видео не выбрано";
-      const btn = document.querySelector("[data-action=launch]");
-      if (btn) btn.disabled = !d.source_id;
-    });
+    for (const dialog of document.querySelectorAll('.editor-dialog')) {
+      dialog.addEventListener('cancel', event => { event.preventDefault(); closeEditorDialog(); });
+      dialog.addEventListener('click', event => { if (event.target === dialog) closeEditorDialog(); });
+    }
     document.querySelectorAll("input[name=layout]").forEach(
       (x) =>
         (x.onchange = () => {
           d.layout = x.value === "social" ? "cinema" : x.value;
           d.frame_style = x.value === "social" ? "social" : "plain";
           syncPreview();
+          if (x.value === "social") openEditorDialog("editorCard", $("editCardButton"));
         }),
     );
     for (const [id, key] of [["socialChannel", "channel_name"], ["socialHandle", "channel_handle"], ["socialCaption", "post_caption"]]) {
@@ -536,37 +600,30 @@
         syncPreview();
       });
     }
-    document.querySelectorAll("input[name=caption]").forEach(
-      (x) =>
-        (x.onchange = () => {
-          d.caption_style = x.value;
-          syncPreview();
-        }),
-    );
-    $("analysisSelect").onchange = (e) => {
-      d.analysis_provider = e.target.value;
-      syncPreview();
-    };
+    $("captionStyle").onchange = event => { d.caption_style = event.target.value; syncPreview(); };
+    $("analysisSelect").onchange = event => { d.analysis_provider = event.target.value; syncPreview(); };
+    $("editEconomyMode").onchange = event => { d.economy_mode = event.target.checked; };
     $("musicEnabled").onchange = (e) => {
       m.enabled = e.target.checked;
-      $("musicSettings").style.opacity = m.enabled ? "1" : ".45";
-      $("musicSettings").style.pointerEvents = m.enabled ? "auto" : "none";
+      syncPreview();
     };
     $("musicVolume").oninput = (e) => {
       m.volume = Number(e.target.value) / 100;
       $("volumeValue").textContent = e.target.value + "%";
+      syncPreview();
     };
     $("musicMode").onchange = (e) => {
       m.mode = e.target.value;
       $("musicTrackOptions").innerHTML = musicOptions();
       bindMusicExtra();
+      syncPreview();
     };
     bindMusicExtra();
   }
   function bindMusicExtra() {
     $("musicTrack")?.addEventListener(
       "change",
-      (e) => (ui.draftMusic.track = e.target.value || null),
+      (e) => { ui.draftMusic.track = e.target.value || null; syncPreview(); },
     );
     document.querySelectorAll(".partTrack").forEach((x) =>
       x.addEventListener("change", (e) => {
@@ -617,6 +674,20 @@
       if (el) el.textContent = "Учёт токенов недоступен: " + error.message;
     }
   }
+  const optionalChecks = new Set(["global_visual_verification", "pacing", "silent_sequences", "endings", "ending_selection_adjudication"]);
+  function renderEconomyControl(j) {
+    if (j.status === "completed" || j.processing_mode === "plan_only") return "";
+    return `<div class="panel economy-control"><label class="fc-toggle" for="jobEconomyMode"><input type="checkbox" role="switch" id="jobEconomyMode" ${j.economy_mode !== false ? "checked" : ""}><span>Экономный режим</span></label><p class="field-hint">Проверки выполняются по необходимости. Титры, опенинг и эндинг проверяем в найденных областях с запасом 5 секунд до целых фраз. Принятые результаты используем повторно; повторные проверки сцен нужны при проблемах или нехватке данных.</p></div>`;
+  }
+  function renderProviderControl(j) {
+    if (j.status === "completed" || j.processing_mode === "plan_only") return "";
+    const options = [["deepseek_plan", "DeepSeek · сюжет и план"],
+      ["antigravity_manual", "Antigravity"], ["local", "На компьютере"],
+      ["deepseek", "DeepSeek · облако"]];
+    const selected = ui.providerDrafts?.[j.id] || j.analysis_provider || "local";
+    if (!options.some(([value]) => value === selected)) options.push([selected, providerLabel(selected)]);
+    return `<div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>Способ анализа</h2></div><label class="form-label" for="jobAnalysisSelect">Продолжить обработку через</label><div class="inline-controls"><select class="form-select" id="jobAnalysisSelect">${options.map(([value, label]) => `<option value="${esc(value)}" ${selected === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select><button class="btn solid" data-action="switch-analysis-provider" data-id="${esc(j.id)}" ${selected === (j.analysis_provider || "local") ? "disabled" : ""}>Переключить и продолжить</button></div><p class="field-hint">Текущий запрос будет остановлен. Обработка продолжится с сохранённых этапов; результаты каждого способа анализа сохраняются отдельно.</p></div>`;
+  }
   function renderManualPanel(j) {
     const supported =
       ["local", "antigravity_manual"].includes(j.analysis_provider) &&
@@ -626,11 +697,23 @@
       idle = !["running", "queued"].includes(j.status),
       packets = manual ? db.manualAnalysis?.[j.id]?.packets || [] : [];
     const exchange = db.manualAnalysis?.[j.id] || {},
-      automatic = !!exchange.automation?.enabled;
+      automatic = !!exchange.automation?.enabled,
+      managed = automatic && exchange.automation?.managed === true;
     const command = `powershell -NoProfile -ExecutionPolicy Bypass -File F:\\new_prodject\\scripts\\run_antigravity_job.ps1 -JobDirectory "${exchange.job_directory || ""}"`;
-    return `<div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>Antigravity CLI · отдельный запуск</h2></div><p class="caption">Запустите сценарий Antigravity отдельно и оставьте его открытым до завершения анализа. Результаты можно загрузить вручную.</p><div class="inline-controls"><button class="btn sm" data-action="manual-prepare" data-id="${esc(j.id)}" ${idle ? "" : "disabled"}>${automatic ? "Запустить / продолжить анализ" : "Подготовить данные"}</button><button class="btn sm" data-action="manual-open" data-id="${esc(j.id)}">Открыть папку анализа</button>${manual ? `<button class="btn sm" data-action="manual-auto" data-id="${esc(j.id)}" ${idle ? "" : "disabled"}>Автоимпорт: ${automatic ? "выключить" : "включить"}</button><button class="btn sm" data-action="manual-return" data-id="${esc(j.id)}" ${idle ? "" : "disabled"}>Вернуться к Qwen 9B</button>` : ""}</div>${automatic ? `<p class="caption">После запуска анализа один раз выполните эту команду в отдельном PowerShell. Оставьте окно открытым: ответы принимаются автоматически до готового монтажа. Общего лимита времени нет. При ошибке или отмене сценарий остановится.</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere;user-select:text">${esc(command)}</pre><p class="caption">Отдельный сценарий: ${esc({ waiting: "ожидает пакет", processing: "обрабатывает пакет", completed: "завершён", stopped: "остановлен", budget_exhausted: "тестовый лимит времени исчерпан; результаты сохранены", error: "ошибка" }[exchange.runner?.status] || "ещё не запущен")}</p>` : ""}${renderPacketSummary(packets, j.id, idle)}<input hidden type="file" id="manualResultFile" accept=".json,application/json"></div>`;
+    return `<div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>Antigravity · ${managed ? "автоматическая обработка" : "настройки обмена"}</h2></div><p class="caption">${managed ? "Antigravity запускается вместе с обработкой. Ответы проверяются и принимаются автоматически до готового монтажа." : "Можно включить автоматическую обработку или загрузить ответы вручную."}</p><div class="inline-controls"><button class="btn sm" data-action="manual-prepare" data-id="${esc(j.id)}" ${idle ? "" : "disabled"}>Продолжить обработку</button>${manual ? `<button class="btn sm" data-action="manual-auto" data-id="${esc(j.id)}" ${idle ? "" : "disabled"}>${managed ? "Перейти к ручному обмену" : "Включить автоматическую обработку"}</button>` : ""}</div>${automatic ? `<p class="caption">Antigravity: ${esc({ starting: "запускается", waiting: "готов к следующему запросу", waiting_quota: "ждёт восстановления лимита; продолжит автоматически", processing: "обрабатывает запросы", completed: "завершён", stopped: "остановлен", budget_exhausted: "лимит времени исчерпан; результаты сохранены", error: "ошибка — сохранённые результаты доступны" }[exchange.runner?.status] || "запустится при продолжении обработки")}</p>` : ""}${automatic && !managed ? `<details class="expand"><summary>Отдельный внешний сценарий</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere;user-select:text">${esc(command)}</pre></details>` : ""}<details class="expand"><summary>Пакеты и ручной импорт</summary><div class="expanded"><button class="btn sm" data-action="manual-open" data-id="${esc(j.id)}">Открыть папку анализа</button>${renderPacketSummary(packets, j.id, idle)}</div></details><input hidden type="file" id="manualResultFile" accept=".json,application/json"></div>`;
   }
   function processingMessage(job) {
+    if (job.status === "running" && job.provider_wait?.reason === "quota") {
+      const resume = new Date(job.provider_wait.resume_at);
+      if (Number.isFinite(resume.getTime()))
+        return `Лимит Antigravity. Продолжим автоматически ${resume.toLocaleString("ru-RU")}. Все принятые ответы сохранены.`;
+    }
+    if (job.status === "waiting_analysis" && job.analysis_provider === "antigravity_manual") {
+      const exchange = db.manualAnalysis?.[job.id];
+      const id = exchange?.runner?.packet || exchange?.exchange?.packet;
+      const failure = exchange?.packets?.find((packet) => packet.id === id && packet.status === "error");
+      if (failure?.error) return `${failure.error}. Готовые результаты сохранены.`;
+    }
     return typeof job.error === "string" && job.error.trim()
       ? job.error
       : job.message || "";
@@ -642,7 +725,7 @@
       if (packet.status in counts) counts[packet.status]++;
     const activeErrors = packets.filter((packet) => packet.status === "error");
     const entry = (packet) =>
-      `<div class="data-row"><span>${esc(packet.purpose)}${packet.batch_size ? ` · ${esc(packet.batch_size)} задания в одном запросе` : ""} · ${esc(packet.id.slice(0, 12))}<br>${esc({ waiting: "Ожидает обработки", ready: "Ответ сохранён", error: "Ошибка" }[packet.status] || packet.status)}</span><button class="btn sm" data-action="manual-import" data-id="${esc(jobId)}" data-packet="${esc(packet.id)}" ${idle ? "" : "disabled"}>Импортировать результат</button></div>`;
+      `<div class="data-row"><span>${esc(packet.purpose)}${packet.batch_size ? ` · ${esc(packet.batch_size)} задания в одном запросе` : ""} · ${esc(packet.id.slice(0, 12))}<br>${esc(packet.error || { waiting: "Ожидает обработки", ready: "Ответ сохранён", error: "Ошибка" }[packet.status] || packet.status)}</span><button class="btn sm" data-action="manual-import" data-id="${esc(jobId)}" data-packet="${esc(packet.id)}" ${idle ? "" : "disabled"}>Импортировать результат</button></div>`;
     return `<p class="caption">Пакеты: ${counts.ready} готовы · ${counts.waiting} ожидают · ${counts.error} с ошибкой в истории</p>${idle && activeErrors.length ? `<p class="caption">Есть ошибки пакетов. Подробности доступны ниже.</p>` : ""}<details class="expand" id="manualPacketDetails"><summary>Подробности пакетов (${packets.length})</summary><div class="expanded" id="manualPackets">${packets.map(entry).join("")}</div></details>`;
   }
   async function updateManualView() {
@@ -671,10 +754,10 @@
     const current = processingProgress(j),
       progress = current.percent;
     const hist = jobsFor(e.id);
-    return `${header(`МОНТАЖ / СЕРИЯ ${e.number}`, "Процесс обработки", "Следите за этапами монтажа и открывайте готовые Shorts.", `<button class="btn clear" data-action="nav" data-screen="editor">⚙ Параметры серии</button>${j.status === "completed" ? '<button class="btn solid" data-action="open-review">▷ Проверить Shorts</button>' : ""}`)}<div class="progress-dashboard"><section class="process-main"><div class="panel process-stat"><div class="progress-head"><div><div class="eyebrow">ЗАДАНИЕ / ${esc(j.id.slice(0, 8))}</div><h2>${j.status === "running" ? "Идёт монтаж серии" : statusLabel(j.status)}</h2></div>${badge(j.status)}</div><div class="percentage" id="percentage">${progress === null ? "…" : progress + '<span style="font-size:26px;letter-spacing:0">%</span>'}</div><p class="caption" id="currentStageLabel">${esc(current.label)}</p><p class="lede" id="stageMessage">${esc(processingMessage(j))}</p><div class="progress-track"><i id="jobBar" style="width:${progress === null ? 0 : progress}%"></i></div><div class="panel" style="padding:12px 15px;margin:14px 0;background:#101a16"><div class="section-title" style="margin-bottom:9px"><h2 style="font-size:12px">Токены моделей · этот запуск</h2><span class="tiny-note">Сохранённая статистика ответов моделей</span></div><div id="jobTokens" style="font-size:12px;color:#d4e8ba;line-height:1.8">Загружаем данные…</div></div><div class="inline-controls">${j.status === "running" ? `<button class="btn red" data-action="cancel-job" data-id="${esc(j.id)}">■ Отменить монтаж</button>` : ""}${["interrupted", "failed", "cancelled", "waiting_analysis"].includes(j.status) ? `<button class="btn solid" data-action="retry-job" data-id="${esc(j.id)}">↺ Продолжить обработку</button>` : ""}<button class="btn" data-action="read-job" data-id="${esc(j.id)}">↻ Обновить статус</button>${j.status === "completed" ? `<button class="btn solid" data-action="open-review">▷ К шортсам</button>` : ""}</div></div>
+    return `${header(`МОНТАЖ / СЕРИЯ ${e.number}`, "Процесс обработки", "Следите за этапами монтажа и открывайте готовые Shorts.", `<button class="btn clear" data-action="nav" data-screen="editor">⚙ Параметры серии</button>${j.status === "completed" ? `<button class="btn solid" data-action="open-review">${j.processing_mode === "plan_only" ? "▷ Проверить план" : "▷ Проверить Shorts"}</button>` : ""}`)}<div class="progress-dashboard"><section class="process-main"><div class="panel process-stat"><div class="progress-head"><div><div class="eyebrow">ЗАДАНИЕ / ${esc(j.id.slice(0, 8))}</div><h2>${j.status === "running" && j.provider_wait?.reason === "quota" ? "Ожидаем восстановления лимита" : j.status === "running" ? "Идёт монтаж серии" : statusLabel(j.status)}</h2></div>${badge(j.status)}</div><div class="percentage" id="percentage">${progress === null ? "…" : progress + '<span style="font-size:26px;letter-spacing:0">%</span>'}</div><p class="caption" id="currentStageLabel">${esc(current.label)}</p><p class="lede" id="stageMessage">${esc(processingMessage(j))}</p><div class="progress-track"><i id="jobBar" style="width:${progress === null ? 0 : progress}%"></i></div><div class="panel" style="padding:12px 15px;margin:14px 0;background:#101a16"><div class="section-title" style="margin-bottom:9px"><h2 style="font-size:12px">Токены моделей · этот запуск</h2><span class="tiny-note">Сохранённая статистика ответов моделей</span></div><div id="jobTokens" style="font-size:12px;color:#d4e8ba;line-height:1.8">Загружаем данные…</div></div><div class="inline-controls">${j.status === "running" ? `<button class="btn red" data-action="cancel-job" data-id="${esc(j.id)}">■ Отменить монтаж</button>` : ""}${["interrupted", "failed", "cancelled", "waiting_analysis"].includes(j.status) ? `<button class="btn solid" data-action="retry-job" data-id="${esc(j.id)}">↺ Продолжить обработку</button>` : ""}<button class="btn" data-action="read-job" data-id="${esc(j.id)}">↻ Обновить статус</button>${j.status === "completed" ? `<button class="btn solid" data-action="open-review">${j.processing_mode === "plan_only" ? "▷ К плану" : "▷ К шортсам"}</button>` : ""}</div></div>
 <div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>Этапы монтажа</h2></div><div class="process-stage-list" id="stageRows">${processingStageRows(j)}</div></div>
-<div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>История монтажей</h2><span class="tiny-note">${hist.length} попыток</span></div>${hist.map((h) => `<div class="history-row"><div><strong>Монтаж ${esc(h.id.slice(0, 8))}</strong><br><span>${stamp(h.created_at)}</span></div>${badge(h.status)}<button class="btn sm" data-action="open-job" data-id="${esc(h.id)}">Открыть →</button></div>`).join("")}</div>${renderManualPanel(j)}</section>
-<aside style="display:grid;gap:17px"><div class="panel" style="padding:23px"><div class="section-title"><h2>Параметры монтажа</h2></div><div class="data-row"><span>Видеофайл</span><b style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.source_name)}">${esc(j.source_name)}</b></div><div class="data-row"><span>Анализ</span><b>${esc(providerLabel(j.analysis_provider))}</b></div><div class="data-row"><span>Кадр</span><b>${j.layout === "cinema" ? "Весь кадр" : "Умное кадрирование"}</b></div><div class="data-row"><span>Субтитры</span><b>${j.caption_style === "accent" ? "С акцентом" : "Классические"}</b></div><div class="data-row"><span>Запущено</span><b>${stamp(j.created_at)}</b></div><div class="data-row"><span>Повтор</span><b>${j.attempt || 1}</b></div><div class="data-row"><span>Файлов</span><b>${publicJob(j).files.length}</b></div><div class="downloads">${j.status !== "running" ? `<button class="btn sm red" data-action="delete-job" data-id="${esc(j.id)}">Удалить запись</button>` : ""}</div></div><div class="panel" style="padding:23px"><div class="section-title"><h2>Сводка статуса</h2><span class="tiny-note">Последние события</span></div><div class="log-box" id="progressLog">${(
+<div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>История монтажей</h2><span class="tiny-note">${hist.length} попыток</span></div>${hist.map((h) => `<div class="history-row"><div><strong>Монтаж ${esc(h.id.slice(0, 8))}</strong><br><span>${stamp(h.created_at)}</span></div>${badge(h.status)}<button class="btn sm" data-action="open-job" data-id="${esc(h.id)}">Открыть →</button></div>`).join("")}</div>${renderEconomyControl(j)}${renderProviderControl(j)}${renderManualPanel(j)}</section>
+<aside style="display:grid;gap:17px"><div class="panel" style="padding:23px"><div class="section-title"><h2>Параметры монтажа</h2></div><div class="data-row"><span>Видеофайл</span><b style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.source_name)}">${esc(j.source_name)}</b></div><div class="data-row"><span>Режим</span><b>${esc(processingModeLabel(j.processing_mode))}</b></div><div class="data-row"><span>Анализ</span><b>${esc(providerLabel(j.analysis_provider))}</b></div><div class="data-row"><span>Кадр</span><b>${j.layout === "cinema" ? "Весь кадр" : "Умное кадрирование"}</b></div><div class="data-row"><span>Субтитры</span><b>${j.caption_style === "accent" ? "С акцентом" : "Классические"}</b></div><div class="data-row"><span>Запущено</span><b>${stamp(j.created_at)}</b></div><div class="data-row"><span>Повтор</span><b>${j.attempt || 1}</b></div><div class="data-row"><span>Файлов</span><b>${publicJob(j).files.length}</b></div><div class="downloads">${j.status !== "running" ? `<button class="btn sm red" data-action="delete-job" data-id="${esc(j.id)}">Удалить запись</button>` : ""}</div></div><div class="panel" style="padding:23px"><div class="section-title"><h2>Сводка статуса</h2><span class="tiny-note">Последние события</span></div><div class="log-box" id="progressLog">${(
       j.logs || [
         { time: j.created_at, text: "Создано задание" },
         { time: j.updated_at, text: j.message },
@@ -688,6 +771,29 @@
   }
   function bindProcessing() {
     if (ui.screen === "processing") {
+      const select = $("jobAnalysisSelect"), job = currentJob();
+      if (select && job) select.onchange = () => {
+        ui.providerDrafts ||= {};
+        ui.providerDrafts[job.id] = select.value;
+        document.querySelector('[data-action="switch-analysis-provider"]').disabled = select.value === (job.analysis_provider || "local");
+      };
+      const economy = $("jobEconomyMode");
+      if (economy && job) economy.onchange = async () => {
+        const enabled = economy.checked;
+        economy.disabled = true;
+        try {
+          await request("POST", `/api/jobs/${encodeURIComponent(job.id)}/analysis-checks`, {
+            economy_mode: enabled, resume: ["running", "queued"].includes(job.status),
+          });
+          if (ui.editing && ui.editing.episodeId === currE()?.id) ui.editing.economy_mode = enabled;
+          notify(enabled ? "Экономный режим включён" : "Включены все проверки");
+          render();
+        } catch (error) {
+          economy.checked = job.economy_mode !== false;
+          economy.disabled = false;
+          notify(error.message, true);
+        }
+      };
       updateTokenView();
       updateManualView();
       runTicker();
@@ -696,7 +802,7 @@
   function processingProgress(job) {
     const rows = processingRows(job);
     if (job.status === "completed")
-      return { percent: 100, label: "Все этапы завершены" };
+      return { percent: 100, label: job.processing_mode === 'plan_only' ? 'План готов · без экспорта видео' : "Все этапы завершены" };
     const code =
       Object.keys(rows).find((key) =>
         [
@@ -791,8 +897,11 @@
                 interrupted: "Прервано",
                 waiting_analysis: "Ожидает ответа agy",
                 not_required: "Не потребовалось",
+                cached: "Из кэша · без пересчёта",
               }[row.status] || "0% · Ожидает";
-        return `<div class="stage-row ${done ? "done" : active ? "active" : ""}"><span>${done ? "✓" : active ? "◉" : "○"} &nbsp; ${esc(title)}</span><i>${esc(label)}</i></div>`;
+        const disabled = row.status === "disabled" || (job.economy_mode !== false && optionalChecks.has(code));
+        const displayLabel = disabled ? (row.phase === "Не потребовалось" ? "Не потребовалось" : done ? "Сохранено · новые запросы отключены" : "Отключено · экономный режим") : row.phase && /^(Выбрано фрагментов|Сохранено)/.test(row.phase) ? row.phase : label;
+        return `<div class="stage-row ${disabled ? "check-disabled" : done ? "done" : active ? "active" : ""}" ${disabled ? 'aria-disabled="true"' : ""}><span>${done ? "✓" : active ? "◉" : "○"} &nbsp; ${esc(title)}</span><i>${esc(displayLabel)}</i></div>`;
       })
       .join("");
   }
@@ -911,10 +1020,10 @@
     return `<div class="rv-source-box ${compact ? "rv-comp-source" : ""}"><video id="reviewSourceVideo" controls playsinline preload="metadata" aria-label="Исходная серия" src="${reviewGetSource(j)}"></video></div>`;
   }
   function reviewShortStage(j, idx, compact = false) {
-    return `<div class="rv-phone-shell ${compact ? "rv-compare-phone" : ""}"><div class="rv-phone-grad"></div><div class="rv-phone-top"><b>КАДР</b><span>ЧАСТЬ ${String(idx + 1).padStart(2, "0")}</span></div><div class="rv-phone-film"><video id="reviewShortVideo" controls playsinline preload="metadata" aria-label="Готовый вертикальный Shorts, часть ${idx + 1}" src="${reviewGetShort(j, idx)}"></video></div><div class="rv-phone-captions ${j.caption_style === "classic" ? "is-white" : ""}"></div><div class="rv-phone-bottom"><span>9:16 · ${j.layout === "portrait" ? "крупный план" : "полный кадр"}</span><span>●</span></div></div>`;
+    return `<div class="rv-phone-shell ${compact ? "rv-compare-phone" : ""}"><video id="reviewShortVideo" controls playsinline preload="metadata" aria-label="Готовый вертикальный Shorts, часть ${idx + 1}" src="${reviewGetShort(j, idx)}"></video></div>`;
   }
   function reviewStage(j, plan, sel) {
-    const mode = ui.reviewMode || "short";
+    const mode = j.processing_mode === "plan_only" ? "source" : ui.reviewMode || "compare";
     if (mode === "source")
       return `<div class="rv-stage rv-single-source">${reviewSourceStage(j)}</div>`;
     if (mode === "compare")
@@ -929,6 +1038,7 @@
       return `<div class="empty" role="status">Загружаем готовые Shorts…</div>`;
     if (!j || j.status !== "completed" || !Array.isArray(plan?.parts) || !plan.parts.length)
       return `<div class="empty"><strong>Нет готовых частей</strong>Сначала завершите монтаж выбранной серии.</div>`;
+    if (j.processing_mode === "plan_only") ui.reviewMode = "source";
     ui.part = Math.max(0, Math.min(plan.parts.length - 1, ui.part));
     const part = plan.parts[ui.part],
       all = reviewSegments(plan),
@@ -959,22 +1069,21 @@
         return `<button class="rv2-clip ${s.kind === "kept" ? "kept" : "removed"} ${sel.key === s.key ? "active" : ""}" data-action="review-select-seg" data-id="${s.key}" title="${esc(title)}"><span class="rv2-clip-top"><b>${s.kind === "kept" ? `Часть ${s.part + 1} · сцена ${s.cut + 1}` : "Вырезано"}</b><i>${s.kind === "kept" ? "✓" : "✕"}</i></span><span class="rv2-clip-art ${s.kind === "kept" ? `scene-tone-${s.part % 5}` : ""}"><small>${s.kind === "kept" ? "▶ СМОТРЕТЬ" : "↪ ПРОПУСК"}</small></span><span class="rv2-clip-foot"><b>${reviewTime(s.start)}–${reviewTime(s.end)}</b><small>${reviewTime(s.end - s.start)}</small></span></button>`;
       })
       .join("");
-    return `<div class="rv2-head"><div class="rv2-titleline"><button class="rv2-back" data-action="nav" data-screen="editor" title="Настройки серии">←</button><div><span class="rv2-kicker">КАДР STUDIO / СЕРИЯ ${e.number}</span><h1>Проверка монтажа</h1></div></div><div class="rv2-heading-actions"><select class="form-select rv2-run-select" id="reviewAttempt" aria-label="Выбор попытки монтажа">${jobsFor(
+    return `<div class="rv2-screen">${j.processing_mode === "plan_only" ? '<p class="field-hint">План пересобран из кэша. Видео не экспортировалось. Здесь можно проверить сцены на исходнике; для создания Shorts запустите обновление по изменениям.</p>' : ""}<div class="rv2-head"><div class="rv2-titleline"><button class="rv2-back" data-action="nav" data-screen="editor" title="Настройки серии">←</button><div><span class="rv2-kicker">КАДР STUDIO / СЕРИЯ ${e.number}</span><h1>${j.processing_mode === "plan_only" ? "Проверка плана" : "Проверка монтажа"}</h1></div></div><div class="rv2-heading-actions"><select class="form-select rv2-run-select" id="reviewAttempt" aria-label="Выбор попытки монтажа">${jobsFor(
       e.id,
     )
       .filter((x) => x.status === "completed")
       .map(
         (x) =>
-          `<option value="${esc(x.id)}" ${x.id === j.id ? "selected" : ""}>${x.review_draft ? "Черновик" : "Монтаж"} ${esc(x.id.slice(0, 8))}</option>`,
+          `<option value="${esc(x.id)}" ${x.id === j.id ? "selected" : ""}>${x.processing_mode === "plan_only" ? "План" : x.review_draft ? "Черновик" : "Монтаж"} ${esc(x.id.slice(0, 8))}</option>`,
       )
       .join(
         "",
-      )}</select><button class="btn sm solid" data-action="nav" data-screen="finishing">✎ Оформление</button><button class="btn sm clear" data-action="review-detail" data-id="quality">⚑ Замечания <span>${warn.length}</span></button><button class="btn sm clear" data-action="review-detail" data-id="context">✦ Для обложки</button></div></div>
- ${plan.review_draft ? `<div class="panel" role="status" style="padding:14px;margin-bottom:14px"><strong>Черновик для просмотра</strong><p>${esc(plan.review_draft.reason || "Монтаж ещё проверяется.")}</p></div>` : ""}
+      )}</select><button class="btn sm solid" data-action="review-panel" data-id="reviewParts" aria-haspopup="dialog" aria-controls="reviewParts" aria-expanded="false">☷ Части · ${ui.part + 1}/${plan.parts.length}</button><button class="btn sm" data-action="review-panel" data-id="reviewAssistant" aria-haspopup="dialog" aria-controls="reviewAssistant" aria-expanded="false">✦ Помощник монтажа</button><button class="btn sm clear" data-action="review-detail" data-id="quality">⚑ Замечания <span>${warn.length}</span></button><button class="btn sm clear" data-action="review-detail" data-id="context">✦ Для обложки</button></div></div>
  <div class="rv2-layout">
   <div class="rv2-maincol">
    <section class="rv2-player panel" aria-label="Просмотр видео">
-    <div class="rv2-player-top"><div class="rv2-playing-title"><span class="rv-dot purple"></span><strong>${mode === "source" ? "Исходная серия" : mode === "compare" ? "Исходник + готовый Shorts" : `Готовый Shorts · часть ${ui.part + 1}`}</strong></div><div class="rv-tabs" role="group" aria-label="Режим просмотра"><button data-action="review-mode" data-id="short" class="${mode === "short" ? "active" : ""}">Shorts</button><button data-action="review-mode" data-id="source" class="${mode === "source" ? "active" : ""}">Исходник</button><button data-action="review-mode" data-id="compare" class="${mode === "compare" ? "active" : ""}">Сравнить</button></div></div>
+    <div class="rv2-player-top"><div class="rv2-playing-title"><span class="rv-dot purple"></span><strong>${mode === "source" ? "Исходная серия" : mode === "short" ? `Готовый Shorts · часть ${ui.part + 1}` : "Исходник + готовый Shorts"}</strong></div><div class="rv-tabs" role="group" aria-label="Режим просмотра">${[["short", "Shorts"], ["source", "Исходник"], ["compare", "Сравнить"]].map(([value, label]) => `<button data-action="review-mode" data-id="${value}" aria-pressed="${mode === value}" ${j.processing_mode === "plan_only" && value !== "source" ? "disabled" : ""} class="${mode === value ? "active" : ""}">${label}</button>`).join("")}</div></div>
     ${reviewStage(j, plan, sel)}
     <div class="rv2-controls"><span class="rv2-playing-meta">${mode === "source" ? esc(sourceBy(j.source_id)?.name || "Исходное видео") : `Часть ${String(ui.part + 1).padStart(2, "0")} / ${String(plan.parts.length).padStart(2, "0")} · ${reviewTime(part.duration)}`}</span><div class="rv-transport"><button data-action="review-prev" title="Предыдущая часть">◀</button><button class="primary" id="rvPlayButton" data-action="review-toggle-play">▷ Смотреть</button><button data-action="review-next" title="Следующая часть">▶</button></div></div>
    </section>
@@ -985,7 +1094,11 @@
     <div class="rv2-selected"><div class="rv2-selection-label"><b>${sel.kind === "kept" ? "✓ Сохранено" : "✕ Вырезано"}</b><span>${reviewTime(sel.start)} – ${reviewTime(sel.end)} · ${reviewTime(sel.end - sel.start)}</span></div><div class="rv2-selection-actions"><label class="rv2-loop"><input type="checkbox" id="rvLimitSource" ${ui.limitSource ? "checked" : ""}> Только этот фрагмент</label><button class="btn sm solid" data-action="seek-source">▶ Смотреть отрезок</button></div></div>
    </section>
   </div>
-  <aside class="rv2-rail panel" aria-label="Выбор готовых Shorts и экспорт"><div class="rv2-rail-head"><div><span class="rv2-kicker">ГОТОВЫЕ SHORTS</span><h2>${plan.parts.length} частей</h2></div><label title="Автоматически включать следующую часть"><input type="checkbox" id="rvAutoNext" ${ui.reviewAutoNext ? "checked" : ""}> Авто</label></div><div class="rv2-parts">${plan.parts.map((p, i) => `<button class="rv2-part ${i === ui.part ? "active" : ""}" data-action="choose-part" data-id="${i}"><span class="rv2-part-num">${String(i + 1).padStart(2, "0")}</span><span class="rv2-part-info"><b>Часть ${String(i + 1).padStart(2, "0")}</b><small>${reviewTime(p.duration)} · ${(p.cuts || []).length} сцен</small></span><span class="rv2-part-play">${i === ui.part ? "●" : "▶"}</span></button>`).join("")}</div><div class="rv2-rail-export"><span class="rv2-kicker">СКАЧИВАНИЕ</span><div class="rv2-export-main"><button class="btn sm solid" data-action="download-mp4">↓ MP4</button><button class="btn sm" data-action="download-srt">↓ SRT</button></div><button class="btn sm rv2-full" data-action="download-all">↓ Все части → папка</button><button class="rv2-text-btn" data-action="save-videos">▣ Сохранить в папку</button><button class="rv2-text-btn" data-action="open-output">↗ Папка результатов</button></div><div class="rv2-fileinfo">Сравнивайте исходник с готовыми Shorts и сохраняйте выбранные части.</div></aside>
+ </div>
+ <dialog id="reviewParts" class="rv2-overlay rv2-drawer" aria-label="Выбор частей и экспорт"><div class="rv2-overlay-head"><h2>Части и экспорт</h2><button class="btn sm clear" data-action="review-panel-close" aria-label="Закрыть выбор частей">✕ Закрыть</button></div>
+  <aside class="rv2-rail panel" aria-label="Выбор готовых Shorts и экспорт"><div class="rv2-rail-head"><div><span class="rv2-kicker">${j.processing_mode === "plan_only" ? "ЧАСТИ ПЛАНА" : "ГОТОВЫЕ SHORTS"}</span><h2>${plan.parts.length} частей</h2></div><label title="Автоматически включать следующую часть"><input type="checkbox" id="rvAutoNext" ${ui.reviewAutoNext ? "checked" : ""}> Авто</label></div><div class="rv2-parts">${plan.parts.map((p, i) => `<button class="rv2-part ${i === ui.part ? "active" : ""}" data-action="choose-part" data-id="${i}"><span class="rv2-part-num">${String(i + 1).padStart(2, "0")}</span><span class="rv2-part-info"><b>Часть ${String(i + 1).padStart(2, "0")}</b><small>${reviewTime(p.duration)} · ${(p.cuts || []).length} сцен</small></span><span class="rv2-part-play">${i === ui.part ? "●" : "▶"}</span></button>`).join("")}</div><div class="rv2-rail-export"><span class="rv2-kicker">СКАЧИВАНИЕ</span><div class="rv2-export-main"><button class="btn sm solid" data-action="download-mp4" ${j.processing_mode === "plan_only" ? "disabled" : ""}>↓ MP4</button><button class="btn sm" data-action="download-srt" ${j.processing_mode === "plan_only" ? "disabled" : ""}>↓ SRT</button></div><button class="btn sm rv2-full" data-action="download-all" ${j.processing_mode === "plan_only" ? "disabled" : ""}>↓ Все части → папка</button><button class="rv2-text-btn" data-action="save-videos" ${j.processing_mode === "plan_only" ? "disabled" : ""}>▣ Сохранить в папку</button><button class="rv2-text-btn" data-action="open-output" ${j.processing_mode === "plan_only" ? "disabled" : ""}>↗ Папка результатов</button></div><div class="rv2-fileinfo">${j.processing_mode === "plan_only" ? "Для экспорта запустите обновление по изменениям в настройках серии." : "Сравнивайте исходник с готовыми Shorts и сохраняйте выбранные части."}</div></aside>
+ </dialog>
+ <dialog id="reviewAssistant" class="rv2-overlay rv2-assistant" aria-label="Помощник монтажа"><div class="rv2-overlay-head"><h2>Помощник монтажа</h2><button class="btn sm clear" data-action="review-panel-close" aria-label="Закрыть помощника монтажа">✕ Закрыть</button></div>${feedbackPanelHTML(j, plan)}</dialog>
  </div>`;
   }
   function showReviewDetail(kind) {
@@ -1044,7 +1157,36 @@
       playing ? "Приостановить видео" : "Воспроизвести видео",
     );
   }
+  function closeReviewDialog(restoreFocus = true) {
+    const dialog = document.querySelector('.rv2-overlay[open]');
+    if (!dialog) return;
+    dialog.close();
+    const opener = reviewDialogOpener;
+    reviewDialogOpener = null;
+    opener?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus && opener?.isConnected) opener.focus({preventScroll: true});
+  }
+  function openReviewDialog(id, opener) {
+    const dialog = $(id);
+    if (!dialog?.matches('.rv2-overlay')) return;
+    closeReviewDialog(false);
+    reviewDialogOpener = opener;
+    dialog.showModal();
+    opener.setAttribute('aria-expanded', 'true');
+    const focus = id === 'reviewAssistant' ? $('feedbackText') : dialog.querySelector('.rv2-part.active');
+    focus?.focus({preventScroll: true});
+  }
   function bindReview() {
+    for (const dialog of document.querySelectorAll('.rv2-overlay')) {
+      dialog.addEventListener('cancel', (event) => {
+        event.preventDefault();
+        closeReviewDialog();
+      });
+      dialog.addEventListener('click', (event) => {
+        if (event.target === dialog) closeReviewDialog();
+      });
+    }
+    bindFeedback();
     const sel = $("reviewAttempt");
     if (sel)
       sel.onchange = (e) => {
@@ -1059,9 +1201,13 @@
       short = $("reviewShortVideo"),
       current = reviewSelection(plan);
     for (const video of [source, short]) {
-      if (video)
+      if (video) {
         for (const type of ["play", "pause", "ended"])
           video.addEventListener(type, updateReviewTransport);
+        for (const type of ['play', 'seeking']) video.addEventListener(type, () => {
+          ui.feedbackPlayback = {job_id: currentJob()?.id, video: video.id};
+        });
+      }
     }
     updateReviewTransport();
     if (source) {
@@ -1108,6 +1254,87 @@
         inline: "center",
       });
       ui.reviewScrollNeeded = false;
+    }
+  }
+  function feedbackMessagesHTML(messages) {
+    if (!messages.length) return '<p class="caption">Напишите, что заметили в монтаже. Предыдущая версия сохранится.</p>';
+    return messages.map(message => `<article class="feedback-exchange"><div class="feedback-user"><small>Ваше замечание · часть ${esc(message.part_index)}</small><p>${esc(message.text)}</p></div><div class="feedback-reply"><small>Помощник монтажа</small><p>${esc(message.reply)}</p><button class="btn sm clear" data-action="feedback-open" data-id="${esc(message.job_id)}" ${message.job_status === "missing" ? "disabled" : ""}>${message.job_status === 'completed' && message.status === 'completed' ? 'Открыть исправленный монтаж →' : 'Процесс исправления →'}</button></div></article>`).join('');
+  }
+  function feedbackPanelHTML(job, plan) {
+    db.feedback ||= {};
+    ui.feedbackDrafts ||= {};
+    const messages = db.feedback[job.id]?.messages || [];
+    return `<section class="panel feedback-panel" aria-label="Помощник монтажа"><p class="caption">Например: «в первой части осталась заставка» или «здесь оборвана фраза». Сейчас помощник проверяет заставки и границы речи, затем сохраняет отдельную исправленную версию.</p><div id="feedbackMessages" class="feedback-messages" aria-live="polite">${feedbackMessagesHTML(messages)}</div><label class="form-label" for="feedbackText">Замечание к открытой части ${ui.part + 1}</label><textarea id="feedbackText" class="area" maxlength="2000" rows="3" placeholder="Опишите проблему своими словами…">${esc(ui.feedbackDrafts[job.id] || '')}</textarea><p class="field-hint">Помощник получает выбранную часть и позицию просмотра. Проверка использует выбранный способ анализа: ${esc(providerLabel(job.analysis_provider))}.</p><div class="inline-controls"><button class="btn solid" data-action="feedback-send">Проверить и исправить</button><span id="feedbackStatus" class="caption"></span></div></section>`;
+  }
+  async function refreshFeedback(job) {
+    if (ui.screen !== 'review' || currentJob()?.id !== job.id) return;
+    if (feedbackReading.has(job.id)) {
+      feedbackTimer = setTimeout(() => refreshFeedback(job), 250);
+      return;
+    }
+    feedbackReading.add(job.id);
+    try {
+      const result = await window.KadrBridge.get(`/api/jobs/${job.id}/feedback`);
+      db.feedback ||= {};
+      db.feedback[job.id] = result;
+      if (ui.screen !== 'review' || currentJob()?.id !== job.id) return;
+      if ($('feedbackMessages')) $('feedbackMessages').innerHTML = feedbackMessagesHTML(result.messages || []);
+      const busy = (result.messages || []).some(message => ['queued', 'running', 'waiting_analysis'].includes(message.job_status));
+      const button = document.querySelector('[data-action="feedback-send"]');
+      if (button) button.disabled = busy || ui.feedbackSending === job.id;
+      if ($('feedbackStatus')) $('feedbackStatus').textContent = busy ? 'Исправление выполняется. Можно продолжать просмотр.' : '';
+      if (busy) feedbackTimer = setTimeout(() => refreshFeedback(job), 3000);
+    } catch (error) {
+      if (ui.screen === 'review' && currentJob()?.id === job.id && $('feedbackStatus'))
+        $('feedbackStatus').textContent = 'Не удалось обновить замечания: ' + error.message;
+    } finally {
+      feedbackReading.delete(job.id);
+    }
+  }
+  function bindFeedback() {
+    const job = currentJob();
+    if (!job || !$('feedbackText')) return;
+    $('feedbackText').oninput = event => { ui.feedbackDrafts[job.id] = event.target.value; };
+    refreshFeedback(job);
+  }
+  function feedbackSourceTime(plan) {
+    const source = $('reviewSourceVideo'), short = $('reviewShortVideo');
+    const prefersSource = ui.reviewMode === 'source'
+      || (ui.feedbackPlayback?.job_id === currentJob()?.id && ui.feedbackPlayback.video === 'reviewSourceVideo');
+    if (short && Number.isFinite(short.currentTime) && short.readyState >= 1
+        && !prefersSource && (!source || !short.paused || source.paused)) {
+      let offset = 0;
+      for (const cut of plan.parts[ui.part].cuts) {
+        const length = cut.end - cut.start;
+        if (short.currentTime < offset + length) return cut.start + Math.max(0, short.currentTime - offset);
+        offset += length;
+      }
+    }
+    if (source && source.readyState >= 1 && Number.isFinite(source.currentTime))
+      return Math.max(0, Math.min(plan.duration, source.currentTime));
+    return reviewSelection(plan)?.start ?? null;
+  }
+  async function sendFeedback() {
+    const job = currentJob(), plan = db.plans[job?.id], text = $('feedbackText')?.value.trim();
+    if (!text) throw new Error('Напишите замечание к монтажу');
+    if (!plan || !job || ui.feedbackSending) return;
+    const part_index = plan.parts[ui.part].index;
+    const prior = ui.feedbackPending;
+    const body = prior?.job_id === job.id && prior.body.text === text && prior.body.part_index === part_index
+      ? prior.body : {operation_id: crypto.randomUUID(), text, part_index, source_time: feedbackSourceTime(plan)};
+    ui.feedbackPending = {job_id: job.id, body};
+    ui.feedbackSending = job.id;
+    const button = document.querySelector('[data-action="feedback-send"]');
+    if (button) button.disabled = true;
+    try {
+      await request('POST', `/api/jobs/${job.id}/feedback`, body);
+      ui.feedbackPending = null;
+      if (ui.feedbackDrafts[job.id]?.trim() === text || !ui.feedbackDrafts[job.id]) ui.feedbackDrafts[job.id] = '';
+      if (currentJob()?.id === job.id && $('feedbackText')?.value.trim() === text) $('feedbackText').value = '';
+      notify('Замечание принято. Предыдущий монтаж сохранён.');
+    } finally {
+      ui.feedbackSending = null;
+      await refreshFeedback(job);
     }
   }
 
@@ -1274,6 +1501,18 @@
           ui.filter = rid;
           render();
           break;
+        case "editor-panel":
+          openEditorDialog(rid, el);
+          break;
+        case "editor-panel-close":
+          closeEditorDialog();
+          break;
+        case "processing-mode":
+          currentEdit().processing_mode = rid;
+          $("processingMenu").open = false;
+          syncPreview();
+          document.querySelector('[data-action="launch"]').focus();
+          break;
         case "upload-video":
           $("uploadFile").click();
           break;
@@ -1293,6 +1532,7 @@
               layout: d.layout,
               caption_style: d.caption_style,
               analysis_provider: d.analysis_provider,
+              economy_mode: d.economy_mode !== false,
             },
           );
           await saveEditorAppearance(d);
@@ -1304,18 +1544,23 @@
         }
         case "launch": {
           const d = currentEdit();
-          if (!d.source_id) throw new Error("Нужно выбрать видео");
+          if (!d.source_id) throw new Error("Импортируйте видео");
+          const processingMode = el.dataset.processingMode;
+          const health = await request("GET", "/api/health");
+          if (!health.processing_modes?.includes(processingMode))
+            throw new Error("Сервер работает на старой версии. Перезапустите КАДР и обновите страницу, чтобы выбрать режим обработки.");
           await request("PUT", `/api/episodes/${e.id}/settings`, {
             source_id: d.source_id,
             layout: d.layout,
             caption_style: d.caption_style,
             analysis_provider: d.analysis_provider,
+              economy_mode: d.economy_mode !== false,
           });
           await saveEditorAppearance(d);
           await request("PUT", "/api/music", musicBody());
-          const j = await request("POST", `/api/episodes/${e.id}/jobs`);
+          const j = await request("POST", `/api/episodes/${e.id}/jobs`, {processing_mode: processingMode});
           ui.jobId = j.id;
-          notify("Монтаж запущен");
+          notify(processingMode === "plan_only" ? "Пересборка плана запущена" : "Монтаж запущен");
           go("processing");
           break;
         }
@@ -1343,16 +1588,31 @@
           notify("Путь скопирован: " + settings.folder);
           break;
         }
-        case "refresh-music":
+        case "refresh-music": {
           await request("GET", "/api/music");
+          ui.draftMusic.tracks = [...db.music.tracks];
+          $("musicTrackOptions").innerHTML = musicOptions();
+          bindMusicExtra();
+          syncPreview();
           notify(`Музыка: ${db.music.tracks.length} файлов`);
-          render();
           break;
+        }
         case "cancel-job":
           await request("POST", `/api/jobs/${rid}/cancel`);
           notify("Монтаж отменён");
           render();
           break;
+        case "switch-analysis-provider": {
+          const provider = $("jobAnalysisSelect")?.value;
+          if (!provider) throw new Error("Выберите способ анализа");
+          const changed = await request("POST", `/api/jobs/${rid}/analysis-provider`, { provider, resume: true });
+          if (ui.providerDrafts) delete ui.providerDrafts[rid];
+          if (ui.editing?.episodeId === e.id) ui.editing.analysis_provider = provider;
+          notify(changed.status === "running" || changed.status === "queued"
+            ? "Продолжаем через " + providerLabel(provider) : changed.message || "Способ анализа изменён");
+          render();
+          break;
+        }
         case "manual-prepare": {
           if (jobBy(rid)?.analysis_provider !== "antigravity_manual")
             await request("POST", `/api/jobs/${rid}/analysis-provider`, {
@@ -1368,15 +1628,16 @@
           notify("Папка анализа открыта");
           break;
         case "manual-auto": {
-          const enabled = !db.manualAnalysis?.[rid]?.automation?.enabled;
+          const automatic = db.manualAnalysis?.[rid]?.automation;
+          const enabled = !(automatic?.enabled && automatic?.managed);
           await request(
             "POST",
-            `/api/jobs/${rid}/antigravity/automation?enabled=${enabled}`,
+            `/api/jobs/${rid}/antigravity/automation?enabled=${enabled}&managed=true`,
           );
           await updateManualView();
           notify(
             enabled
-              ? "Автоимпорт включён. Запустите анализ и отдельный сценарий один раз"
+              ? "Автоматическая обработка включена. Нажмите продолжение"
               : "Вернулись к ручному импорту",
           );
           break;
@@ -1440,16 +1701,29 @@
             },
           });
           break;
+        case "review-panel":
+          openReviewDialog(rid, el);
+          break;
+        case "review-panel-close":
+          closeReviewDialog();
+          break;
         case "choose-part": {
           const pl = db.plans[j?.id];
           ui.part = Math.max(0, Math.min((pl?.parts?.length || 1) - 1, idx));
           ui.reviewSelection = null;
-          ui.reviewMode = "short";
           ui.reviewScrollNeeded = true;
           render();
           $("reviewShortVideo")
             ?.play()
             .catch(() => {});
+          break;
+        }
+        case 'feedback-send':
+          await sendFeedback();
+          break;
+        case 'feedback-open': {
+          const corrected = await request('GET', `/api/jobs/${rid}`);
+          go(corrected.status === 'completed' ? 'review' : 'processing', {job: corrected.id});
           break;
         }
         case "review-mode": {
@@ -1468,7 +1742,7 @@
           if (!segment) break;
           ui.reviewSelection = segment.key;
           if (segment.kind === "kept") ui.part = segment.part;
-          ui.reviewMode = segment.kind === "removed" ? "source" : "compare";
+          if (segment.kind === "removed" && ui.reviewMode === "short") ui.reviewMode = "source";
           ui.reviewScrollNeeded = true;
           render();
           reviewSeek($("reviewSourceVideo"), segment.start, true);
@@ -1478,7 +1752,6 @@
           const pl = db.plans[j?.id];
           ui.part = Math.max(0, ui.part - 1);
           ui.reviewSelection = null;
-          ui.reviewMode = "short";
           ui.reviewScrollNeeded = true;
           render();
           break;
@@ -1487,7 +1760,6 @@
           const pl = db.plans[j?.id];
           ui.part = Math.min(pl.parts.length - 1, ui.part + 1);
           ui.reviewSelection = null;
-          ui.reviewMode = "short";
           ui.reviewScrollNeeded = true;
           render();
           break;
@@ -1620,6 +1892,8 @@
     event.target.value = "";
   });
   document.addEventListener("click", (ev) => {
+    const processingMenu = $("processingMenu");
+    if (processingMenu?.open && !processingMenu.contains(ev.target)) processingMenu.open = false;
     if (ev.target.classList.contains("modal-overlay")) {
       $("modalHost").innerHTML = "";
       return;
@@ -1630,7 +1904,12 @@
     doAction(el.dataset.action, el);
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") $("modalHost").innerHTML = "";
+    if (ev.key === "Escape") {
+      $("modalHost").innerHTML = "";
+      closeReviewDialog();
+      closeEditorDialog();
+      if ($("processingMenu")) $("processingMenu").open = false;
+    }
     if (ev.key === "Enter" && ev.target.matches(".project-card")) {
       ev.preventDefault();
       doAction("go-project", ev.target);
@@ -1658,6 +1937,8 @@
       layout: "cinema",
       frame_style: "plain",
       card_variant: "compact",
+      avatar_style: "initials",
+      avatar_id: null,
       channel_handle: "",
       channel_name: "",
       post_caption: "",
@@ -1691,16 +1972,28 @@
     },
     part_overrides: {},
   });
+  function avatarURL(video, episode = ui.episodeId) {
+    const icon = video.avatar_style === "image" && video.avatar_id ? video.avatar_id : video.avatar_style || "initials";
+    return `/api/episodes/${encodeURIComponent(episode)}/avatars/${encodeURIComponent(icon)}.png?name=${encodeURIComponent(video.channel_name || "")}`;
+  }
+  function avatarPicker(video) {
+    const options = [["initials", "Буква"], ["star", "Звезда"], ["play", "Видео"], ["chat", "Сообщение"]];
+    if (video.avatar_id) options.push(["image", "Моя иконка"]);
+    return `<div class="fc-avatar-picker"><span class="fc-avatar-label">Иконка канала</span><div class="fc-avatar-options">${options.map(([key, label]) => `<button type="button" data-favatar="${key}" aria-label="${label}" aria-pressed="${(video.avatar_style || "initials") === key}" class="${(video.avatar_style || "initials") === key ? "active" : ""}"><img alt="" src="${escAttr(avatarURL({...video, avatar_style:key}))}"><small>${label}</small></button>`).join("")}</div><button type="button" class="fc-secondary" id="fcAvatarUpload">＋ Загрузить свою иконку</button><input type="file" hidden id="fcAvatarFile" accept="image/png,image/jpeg,image/webp"><small class="fc-inline-tip">PNG, JPEG или WebP до 4 МБ. Центр изображения станет круглым аватаром.</small></div>`;
+  }
   function getFinishing(id = ui.episodeId) {
     db.finishing ||= {};
     if (!db.finishing[id]) db.finishing[id] = finishingDefaults();
     return db.finishing[id];
   }
   async function saveEditorAppearance(d) {
+    currentEdit();
     const { episode_id, ...profile } = structuredClone(getFinishing());
     profile.video = { ...profile.video, layout: d.layout, frame_style: d.frame_style, card_variant: d.card_variant, channel_handle: d.channel_handle,
       channel_name: d.channel_name, post_caption: d.post_caption };
     await request("PUT", `/api/episodes/${ui.episodeId}/finishing`, profile);
+    ui.editingAppearanceBase = Object.fromEntries(Object.keys(ui.editingAppearanceBase || {})
+      .map(key => [key, getFinishing().video[key]]));
   }
   function selectedCues(partIndex = ui.finishPart ?? 0) {
     const job = currentJob(),
@@ -1736,7 +2029,7 @@
   function finishingPreviewSource() {
     const job = currentJob();
     const raw = getFinishing().video.frame_style === "social" ||
-      db.plans[job?.id]?.render_video?.frame_style === "social";
+      db.plans[job?.id]?.render_video?.frame_style === "social" || Boolean(job?.finishing_applied);
     return { raw, url: raw ? reviewGetSource(job) : reviewGetShort(job, ui.finishPart ?? 0) };
   }
   function finishingClock(video) {
@@ -1787,6 +2080,7 @@
     };
   }
   function finishCueChanged(partIndex = ui.finishPart ?? 0) {
+    invalidateFinishingPreview();
     const job = currentJob(),
       part = db.plans[job?.id]?.parts?.[partIndex];
     if (!job || !part) return;
@@ -1874,7 +2168,7 @@
  <p class="fc-inline-tip">Прослушайте музыку вместе с видео. Сохраните результат через экспорт.</p>`
           : `${label("Композиция кадра", "Изменения не затрагивают исходное видео")}
  <div class="fc-layout-modes"><button type="button" data-flayout="cinema" class="${v.layout === "cinema" && v.frame_style !== "social" ? "active" : ""}"><span class="fc-layout-icon cine"></span><b>Полный кадр</b><small>На мягком фоне</small></button><button type="button" data-flayout="portrait" class="${v.layout === "portrait" && v.frame_style !== "social" ? "active" : ""}"><span class="fc-layout-icon crop"></span><b>Крупный план</b><small>С заполнением 9:16</small></button><button type="button" data-flayout="social" class="${v.frame_style === "social" ? "active" : ""}"><span class="fc-layout-icon social"></span><b>Карточка публикации</b><small>Канал и подпись</small></button></div>
- ${v.frame_style === "social" ? `<label class="fc-field"><span>Стиль карточки</span><select id="fcCardVariant"><option value="compact" ${v.card_variant !== "post" ? "selected" : ""}>Компактная карточка</option><option value="post" ${v.card_variant === "post" ? "selected" : ""}>Пост · крупная подпись</option></select></label><label class="fc-field"><span>Название канала</span><input id="fcChannel" maxlength="60" value="${escAttr(v.channel_name)}" placeholder="Название вашего канала"></label>${v.card_variant === "post" ? `<label class="fc-field"><span>Адрес канала</span><input id="fcHandle" maxlength="60" value="${escAttr(v.channel_handle)}" placeholder="@ваш_канал"></label>` : ""}<label class="fc-field"><span>Подпись к видео</span><textarea id="fcPostCaption" maxlength="180" rows="3" placeholder="Ваша подпись">${escAttr(v.post_caption)}</textarea></label><p class="fc-inline-tip">Весь исходный кадр остаётся виден. Серверный предпросмотр показывает итоговый MP4 с рамкой.</p>` : ""}
+ ${v.frame_style === "social" ? `<label class="fc-field"><span>Стиль карточки</span><select id="fcCardVariant"><option value="compact" ${v.card_variant !== "post" ? "selected" : ""}>Компактная карточка</option><option value="post" ${v.card_variant === "post" ? "selected" : ""}>Пост · крупная подпись</option></select></label>${avatarPicker(v)}<label class="fc-field"><span>Название канала</span><input id="fcChannel" maxlength="60" value="${escAttr(v.channel_name)}" placeholder="Название вашего канала"></label><label class="fc-field"><span>Адрес канала</span><input id="fcHandle" maxlength="60" value="${escAttr(v.channel_handle)}" placeholder="@ваш_канал"></label><label class="fc-field"><span>Подпись к видео</span><textarea id="fcPostCaption" maxlength="180" rows="3" placeholder="Ваша подпись">${escAttr(v.post_caption)}</textarea></label><p class="fc-inline-tip">Весь исходный кадр остаётся виден. Серверный предпросмотр показывает итоговый MP4 с рамкой.</p>` : ""}
  ${v.frame_style === "social" ? "" : r("Масштаб", "fcZoom", v.zoom, 90, 160)}${r("Размытие фона", "fcBlur", v.blur, 0, 45, " px")}${r("Яркость", "fcBrightness", v.brightness, 60, 140)}${r("Виньетка", "fcVignette", v.vignette, 0, 60)}
  <label class="fc-toggle"><input type="checkbox" id="fcGuides" ${s.safe_guides ? "checked" : ""}><span>Безопасные зоны Shorts</span></label>
  `;
@@ -1889,16 +2183,16 @@
         ? `♫ ${esc(audioName(f))} · ${Math.round(a.volume * 100)}%`
         : "Музыка выключена";
     const previewSource = finishingPreviewSource(), src = previewSource.url;
-    return `<div class="fc-screen"><div class="fc-header"><div><div class="fc-overline">ОФОРМЛЕНИЕ / СЕРИЯ ${e.number}</div><h1>Финальный штрих<span class="fc-period">.</span></h1><p>Настройте кадр, субтитры и музыку, затем сохраните готовое видео.</p></div><div class="fc-header-actions"><button class="fc-secondary" id="fcReset">↶ Сбросить оформление</button><button class="fc-accent" id="fcSave">Сохранить правки <span>↗</span></button></div></div>
- <div class="fc-workspace"><section class="fc-controls"><div class="fc-controls-top"><span>ИНСТРУМЕНТЫ</span></div>${tabs}<div class="fc-controls-content">${controls}</div></section>
+    return `<div class="fc-screen"><div class="fc-header"><div><div class="fc-overline">ОФОРМЛЕНИЕ / СЕРИЯ ${e.number}</div><h1>Финальный штрих<span class="fc-period">.</span></h1><p>Настройте кадр, субтитры и музыку, затем сохраните готовое видео.</p></div><div class="fc-header-actions"><button class="fc-secondary" id="fcReset">↶ Сбросить оформление</button><button class="fc-accent" id="fcSave" ${ui.finishApplying ? "disabled" : ""}>${ui.finishApplying ? "Обновляем Shorts…" : "Применить оформление к Shorts"} <span>↗</span></button></div></div>
+ ${finishingProgressMarkup(j.id)}<div class="fc-workspace"><section class="fc-controls"><div class="fc-controls-top"><span>ИНСТРУМЕНТЫ</span></div>${tabs}<div class="fc-controls-content">${controls}</div></section>
  <section class="fc-stage"><div class="fc-stage-toolbar"><span><i class="fc-live"></i> Предпросмотр</span><div><button id="fcGuideToggle" class="fc-minibtn ${s.safe_guides ? "active" : ""}" title="Показать границы безопасной области">⌗ Сетка</button><button id="fcPreviewReset" class="fc-minibtn" title="Вернуть предпросмотр">⤾</button></div></div><div class="fc-stage-inside"><div class="fc-canvas" id="fcCanvas" tabindex="0" aria-label="Предпросмотр 9 на 16. Перетаскивайте надпись, чтобы изменить позицию.">
  <video id="fcBackdrop" class="fc-backdrop" src="${src}" muted loop playsinline preload="metadata" aria-hidden="true"></video><video id="fcVideo" src="${src}" data-source-preview="${previewSource.raw}" data-preview-cut="0" loop playsinline preload="metadata"></video>
- <div class="fc-social-card" id="fcSocialCard"><div class="fc-social-header"><span id="fcSocialInitial"></span><div class="fc-social-identity"><b id="fcSocialChannel"></b><small id="fcSocialHandle"></small></div><i>•••</i></div><div class="fc-social-caption" id="fcSocialCaption"></div></div><div class="fc-frame-shade"></div><div class="fc-frame-number">KADR <span>STUDIO</span> <b> / ${String(ui.finishPart + 1).padStart(2, "0")}</b></div>
+ <div class="fc-social-card" id="fcSocialCard"><div class="fc-social-header"><img id="fcSocialAvatar" alt="Иконка канала" src="${escAttr(avatarURL(v))}"><div class="fc-social-identity"><b id="fcSocialChannel"></b><small id="fcSocialHandle"></small></div><i>•••</i></div><div class="fc-social-caption" id="fcSocialCaption"></div><div class="fc-social-footer">Видео · ${reviewTime(finishingPart()?.duration || 0)}</div></div><div class="fc-frame-shade"></div><div class="fc-frame-number">KADR <span>STUDIO</span> <b> / ${String(ui.finishPart + 1).padStart(2, "0")}</b></div>
  <div class="fc-safe-zone ${s.safe_guides ? "shown" : ""}" id="fcSafeZone"></div>
  <div class="fc-caption" id="fcCaption" role="slider" tabindex="0" aria-label="Положение субтитров; стрелками переместить" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${s.y}">${escAttr(cue?.text)}</div>
  <div class="fc-waterline"></div></div></div>
  <div class="fc-playbar"><button id="fcPlay" class="fc-play" title="Воспроизвести или остановить">▶</button><span id="fcTime">0:00</span><input id="fcSeek" aria-label="Позиция в видео" type="range" min="0" max="100" value="0"><span id="fcDuration">—</span><button id="fcMute" class="fc-minibtn" title="Включить или выключить звук исходника">♬</button></div><div class="fc-stage-foot"><span>1080 × 1920 <b>·</b> 9:16 Shorts</span><span id="fcSoundTag">${audioLine}</span></div></section>
- <aside class="fc-queue"><div class="fc-queue-title"><span>МОНТАЖНЫЙ НАБОР</span><strong>${String(cnt).padStart(2, "0")} шортсов</strong></div><div class="fc-parts">${counts}</div><div class="fc-queue-divider"></div><div class="fc-tips"><span class="fc-tips-kicker">БЫСТРЫЕ ДЕЙСТВИЯ</span><button class="fc-menu-button" id="fcCopyStyle"><span>⧉</span> Применить стиль ко всем частям <b>→</b></button><button class="fc-menu-button" id="fcPreviewRequest"><span>▣</span> Создать предпросмотр <b>→</b></button></div><div class="fc-queue-bottom"><p>Экспорт создаст новое видео с выбранным оформлением.</p><button class="fc-export" id="fcExport">Экспортировать видео <span>↗</span></button></div></aside></div>
+ <aside class="fc-queue"><div class="fc-queue-title"><span>МОНТАЖНЫЙ НАБОР</span><strong>${String(cnt).padStart(2, "0")} шортсов</strong></div><div class="fc-parts">${counts}</div><div class="fc-queue-divider"></div><div class="fc-tips"><span class="fc-tips-kicker">БЫСТРЫЕ ДЕЙСТВИЯ</span><button class="fc-menu-button" id="fcCopyStyle"><span>⧉</span> Применить стиль ко всем частям <b>→</b></button><button class="fc-menu-button" id="fcPreviewRequest"><span>▣</span> Создать предпросмотр <b>→</b></button></div><div class="fc-queue-bottom"><p>Применение обновит все Shorts в просмотре и скачивании. Можно экспортировать только выбранную часть.</p><button class="fc-export" id="fcExport">Экспортировать эту часть <span>↗</span></button></div></aside></div>
  <input hidden type="file" id="fcMusicFile" accept="audio/*,.mp3,.wav,.m4a,.ogg"><audio id="fcAudio" preload="metadata" loop></audio>
  </div>`;
   }
@@ -1929,6 +2223,9 @@
     cap.style.visibility = cue && s.enabled !== false ? "visible" : "hidden";
   }
   function finishUpdateView() {
+    if (ui.finishApplying) {
+      document.querySelectorAll(".fc-controls input,.fc-controls select,.fc-controls textarea,.fc-controls button,#fcExport,#fcCopyStyle,#fcReset").forEach(el => el.disabled = true);
+    }
     const f = getFinishing(),
       s = selectedSubtitle(),
       v = f.video,
@@ -1954,21 +2251,12 @@
     const bakedPreview = vid?.dataset.renderedPreview === "true";
     canvas.classList.toggle("social-mode", v.frame_style === "social" && !bakedPreview);
     canvas.classList.toggle("rendered-preview", bakedPreview);
-    const source = db.plans[currentJob()?.id]?.source || {};
-    const ratio = source.width > 0 && source.height > 0 ? source.width / source.height : 16 / 9;
-    const padding = v.card_variant === "post" ? 420 : 300, videoTop = padding - 20;
     canvas.classList.toggle("post-card", v.card_variant === "post");
-    const height = Math.min(800, 900 / ratio);
-    const width = Math.min(900, height * ratio);
-    canvas.style.setProperty("--social-top", ((1920 - height - padding) / 2 / 1920 * 100) + "%");
-    canvas.style.setProperty("--social-height", ((height + padding) / 1920 * 100) + "%");
-    canvas.style.setProperty("--social-video-top", (((1920 - height - padding) / 2 + videoTop) / 1920 * 100) + "%");
-    canvas.style.setProperty("--social-video-height", (height / 1920 * 100) + "%");
-    canvas.style.setProperty("--social-video-width", (width / 1080 * 100) + "%");
-    if ($("fcSocialHandle")) $("fcSocialHandle").textContent = v.channel_handle ? "@" + v.channel_handle.replace(/^@+/, "") : "";
+    applySocialGeometry(canvas, v, db.plans[currentJob()?.id]?.source);
+    if ($("fcSocialHandle")) $("fcSocialHandle").textContent = v.channel_handle ? "@" + v.channel_handle.replace(/^@+/, "") : "Канал";
     if ($("fcSocialChannel")) $("fcSocialChannel").textContent = v.channel_name || "";
     if ($("fcSocialCaption")) $("fcSocialCaption").textContent = v.post_caption || "";
-    if ($("fcSocialInitial")) $("fcSocialInitial").textContent = (v.channel_name || "").slice(0, 1).toLocaleUpperCase("ru-RU");
+    if ($("fcSocialAvatar")) $("fcSocialAvatar").src = avatarURL(v);
     fitPublicationText($("fcSocialChannel"), 44, 12);
     fitPublicationText($("fcSocialCaption"), v.card_variant === "post" ? 48 : 34);
     canvas.style.setProperty("--fc-blur", v.blur + "px");
@@ -1995,27 +2283,49 @@
   }
 
   async function waitForFinishingJob(path, onProgress) {
-    for (let i = 0; i < 180; i++) {
+    for (let i = 0; i < 1800; i++) {
       const state = await request("GET", path, null, { quiet: true });
       if (onProgress) onProgress(state);
-      if (["completed", "failed", "cancelled"].includes(state.status))
+      if (["completed", "failed", "cancelled", "interrupted"].includes(state.status))
         return state;
       await new Promise((resolve) => setTimeout(resolve, 1200));
     }
     throw new Error(
-      "Экспорт выполняется слишком долго. Запомните адрес: " + path,
+      "Экспорт продолжается в фоне. Готовые Shorts появятся после завершения обработки.",
     );
+  }
+  function finishingProgressMarkup(jobId) {
+    const state = ui.finishProgress;
+    if (!state || state.jobId !== jobId) return "";
+    return `<div id="fcProgress" class="fc-progress ${state.status}" role="status" aria-live="polite"><span id="fcProgressText">${esc(state.message)}</span><progress id="fcProgressBar" max="1" ${state.progress == null ? "" : `value="${state.progress}"`} ${["completed", "failed"].includes(state.status) ? "hidden" : ""}></progress></div>`;
+  }
+  function setFinishingProgress(jobId, status, message, progress = null) {
+    ui.finishProgress = {jobId, status, message, progress};
+    if (currentJob()?.id !== jobId) return;
+    const box = $("fcProgress");
+    if (box) {
+      box.className = "fc-progress " + status;
+      $("fcProgressText").textContent = message;
+      const bar = $("fcProgressBar");
+      bar.hidden = ["completed", "failed"].includes(status);
+      if (progress == null) bar.removeAttribute("value");
+      else bar.value = progress;
+    }
+    const button = $("fcSave");
+    if (button && ui.finishApplying) button.textContent = progress == null
+      ? "Обновляем Shorts…" : `Обновляем Shorts · ${Math.min(99, Math.round(progress * 100))}%`;
   }
   function showFinishingFiles(files) {
     const valid = (files || []).filter((f) => f.url && f.name);
     modal({
       title: "Готовые Shorts",
-      text: "Созданы новые файлы. Исходные видео и монтажный план не изменены.",
+      text: "Оформление применено. На экране Shorts и в скачивании доступны обновлённые видео.",
       confirm: "Закрыть",
       onConfirm: async () => {},
     });
     const dialog = document.querySelector("#modalHost .dialog");
     if (!dialog) return;
+    dialog.dataset.finishingResult = "true";
     const box = document.createElement("div");
     box.className = "buttons";
     for (const file of valid) {
@@ -2035,8 +2345,59 @@
     }
     dialog.querySelector(".buttons")?.before(box);
   }
+  async function applyFinishing(indices) {
+    if (ui.finishApplying) return;
+    const job = currentJob();
+    if (!job || job.status !== "completed") throw new Error("Нужен завершённый монтаж");
+    ui.finishApplying = job.id;
+    if (document.querySelector('#modalHost [data-finishing-result="true"]')) $("modalHost").innerHTML = "";
+    setFinishingProgress(job.id, "running", "Обновление началось. Сохраняем изменения…");
+    notify("Обновление Shorts началось.");
+    render();
+    try {
+      const settings = structuredClone(getFinishing());
+      await request("PUT", `/api/jobs/${job.id}/finishing/state`, {
+        profile: settings, captions: finishPendingCaptions(job),
+      });
+      if (currentJob()?.id === job.id && ui.screen === "finishing") render();
+      const task = await request("POST", `/api/jobs/${job.id}/exports`, {part_indices: indices, settings});
+      setFinishingProgress(job.id, "running", "Задача принята. Ожидаем начала обработки…");
+      const result = await waitForFinishingJob(`/api/exports/${task.export_id}`, (state) => {
+        if (state.status === "completed") {
+          setFinishingProgress(job.id, "running", "Завершаем обновление: загружаем готовые Shorts…");
+          return;
+        }
+        if (state.status !== "queued" && state.status !== "running") return;
+        const phase = state.status === "queued" ? "Ожидаем свободного обработчика"
+          : state.phase === "preparing_clean" ? "Готовим чистую часть — один раз для этого монтажа"
+          : state.phase === "reusing" ? "Используем готовые неизменённые части"
+          : "Применяем субтитры, музыку и оформление";
+        const part = state.part_index ? ` · Часть ${state.part_index}` : "";
+        const count = ` · Готово ${state.completed_parts || 0} из ${state.total_parts || indices.length}`;
+        setFinishingProgress(job.id, "running", phase + part + count,
+          state.status === "queued" ? null : Math.min(.99, state.progress || 0));
+      });
+      if (result.status !== "completed") throw new Error(result.error || "Не удалось применить оформление");
+      await request("GET", `/api/jobs/${job.id}`);
+      setFinishingProgress(job.id, "completed", `Shorts обновлены: ${result.files.length}. Видео готовы к просмотру и скачиванию.`, 1);
+      if (currentJob()?.id === job.id) showFinishingFiles(result.files);
+      notify(`Оформление применено: ${result.files.length} Shorts обновлены.`);
+    } catch (error) {
+      setFinishingProgress(job.id, "failed", error.message);
+      throw error;
+    } finally {
+      ui.finishApplying = null;
+      const currentButton = $("fcSave");
+      if (currentButton) { currentButton.disabled = false; currentButton.innerHTML = 'Применить оформление к Shorts <span>↗</span>'; }
+      if (ui.screen === "finishing") render();
+    }
+  }
   function optionalElement(id) {
     return $(id) || {};
+  }
+  function invalidateFinishingPreview() {
+    ui.finishPreviewEpoch = (ui.finishPreviewEpoch || 0) + 1;
+    if ($("fcVideo")?.dataset.renderedPreview === "true") $("fcPreviewReset")?.click();
   }
   function bindFinishing() {
     const canvasRoot = $("fcCanvas");
@@ -2046,6 +2407,17 @@
       a = f.audio,
       v = f.video;
     finishUpdateView();
+    const workspace = canvasRoot.closest(".fc-workspace");
+    const onSettingChange = event => {
+      if (event.target.closest(".fc-controls") && event.target.id !== "fcGuides")
+        invalidateFinishingPreview();
+    };
+    workspace.addEventListener("input", onSettingChange, true);
+    workspace.addEventListener("change", onSettingChange, true);
+    workspace.addEventListener("click", event => {
+      if (event.target.closest("[data-fpreset],[data-fcolor],[data-flayout],[data-favatar]"))
+        invalidateFinishingPreview();
+    }, true);
     document.querySelectorAll("[data-ftab]").forEach(
       (el) =>
         (el.onclick = () => {
@@ -2114,10 +2486,25 @@
         v[key] = event.target.value;
         // A previously rendered preview is a fixed MP4. Reset it before
         // editing; otherwise changed metadata would look baked when it is not.
-        if ($("fcVideo")?.dataset.renderedPreview === "true") $("fcPreviewReset")?.click();
         finishUpdateView();
       });
     }
+    document.querySelectorAll("[data-favatar]").forEach(el => el.onclick = () => {
+      v.avatar_style = el.dataset.favatar;
+      render();
+    });
+    $("fcAvatarUpload")?.addEventListener("click", () => $("fcAvatarFile").click());
+    $("fcAvatarFile")?.addEventListener("change", async event => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      if (file.size > 4 * 1024 * 1024) return notify("Изображение больше 4 МБ", true);
+      try {
+        const result = await request("POST", `/api/episodes/${ui.episodeId}/finishing/avatar`, {file});
+        v.avatar_id = result.avatar_id; v.avatar_style = "image";
+        render();
+        notify("Иконка загружена. Примените оформление, чтобы обновить Shorts.");
+      } catch (error) { notify(error.message, true); }
+    });
     $("fcCardVariant")?.addEventListener("change", (event) => { v.card_variant = event.target.value; render(); });
     const binds = [
       ["fcSize", s, "font_size", Number],
@@ -2273,6 +2660,7 @@
       };
       cap.onpointermove = (e) => {
         if (!drag) return;
+        invalidateFinishingPreview();
         const box = canvas.getBoundingClientRect();
         s.x = Math.max(
           6,
@@ -2294,6 +2682,7 @@
         drag = false;
       };
       cap.ondblclick = () => {
+        invalidateFinishingPreview();
         s.x = 50;
         s.y = 74;
         finishUpdateView();
@@ -2305,6 +2694,7 @@
         else if (e.key === "ArrowLeft") s.x = Math.max(5, s.x - step);
         else if (e.key === "ArrowRight") s.x = Math.min(95, s.x + step);
         else return;
+        invalidateFinishingPreview();
         e.preventDefault();
         finishUpdateView();
       };
@@ -2436,31 +2826,19 @@
         },
       });
     };
-    optionalElement("fcSave").onclick = async () => {
-      try {
-        const j = currentJob();
-        if (!j || j.status !== "completed")
-          throw new Error("Нужен завершённый монтаж");
-        await request("PUT", `/api/jobs/${j.id}/finishing/state`, {
-          profile: getFinishing(),
-          captions: finishPendingCaptions(j),
-        });
-        notify("Правки сохранены");
-      } catch (e) {
-        notify(e.message, true);
-      }
-    };
-    optionalElement("fcCopyStyle").onclick = () => {
+    optionalElement("fcSave").onclick = () => applyFinishing(
+      (db.plans[currentJob()?.id]?.parts || []).map(part => part.index),
+    ).catch(error => notify(error.message, true));
+    optionalElement("fcCopyStyle").onclick = async () => {
       const style = structuredClone(s);
       const prev = getFinishing().part_overrides;
       for (const part of db.plans[currentJob()?.id]?.parts || []) {
         prev[String(part.index)] ||= {};
         prev[String(part.index)].style = structuredClone(style);
       }
-      notify(
-        "Стиль выбранной части применён ко всем частям, тексты не изменены.",
-      );
       render();
+      try { await applyFinishing((db.plans[currentJob()?.id]?.parts || []).map(part => part.index)); }
+      catch (error) { notify(error.message, true); }
     };
     optionalElement("fcPreviewRequest").onclick = async () => {
       try {
@@ -2468,6 +2846,8 @@
           part = ui.finishPart;
         if (!job || job.status !== "completed")
           throw new Error("Нужен завершённый монтаж");
+        const previewEpoch = ui.finishPreviewEpoch || 0;
+        const previewSettings = structuredClone(f);
         await persistSelectedCaptions(job, part);
         const task = await request(
           "POST",
@@ -2476,7 +2856,7 @@
             part_index: db.plans[job.id]?.parts?.[part]?.index ?? part + 1,
             from: 0,
             duration: 5,
-            settings: f,
+            settings: previewSettings,
           },
         );
         notify("Создаём предпросмотр. Подождите несколько секунд.");
@@ -2484,6 +2864,10 @@
           "/api/jobs/" + job.id + "/previews/" + task.preview_id,
         );
         if (result.status === "completed" && result.url) {
+          if ((ui.finishPreviewEpoch || 0) !== previewEpoch) {
+            notify("Настройки изменились. Создайте новый предпросмотр, чтобы увидеть текущий результат.");
+            return;
+          }
           if (ui.finishPart === part && currentJob()?.id === job.id) {
             const video = $("fcVideo");
             if (video) {
@@ -2506,40 +2890,9 @@
         notify(error.message, true);
       }
     };
-    optionalElement("fcExport").onclick = () => {
-      modal({
-        title: "Повторный экспорт Shorts",
-        text: "Будет создан новый MP4 с текущим оформлением. Существующие Shorts не перезаписываются.",
-        confirm: "Запустить экспорт",
-        onConfirm: async () => {
-          const job = currentJob();
-          if (!job || job.status !== "completed")
-            throw new Error("Нужен завершённый монтаж");
-          await persistSelectedCaptions(job, ui.finishPart);
-          const task = await request(
-            "POST",
-            "/api/jobs/" + job.id + "/exports",
-            {
-              part_indices: [
-                db.plans[job.id]?.parts?.[ui.finishPart]?.index ??
-                  ui.finishPart + 1,
-              ],
-              settings: f,
-            },
-          );
-          notify("Экспорт запущен. Видео появится после завершения обработки.");
-          (async () => {
-            const result = await waitForFinishingJob(
-              "/api/exports/" + task.export_id,
-            );
-            if (result.status !== "completed")
-              throw new Error(result.error || "Ошибка рендера");
-            showFinishingFiles(result.files);
-            notify("Новый MP4 готов к скачиванию");
-          })().catch((error) => notify(error.message, true));
-        },
-      });
-    };
+    optionalElement("fcExport").onclick = () => applyFinishing([
+      db.plans[currentJob()?.id]?.parts?.[ui.finishPart]?.index ?? ui.finishPart + 1,
+    ]).catch(error => notify(error.message, true));
     $("fcImportAudio")?.addEventListener("click", () =>
       $("fcMusicFile").click(),
     );
@@ -2603,6 +2956,13 @@
         '<section class="empty"><strong>Загрузка проектов…</strong></section>';
       await window.KadrBridge.refresh(db, ui);
       const q = new URLSearchParams(location.search);
+      const legacy = /^#\/?episode\/([0-9a-f-]{36})\/(edit|editor|processing|review|finishing)(?:\/([0-9a-f-]{36}))?\/?$/i.exec(location.hash || "");
+      if (!q.has("screen") && legacy) {
+        q.set("screen", legacy[2] === "edit" ? "editor" : legacy[2]);
+        q.set("episode", legacy[1]);
+        if (legacy[3]) q.set("job", legacy[3]);
+        window.history?.replaceState(null, "", "/studio-edition.html?" + q.toString());
+      }
       const requestedProject = q.get("project"),
         requestedEpisode = q.get("episode"),
         requestedJob = q.get("job");

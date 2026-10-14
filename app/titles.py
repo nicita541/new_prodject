@@ -194,13 +194,15 @@ def refine_titles(events, transcript, shots, job_dir:Path, vision, report, cance
             continue
         units = title_units(event['start'],event['end'],transcript,shots)
         candidates = _candidates(event,units,transcript)
+        from .review_scope import target_units
+        candidates = target_units(event,candidates,'titles')
         if not candidates:
             continue
         if source is None:
             event.setdefault('story_warnings',[]).append('Промежуточный титр не проверен: источник недоступен; сцена сохранена')
             continue
         screened=[]
-        for group in [candidates]:
+        for group in _groups(candidates):
             if cancelled():
                 raise InterruptedError('Обработка отменена')
             label='screen_'+hashlib.sha256(json.dumps([event['id'],group]).encode()).hexdigest()[:24]

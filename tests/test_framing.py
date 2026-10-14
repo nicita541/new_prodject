@@ -194,7 +194,9 @@ class FramingTests(unittest.TestCase):
                 checkpoint.write_text(json.dumps(value), encoding="utf-8")
             fourth = FakeVision(answers)
             refine_focus(source, {"fps": 30}, transcript, shots, events, directory, fourth, lambda *a: None, lambda: False)
-            self.assertEqual(len(fourth.calls), 2)
+            # The event-level projection was damaged; exact source samples
+            # remain valid and restore it without another model request.
+            self.assertEqual(len(fourth.calls), 0)
 
     def test_temporal_sequence_never_crosses_a_shot_or_selected_cut(self):
         event = {"start": 0, "end": 10, "selected_ranges": [{"start": 3, "end": 6}]}
@@ -299,12 +301,14 @@ class FramingTests(unittest.TestCase):
         directory, source = self.prepare()
         events, shots, transcript = fixtures()
         reader = FakeReader()
-        calls = 0
+        opened = False
         def cancelled():
-            nonlocal calls
-            calls += 1
-            return calls > 1
-        with patch("app.framing._FrameReader", return_value=reader):
+            return opened
+        def open_reader(*args):
+            nonlocal opened
+            opened = True
+            return reader
+        with patch("app.framing._FrameReader", side_effect=open_reader):
             with self.assertRaises(InterruptedError):
                 refine_focus(source, {}, transcript, shots, events, directory, FakeVision([]), lambda *a: None, cancelled)
         self.assertTrue(reader.closed)

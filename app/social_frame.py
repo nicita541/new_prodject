@@ -1,13 +1,14 @@
 """Raster publication card: user text never enters FFmpeg filter syntax."""
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 from app.subtitles import _speech_font
+from app.finishing_avatar import draw_avatar
 
 
-CARD_LAYOUTS = {"compact": {"video_top": 280, "padding": 300, "caption_size": 34},
-                "post": {"video_top": 400, "padding": 420, "caption_size": 48}}
+CARD_LAYOUTS = {"compact": {"video_top": 280, "padding": 340, "caption_size": 34},
+                "post": {"video_top": 400, "padding": 460, "caption_size": 48}}
 
 
 def geometry(width: int, height: int, variant: str = "compact") -> dict:
@@ -42,41 +43,45 @@ def _wrap(text: str, font, width: int) -> list[str]:
     return lines
 
 
-def write_card(path: Path, width: int, height: int, video: dict) -> dict:
+def write_card(path: Path, width: int, height: int, video: dict, *, avatar: Path | None = None,
+               duration: float | None = None) -> dict:
     variant = video.get("card_variant", "compact")
     layout = CARD_LAYOUTS[variant]
     box = geometry(width, height, variant)
     image = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
     top, bottom = box["card_top"], box["card_bottom"]
-    radius = 28 if variant == "post" else 4
-    draw.rounded_rectangle((68, top + 10, 1020, bottom + 12), radius=radius,
-                           fill=(0, 0, 0, 75))
-    draw.rounded_rectangle((60, top, 1020, bottom), radius=radius,
-                           fill="#14212a" if variant == "post" else "#080b0f")
-    if variant == "post":
-        draw.rounded_rectangle((60, top, 1020, bottom), radius=28, outline="#535662", width=2)
+    radius = 38
+    shadow = Image.new('RGBA', image.size)
+    ImageDraw.Draw(shadow).rounded_rectangle((60, top + 20, 1020, bottom + 20), radius=radius,
+                                             fill=(0, 0, 0, 125))
+    image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(22)))
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle((60, top, 1020, bottom), radius=radius, fill='#1b3042', outline='#29465d', width=2)
+    # A small messenger-bubble tail, kept away from the media and caption.
+    draw.polygon([(64, bottom - 53), (40, bottom - 13), (87, bottom - 26)], fill='#1b3042')
+    draw.line((99, top + 2, 981, top + 2), fill='#38556b', width=2)
     name = str(video.get("channel_name", ""))
     name_font = _font(44)
     for size in range(44, 11, -1):
         name_font = _font(size)
-        if name_font.getlength(name) <= 740:
+        if name_font.getlength(name) <= 705:
             break
-    draw.ellipse((94, top + 30, 160, top + 96), fill="#35343f")
+    image.alpha_composite(draw_avatar(video, 84, avatar), (94, top + 30))
+    draw = ImageDraw.Draw(image)
     if name:
-        draw.text((127, top + 63), name[0].upper(), font=_font(34),
-                  fill="#dbd3f4", anchor="mm")
-        draw.text((186, top + (50 if variant == "post" else 64)), name, font=name_font, fill="#f3f3fa", anchor="lm")
+        draw.text((202, top + 56), name, font=name_font, fill='#79bce8', anchor='lm')
     handle = str(video.get("channel_handle", "")).lstrip("@")
-    if variant == "post" and handle:
+    if handle:
         handle_font = _font(26)
         while handle_font.size > 12 and handle_font.getlength("@" + handle) > 740:
             handle_font = _font(handle_font.size - 1)
-        draw.text((186, top + 85), "@" + handle, font=handle_font, fill="#9b9fad", anchor="lm")
+        draw.text((202, top + 94), "@" + handle, font=handle_font, fill='#93acbf', anchor='lm')
+    else:
+        draw.text((202, top + 94), 'Канал', font=_font(26), fill='#93acbf', anchor='lm')
     for x in (954, 970, 986):
         draw.ellipse((x - 3, top + 62, x + 3, top + 68), fill="#999cac")
     x, y, w, h = box["x"], box["y"], box["width"], box["height"]
-    draw.rectangle((x, y, x + w - 1, y + h - 1), fill=(0, 0, 0, 0))
+    draw.rounded_rectangle((x, y, x + w - 1, y + h - 1), radius=min(24, w // 8), fill=(0, 0, 0, 0))
     caption = str(video.get("post_caption", ""))
     caption_font = _font(layout["caption_size"])
     lines = _wrap(caption, caption_font, 870)
@@ -86,6 +91,11 @@ def write_card(path: Path, width: int, height: int, video: dict) -> dict:
         if len(lines) * (size + 9) <= layout["video_top"] - 145:
             break
     draw.multiline_text((94, top + 140), "\n".join(lines), font=caption_font,
-                        fill="#d6d9e4", spacing=9)
+                        fill='#edf5fc', spacing=9)
+    footer = 'Видео'
+    if duration is not None:
+        seconds = max(0, round(duration))
+        footer += f' · {seconds // 60}:{seconds % 60:02}'
+    draw.text((98, bottom - 30), footer, font=_font(24), fill='#93acbf', anchor='lm')
     image.save(path)
     return box

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from app.viewer_interest import INTEREST_INSTRUCTION
 
 POLICY_ID = 'balanced-atmosphere-v1'
 DRAMATIC_POLICY_ID = 'dramatic-shorts-v1'
@@ -33,14 +34,14 @@ def load_profile(job_dir: Path, *, persist=False):
 def instruction(profile):
     if profile.get('dramatic_condensation'):
         parts = [
-            'Dramatic Shorts condensation: condense the episode into 5 to 8 focused, high-retention Shorts.',
+            'Dramatic Shorts condensation: build focused, engaging Shorts with a soft part-count preference.',
             'Preserve the core dramatic arc: decisive character choices, escalating conflict, key twists, and climaxes.',
             'Omit low-stakes filler, slow background exposition, repetitive talk, and uneventful walking.',
             'Never omit a narrative bridge (causal physical transition connecting State A to State B) or an unresolved prerequisite.',
         ]
         if profile.get('preserve_humor'):
             parts.append('Preserve sharp punchlines, comedic climaxes, and decisive character reactions.')
-        return ' '.join(parts)
+        return ' '.join(parts) + ' ' + INTEREST_INSTRUCTION
     parts=['Balanced chronological condensation with no duration or removal quota.']
     parts.append('An unchanged pose, generic walking between places, repeated camera views, empty holds, and scenery alone are not reactions or atmosphere.')
     if profile.get('preserve_reactions'):
@@ -53,4 +54,4 @@ def instruction(profile):
         parts.append('Do not shorten empty holds or neutral scenery.')
     if not profile.get('remove_exact_repetition'):
         parts.append('Do not remove repetitions.')
-    return ' '.join(parts)
+    return ' '.join(parts) + ' ' + INTEREST_INSTRUCTION

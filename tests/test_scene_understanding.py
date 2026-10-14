@@ -213,10 +213,12 @@ class RecoveryTests(unittest.TestCase):
 
     def test_b_uncertain_scene_runs_fresh_recovery_with_dense_evidence(self):
         vision = Vision(response())
+        self.initial['uncertainty_reasons'] = ['visual_ambiguity']
         recover_chunk(vision, self.initial, units(), self.transcript, self.payload, self.images, self.diagnostics)
         self.assertEqual(len(vision.calls), 1)
         call = vision.calls[0]
-        self.assertEqual(call['images'], self.images)
+        self.assertEqual(call['images'], self.images[:2])
+        self.assertNotIn('Я не уверен, что справлюсь.',call['prompt'])
         self.assertTrue(call['prompt'].startswith(RECOVERY_PROMPT))
         self.assertIn('not a decision to confirm', call['prompt'])
         self.assertEqual(call['schema'], understanding_schema(units()))
@@ -267,11 +269,12 @@ class RecoveryTests(unittest.TestCase):
 
     def test_e_neighbors_are_context_and_foreign_selection_is_rejected(self):
         vision = Vision(response(keep_units=['next_scene_unit']))
+        self.initial['uncertainty_reasons'] = ['missing_context']
         event = recover_chunk(vision, self.initial, units(), self.transcript, self.payload, self.images, self.diagnostics)
         sent = json.loads(vision.calls[0]['prompt'][len(RECOVERY_PROMPT)+1:])
         self.assertEqual(sent['PREVIOUS SCENE']['transcript'][0]['text'], 'Я не уверен, что справлюсь.')
         self.assertEqual(sent['NEXT SCENE']['transcript'][0]['text'], 'Хинако, что ты тут делаешь?')
-        self.assertEqual(sent['initial_analysis']['uncertainty_reasons'], ['transition_unclear'])
+        self.assertEqual(sent['initial_analysis']['uncertainty_reasons'], ['missing_context'])
         self.assertEqual(event['summary_source'], 'local')
         self.assertEqual(event['understanding_status'], 'unresolved')
         self.assertEqual(self.records()[0]['reason'], 'invalid_json')

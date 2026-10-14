@@ -21,6 +21,27 @@ from tests.test_jobs import FakeWorker, deepseek_stub
 
 
 class ApiTests(unittest.TestCase):
+    def test_job_summary_skips_diagnostics_but_selected_progress_and_default_api_remain(self):
+        job = self.start_job()
+        with patch('app.job_progress.stage_progress', return_value={'scenes': {'fraction': .25}}) as progress, \
+                patch('app.job_progress.analysis_passes', return_value={'visual_analysis': {'status': 'running'}}) as passes:
+            summary = self.client.get('/api/jobs?summary=true')
+            self.assertEqual(summary.status_code, 200, summary.text)
+            self.assertEqual(summary.json()[0]['id'], job['id'])
+            self.assertNotIn('stage_progress', summary.json()[0])
+            progress.assert_not_called()
+            passes.assert_not_called()
+            selected = self.client.get('/api/jobs?summary=true&progress_job_id=' + job['id'])
+            self.assertEqual(selected.json()[0]['stage_progress']['scenes']['fraction'], .25)
+            progress.assert_called_once()
+            passes.assert_called_once()
+            progress.reset_mock()
+            passes.reset_mock()
+            complete = self.client.get('/api/jobs')
+            self.assertIn('analysis_passes', complete.json()[0])
+            progress.assert_called_once()
+            passes.assert_called_once()
+
     def test_folder_picker_does_not_silently_select_downloads_when_dialogs_fail(self):
         from app.server import choose_download_directory
         # There is no direct destination or valid environment override.

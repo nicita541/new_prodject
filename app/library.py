@@ -8,7 +8,7 @@ from pathlib import Path
 from app.json_store import atomic_json, now, read_json
 from .jobs import contained, validate_id
 
-DEFAULT_SETTINGS = {'analysis_provider': 'deepseek_plan', 'layout': 'cinema', 'caption_style': 'accent'}
+DEFAULT_SETTINGS = {'analysis_provider': 'deepseek_plan', 'layout': 'cinema', 'caption_style': 'accent', 'economy_mode': True}
 
 
 class RevisionConflict(ValueError):
@@ -158,16 +158,47 @@ class Library:
             options = validate_options(settings['layout'], settings['caption_style'])
             if settings['analysis_provider'] not in {'local', 'hybrid', 'deepseek', 'deepseek_plan', 'local_flash_story', 'local_fast_story', 'local_flash_story_budgeted', 'antigravity_manual'}:
                 raise ValueError('Неизвестный способ анализа')
-            episode.update(source_id=source_id, settings={**options, 'analysis_provider': settings['analysis_provider']})
+            economical = settings.get('economy_mode')
+            if economical is None:
+                economical = episode['settings'].get('economy_mode', True)
+            if type(economical) is not bool:
+                raise ValueError('Экономный режим должен быть включён или выключен')
+            episode.update(source_id=source_id, settings={**options, 'analysis_provider': settings['analysis_provider'],
+                                                       'economy_mode': economical})
             self._save()
             return dict(episode)
 
-    def launch(self, identifier):
+    def change_analysis_provider(self, job_id, provider, *, resume=False):
+        """Keep the job and its episode preference in step before restarting."""
+        with self.manager.mutex:
+            self._migrate()
+            job = self.manager.get(job_id)
+            owner = job.get('episode_id') or self.data['legacy_jobs'].get(job_id)
+            episode = self._episode(owner) if owner else None
+            def remember():
+                if episode is not None:
+                    self.save_episode(owner, episode['source_id'],
+                                      {**episode['settings'], 'analysis_provider': provider})
+            return self.manager.change_analysis_provider(job_id, provider, resume=resume, remember=remember)
+
+    def change_analysis_economy(self, job_id, enabled, *, resume=False):
+        with self.manager.mutex:
+            self._migrate()
+            job = self.manager.get(job_id)
+            owner = job.get('episode_id') or self.data['legacy_jobs'].get(job_id)
+            episode = self._episode(owner) if owner else None
+            def remember():
+                if episode is not None:
+                    self.save_episode(owner, episode['source_id'], {**episode['settings'], 'economy_mode': enabled})
+            return self.manager.change_analysis_economy(job_id, enabled, resume=resume, remember=remember)
+
+    def launch(self, identifier, processing_mode='full', reuse_job_id=None):
         with self.manager.mutex:
             episode = self._episode(identifier)
             if not episode['source_id']:
                 raise ValueError('Сначала выберите и сохраните видео серии')
-            return self.manager.create(episode['source_id'], **episode['settings'], episode_id=identifier)
+            return self.manager.create(episode['source_id'], **episode['settings'], episode_id=identifier,
+                                       processing_mode=processing_mode, reuse_job_id=reuse_job_id)
 
     def archive(self, kind, identifier):
         with self.manager.mutex:

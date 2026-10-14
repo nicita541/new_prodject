@@ -26,10 +26,15 @@ style.textContent = css;
 window.document.head.appendChild(style);
 assert.equal(window.getComputedStyle(window.document.querySelector('.sidebar')).display, 'flex');
 window.scrollTo = () => {};
+window.HTMLElement.prototype.scrollIntoView = () => {};
 window.structuredClone = structuredClone;
 window.HTMLMediaElement.prototype.load = () => {};
 window.HTMLMediaElement.prototype.pause = () => {};
 window.HTMLMediaElement.prototype.play = async () => {};
+// jsdom has no native top layer; real-browser verification covers geometry
+// and native focus trapping. The smoke exercises our open/close lifecycle.
+window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+window.HTMLDialogElement.prototype.close = function () { this.open = false; };
 const profile = {
   version: 1, revision: 0, episode_id: episode,
   video: { layout: 'portrait', zoom: 100, blur: 24, brightness: 100, vignette: 15 },
@@ -58,20 +63,114 @@ const jobs = [
   outputs:['part_001.mp4','part_001.srt'],files:[{name:'part_001.mp4',
     url:'/api/jobs/'+job+'/files/part_001.mp4',subtitle_url:'/api/jobs/'+job+'/files/part_001.srt',duration:4}]}
 ];
-const plan = {source:{duration:40,width:640,height:360},parts:[{index:7,duration:4,
+const plan = {review_draft:{reason:'Проверочный черновик'},source:{duration:40,width:640,height:360},parts:[{index:7,duration:4,
   cuts:[{start:10,end:12},{start:20,end:22}],subtitles:[{start:.1,end:3.5,text:'РЕАЛЬНАЯ РЕПЛИКА'},
     {start:3.8,end:4,text:'ДРУГАЯ РЕПЛИКА'}]}]};
+let automation = {enabled:true,managed:true};
+let analysisPackets=[];
+const automationWrites = [];
 let saveCalls = 0;
+let exportCalls = 0;
+let exportedParts = [];
+const exports = new Map();
 let savedProfileBody;
 let savedCaptionBodies;
+let releasePreviewStatus;
+let holdPreviewStatus = false;
+let holdExportStatus = false;
+let releaseExportStatus;
+let holdJobRefresh = false;
+let releaseJobRefresh;
+const correctedJob = '10000000-0000-4000-8000-000000000005';
+const feedbackMessages = [];
+let feedbackBody;
+let supportedProcessingModes = ['full', 'incremental', 'plan_only'];
+let launchBodies = [];
+let settingsWrites = 0;
+const providerSwitches = [];
+const checkSwitches = [];
+const previewId = 'pv_' + '1'.repeat(32);
 window.fetch = async (input,options={}) => {
   const p = String(input);
   let value;
   if(p==='/api/library')value=library;
+  else if(p===`/api/jobs/${failedJob}/analysis-checks` && options.method==='POST'){
+    const body=JSON.parse(options.body);checkSwitches.push(body);
+    const current=jobs.find(item=>item.id===failedJob);
+    Object.assign(current,{economy_mode:body.economy_mode});
+    library.episodes[0].settings.economy_mode=body.economy_mode;
+    value=current;
+  }
+  else if(p===`/api/jobs/${failedJob}/analysis-provider` && options.method==='POST'){
+    const body=JSON.parse(options.body);providerSwitches.push(body);
+    const current=jobs.find(item=>item.id===failedJob);
+    Object.assign(current,{analysis_provider:body.provider,status:'running',provider_wait:null,error:null,
+                          message:'Продолжаем с сохранённых этапов'});
+    library.episodes[0].settings.analysis_provider=body.provider;
+    value=current;
+  }
+  else if(p===`/api/jobs/${failedJob}/antigravity`)value={automation,runner:{status:'error',packet:'a'.repeat(64)},packets:analysisPackets,job_directory:'F:/new_prodject/data/jobs/'+failedJob};
+  else if(p.startsWith(`/api/jobs/${failedJob}/antigravity/automation?`)){
+    const query=new URLSearchParams(p.split('?')[1]);
+    automation={enabled:query.get('enabled')==='true',managed:query.get('managed')==='true'};
+    automationWrites.push({...automation});value=automation;
+  }
+  else if(p.endsWith('/feedback')){
+    if(options.method==='POST'){
+      feedbackBody=JSON.parse(options.body);
+      const corrected={...structuredClone(jobs.find(item=>item.id===job)),id:correctedJob,
+        created_at:'2026-10-08T00:00:00Z',status:'running',stage:'planning',
+        feedback_parent_job_id:job,outputs:[],files:[]};
+      jobs.push(corrected);
+      feedbackMessages.push({text:feedbackBody.text,part_index:feedbackBody.part_index,
+        operation_id:feedbackBody.operation_id,job_id:correctedJob,job_status:'running',
+        status:'understanding',reply:'Проверяю исходные реплики.'});
+      value=corrected;
+    }else value={messages:feedbackMessages};
+  }
+  else if(p==='/api/jobs/'+correctedJob)value=jobs.find(item=>item.id===correctedJob);
+  else if(p==='/api/jobs/'+failedJob)value=jobs.find(item=>item.id===failedJob);
   else if(p==='/api/sources')value=sources;
-  else if(p==='/api/jobs')value=jobs;
+  else if(p.startsWith('/api/jobs?'))value=jobs;
+  else if(p==='/api/jobs/'+job){
+    if(holdJobRefresh)await new Promise(resolve=>releaseJobRefresh=resolve);
+    value=jobs.find(item=>item.id===job);
+  }
+  else if(p==='/api/jobs/'+job+'/exports' && options.method==='POST'){
+    const body=JSON.parse(options.body);exportCalls++;exportedParts=body.part_indices;
+    const id='ex_'+String(exportCalls).padStart(32,'0');
+    const files=body.part_indices.map(index=>({name:`part_${String(index).padStart(3,'0')}.mp4`,part_index:index,
+      url:`/api/exports/${id}/files/part_${String(index).padStart(3,'0')}.mp4`,duration:4}));
+    exports.set(id,{export_id:id,status:'completed',progress:1,files});
+    value={export_id:id,status:'queued'};
+  }
+  else if(p.startsWith('/api/exports/')){
+    value=holdExportStatus ? await new Promise(resolve=>releaseExportStatus=resolve) : exports.get(p.split('/')[3]);
+    if(value.status==='completed'){
+      jobs.find(item=>item.id===job).files=value.files;
+      jobs.find(item=>item.id===job).finishing_applied=true;
+    }
+  }
+  else if(p==='/api/jobs/'+job+'/previews' && options.method==='POST')value={preview_id:previewId,status:'queued'};
+  else if(p==='/api/jobs/'+job+'/previews/'+previewId){
+    if(holdPreviewStatus)await new Promise(resolve=>releasePreviewStatus=resolve);
+    value={preview_id:previewId,status:'completed',files:[],url:'/api/jobs/'+job+'/previews/'+previewId+'.mp4'};
+  }
   else if(p==='/api/music')value={enabled:true,volume:.15,tracks:[],mode:'single',track:null};
-  else if(p==='/api/health')value={ready:true,missing:[],busy:false};
+  else if(p==='/api/health')value={ready:true,missing:[],busy:false,processing_modes:supportedProcessingModes};
+  else if(p===`/api/episodes/${episode}/settings` && options.method==='PUT'){
+    settingsWrites++;
+    const data=JSON.parse(options.body);
+    Object.assign(library.episodes[0],{source_id:data.source_id,settings:data});
+    value=library.episodes[0];
+  }
+  else if(p===`/api/episodes/${episode}/jobs` && options.method==='POST'){
+    const data=JSON.parse(options.body);launchBodies.push(data);
+    value={...structuredClone(jobs.find(item=>item.id===job)),id:'10000000-0000-4000-8000-000000000006',
+      processing_mode:data.processing_mode,status:'completed',stage:'completed',outputs:[],files:[],
+      created_at:'2026-10-10T00:00:00Z'};
+    jobs.push(value);
+  }
   else if(p==='/api/deepseek')value={configured:false,remaining_usd:null,model:'deepseek-chat',budget_usd:null};
   else if(p.endsWith('/plan'))value=plan;
   else if(p.endsWith('/finishing/state')){
@@ -176,8 +275,34 @@ for(const [tab,contains] of [['audio','Звуковое сопровождени
 const editedField=window.document.querySelector('#fcCaptionText');
 editedField.value='ИЗМЕНЁННАЯ РЕПЛИКА';
 editedField.dispatchEvent(new window.Event('input',{bubbles:true}));
+// Hold real bridge requests: success must never appear while processing or
+// while finished files are still being refreshed.
+holdExportStatus=true;
+window.document.querySelector('#toast').textContent='Все Shorts обновлены — старое сообщение';
 window.document.querySelector('#fcSave').click();
-await new Promise(resolve=>setTimeout(resolve,150));
+assert(window.document.querySelector('#toast').textContent.includes('началось'));
+assert(window.document.querySelector('#fcProgressText').textContent.includes('началось'));
+for(let i=0;i<100&&!releaseExportStatus;i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(releaseExportStatus,'export polling must begin');
+assert(!window.document.querySelector('#modalHost').textContent.includes('Готовые Shorts'));
+releaseExportStatus({status:'running',phase:'rendering',progress:1,part_index:7,completed_parts:0,total_parts:1,files:[]});
+await new Promise(resolve=>setTimeout(resolve,30));
+assert(window.document.querySelector('#fcProgressText').textContent.includes('Применяем'));
+assert(!window.document.querySelector('#fcProgressText').textContent.includes('обновлены'));
+assert(window.document.querySelector('#fcSave').textContent.includes('99%'),'running 100% is not success');
+releaseExportStatus=null;
+holdJobRefresh=true;
+for(let i=0;i<180&&!releaseExportStatus;i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(releaseExportStatus);
+holdExportStatus=false;
+releaseExportStatus(exports.get('ex_'+String(exportCalls).padStart(32,'0')));
+for(let i=0;i<100&&!releaseJobRefresh;i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(releaseJobRefresh);
+assert(window.document.querySelector('#fcProgressText').textContent.includes('Завершаем'));
+assert(!window.document.querySelector('#modalHost').textContent.includes('Готовые Shorts'));
+holdJobRefresh=false;releaseJobRefresh();
+await new Promise(resolve=>setTimeout(resolve,80));
+assert(window.document.querySelector('#fcProgressText').textContent.includes('Shorts обновлены'));
 assert(saveCalls > 0,'save action must use real API bridge');
 assert.equal(savedCaptionBodies.length,1,'changed job captions must be batched');
 assert.equal(savedCaptionBodies[0].cues[0].text,'ИЗМЕНЁННАЯ РЕПЛИКА');
@@ -186,6 +311,10 @@ assert.equal(savedCaptionBodies[0].part_index,7,'nonsequential part index must b
 assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
 assert(Array.isArray(savedCaptionBodies),'save must bundle captions in one validated request');
 assert(!('episode_id' in savedProfileBody), 'profile path data must not contain response-only fields');
+assert.equal(exportCalls,1,'applying appearance must render, not just save JSON');
+assert.deepEqual(exportedParts,[7],'apply must preserve actual part IDs');
+assert(jobs.find(item=>item.id===job).files[0].url.startsWith('/api/exports/'),'review must adopt the completed file');
+window.document.querySelector('#modalHost .buttons button[data-action="modal-confirm"]')?.click();
 // Per-part "no music" is a real, usable control; it should never request
 // /api/music/tracks/none/stream or invent a sample track.
 window.document.querySelector('[data-ftab="audio"]').click();
@@ -226,11 +355,15 @@ for(const [id,value] of [['fcChannel','Канал <b>100%</b>'],['fcHandle','@my
 assert.equal(window.document.querySelector('#fcSocialChannel').textContent,'Канал <b>100%</b>');
 assert(!window.document.querySelector('#fcSocialChannel b'), 'channel must remain literal text');
 assert.equal(window.document.querySelector('#fcSocialHandle').textContent,'@my_channel');
+window.document.querySelector('[data-favatar="star"]').click();
+assert(window.document.querySelector('#fcSocialAvatar').getAttribute('src').includes('/star.png'),'selected icon must appear in preview');
 window.document.querySelector('#fcSave').click();
 await new Promise(resolve=>setTimeout(resolve,150));
+assert.equal(exportCalls,2,'the new card must be rendered when applied');
 assert.equal(savedProfileBody.video.card_variant,'post');
 assert.equal(savedProfileBody.video.channel_handle,'@my_channel');
 assert.equal(savedProfileBody.video.post_caption,'Подпись: [x]; 100%');
+assert.equal(savedProfileBody.video.avatar_style,'star','icon must survive save/export');
 socialVideo=window.document.querySelector('#fcVideo');
 socialVideo.dataset.renderedPreview='true';
 window.document.querySelector('#fcGuideToggle').click();
@@ -260,6 +393,93 @@ assert(shortsButton, 'older ready Shorts must remain accessible after a failed r
 shortsButton.click();
 assert(window.document.querySelector('.rv2-head'), 'episode must open the Shorts review');
 assert(window.document.querySelector('#breadcrumbs').textContent.includes('Серия 1'), 'review must retain episode breadcrumbs');
+await new Promise(resolve=>setTimeout(resolve,60));
+assert(window.document.querySelector('#feedbackText'), 'review assistant must be available from playback');
+assert.equal(window.document.querySelector('.rv2-maincol').children.length,2,
+  'only playback and timeline may occupy the permanent workspace');
+assert.equal(window.document.querySelector('#reviewParts').open,false);
+assert.equal(window.document.querySelector('#reviewAssistant').open,false);
+const originalPlayer=window.document.querySelector('#reviewSourceVideo');
+const shortPlayer=window.document.querySelector('#reviewShortVideo');
+assert(originalPlayer && shortPlayer,'both videos must remain visible together');
+assert(!window.document.querySelector('.rv2-screen').textContent.includes('Черновик для просмотра'),
+  'the draft banner must not consume playback space');
+originalPlayer.currentTime=12;
+shortPlayer.currentTime=3;
+const assistantToggle=window.document.querySelector('[data-action="review-panel"][data-id="reviewAssistant"]');
+assistantToggle.click();
+assert.equal(window.document.querySelector('#reviewAssistant').open,true);
+assert.equal(window.document.activeElement.id,'feedbackText');
+const feedbackInput=window.document.querySelector('#feedbackText');
+feedbackInput.value='Здесь оборвана фраза <img src=x onerror=alert(1)>';
+feedbackInput.dispatchEvent(new window.Event('input'));
+window.document.querySelector('#reviewAssistant [data-action="review-panel-close"]').click();
+assert.equal(window.document.querySelector('#reviewAssistant').open,false);
+assert.equal(window.document.activeElement,assistantToggle);
+assistantToggle.click();
+assert.equal(window.document.querySelector('#feedbackText'),feedbackInput);
+assert(feedbackInput.value.includes('оборвана фраза'),'closing must retain unsent feedback');
+window.document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape',bubbles:true}));
+assert.equal(window.document.querySelector('#reviewAssistant').open,false);
+const partsToggle=window.document.querySelector('[data-action="review-panel"][data-id="reviewParts"]');
+partsToggle.click();
+assert.equal(window.document.querySelector('#reviewParts').open,true);
+assert.equal(partsToggle.getAttribute('aria-expanded'),'true');
+window.document.querySelector('#reviewParts').click();
+assert.equal(window.document.querySelector('#reviewParts').open,false,'backdrop must close the drawer');
+assert.equal(window.document.querySelector('#reviewSourceVideo'),originalPlayer);
+assert.equal(window.document.querySelector('#reviewShortVideo'),shortPlayer);
+assert.equal(originalPlayer.currentTime,12);
+assert.equal(shortPlayer.currentTime,3);
+assistantToggle.click();
+window.document.querySelector('[data-action="feedback-send"]').click();
+await new Promise(resolve=>setTimeout(resolve,180));
+assert.equal(feedbackBody.part_index,7, 'feedback must bind to actual plan part ID');
+assert.equal(typeof feedbackBody.source_time,'number');
+assert.match(feedbackBody.operation_id,/^[0-9a-f-]{36}$/);
+assert.equal(window.document.querySelector('#reviewSourceVideo'),originalPlayer,
+  'submitting/polling feedback must preserve the playback element');
+assert(!window.document.querySelector('#feedbackMessages img'), 'feedback text must never become executable HTML');
+assert.equal(window.document.querySelector('[data-action="feedback-send"]').disabled,true);
+const corrected=jobs.find(item=>item.id===correctedJob);
+corrected.status='completed';corrected.files=structuredClone(jobs.find(item=>item.id===job).files);
+feedbackMessages[0].status=feedbackMessages[0].job_status='completed';
+feedbackMessages[0].reply='Новая версия готова. Предыдущий монтаж сохранён.';
+window.document.querySelector('#reviewAssistant [data-action="review-panel-close"]').click();
+window.document.querySelector('[data-action="review-panel"][data-id="reviewParts"]').click();
+window.document.querySelector('[data-action="choose-part"]').click();
+await new Promise(resolve=>setTimeout(resolve,80));
+assert(window.document.querySelector('#reviewSourceVideo') && window.document.querySelector('#reviewShortVideo'),
+  'choosing a part must keep source and output together');
+assert.equal(window.document.querySelector('#reviewAssistant').open,false);
+assert.equal(window.document.querySelector('#reviewParts').open,false);
+window.document.querySelector('[data-action="review-panel"][data-id="reviewAssistant"]').click();
+assert(window.document.querySelector('[data-action="feedback-open"]').textContent.includes('исправленный'));
+window.document.querySelector('[data-action="feedback-open"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+assert.equal(window.document.querySelector('#reviewAttempt').value,correctedJob);
+const previousAttempt=window.document.querySelector('#reviewAttempt');
+previousAttempt.value=job;previousAttempt.dispatchEvent(new window.Event('change'));
+assert.equal(window.document.querySelector('#reviewAttempt').value,job,
+  'original montage must remain selectable after correction');
+window.document.querySelector('[data-action="review-mode"][data-id="short"]').click();
+assert(window.document.querySelector('#reviewShortVideo'));
+assert(!window.document.querySelector('#reviewSourceVideo'));
+window.document.querySelector('[data-action="review-next"]').click();
+assert(!window.document.querySelector('#reviewSourceVideo'),'part navigation must preserve the chosen viewing mode');
+window.document.querySelector('[data-action="review-mode"][data-id="source"]').click();
+assert(window.document.querySelector('#reviewSourceVideo'));
+assert(!window.document.querySelector('#reviewShortVideo'));
+assert.equal(window.document.querySelector('[data-action="review-mode"][data-id="source"]').getAttribute('aria-pressed'),'true');
+window.document.querySelector('[data-action="review-mode"][data-id="compare"]').click();
+assert(window.document.querySelector('#reviewSourceVideo') && window.document.querySelector('#reviewShortVideo'));
+window.document.querySelector('.rv2-clip.removed').click();
+assert(window.document.querySelector('.rv2-clip.removed.active'));
+assert(window.document.querySelector('#reviewSourceVideo') && window.document.querySelector('#reviewShortVideo'),
+  'inspecting a removed scene must keep the rendered part visible');
+window.document.querySelector('[data-action="review-next"]').click();
+assert(window.document.querySelector('#reviewSourceVideo') && window.document.querySelector('#reviewShortVideo'),
+  'transport part navigation must keep both players');
 window.document.querySelector('.episode-navigation [data-screen="processing"]').click();
 assert(window.document.querySelector('#stageRows'), 'montage must be accessible from its episode');
 assert(window.document.querySelector('[data-action="retry-job"][data-id="'+failedJob+'"]'),
@@ -269,8 +489,225 @@ window.document.querySelector('.episode-navigation [data-screen="finishing"]').c
 assert(window.document.querySelector('#fcCanvas'), 'finishing must remain accessible after processing');
 window.document.querySelector('.episode-navigation [data-screen="editor"]').click();
 assert(window.document.querySelector('#analysisSelect'), 'episode settings must remain accessible after finishing');
+assert(!window.document.querySelector('#sourceSelect'), 'video import must not require a library selector');
+assert(window.document.querySelector('[data-action="upload-video"]'));
+const processingMenu = window.document.querySelector('#processingMenu');
+assert(processingMenu.closest('.launch-split'), 'mode menu must be attached to the launch button');
+assert.equal(window.document.querySelectorAll('[data-action="processing-mode"]').length, 3);
+assert.equal(window.document.querySelector('[data-action="launch"]').dataset.processingMode, 'incremental');
+assert.equal(processingMenu.open, false);
+processingMenu.querySelector('summary').click();
+assert.equal(processingMenu.open, true);
+window.document.querySelector('[data-action="processing-mode"][data-id="plan_only"]').click();
+assert.equal(processingMenu.open, false);
+assert(window.document.querySelector('#processingModeHint').textContent.includes('Без моделей и экспорта'));
+assert(window.document.querySelector('[data-action="launch"]').textContent.includes('Пересобрать план'));
+window.document.querySelector('[data-action="processing-mode"][data-id="incremental"]').click();
+assert(!window.document.querySelector('#editorCard').open, 'card fields must start in a closed dialog');
+window.document.querySelector('#editCardButton').click();
+assert(window.document.querySelector('#editorCard').open);
+assert.equal(window.document.querySelector('#socialChannel').value,savedProfileBody.video.channel_name,
+  'saved finishing appearance must rebase the previously opened episode settings');
+const phoneCard=window.document.querySelector('.phone-social-card');
+assert.equal(window.getComputedStyle(phoneCard).backgroundColor,'rgb(27, 48, 66)',
+  'post preview must use the renderer messenger color');
+assert.equal(window.getComputedStyle(phoneCard).borderRadius,'3.52cqw',
+  'post preview must not retain legacy seven-pixel corners');
+assert(window.document.querySelector('#editorPhone').style.getPropertyValue('--social-height'),
+  'phone preview geometry must be computed from the source aspect ratio');
+const compact=window.document.querySelector('#socialVariant');
+compact.value='compact';compact.dispatchEvent(new window.Event('change'));
+assert.equal(window.document.querySelector('#socialHandleField').hidden,false,
+  'compact card must retain its channel handle like the renderer');
+const draftName=window.document.querySelector('#socialChannel');
+draftName.value='Несохранённый черновик';draftName.dispatchEvent(new window.Event('input'));
+window.document.querySelector('#editorCard [data-action="editor-panel-close"]').click();
+assert(!window.document.querySelector('#editorCard').open);
+assert.equal(window.document.activeElement.id, 'editCardButton');
+window.document.querySelector('[data-action="editor-panel"][data-id="editorMusic"]').click();
+assert(window.document.querySelector('#editorMusic').open);
+window.document.dispatchEvent(new window.KeyboardEvent('keydown',{key:'Escape'}));
+assert(!window.document.querySelector('#editorMusic').open);
+window.document.querySelector('.episode-navigation [data-screen="finishing"]').click();
+window.document.querySelector('[data-ftab="frame"]').click();
+const nextName=window.document.querySelector('#fcChannel');
+nextName.value='Новое сохранённое имя';nextName.dispatchEvent(new window.Event('input'));
+window.document.querySelector('#fcSave').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+window.document.querySelector('#modalHost .buttons button[data-action="modal-confirm"]')?.click();
+window.document.querySelector('.episode-navigation [data-screen="editor"]').click();
+assert.equal(window.document.querySelector('#socialChannel').value,'Несохранённый черновик',
+  'rebasing must preserve an intentional unsaved settings field');
+window.document.querySelector('.episode-navigation [data-screen="finishing"]').click();
+window.document.querySelector('[data-flayout="portrait"]').click();
+assert.equal(window.document.querySelector('#fcVideo').dataset.sourcePreview,'true',
+  'removing a baked card must preview source cuts, not the already styled MP4');
+assert(window.document.querySelector('#fcVideo').getAttribute('src').endsWith('/source'));
+window.document.querySelector('[data-ftab="captions"]').click();
+let baked=window.document.querySelector('#fcVideo');
+baked.dataset.renderedPreview='true';window.document.querySelector('#fcGuideToggle').click();
+let subtitleSize=window.document.querySelector('#fcSize');
+subtitleSize.value='44';subtitleSize.dispatchEvent(new window.Event('input',{bubbles:true}));
+assert.notEqual(baked.dataset.renderedPreview,'true','subtitle edits must invalidate a baked preview');
+assert.equal(window.document.querySelector('#fcCaption').style.visibility,'visible');
+holdPreviewStatus=true;window.document.querySelector('#fcPreviewRequest').click();
+for(let i=0;i<50&&!releasePreviewStatus;i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(releasePreviewStatus,'preview request must reach status polling');
+subtitleSize.value='38';subtitleSize.dispatchEvent(new window.Event('input',{bubbles:true}));
+holdPreviewStatus=false;releasePreviewStatus();
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.notEqual(window.document.querySelector('#fcVideo').dataset.renderedPreview,'true',
+  'a pending preview rendered with old settings must not overwrite newer edits');
+
+// Opening an existing hash bookmark must retain its requested episode/job.
+const bookmark=new JSDOM(src,{runScripts:'outside-only',pretendToBeVisual:true,
+  url:'http://127.0.0.1:8766/#episode/'+episode+'/review/'+job});
+bookmark.window.scrollTo=()=>{};bookmark.window.structuredClone=structuredClone;
+bookmark.window.HTMLMediaElement.prototype.load=()=>{};
+bookmark.window.HTMLMediaElement.prototype.pause=()=>{};
+bookmark.window.HTMLMediaElement.prototype.play=async()=>{};
+bookmark.window.fetch=window.fetch;
+bookmark.window.eval(bridge);bookmark.window.eval(script);
+for(let i=0;i<50&&!bookmark.window.document.querySelector('.rv2-head');i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(bookmark.window.document.querySelector('.rv2-head'),'hash bookmark must open the Shorts review');
+assert.equal(bookmark.window.location.hash,'');
+assert.equal(new URLSearchParams(bookmark.window.location.search).get('job'),job);
+bookmark.window.close();
+
+// Applying all supported parts must not fall over at the old fifty-part cap.
+const template=structuredClone(plan.parts[0]);
+plan.parts.splice(0,plan.parts.length,...Array.from({length:51},(_,i)=>({...structuredClone(template),index:i+1})));
+window.document.querySelector('[data-ftab="frame"]').click();
+window.document.querySelector('#fcSave').click();
+await new Promise(resolve=>setTimeout(resolve,200));
+assert.deepEqual(exportedParts,Array.from({length:51},(_,i)=>i+1));
+// A failed update replaces the previous success result and never reports completion.
+holdExportStatus=true;releaseExportStatus=null;
+window.document.querySelector('#fcSave').click();
+assert(!window.document.querySelector('#modalHost').textContent.includes('Готовые Shorts'));
+assert(window.document.querySelector('#toast').textContent.includes('началось'));
+for(let i=0;i<100&&!releaseExportStatus;i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(releaseExportStatus);
+holdExportStatus=false;
+releaseExportStatus({status:'failed',progress:0,error:'Проверочная ошибка рендера',files:[]});
+await new Promise(resolve=>setTimeout(resolve,60));
+assert(window.document.querySelector('#fcProgress').classList.contains('failed'));
+assert(window.document.querySelector('#toast').textContent.includes('Проверочная ошибка'));
+assert(!window.document.querySelector('#modalHost').textContent.includes('Готовые Shorts'));
+assert.equal(window.document.querySelector('#fcSave').disabled,false);
+// A plan-only result is inspected on the original source; absent videos must
+// not masquerade as completed Shorts or expose dead download actions.
+const cachedPlanJob = jobs.find(item => item.id === job);
+cachedPlanJob.processing_mode = 'plan_only';
+cachedPlanJob.outputs = [];
+cachedPlanJob.files = [];
+window.document.querySelector('.episode-navigation [data-screen="processing"]').click();
+window.document.querySelector(`[data-action="open-job"][data-id="${job}"]`).click();
+await new Promise(resolve=>setTimeout(resolve,80));
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+assert(window.document.querySelector('[data-action="open-review"]'), window.document.querySelector('main').textContent);
+window.document.querySelector('[data-action="open-review"]').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+assert(window.document.body.textContent.includes('Проверка плана'));
+assert(window.document.querySelector('#reviewSourceVideo'));
+assert(!window.document.querySelector('#reviewShortVideo'));
+assert.equal(window.document.querySelector('[data-action="download-mp4"]').disabled, true);
+assert.equal(window.document.querySelector('[data-action="review-mode"][data-id="compare"]').disabled,true);
+assert.equal(window.document.querySelector('[data-action="review-mode"][data-id="short"]').disabled,true);
+// A stale server used to ignore processing_mode and start its default full
+// run. Reject it before saving settings or creating any job.
+window.document.querySelector('.episode-navigation [data-screen="editor"]').click();
+window.document.querySelector('[data-action="processing-mode"][data-id="plan_only"]').click();
+supportedProcessingModes = undefined;
+const writesBeforeStaleLaunch = settingsWrites;
+window.document.querySelector('[data-action="launch"]').click();
+await new Promise(resolve=>setTimeout(resolve,80));
+assert.equal(launchBodies.length,0,'an old backend must never receive a selective launch');
+assert.equal(settingsWrites,writesBeforeStaleLaunch,'capability check must happen before settings mutations');
+assert(window.document.querySelector('#toast').textContent.includes('Перезапустите'));
+supportedProcessingModes = ['full','incremental','plan_only'];
+window.document.querySelector('[data-action="launch"]').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+assert.deepEqual(launchBodies,[{processing_mode:'plan_only'}], 'the split button must submit its displayed mode');
+assert(window.document.querySelector('[data-action="open-review"]').textContent.includes('Проверить план'));
 window.document.querySelector('.sidebar [data-screen="trash"]').click();
 assert(window.document.querySelector('main').textContent.includes('Корзина'), 'global trash must remain available');
+
+// Managed exchange needs no shell command and preserves an explicit manual opt-out.
+jobs.find(item=>item.id===failedJob).analysis_provider='antigravity_manual';
+window.document.querySelector('.sidebar [data-screen="projects"]').click();
+window.document.querySelector(`[data-action="go-project"][data-id="${project}"]`).click();
+window.document.querySelector(`[data-action="open-episode"][data-id="${episode}"]`).click();
+window.document.querySelector('.episode-navigation [data-screen="processing"]').click();
+window.document.querySelector(`[data-action="open-job"][data-id="${failedJob}"]`).click();
+await new Promise(resolve=>setTimeout(resolve,120));
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+assert(window.document.querySelector('main').textContent.includes('автоматическая обработка'));
+assert(!window.document.querySelector('main').textContent.includes('powershell -NoProfile'));
+window.document.querySelector('[data-action="manual-auto"]').click();
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.deepEqual(automationWrites,[{enabled:false,managed:true}]);
+assert(window.document.querySelector('[data-action="manual-auto"]').textContent.includes('Включить'));
+window.document.querySelector('[data-action="manual-auto"]').click();
+await new Promise(resolve=>setTimeout(resolve,100));
+assert.deepEqual(automationWrites,[{enabled:false,managed:true},{enabled:true,managed:true}]);
+jobs.find(item=>item.id===failedJob).status='waiting_analysis';
+analysisPackets=[{id:'a'.repeat(64),purpose:'choose_units',status:'error',error:'Antigravity: требуется восстановить авторизацию в официальном CLI'}];
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+assert(window.document.querySelector('#stageMessage').textContent.includes('восстановить авторизацию'));
+jobs.find(item=>item.id===failedJob).status='running';
+jobs.find(item=>item.id===failedJob).provider_wait={reason:'quota',resume_at:'2026-10-13T18:17:50Z'};
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+assert(window.document.querySelector('#stageMessage').textContent.includes('Продолжим автоматически'));
+assert(window.document.querySelector('#stageMessage').textContent.includes(new Date('2026-10-13T18:17:50Z').toLocaleDateString('ru-RU')));
+jobs.find(item=>item.id===failedJob).status='cancelled';
+jobs.find(item=>item.id===failedJob).message='Обработка отменена';
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+assert(!window.document.querySelector('#stageMessage').textContent.includes('Продолжим автоматически'));
+
+// Switch the running Antigravity job directly and keep editor preferences in step.
+jobs.find(item=>item.id===failedJob).status='running';
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+const providerSelect=window.document.querySelector('#jobAnalysisSelect');
+assert(providerSelect, 'Processing must expose a provider selector for the active job');
+providerSelect.value='deepseek_plan';
+providerSelect.dispatchEvent(new window.Event('change',{bubbles:true}));
+const switchButton=window.document.querySelector('[data-action="switch-analysis-provider"]');
+assert.equal(switchButton.disabled,false);
+switchButton.click();
+await new Promise(resolve=>setTimeout(resolve,180));
+assert.deepEqual(providerSwitches,[{provider:'deepseek_plan',resume:true}]);
+assert.equal(window.document.querySelector('#jobAnalysisSelect').value,'deepseek_plan');
+assert.equal(window.document.querySelector('[data-action="switch-analysis-provider"]').disabled,true);
+assert(!window.document.querySelector('[data-action="manual-auto"]'));
+const economySwitch=window.document.querySelector('#jobEconomyMode');
+assert(economySwitch.checked, 'Economy defaults to enabled');
+assert.equal(window.document.querySelectorAll('.stage-row.check-disabled').length,5);
+assert(![...window.document.querySelectorAll('.stage-row.check-disabled')].some(row=>row.textContent.includes('Проверка конкретного выбора')));
+economySwitch.checked=false;
+economySwitch.dispatchEvent(new window.Event('change',{bubbles:true}));
+await new Promise(resolve=>setTimeout(resolve,180));
+assert.deepEqual(checkSwitches,[{economy_mode:false,resume:true}]);
+assert.equal(window.document.querySelectorAll('.stage-row.check-disabled').length,0);
+jobs.find(item=>item.id===failedJob).status='cancelled';
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+const stoppedSwitch=window.document.querySelector('#jobEconomyMode');
+stoppedSwitch.checked=true;
+stoppedSwitch.dispatchEvent(new window.Event('change',{bubbles:true}));
+await new Promise(resolve=>setTimeout(resolve,180));
+assert.deepEqual(checkSwitches[1],{economy_mode:true,resume:false});
+assert.equal(jobs.find(item=>item.id===failedJob).status,'cancelled');
+window.document.querySelector('.episode-navigation [data-screen="editor"]').click();
+assert.equal(window.document.querySelector('#analysisSelect').value,'deepseek_plan');
+assert(window.document.querySelector('#editEconomyMode').checked);
+
 
 dom.window.close();
 console.log('Exact Studio Edition DOM smoke: live API, reference layout, tabs, save passed');

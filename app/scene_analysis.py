@@ -4,16 +4,17 @@ from __future__ import annotations
 import hashlib
 import json
 import copy
+import re
 from bisect import bisect_left
 from pathlib import Path
 import urllib.error
 
 from app.json_store import analysis_json as atomic_json, load_json
-from .bounded_storyboard import MAX_INFERENCE_FRAMES
+from .bounded_storyboard import MAX_INFERENCE_FRAMES, MAX_PAGED_INFERENCE_FRAMES
 from .pipeline_diagnostics import Diagnostics
 from .story_review import candidate_units, validated_event, apply_unit_selection
 
-SCENE_CONTEXT_POLICY_VERSION = 2  # Only source-adjacent chunks need neighboring image pages.
+SCENE_CONTEXT_POLICY_VERSION = 3  # Neighbor evidence is added only for an explicit context demand.
 
 SCENE_PROMPT = '''Analyze CURRENT footage only. The CURRENT scene can have multiple technical chunks;
 chunk boundaries are not scene boundaries. First examine visual evidence, then imperfect Russian ASR.
@@ -78,7 +79,7 @@ def merge_subframe_chunks(chunks, minimum_seconds=.125):
 
 
 def bounded_chunks(scene, transcript, shots, max_frames=MAX_INFERENCE_FRAMES, *, frame_times=None):
-    """Bound inference by actual frame demand; 18 readable frames reduce redundant story passes."""
+    """Bound inference by source demand; each image page keeps at most 18 readable frames."""
     from .scene_detection import analysis_chunks
     from .vision import inference_samples
     pending = merge_subframe_chunks(analysis_chunks(scene, transcript))
@@ -243,14 +244,22 @@ def frame_backed_scenes(scenes, frame_times):
     return result
 
 
-def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature, report, cancelled):
+def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature, report, cancelled, *,
+                   event_ids=None, context_scenes=None):
     from .vision import storyboard, inference_storyboard
     from .semantic_identity import component_identity
     diagnostics = Diagnostics(job_dir)
+    frame_limit = (min(getattr(vision, 'max_current_frames', MAX_INFERENCE_FRAMES), MAX_PAGED_INFERENCE_FRAMES)
+                   if getattr(vision, 'supports_image_pages', False) else MAX_INFERENCE_FRAMES)
     visual_dir = Path(job_dir) / 'visual'
     visual_dir.mkdir(exist_ok=True)
     components = {name: component_identity(name)['digest'] for name in ('local_prompt', 'recovery', 'storyboard')}
     source_path = Path(source)
+    if event_ids is not None and (set(event_ids)!={s['id'] for s in scenes}
+            or len(set(event_ids.values()))!=len(event_ids)
+            or any(not isinstance(value,str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,150}',value)
+                   or value in ('.','..') for value in event_ids.values())):
+        raise ValueError('Scoped analysis requires unique source-owned artifact IDs')
     source_stat = source_path.stat() if source_path.is_file() else None
     frame_times = None
     if source_stat is not None and scenes:
@@ -278,200 +287,276 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                      'profile': getattr(vision, 'cache_profile', None),
                      'model_files': model_files,
                      'image_pages': bool(getattr(vision, 'supports_image_pages', False)),
+                     'current_frame_limit': frame_limit,
                      'thinking': bool(getattr(vision, 'thinking', False))}}
-    events, storyboards = [], []
+    plans, pending = [], []
     for index, scene in enumerate(scenes):
         if cancelled():
             raise InterruptedError('Обработка отменена')
-        event_id = f'event_{index:04d}'
+        event_id = event_ids[scene['id']] if event_ids is not None else f'event_{index:04d}'
         checkpoint = visual_dir / f'{event_id}.json'
         saved = _read_optional_checkpoint(checkpoint)
+        context = (context_scenes or {}).get(scene['id'], {})
         semantic_cache = {'components': components, 'context_policy': SCENE_CONTEXT_POLICY_VERSION,
             'input_hash': hashlib.sha256(json.dumps({**base_identity, 'scene': scene,
-                'previous': scenes[index-1] if index else None,
-                'next': scenes[index+1] if index+1 < len(scenes) else None},
+                'previous': context.get('previous',scenes[index-1] if index else None),
+                'next': context.get('next',scenes[index+1] if index+1 < len(scenes) else None)},
                 ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()}
-        report('analyze', .22+.26*index/max(1, len(scenes)), f'Смысловая сцена {index+1} из {len(scenes)}')
-        if (saved.get('signature') == signature and saved.get('semantic_identity') == semantic_cache
-                and saved.get('event', {}).get('scene_id') == scene['id']
-                and isinstance(saved.get('image_hashes'), dict)
-                and _scene_image_hashes(saved.get('storyboards', []), visual_dir) == saved['image_hashes']):
-            event = saved['event']
-            storyboards.extend(saved.get('storyboards', []))
-            diagnostics.event('scene_analysis', 'cache_hit', scene_id=scene['id'], event_id=event_id)
-            events.append(event)
-            continue
-        diagnostics.event('scene_analysis', 'cache_miss', scene_id=scene['id'], event_id=event_id)
-        previous = scenes[index-1] if index else None
-        following = scenes[index+1] if index+1 < len(scenes) else None
-        chunk_results, scene_boards, all_units = [], [], []
-        chunks = bounded_chunks(scene, transcript, shots, frame_times=frame_times)
-        with diagnostics.stage('scene_analysis', scene_id=scene['id'], provider=type(vision).__name__,
-                               source_start=scene['start'], source_end=scene['end'], chunks=len(chunks)):
-            for number, chunk in enumerate(chunks):
-                if cancelled():
-                    raise InterruptedError('Обработка отменена')
-                start, end = chunk['start'], chunk['end']
-                image = visual_dir / f'{event_id}_chunk_{number:03d}.jpg'
-                units = candidate_units(start, end, transcript, shots, annotated=True, max_unit_seconds=4)
-                for unit in units:
-                    unit['id'] = f'c{number:03d}_{unit["id"]}'
-                    unit['parent_scene_id'] = scene['id']
-                # Durable, model-specific checkpoint for every *completed* chunk.
-                # Includes source, transcript, context, scene and semantic versions.
-                piece = visual_dir / f'{event_id}_chunk_{number:03d}.checkpoint.json'
-                piece_key = hashlib.sha256(json.dumps({
-                    'version': 1, 'signature': signature,
-                    'identity': semantic_cache, 'chunk': chunk, 'units': units,
-                    'previous': previous, 'following': following,
-                }, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()
-                saved_piece = _read_optional_checkpoint(piece)
-                if (saved_piece.get('identity') == piece_key
-                        and isinstance(saved_piece.get('result'), dict)
-                        and isinstance(saved_piece.get('units'), list)
-                        and isinstance(saved_piece.get('boards'), list)
-                        and isinstance(saved_piece.get('image_hashes'), dict)
-                        and _scene_image_hashes(saved_piece['boards'], visual_dir) == saved_piece['image_hashes']):
-                    all_units.extend(saved_piece['units'])
-                    scene_boards.extend(saved_piece['boards'])
-                    chunk_results.append(saved_piece['result'])
-                    diagnostics.event('scene_analysis', 'chunk_cache_hit',
-                                      scene_id=scene['id'], chunk_id=chunk['id'])
-                    continue
-                diagnostics.event('scene_analysis', 'chunk_cache_miss',
-                                  scene_id=scene['id'], chunk_id=chunk['id'])
-                board_start = len(scene_boards)
-                sampling = {'sample_limit': chunk['sampling_limit']} if chunk.get('sampling_limit') else {}
-                timestamps = inference_storyboard(source,start,end,units,image,cancelled,**sampling)
-                all_units.extend(units)
-                board = load_json(image.with_suffix('.storyboard.json'))
-                images = [Path(p) for p in board.get('pages', [str(image)])] if getattr(vision, 'supports_image_pages', False) else [image]
-                image_order = ['CURRENT'] * len(images)
-                board.update(scene_id=scene['id'], chunk_id=chunk['id'], role='current', image=str(image))
-                scene_boards.append(board)
-                # Context is only physically adjacent to the first/last
-                # technical chunk. Interior chunks already carry their own
-                # CURRENT original frames plus textual scene context; sending
-                # two unrelated neighbor image pages for every one of them
-                # costs VLM tokens without stronger temporal evidence.
-                neighbor_edges = ((previous, 'PREVIOUS') if number == 0 else (None, 'PREVIOUS'),
-                                  (following, 'NEXT') if number == len(chunks)-1 else (None, 'NEXT'))
-                for neighbor, label in neighbor_edges:
-                    if neighbor is None or not getattr(vision, 'supports_image_pages', False):
+        cached = (saved.get('signature') == signature and saved.get('semantic_identity') == semantic_cache
+                  and saved.get('event', {}).get('scene_id') == scene['id']
+                  and isinstance(saved.get('image_hashes'), dict)
+                  and _scene_image_hashes(saved.get('storyboards', []), visual_dir) == saved['image_hashes'])
+        specs = []
+        chunks = [] if cached else bounded_chunks(scene, transcript, shots, max_frames=frame_limit, frame_times=frame_times)
+        context = (context_scenes or {}).get(scene['id'], {})
+        previous = context.get('previous',scenes[index-1] if index else None)
+        following = context.get('next',scenes[index+1] if index+1 < len(scenes) else None)
+        for number, chunk in enumerate(chunks):
+            if cancelled():
+                raise InterruptedError('Обработка отменена')
+            start, end = chunk['start'], chunk['end']
+            image = visual_dir / f'{event_id}_chunk_{number:03d}.jpg'
+            units = candidate_units(start, end, transcript, shots, annotated=True, max_unit_seconds=4)
+            for unit in units:
+                unit['id'] = f'c{number:03d}_{unit["id"]}'
+                unit['parent_scene_id'] = scene['id']
+            piece = visual_dir / f'{event_id}_chunk_{number:03d}.checkpoint.json'
+            piece_key = hashlib.sha256(json.dumps({
+                'version': 1, 'signature': signature,
+                'identity': semantic_cache, 'chunk': chunk, 'units': units,
+                'previous': previous, 'following': following,
+            }, ensure_ascii=False, sort_keys=True, allow_nan=False).encode()).hexdigest()
+            saved_piece = _read_optional_checkpoint(piece)
+            piece_cached = (saved_piece.get('identity') == piece_key
+                            and isinstance(saved_piece.get('result'), dict)
+                            and isinstance(saved_piece.get('units'), list)
+                            and isinstance(saved_piece.get('boards'), list)
+                            and isinstance(saved_piece.get('image_hashes'), dict)
+                            and _scene_image_hashes(saved_piece['boards'], visual_dir) == saved_piece['image_hashes'])
+            sampling = {'sample_limit': chunk['sampling_limit']} if chunk.get('sampling_limit') else {}
+            if frame_limit != MAX_INFERENCE_FRAMES:
+                sampling['max_frames'] = frame_limit
+            spec = {'key': (index, number), 'chunk': chunk, 'units': units, 'image': image,
+                    'piece': piece, 'piece_key': piece_key, 'saved_piece': saved_piece,
+                    'cached': piece_cached, 'sampling': sampling}
+            specs.append(spec)
+            if not piece_cached:
+                pending.append(spec)
+        plans.append({'semantic_cache': semantic_cache, 'saved': saved, 'cached': cached,
+                      'chunks': chunks, 'specs': specs})
+
+    def prepare_current(spec, stop_check):
+        chunk = spec['chunk']
+        timestamps = inference_storyboard(source, chunk['start'], chunk['end'], spec['units'],
+                                          spec['image'], stop_check, **spec['sampling'])
+        return timestamps, load_json(spec['image'].with_suffix('.storyboard.json'))
+
+    from .scene_preparation import CurrentPreparation
+    with CurrentPreparation(pending, prepare_current, cancelled) as preparation:
+        events, storyboards = [], []
+        for index, scene in enumerate(scenes):
+            if cancelled():
+                raise InterruptedError('Обработка отменена')
+            event_id = event_ids[scene['id']] if event_ids is not None else f'event_{index:04d}'
+            checkpoint = visual_dir / f'{event_id}.json'
+            plan = plans[index]
+            saved, semantic_cache = plan['saved'], plan['semantic_cache']
+            report('analyze', .22+.26*index/max(1, len(scenes)), f'Смысловая сцена {index+1} из {len(scenes)}')
+            if plan['cached']:
+                event = saved['event']
+                storyboards.extend(saved.get('storyboards', []))
+                diagnostics.event('scene_analysis', 'cache_hit', scene_id=scene['id'], event_id=event_id)
+                events.append(event)
+                continue
+            diagnostics.event('scene_analysis', 'cache_miss', scene_id=scene['id'], event_id=event_id)
+            context = (context_scenes or {}).get(scene['id'], {})
+            previous = context.get('previous',scenes[index-1] if index else None)
+            following = context.get('next',scenes[index+1] if index+1 < len(scenes) else None)
+            chunk_results, scene_boards, all_units = [], [], []
+            chunks = plan['chunks']
+            with diagnostics.stage('scene_analysis', scene_id=scene['id'], provider=type(vision).__name__,
+                                   source_start=scene['start'], source_end=scene['end'], chunks=len(chunks)):
+                for number, chunk in enumerate(chunks):
+                    if cancelled():
+                        raise InterruptedError('Обработка отменена')
+                    start, end = chunk['start'], chunk['end']
+                    spec = plan['specs'][number]
+                    image, units = spec['image'], spec['units']
+                    piece, piece_key, saved_piece = spec['piece'], spec['piece_key'], spec['saved_piece']
+                    if spec['cached']:
+                        all_units.extend(saved_piece['units'])
+                        scene_boards.extend(saved_piece['boards'])
+                        chunk_results.append(saved_piece['result'])
+                        diagnostics.event('scene_analysis', 'chunk_cache_hit',
+                                          scene_id=scene['id'], chunk_id=chunk['id'])
                         continue
-                    a, b = ((max(neighbor['start'], neighbor['end']-2), neighbor['end']) if label == 'PREVIOUS'
-                            else (neighbor['start'], min(neighbor['end'], neighbor['start']+2)))
-                    context_image = visual_dir / f'{event_id}_{label.lower()}.jpg'
-                    # Neighbor pages show state/context at dense temporal
-                    # samples; all CURRENT shot transitions remain explicit.
-                    # Do not consume the provider's page allowance reanalysing
-                    # every camera cut of a context-only neighbor.
-                    inference_storyboard(source,a,b,[],context_image,cancelled,context=True)
-                    context_board = load_json(context_image.with_suffix('.storyboard.json'))
-                    context_board.update(scene_id=neighbor['id'], current_scene_id=scene['id'],
-                                         role='context_only', label=label, image=str(context_image))
-                    scene_boards.append(context_board)
-                    context_pages = [Path(p) for p in context_board.get('pages', [str(context_image)])]
-                    images.extend(context_pages)
-                    image_order.extend([label+' CONTEXT ONLY'] * len(context_pages))
-                payload = {'PREVIOUS SCENE': context_record(previous, transcript, (max(previous['start'],previous['end']-8),previous['end'])) if previous else None,
-                           'CURRENT SCENE': {**context_record(scene, transcript, (start,end)), 'role': 'analyse',
-                                             'chunk': chunk, 'units': units, 'frame_times': timestamps},
-                           'NEXT SCENE': context_record(following, transcript, (following['start'],min(following['end'],following['start']+8))) if following else None,
-                           'image_order': image_order}
-                prompt = SCENE_PROMPT+'\n'+json.dumps(payload, ensure_ascii=False)
-                diagnostics.event('scene_analysis', 'request', scene_id=scene['id'], chunk_id=chunk['id'],
-                                  provider=type(vision).__name__, model=str(getattr(vision,'model','unknown')),
-                                  source_start=start, source_end=end, units=len(units), frame_times=timestamps,
-                                  image_pages=len(images), context_image_pages=sum(role != 'CURRENT' for role in image_order),
-                                  prompt_hash=hashlib.sha256(prompt.encode()).hexdigest())
-                from .scene_understanding import recover_chunk, recovery_trigger
-                try:
-                    current = query_scene(vision, prompt, images if len(images)>1 else image, units,
-                        event_id, start, end, timestamps, {e['id'] for e in events}, diagnostics)
-                except RuntimeError as error:
-                    # Only the explicitly chained exhausted quality/network
-                    # failure enters recovery; unrelated provider failures keep
-                    # their established cancellation/auth/billing semantics.
-                    from .deepseek import RemoteError
-                    from .jobs import BusyError
-                    if isinstance(error,(RemoteError,BusyError)) or not isinstance(error.__cause__, (ValueError, urllib.error.URLError, TimeoutError)):
-                        raise
-                    current = validated_event({'summary':'Сцена пока не распознана','uncertain':True},
-                        event_id, start, end, timestamps, {e['id'] for e in events})
-                    current.update(confidence=0, semantic_confidence=0, visual_confidence=0, context_confidence=0,
-                        confidence_known=False, local_summary=current['summary'], final_summary=current['summary'],
-                        summary_source='local', uncertainty_reasons=['invalid_json' if isinstance(error.__cause__,ValueError) else 'model_failure'])
-                current['initial_uncertain'] = bool(current.get('uncertain')) or current.get('confidence',0)<.85
-                current['initial_selected_ranges'] = [dict(r) for r in current.get('selected_ranges', [])]
-                current.update(scene_id=scene['id'],chunk_id=chunk['id'])
-                if recovery_trigger(current):
-                    recovery_image = visual_dir/f'{event_id}_chunk_{number:03d}_recovery.jpg'
-                    recovery_times = inference_storyboard(source,start,end,units,recovery_image,cancelled,recovery=True,**sampling)
-                    recovery_board = load_json(recovery_image.with_suffix('.storyboard.json'))
-                    recovery_board.update(scene_id=scene['id'],chunk_id=chunk['id'],role='recovery_current',image=str(recovery_image))
-                    scene_boards.append(recovery_board)
-                    recovery_pages = [Path(p) for p in recovery_board.get('pages',[str(recovery_image)])]
-                    if not getattr(vision,'supports_image_pages',False):
-                        recovery_pages = [recovery_image]
-                    context_pages = [p for p,role in zip(images,image_order) if role != 'CURRENT']
-                    recovery_payload = {**payload, 'CURRENT SCENE':{**payload['CURRENT SCENE'],'frame_times':recovery_times},
-                        'image_order':['CURRENT RECOVERY']*len(recovery_pages)+[r for r in image_order if r!='CURRENT']}
-                    current = recover_chunk(vision,current,units,transcript,recovery_payload,
-                        [*recovery_pages,*context_pages],diagnostics)
-                current.setdefault('understanding_status','unresolved' if current.get('uncertain') or current.get('confidence',0)<.85 else 'accepted')
-                chunk_results.append(current)
-                durable_boards = scene_boards[board_start:]
-                atomic_json(piece, {'identity': piece_key, 'units': units, 'result': current,
-                                    'boards': durable_boards,
-                                    'image_hashes': _scene_image_hashes(durable_boards, visual_dir)})
-                diagnostics.event('scene_analysis', 'chunk_cache_saved',
-                                  scene_id=scene['id'], chunk_id=chunk['id'])
-        kinds = {result['kind'] for result in chunk_results}
-        event = validated_event({'summary': '\n'.join(r['summary'] for r in chunk_results),
-            'kind': kinds.pop() if len(kinds)==1 else 'story',
-            'importance': max(r['importance'] for r in chunk_results),
-            'uncertain': any(r['uncertain'] for r in chunk_results)}, event_id,
-            scene['start'], scene['end'], [f['time'] for b in scene_boards if b['role']=='current' for f in b['frames']],
-            {e['id'] for e in events})
-        event.update(scene_id=scene['id'], parent_scene_id=scene['id'], analysis_chunks=chunks, units=all_units,
-                     chunk_analyses=chunk_results, selected_ranges=[r for c in chunk_results for r in c['selected_ranges']],
-                     boundary_times=[s['end'] for s in transcript['segments'] if scene['start'] < s['end'] < scene['end']],
-                     scene_evidence=scene.get('evidence', {}), scene_confidence=scene.get('confidence', .5))
-        for field in ('semantic_confidence','visual_confidence','context_confidence','confidence',
-                      'understanding_confidence','selection_confidence'):
-            event[field] = min(r.get(field) if type(r.get(field)) in (int,float) else 0 for r in chunk_results)
-        event.update(initial_uncertain=any(r.get('initial_uncertain') for r in chunk_results),
-                     selection_uncertain=any(r.get('selection_uncertain') for r in chunk_results),
-                     analysis_unresolved=any(r.get('analysis_unresolved') for r in chunk_results),
-                     uncertain_after_recovery=any(r.get('uncertain') for r in chunk_results),
-                     confidence_known=all(r.get('confidence_known',False) for r in chunk_results),
-                     understanding_status='unresolved' if any(r.get('understanding_status')=='unresolved' for r in chunk_results) else 'accepted',
-                     uncertainty_reasons=sorted({reason for r in chunk_results for reason in r.get('uncertainty_reasons',[])}),
-                     action_units=[u for r in chunk_results for u in r.get('action_units',[])],
-                     narrative_bridge=any(r.get('narrative_bridge') for r in chunk_results),
-                     local_summary='\n'.join(r.get('local_summary',r['summary']) for r in chunk_results),
-                     recovery_summary='\n'.join(r.get('recovery_summary') or '' for r in chunk_results),
-                     final_summary=event['summary'],
-                     summary_source='recovery' if any(r.get('summary_source')=='recovery' for r in chunk_results) else 'local',
-                     state_before=chunk_results[0].get('state_before',{}),state_after=chunk_results[-1].get('state_after',{}))
-        event['local_decision'] = {'summary':event['local_summary'],'chunks':[r.get('local_decision',{}) for r in chunk_results]}
-        event['recovery_decision'] = {'summary':event['recovery_summary'],'chunks':[r.get('recovery_decision',{}) for r in chunk_results]}
-        if any(r.get('fallback') for r in chunk_results):
-            event.update(unit_selection_version=1,fallback='positively_evidenced_context_only',
-                         selection_uncertain=True,analysis_unresolved=True)
-        # Legacy downstream classifiers consume this canonical scene collage.
-        # Its complete frame map must match storyboard_times over the scene.
-        canonical = visual_dir / f'{event_id}.jpg'
-        storyboard(source, scene['start'], scene['end'], shots, transcript, canonical, cancelled)
-        canonical_board = load_json(canonical.with_suffix('.storyboard.json'))
-        canonical_board.update(scene_id=scene['id'], role='legacy_overview', image=str(canonical))
-        scene_boards.append(canonical_board)
-        atomic_json(checkpoint, {'signature': signature, 'semantic_identity': semantic_cache,
-                                'image_hashes': _scene_image_hashes(scene_boards, visual_dir),
-                                'event': event, 'storyboards': scene_boards})
-        storyboards.extend(scene_boards)
-        events.append(event)
+                    diagnostics.event('scene_analysis', 'chunk_cache_miss',
+                                      scene_id=scene['id'], chunk_id=chunk['id'])
+                    board_start = len(scene_boards)
+                    sampling = spec['sampling']
+                    (timestamps, board), elapsed = preparation.take((index, number))
+                    diagnostics.event('image_preparation', 'end', role='current',
+                                      scene_id=scene['id'], chunk_id=chunk['id'],
+                                      elapsed_seconds=round(elapsed, 6), prefetched=True)
+                    all_units.extend(units)
+                    images = [Path(p) for p in board.get('pages', [str(image)])] if getattr(vision, 'supports_image_pages', False) else [image]
+                    image_order = ['CURRENT'] * len(images)
+                    board.update(scene_id=scene['id'], chunk_id=chunk['id'], role='current', image=str(image))
+                    scene_boards.append(board)
+                    # Context is only physically adjacent to the first/last
+                    # technical chunk. Interior chunks already carry their own
+                    # CURRENT original frames plus textual scene context; sending
+                    # two unrelated neighbor image pages for every one of them
+                    # costs VLM tokens without stronger temporal evidence.
+                    neighbor_edges = ((previous, 'PREVIOUS') if number == 0 else (None, 'PREVIOUS'),
+                                      (following, 'NEXT') if number == len(chunks)-1 else (None, 'NEXT'))
+                    need_context = scene.get('context_required') is True
+                    for neighbor, label in neighbor_edges:
+                        if not need_context or neighbor is None or not getattr(vision, 'supports_image_pages', False):
+                            continue
+                        a, b = ((max(neighbor['start'], neighbor['end']-2), neighbor['end']) if label == 'PREVIOUS'
+                                else (neighbor['start'], min(neighbor['end'], neighbor['start']+2)))
+                        context_image = visual_dir / f'{event_id}_{label.lower()}.jpg'
+                        # Neighbor pages show state/context at dense temporal
+                        # samples; all CURRENT shot transitions remain explicit.
+                        # Do not consume the provider's page allowance reanalysing
+                        # every camera cut of a context-only neighbor.
+                        with diagnostics.stage('image_preparation', role='context_only', scene_id=scene['id'], label=label):
+                            inference_storyboard(source,a,b,[],context_image,cancelled,context=True)
+                        context_board = load_json(context_image.with_suffix('.storyboard.json'))
+                        context_board.update(scene_id=neighbor['id'], current_scene_id=scene['id'],
+                                             role='context_only', label=label, image=str(context_image))
+                        scene_boards.append(context_board)
+                        context_pages = [Path(p) for p in context_board.get('pages', [str(context_image)])]
+                        images.extend(context_pages)
+                        image_order.extend([label+' CONTEXT ONLY'] * len(context_pages))
+                    payload = {'PREVIOUS SCENE': context_record(previous, transcript, (max(previous['start'],previous['end']-8),previous['end'])) if previous and need_context else None,
+                               'CURRENT SCENE': {**context_record(scene, transcript, (start,end)), 'role': 'analyse',
+                                                 'chunk': chunk, 'units': units, 'frame_times': timestamps},
+                               'NEXT SCENE': context_record(following, transcript, (following['start'],min(following['end'],following['start']+8))) if following and need_context else None,
+                               'image_order': image_order}
+                    prompt = SCENE_PROMPT+'\n'+json.dumps(payload, ensure_ascii=False)
+                    diagnostics.event('scene_analysis', 'request', scene_id=scene['id'], chunk_id=chunk['id'],
+                                      provider=type(vision).__name__, model=str(getattr(vision,'model','unknown')),
+                                      source_start=start, source_end=end, units=len(units), frame_times=timestamps,
+                                      image_pages=len(images), context_image_pages=sum(role != 'CURRENT' for role in image_order),
+                                      prompt_hash=hashlib.sha256(prompt.encode()).hexdigest())
+                    from .scene_understanding import recover_chunk, recovery_trigger
+                    preparation.advance()
+                    try:
+                        current = query_scene(vision, prompt, images if len(images)>1 else image, units,
+                            event_id, start, end, timestamps, {e['id'] for e in events}, diagnostics)
+                    except RuntimeError as error:
+                        # Only the explicitly chained exhausted quality/network
+                        # failure enters recovery; unrelated provider failures keep
+                        # their established cancellation/auth/billing semantics.
+                        from .deepseek import RemoteError
+                        from .jobs import BusyError
+                        if isinstance(error,(RemoteError,BusyError)) or not isinstance(error.__cause__, (ValueError, urllib.error.URLError, TimeoutError)):
+                            raise
+                        current = validated_event({'summary':'Сцена пока не распознана','uncertain':True},
+                            event_id, start, end, timestamps, {e['id'] for e in events})
+                        current.update(confidence=0, semantic_confidence=0, visual_confidence=0, context_confidence=0,
+                            confidence_known=False, local_summary=current['summary'], final_summary=current['summary'],
+                            summary_source='local', uncertainty_reasons=['invalid_json' if isinstance(error.__cause__,ValueError) else 'model_failure'])
+                    current['initial_uncertain'] = bool(current.get('uncertain')) or current.get('confidence',0)<.85
+                    current['initial_selected_ranges'] = [dict(r) for r in current.get('selected_ranges', [])]
+                    current.update(scene_id=scene['id'],chunk_id=chunk['id'])
+                    if recovery_trigger(current):
+                        recovery_image = visual_dir/f'{event_id}_chunk_{number:03d}_recovery.jpg'
+                        with diagnostics.stage('image_preparation', role='recovery_current', scene_id=scene['id'], chunk_id=chunk['id']):
+                            recovery_times = inference_storyboard(source,start,end,units,recovery_image,cancelled,recovery=True,**sampling)
+                        recovery_board = load_json(recovery_image.with_suffix('.storyboard.json'))
+                        recovery_board.update(scene_id=scene['id'],chunk_id=chunk['id'],role='recovery_current',image=str(recovery_image))
+                        scene_boards.append(recovery_board)
+                        recovery_pages = [Path(p) for p in recovery_board.get('pages',[str(recovery_image)])]
+                        if not getattr(vision,'supports_image_pages',False):
+                            recovery_pages = [recovery_image]
+                        context_pages = [p for p,role in zip(images,image_order) if role != 'CURRENT']
+                        recovery_payload = {**payload, 'CURRENT SCENE':{**payload['CURRENT SCENE'],'frame_times':recovery_times},
+                            'image_order':['CURRENT RECOVERY']*len(recovery_pages)+[r for r in image_order if r!='CURRENT']}
+                        context_reasons = set(current.get('uncertainty_reasons', []))
+                        if not need_context and context_reasons & {'missing_context','location_unclear','transition_unclear','asr_conflict'}:
+                            # Recovery asks one concrete question. Neighbors are
+                            # actual source-adjacent edge context, never another
+                            # complete episode/scene analysis packet.
+                            recovery_edges=((previous if number==0 else scene,'PREVIOUS'),
+                                            (following if number==len(chunks)-1 else scene,'NEXT'))
+                            for neighbor,label in recovery_edges:
+                                if neighbor is None:
+                                    continue
+                                edge = start if label=='PREVIOUS' else end
+                                a,b=((max(neighbor['start'],edge-2),edge) if label=='PREVIOUS'
+                                     else (edge,min(neighbor['end'],edge+2)))
+                                recovery_payload[label+' SCENE']=context_record(neighbor,transcript,(a,b))
+                                if (not context_reasons & {'missing_context','location_unclear','transition_unclear'}
+                                        or not getattr(vision,'supports_image_pages',False)):
+                                    continue
+                                context_image=visual_dir/f'{event_id}_{label.lower()}.jpg'
+                                inference_storyboard(source,a,b,[],context_image,cancelled,context=True)
+                                context_board=load_json(context_image.with_suffix('.storyboard.json'))
+                                context_board.update(scene_id=neighbor['id'],current_scene_id=scene['id'],
+                                                     role='context_only',label=label,image=str(context_image))
+                                scene_boards.append(context_board)
+                                pages=[Path(p) for p in context_board.get('pages',[str(context_image)])]
+                                context_pages.extend(pages)
+                                recovery_payload['image_order'].extend([label+' CONTEXT ONLY']*len(pages))
+                        current = recover_chunk(vision,current,units,transcript,recovery_payload,
+                            [*recovery_pages,*context_pages],diagnostics)
+                    current.setdefault('understanding_status','unresolved' if current.get('uncertain') or current.get('confidence',0)<.85 else 'accepted')
+                    chunk_results.append(current)
+                    durable_boards = scene_boards[board_start:]
+                    atomic_json(piece, {'identity': piece_key, 'units': units, 'result': current,
+                                        'boards': durable_boards,
+                                        'image_hashes': _scene_image_hashes(durable_boards, visual_dir)})
+                    diagnostics.event('scene_analysis', 'chunk_cache_saved',
+                                      scene_id=scene['id'], chunk_id=chunk['id'])
+            kinds = {result['kind'] for result in chunk_results}
+            event = validated_event({'summary': '\n'.join(r['summary'] for r in chunk_results),
+                'kind': kinds.pop() if len(kinds)==1 else 'story',
+                'importance': max(r['importance'] for r in chunk_results),
+                'uncertain': any(r['uncertain'] for r in chunk_results)}, event_id,
+                scene['start'], scene['end'], [f['time'] for b in scene_boards if b['role']=='current' for f in b['frames']],
+                {e['id'] for e in events})
+            event.update(scene_id=scene['id'], parent_scene_id=scene['id'], analysis_chunks=chunks, units=all_units,
+                         chunk_analyses=chunk_results, selected_ranges=[r for c in chunk_results for r in c['selected_ranges']],
+                         boundary_times=[s['end'] for s in transcript['segments'] if scene['start'] < s['end'] < scene['end']],
+                         scene_evidence=scene.get('evidence', {}), scene_confidence=scene.get('confidence', .5))
+            for field in ('semantic_confidence','visual_confidence','context_confidence','confidence',
+                          'understanding_confidence','selection_confidence'):
+                event[field] = min(r.get(field) if type(r.get(field)) in (int,float) else 0 for r in chunk_results)
+            event.update(initial_uncertain=any(r.get('initial_uncertain') for r in chunk_results),
+                         selection_uncertain=any(r.get('selection_uncertain') for r in chunk_results),
+                         analysis_unresolved=any(r.get('analysis_unresolved') for r in chunk_results),
+                         uncertain_after_recovery=any(r.get('uncertain') for r in chunk_results),
+                         confidence_known=all(r.get('confidence_known',False) for r in chunk_results),
+                         understanding_status='unresolved' if any(r.get('understanding_status')=='unresolved' for r in chunk_results) else 'accepted',
+                         uncertainty_reasons=sorted({reason for r in chunk_results for reason in r.get('uncertainty_reasons',[])}),
+                         action_units=[u for r in chunk_results for u in r.get('action_units',[])],
+                         narrative_bridge=any(r.get('narrative_bridge') for r in chunk_results),
+                         local_summary='\n'.join(r.get('local_summary',r['summary']) for r in chunk_results),
+                         recovery_summary='\n'.join(r.get('recovery_summary') or '' for r in chunk_results),
+                         final_summary=event['summary'],
+                         summary_source='recovery' if any(r.get('summary_source')=='recovery' for r in chunk_results) else 'local',
+                         state_before=chunk_results[0].get('state_before',{}),state_after=chunk_results[-1].get('state_after',{}))
+            event['local_decision'] = {'summary':event['local_summary'],'chunks':[r.get('local_decision',{}) for r in chunk_results]}
+            event['recovery_decision'] = {'summary':event['recovery_summary'],'chunks':[r.get('recovery_decision',{}) for r in chunk_results]}
+            if any(r.get('fallback') for r in chunk_results):
+                event.update(unit_selection_version=1,fallback='positively_evidenced_context_only',
+                             selection_uncertain=True,analysis_unresolved=True)
+            # Legacy downstream classifiers consume this canonical scene collage.
+            # Preserve requested overview coverage and record actual decoded source PTS.
+            canonical = visual_dir / f'{event_id}.jpg'
+            with diagnostics.stage('image_preparation', role='legacy_overview', scene_id=scene['id']):
+                storyboard(source, scene['start'], scene['end'], shots, transcript, canonical, cancelled)
+            canonical_board = load_json(canonical.with_suffix('.storyboard.json'))
+            canonical_board.update(scene_id=scene['id'], role='legacy_overview', image=str(canonical))
+            scene_boards.append(canonical_board)
+            atomic_json(checkpoint, {'signature': signature, 'semantic_identity': semantic_cache,
+                                    'image_hashes': _scene_image_hashes(scene_boards, visual_dir),
+                                    'event': event, 'storyboards': scene_boards})
+            storyboards.extend(scene_boards)
+            events.append(event)
     diagnostics.write('storyboard.json', storyboards)
     diagnostics.summary(story_events=len(events), uncertain_initial=sum(bool(e.get('initial_uncertain')) for e in events),
                         uncertain_after_recovery=sum(bool(e.get('uncertain')) for e in events),
@@ -479,3 +564,68 @@ def analyze_scenes(source, scenes, transcript, shots, job_dir, vision, signature
                             for c in e.get('chunk_analyses', []) for r in c.get('initial_selected_ranges', c.get('selected_ranges', []))),
                         duration_after_recovery=sum(r['end']-r['start'] for e in events for r in e.get('selected_ranges', [])))
     return events
+
+
+def rebuild_scoped_event(source, scene, previous_event, transcript, shots, job_dir, vision, report,
+                         cancelled, *, source_key, event_id):
+    """Run native CURRENT analysis/selection only for a changed source window.
+
+    A private cache namespace prevents ordinal artifact collisions and partial
+    discovery summaries from overwriting the accepted episode diagnostics.
+    """
+    import shutil
+    from .content_identity import evidence_digest
+    from .selection_adjudication import adjudicate_event
+    start,end=scene['start'],scene['end']
+    duration=json.loads((Path(job_dir)/'probe.json').read_text('utf-8')).get('duration') if (
+        Path(job_dir)/'probe.json').is_file() else max(end,max((s['end'] for s in shots),default=end))
+    local_transcript={**transcript,
+        'words':[w for w in transcript.get('words',[]) if w['start']<min(duration,end+2) and w['end']>max(0,start-2)],
+        'segments':[s for s in transcript.get('segments',[]) if s['start']<min(duration,end+2) and s['end']>max(0,start-2)]}
+    local_shots=[s for s in shots if s['start']<min(duration,end+2) and s['end']>max(0,start-2)]
+    signature=evidence_digest({'version':1,'source':source_key,'scene':scene,'event':event_id,
+                               'transcript':local_transcript,'shots':local_shots})
+    directory=Path(job_dir)/'boundary-recovery'/signature
+    directory.mkdir(parents=True,exist_ok=True)
+    for name in ('editorial-settings.json','analysis-settings.json','probe.json','source.json','analysis.meta.json'):
+        path=Path(job_dir)/name
+        if path.is_file():
+            shutil.copyfile(path,directory/name)
+    context={}
+    if start>0:
+        context['previous']={'id':event_id+'.context_before','start':max(0,start-2),'end':start,
+                             'boundary_reason':['source_context_only']}
+    if end<duration:
+        context['next']={'id':event_id+'.context_after','start':end,'end':min(duration,end+2),
+                         'boundary_reason':['source_context_only']}
+    result=analyze_scenes(source,[scene],local_transcript,local_shots,directory,vision,signature,report,cancelled,
+                         event_ids={scene['id']:event_id},context_scenes={scene['id']:context})
+    if (len(result)!=1 or result[0]['id']!=event_id
+            or (result[0]['start'],result[0]['end'])!=(start,end)):
+        raise ValueError('Scoped scene analysis changed source ownership')
+    event=result[0]
+    origin=directory/'visual'
+    destination=Path(job_dir)/'visual'
+    destination.mkdir(parents=True,exist_ok=True)
+    def rebind(value):
+        if isinstance(value,str):
+            return value.replace(str(origin),str(destination))
+        if isinstance(value,list):return [rebind(v) for v in value]
+        if isinstance(value,dict):return {k:rebind(v) for k,v in value.items()}
+        return value
+    for path in origin.iterdir():
+        if not path.is_file():
+            continue
+        target=destination/path.name
+        if path.suffix=='.json':
+            atomic_json(target,rebind(load_json(path)))
+        else:
+            shutil.copyfile(path,target)
+    event=rebind(event)
+    # New geometry has no inherited deletion/selection authority. Establish its
+    # complete native source proof instead of copying old unit IDs/confidence.
+    event=adjudicate_event(source,event,local_transcript,local_shots,Path(job_dir),vision,cancelled,
+        questions=['Проверь только изменённое исходное окно после подтверждения смысловой границы.'])
+    event['source_boundary_recovery']={'version':1,'previous_event':previous_event['id'],
+        'source':copy.deepcopy(source_key),'native_window':{'start':start,'end':end},'namespace':str(directory)}
+    return event

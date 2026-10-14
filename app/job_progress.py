@@ -40,6 +40,8 @@ def analysis_passes(job, directory):
     """Separate actual passes without changing legacy stage IDs or worker state."""
     directory = Path(directory)
     result = {step: {'status': 'pending', 'fraction': 0.0} for step in ANALYSIS_PASSES}
+    if job.get('processing_mode') == 'plan_only':
+        return {step: {'status': 'cached', 'fraction': None} for step in ANALYSIS_PASSES}
     if job.get('status') == 'queued':
         return result
     audit = directory / 'diagnostics' / 'pipeline'
@@ -60,19 +62,31 @@ def analysis_passes(job, directory):
             failed.add(step)
             result[step] = {'status': 'waiting_analysis' if record.get('error_type') == 'AnalysisPending' else 'failed', 'fraction': None}
         elif action == 'end' and step not in failed:
-            result[step] = {'status': 'completed', 'fraction': 1.0}
+            if result[step].get('status') != 'disabled':
+                result[step].update(status='completed', fraction=1.0)
             if current == step:
                 current = None
+        elif action == 'skipped' and record.get('reason') in ('economy_mode','not_needed'):
+            result[step] = {'status': 'disabled', 'fraction': None,
+                            'phase': 'Не потребовалось' if record.get('reason')=='not_needed' else 'Экономный режим'}
+        elif action == 'targeted':
+            result[step] = {'status':'running','fraction':None,
+                            'phase':f"Выбрано фрагментов: {record.get('selected',0)} из {record.get('total',0)}"}
+        elif action == 'cache_hit' and record.get('scope') == 'stage':
+            label = {'antigravity_manual': 'Antigravity', 'deepseek_plan': 'DeepSeek',
+                     'deepseek': 'DeepSeek', 'local': 'на компьютере'}.get(record.get('producer'), '')
+            result[step] = {'status': 'completed', 'fraction': 1.0, 'phase': 'Сохранено ' + label}
         elif action == 'cache_hit' and step == 'story_refinement':
             for cached in ANALYSIS_PASSES[:ANALYSIS_PASSES.index('pacing')]:
                 result[cached] = {'status': 'completed', 'fraction': 1.0}
-    message = str(job.get('message') or '')[:2000].lower()
+    waiting = job.get('provider_wait')
+    quota_wait = (job.get('status') == 'running' and isinstance(waiting,dict)
+                  and waiting.get('reason') == 'quota')
+    message = str((waiting.get('previous_message') if quota_wait else job.get('message')) or '')[:2000].lower()
     stage = canonical(job.get('stage'))
     if current is None and stage in ('analyze', 'condense'):
         if 'проверка конкретного выбора' in message:
             current = 'selection_adjudication'
-        elif 'обработано событий' in message or job.get('stage') == 'global_verify':
-            current = 'global_visual_verification'
         elif 'темп и титры' in message:
             current = 'pacing'
         elif 'безречевую последовательность' in message:
@@ -83,6 +97,10 @@ def analysis_passes(job, directory):
             current = 'closing_novelty'
         elif any(text in message for text in ('поиск титров', 'подтверждение титра', 'подтверждённой заставкой')):
             current = 'titles'
+        elif 'проверка концовок' in message:
+            current = 'endings'
+        elif 'обработано событий' in message or job.get('stage') == 'global_verify':
+            current = 'global_visual_verification'
         elif stage == 'condense':
             current = 'story_refinement'
         elif 'анализ смысловых сцен' in message or 'смысловая сцена' in message:
@@ -97,12 +115,15 @@ def analysis_passes(job, directory):
                 result[step] = {'status': 'not_required', 'fraction': None}
         state = job.get('status')
         result[current].update(status=state if state in ('failed', 'cancelled', 'interrupted', 'waiting_analysis') else 'running', fraction=None)
-        processed = re.search(r'обработано (?:событий|фрагментов):\s*(\d+)\s+из\s+(\d+)', message)
+        if quota_wait:
+            result[current]['status'] = 'waiting_analysis'
+        processed = re.search(r'обработано (?:событий|фрагментов|окон):\s*(\d+)\s+из\s+(\d+)', message)
         counter = processed or re.search(r'(?:сцена|событие|фрагмент|проверка)\s+(\d+)\s+из\s+(\d+)', message)
         counter = counter or re.search(r'в финале:\s*(\d+)\s*/\s*(\d+)', message)
         relevant = {
             'visual_analysis': ('сцена',), 'story_refinement': ('сцена', 'фрагмент'),
             'titles': ('титр', 'заставк'), 'closing_novelty': ('в финале',),
+            'source_roles': ('сюжетную речь',), 'endings': ('проверка концовок',),
             'global_visual_verification': ('независимая проверка', 'проверка изображения'),
             'selection_adjudication': ('проверка конкретного выбора',),
             'final_selection_adjudication': ('проверка конкретного выбора',),
@@ -133,6 +154,21 @@ def analysis_passes(job, directory):
 
 def canonical(stage):
     return ALIASES.get(stage, stage) if isinstance(stage, str) else None
+
+
+def effective_stage(job, rows=()):
+    """Waiting is a status, not a pipeline milestone; recover old paused jobs from their run."""
+    stage = canonical(job.get('stage'))
+    if stage in STEPS or job.get('stage') != 'waiting_analysis':
+        return stage
+    paused = canonical(job.get('waiting_stage'))
+    if paused in STEPS:
+        return paused
+    for record in rows:
+        candidate = canonical(record.get('stage'))
+        if record.get('action') == 'start' and candidate in STEPS:
+            stage = candidate
+    return stage
 
 
 @lru_cache(maxsize=2)
@@ -270,7 +306,7 @@ def _render_count(directory, plan):
             stat = media.stat()
             subtitle = media.with_suffix('.srt')
             valid = (stat.st_size > 0 and media.is_file() and
-                     saved.get('fingerprint') == fingerprint and
+                     saved.get('fingerprint') == part.get('render_fingerprint', fingerprint) and
                      type(saved.get('size')) is int and saved['size'] == stat.st_size and
                      type(saved.get('mtime_ns')) is int and saved['mtime_ns'] == stat.st_mtime_ns and
                      subtitle.is_file() and subtitle.stat().st_size <= MAX_FILE_BYTES and
@@ -291,9 +327,16 @@ def stage_progress(job, directory):
     job = job if isinstance(job, dict) else {}
     status, stage = job.get('status'), canonical(job.get('stage'))
     result = {step: {'status': 'pending', 'fraction': 0.0} for step in STEPS}
+    if job.get('processing_mode') == 'plan_only':
+        result = {step: {'status': 'cached', 'fraction': None} for step in STEPS}
+        result['render'] = {'status': 'not_required', 'fraction': None}
+        plan_status = 'completed' if status == 'completed' else status if status in {
+            'failed', 'cancelled', 'interrupted'} else 'running' if stage == 'plan' else 'pending'
+        result['plan'] = {'status': plan_status, 'fraction': 1.0 if plan_status == 'completed' else None}
+        return result
     if status == 'completed':
         return {step: {'status': 'completed', 'fraction': 1.0} for step in STEPS}
-    if status == 'queued' or job.get('stage') == 'queued' or stage not in STEPS:
+    if status == 'queued' or job.get('stage') == 'queued':
         return result
 
     audit = directory / 'diagnostics' / 'pipeline'
@@ -303,6 +346,9 @@ def stage_progress(job, directory):
     run_id = run.get('run_id') if isinstance(run, dict) else None
     run_id = run_id if isinstance(run_id, str) and run_id else None
     rows = _current_rows(rows, run_id)
+    stage = effective_stage(job, rows)
+    if stage not in STEPS:
+        return result
     finished, failed = set(), set()
     for record in rows:
         step = canonical(record.get('stage'))

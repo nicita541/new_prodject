@@ -20,9 +20,10 @@ import re
 from app.content_identity import digest as _hash
 from app.cancellation import check_cancelled as _check
 from app.source_text import source_text as _source_text, tokens as _tokens, quote_in as _quote_in
+from app.viewer_interest import INTEREST_KINDS
 
 
-VERSION = 7
+VERSION = 8
 ROLES = ('setup', 'development', 'turning_point', 'payoff', 'transition', 'unknown')
 RELATIONS = ('cause', 'response', 'setup_payoff', 'state_transition')
 ENTITY_KINDS = ('character', 'location', 'object', 'physical_state', 'topic', 'relationship_state')
@@ -77,7 +78,18 @@ inherited proof in the arc's support; citing only closing_unit does not cover it
 resolved describes whether the returned structure is supported. An evidenced
 setup with an open arc is resolved structure, even when its answer is outside
 the supplied context. Keep that arc open; never invent a closing outcome.
-Return only JSON matching the schema.'''
+For each CURRENT row also return viewer_interest, independently of its story role:
+up to three evidenced functions from conflict, escalation, reversal, revelation,
+humor, emotional_payoff, anticipation, character_choice, skill_payoff. Use []
+when none is established. Brief evidence must explain that function and the role;
+support must cite this CURRENT unit's actual proof. Do not infer interest from
+word volume, motion, importance, routine questions/answers or a generic closure.
+Quiet acting can deliver emotional payoff. Skill payoff requires a concrete
+demonstration with stakes or consequence, not routine movement. Retain explicit
+setup/payoff relations so a ranked payoff keeps its necessary buildup/reaction.
+Transport text_ref and speech_quote_ref are exact aliases within the same node:
+ASR means its ASR text; proofs/ID/evidence means that proof description. Resolve
+these aliases without inventing or omitting words. Return only JSON matching the schema.'''
 
 
 def _normalized(text):
@@ -320,8 +332,10 @@ def structure_schema(nodes, current):
         'required': ['ref', 'role'], 'additionalProperties': False}
     row = {'type': 'object', 'properties': {'ref': refs, 'roles': {'type': 'array', 'minItems': 1,
         'maxItems': len(ROLES), 'uniqueItems': True, 'items': {'type': 'string', 'enum': list(ROLES)}},
-        'before': facts, 'after': facts, 'confidence': confidence, 'evidence': brief, 'support': support},
-        'required': ['ref', 'roles', 'before', 'after', 'confidence', 'evidence', 'support'],
+        'before': facts, 'after': facts, 'confidence': confidence, 'evidence': brief, 'support': support,
+        'viewer_interest': {'type': 'array', 'maxItems': 3, 'uniqueItems': True,
+                            'items': {'type': 'string', 'enum': list(INTEREST_KINDS)}}},
+        'required': ['ref', 'roles', 'before', 'after', 'confidence', 'evidence', 'support', 'viewer_interest'],
         'additionalProperties': False}
     relation = {'type': 'object', 'properties': {'type': {'type': 'string', 'enum': list(RELATIONS)},
         'from': refs, 'to': refs, 'confidence': confidence, 'evidence': brief, 'support': support},
@@ -433,7 +447,7 @@ def validate_structure(raw, nodes, current, registry=None):
     kinds = {'location_id': 'location', 'topic_id': 'topic', 'relationship_state_id': 'relationship_state',
              'character_ids': 'character', 'physical_state_ids': 'physical_state', 'object_ids': 'object'}
     for row in _list(raw['units'], 'units'):
-        _object(row, ('ref', 'roles', 'before', 'after', 'confidence', 'evidence', 'support'), 'unit row')
+        _object(row, ('ref', 'roles', 'before', 'after', 'confidence', 'evidence', 'support', 'viewer_interest'), 'unit row')
         key = reference(row['ref'])
         if key not in owner or key in covered:
             raise ValueError('Unit assignments must cover CURRENT exactly once')
@@ -443,6 +457,14 @@ def validate_structure(raw, nodes, current, registry=None):
             raise ValueError('Invalid source-unit story roles')
         confidence = _number(row['confidence'], 'unit.confidence', confidence=True)
         _text(row['evidence'], 'unit.evidence', minimum=12)
+        interest = _list(row['viewer_interest'], 'unit.viewer_interest')
+        if (len(interest) > 3 or any(not isinstance(k, str) or k not in INTEREST_KINDS for k in interest)
+                or len(interest) != len(set(interest))):
+            raise ValueError('Invalid source-unit viewer interest')
+        if interest:
+            if confidence < .9:
+                raise ValueError('Uncertain viewer interest must remain unknown')
+            support(row['support'], [key])
         if roles != ['unknown']:
             if confidence < .9:
                 raise ValueError('Uncertain source role must remain unknown')
@@ -567,10 +589,30 @@ def model_source_unit(node):
     Full nodes remain authoritative for validation and cache identities. Paths,
     frame geometry and checkpoint hashes do not help this text-only relation pass.
     """
-    result = {k: copy.deepcopy(v) for k, v in node.items() if k not in ('proofs', 'ASR_rows')}
+    result = {k: copy.deepcopy(v) for k, v in node.items() if k not in ('proofs', 'ASR_rows', 'mentions')}
     result['proofs'] = [{k: copy.deepcopy(p[k]) for k in ('id', 'ref', 'kind', 'evidence',
         'speech_quote', 'source_ranges', 'ASR_ranges', 'confidence') if k in p}
         for p in node['proofs']]
+    for proof in result['proofs']:
+        if proof.get('speech_quote') and proof['speech_quote'] == result.get('ASR'):
+            proof.pop('speech_quote')
+            proof['speech_quote_ref'] = 'ASR'
+        for row in proof.get('ASR_ranges', []):
+            if row.get('text') and row['text'] == result.get('ASR'):
+                row.pop('text')
+                row['text_ref'] = 'ASR'
+    if 'mentions' in node:
+        result['mentions'] = copy.deepcopy(node['mentions'])
+        for field, mention in result['mentions'].items():
+            if field == 'ASR' and mention.get('text') == result.get('ASR'):
+                mention.pop('text')
+                mention['text_ref'] = 'ASR'
+            elif field.startswith('proof.'):
+                proof_id = field[len('proof.'):]
+                proof = next((p for p in result['proofs'] if p['id'] == proof_id), None)
+                if proof and mention.get('text') == proof.get('evidence'):
+                    mention.pop('text')
+                    mention['text_ref'] = 'proofs/'+proof_id+'/evidence'
     return result
 
 
@@ -640,12 +682,14 @@ def _merge_arc_groups(arcs, nodes, relations, signature):
     return sorted(merged, key=lambda arc: (arc['start'], arc['end'], arc['id'])), unresolved, history
 
 
-def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, progress=None):
+def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, progress=None,
+                          previous=None, dispatch_refs=None):
     """Bounded genuine provider text pass; selection and exclusions stay unchanged."""
     from app.config import ROOT
     result_events = copy.deepcopy(events)
     from app.antigravity_batch import text_batch_limits
     from app.antigravity_exchange import OutputLimitExceeded, EmptyResponse, AnalysisPending
+    from app.scoped_relations import accepted_contract, contract_record, request_identity
     batch_units, output_tokens = text_batch_limits(vision, 'story_structure', POLICY['max_current_units'], POLICY['output_tokens'])
     configured_batch_units, split_until = batch_units, 0
     history, assignments, relation_map, arc_map, registry = [], {}, {}, {}, {}
@@ -658,10 +702,9 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
     _check(cancelled)
     try:
         nodes, coverage, snapshots = source_units(events, transcript)
+        _hash(snapshots)  # Validate finite local evidence; not a request dependency.
         unresolved.extend(r['ref'] for r in coverage if r['status'] == 'unresolved_source_proof')
-        base = {'version': VERSION, 'policy': POLICY, 'source': snapshots, 'ASR': transcript,
-            'implementation_sha256': hashlib.sha256(_normalized(Path(__file__).read_text('utf-8')).encode()).hexdigest(),
-            'model': _model_identity(vision)}
+        implementation = hashlib.sha256(_normalized(Path(__file__).read_text('utf-8')).encode()).hexdigest()
         cursor = 0
         while cursor < len(nodes):
             _check(cancelled)
@@ -674,7 +717,15 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                 current = nodes[cursor:cursor+size]
                 context = [*nodes[max(0, cursor-POLICY['context_units_each_side']):cursor],
                            *nodes[cursor+size:cursor+size+POLICY['context_units_each_side']]]
-                anchors = list(arc_map)[-POLICY['max_memory_anchors']:]
+                current_terms = set(_tokens(' '.join(n['ASR']+' '+' '.join(
+                    p['evidence'] for p in n['proofs']) for n in current)))
+                current_refs = {_key(n['ref']) for n in current}
+                def relevant_anchor(key):
+                    if any(_key(m['ref']) in current_refs for arc in arc_map[key] for m in arc['members']):
+                        return True
+                    anchor = next(n for n in nodes if _key(n['ref']) == key)
+                    return bool(current_terms.intersection(_tokens(anchor['ASR'])))
+                anchors = [k for k in arc_map if relevant_anchor(k)][-POLICY['max_memory_anchors']:]
                 memory = [{'anchor': {'event': k[0], 'unit': k[1]},
                            'closed': any(a['closed'] for a in arc_map[k]),
                            'closing_unit': next((a['closing_unit'] for a in arc_map[k] if a['closed']), None),
@@ -682,7 +733,11 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                            'confidence': min(a['confidence'] for a in arc_map[k]),
                            'source': next(n for n in nodes if _key(n['ref']) == k)} for k in anchors]
                 allowed = list({_key(n['ref']): n for n in [*current, *context, *(m['source'] for m in memory)]}.values())
-                relevant_registry = dict(list(registry.items())[-POLICY['max_canonical_memory']:])
+                relevant_registry = {k:v for k,v in registry.items() if any(
+                    _key(m['ref']) in {_key(n['ref']) for n in allowed}
+                    or bool(set(_tokens(m['text'])).intersection(current_terms))
+                    for m in v.get('mentions', []))}
+                relevant_registry = dict(list(relevant_registry.items())[-POLICY['max_canonical_memory']:])
                 while True:
                     allowed = list({_key(n['ref']): n for n in [*current, *context, *(m['source'] for m in memory)]}.values())
                     payload = _payload(allowed, current, context, memory, relevant_registry, snapshots)
@@ -712,21 +767,24 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                 cursor += 1
                 continue
             schema = structure_schema(allowed, current)
-            signature = _hash({**base, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(), 'schema': schema})
+            identity = request_identity(implementation,POLICY,prompt,schema,allowed,current)
+            signature = _hash(identity)
             checkpoint = directory/(signature+'.json')
-            cached = None
-            try:
-                if checkpoint.is_file():
-                    cached = json.loads(checkpoint.read_text('utf-8'))
-            except (ValueError, OSError):
-                pass
-            raw = cached.get('decision') if isinstance(cached, dict) and cached.get('signature') == signature else None
+            cached = accepted_contract(checkpoint,identity,previous)
+            raw = cached.get('decision') if cached else None
             decision = None
             if raw is not None:
                 try:
                     decision = validate_structure(raw, allowed, current, registry)
                 except (ValueError, TypeError, KeyError):
                     raw = None
+            cache_hit = raw is not None
+            if raw is None and dispatch_refs is not None and not any(_key(n['ref']) in dispatch_refs for n in current):
+                unresolved.extend(n['ref'] for n in current)
+                history.append({'status':'unresolved','reason':'missing_exact_contract_outside_recovery_scope',
+                                'CURRENT_refs':[n['ref'] for n in current]})
+                cursor += size
+                continue
             try:
                 _check(cancelled)
                 if raw is None:
@@ -746,13 +804,14 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
                                 'Cover every CURRENT ref; roles must agree with arc members; cite all relation endpoints.\n'+prompt)
                             if _tokens_count(vision, retry_prompt) > _context_limit(vision):
                                 raise ValueError('Structure validation retry exceeds text context') from error
-                    _atomic(checkpoint, {'signature': signature, 'decision': raw, 'source_identity': _hash(snapshots),
+                    cached = {**contract_record(identity,raw,_model_identity(vision)),
                         'validation_attempts': attempt+1,
-                        'actual_prompt_sha256': hashlib.sha256(retry_prompt.encode()).hexdigest()})
+                        'actual_prompt_sha256': hashlib.sha256(retry_prompt.encode()).hexdigest()}
+                    _atomic(checkpoint,cached)
                 signatures.append(signature)
                 history.append({'status': 'accepted' if decision['accepted'] else 'unresolved',
                     'CURRENT_refs': [n['ref'] for n in current], 'CONTEXT_refs': [n['ref'] for n in context],
-                    'checkpoint': signature, 'decision': copy.deepcopy(raw)})
+                    **copy.deepcopy(cached),'cache_hit':cache_hit})
                 accepted_rows = decision['accepted_units']
                 accepted_keys = {_key(r['ref']) for r in accepted_rows}
                 unresolved.extend(n['ref'] for n in current if _key(n['ref']) not in accepted_keys)
@@ -828,7 +887,8 @@ def infer_story_structure(events, transcript, job_dir, vision, cancelled, *, pro
         own = [u for u in units if u['ref']['event'] == event.get('id')]
         own_unresolved = [r for r in unresolved if r['event'] == event.get('id')]
         event['story_structure'] = {'version': VERSION, 'status': 'unresolved' if own_unresolved else 'accepted',
-            'units': [{k: copy.deepcopy(u.get(k)) for k in ('ref', 'roles', 'before', 'after', 'arc_ids', 'status')} for u in own],
+            'units': [{k: copy.deepcopy(u.get(k)) for k in ('ref', 'roles', 'before', 'after', 'arc_ids', 'status',
+                      'viewer_interest', 'confidence', 'evidence', 'support')} for u in own],
             'unresolved_refs': own_unresolved}
         event['inferred_story_arcs'] = [copy.deepcopy(a) for a in final_arcs if event.get('id') in a['event_ids']]
         event['story_relations'] = [copy.deepcopy(r) for r in relation_map.values()

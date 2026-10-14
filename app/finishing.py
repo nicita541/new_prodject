@@ -138,7 +138,7 @@ class PreviewSubmission(BaseModel):
 
 class ExportSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    part_indices: list[int] = Field(min_length=1, max_length=50)
+    part_indices: list[int] = Field(min_length=1, max_length=100)
     settings: FinishProfile | None = None
 
     @field_validator("part_indices")
@@ -221,6 +221,7 @@ def _save_shared_profile(request: Request, episode_id: str,
     previous_revision = int(previous.get("revision", 0))
     if profile.revision is not None and profile.revision != previous_revision:
         raise HTTPException(409, "Оформление изменено в другом окне, обновите страницу")
+    _check_avatar(request, episode_id, profile.video.model_dump())
     path = _profile_file(request, episode_id)
     shared = profile.model_dump(exclude={"revision"})
     old_overrides = previous.get("part_overrides", {})
@@ -242,8 +243,55 @@ def _save_shared_profile(request: Request, episode_id: str,
     return stored
 
 
+def _check_avatar(request: Request, episode_id: str, video: dict):
+    from .finishing_avatar import resolve_avatar
+    try:
+        resolve_avatar(_manager(request).root, video, episode_id)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
 def create_finishing_router() -> APIRouter:
     router = APIRouter()
+
+    @router.post('/api/episodes/{episode_id}/finishing/avatar', status_code=201)
+    async def upload_avatar(request: Request, episode_id: str, file: UploadFile = File(...)):
+        from .finishing_avatar import MAX_AVATAR_BYTES, store_avatar
+        from PIL import UnidentifiedImageError, Image
+        _episode(request, episode_id)
+        try:
+            data = await file.read(MAX_AVATAR_BYTES + 1)
+            if len(data) > MAX_AVATAR_BYTES:
+                raise HTTPException(413, 'Изображение больше 4 МБ')
+            try:
+                identifier = store_avatar(_manager(request).root, episode_id, data)
+            except (ValueError, OSError, UnidentifiedImageError, Image.DecompressionBombError) as error:
+                raise HTTPException(422, 'Выберите корректное изображение PNG, JPEG или WebP до 4 МБ и 16 мегапикселей') from error
+            return {'avatar_id': identifier, 'url': f'/api/episodes/{episode_id}/avatars/{identifier}.png'}
+        finally:
+            await file.close()
+
+    @router.get('/api/episodes/{episode_id}/avatars/{identifier}.png')
+    def get_avatar(request: Request, episode_id: str, identifier: str):
+        from .finishing_avatar import avatar_path, draw_avatar, PRESETS
+        from fastapi.responses import Response, FileResponse
+        import io
+        _episode(request, episode_id)
+        if identifier in PRESETS:
+            name = request.query_params.get('name', '')
+            if len(name) > 60:
+                raise HTTPException(422, 'Название канала слишком длинное')
+            image = draw_avatar({'avatar_style': identifier, 'channel_name': name}, 128)
+            output = io.BytesIO()
+            image.save(output, format='PNG')
+            return Response(output.getvalue(), media_type='image/png')
+        try:
+            path = avatar_path(_manager(request).root, identifier, episode_id)
+        except ValueError as error:
+            raise HTTPException(404, 'Иконка не найдена') from error
+        if not path.is_file():
+            raise HTTPException(404, 'Иконка не найдена')
+        return FileResponse(path, media_type='image/png', headers={'Cache-Control': 'private, max-age=31536000, immutable'})
 
     @router.get("/api/episodes/{episode_id}/finishing")
     def get_finishing(request: Request, episode_id: str):
@@ -350,6 +398,7 @@ def create_finishing_router() -> APIRouter:
             raise HTTPException(422, "Выбранное время за пределами части")
         duration = min(body.duration, float(part["duration"]) - body.from_seconds)
         profile = body.settings.model_dump() if body.settings else _stored_profile(request, episode_id)
+        _check_avatar(request, episode_id, profile['video'])
         try:
             state = submit_render(_manager(request), job_id, [body.part_index], profile,
                                   preview=(body.part_index, body.from_seconds, duration))
@@ -390,6 +439,7 @@ def create_finishing_router() -> APIRouter:
         for index in body.part_indices:
             _part(plan, index)
         profile = body.settings.model_dump() if body.settings else _stored_profile(request, episode_id)
+        _check_avatar(request, episode_id, profile['video'])
         try:
             return submit_render(_manager(request), job_id, body.part_indices, profile)
         except RuntimeError as error:

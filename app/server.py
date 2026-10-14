@@ -61,13 +61,14 @@ class UploadLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
+        avatar_upload = bool(re.fullmatch(r'/api/episodes/[0-9a-f-]{36}/finishing/avatar', scope.get('path', '')))
         if (scope["type"] != "http" or scope.get("method") != "POST" or
-                scope.get("path") not in {"/api/import", "/api/music/import"}):
+                scope.get("path") not in {"/api/import", "/api/music/import"} and not avatar_upload):
             return await self.app(scope, receive, send)
         music_upload = scope.get("path") == "/api/music/import"
         # Reject an oversized upload before Starlette spools its multipart body.
-        limit = (35 * 1024 * 1024 if music_upload else MAX_UPLOAD) + MULTIPART_OVERHEAD
-        error_text = "Музыкальный файл больше 35 МБ" if music_upload else "Серия слишком большая (предел 20 ГБ)"
+        limit = (4 * 1024 * 1024 if avatar_upload else 35 * 1024 * 1024 if music_upload else MAX_UPLOAD) + MULTIPART_OVERHEAD
+        error_text = 'Изображение больше 4 МБ' if avatar_upload else "Музыкальный файл больше 35 МБ" if music_upload else "Серия слишком большая (предел 20 ГБ)"
         rejection = JSONResponse({"detail": error_text}, 413)
         for name, value in scope.get("headers", []):
             if name.lower() == b"content-length" and value.isdigit() and int(value) > limit:
@@ -89,17 +90,31 @@ class UploadLimitMiddleware:
             await rejection(scope, receive, send)
 
 
-class CreateJob(BaseModel):
+class ProcessingMode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    processing_mode: Literal['full', 'incremental', 'plan_only'] = 'full'
+    reuse_job_id: str | None = None
+
+
+class CreateJob(ProcessingMode):
     model_config = ConfigDict(extra="forbid")
     source_id: str
     analysis_provider: Literal["local", "deepseek", "hybrid", "deepseek_plan", "local_flash_story", "local_fast_story", "local_flash_story_budgeted", "antigravity_manual"] = "local"
     layout: Literal["portrait", "cinema"] = "portrait"
     caption_style: Literal["classic", "accent"] = "classic"
+    economy_mode: bool = True
 
 
 class ManualAnalysisMode(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    provider: Literal["local", "antigravity_manual"]
+    provider: Literal["local", "deepseek_plan", "deepseek", "antigravity_manual"]
+    resume: bool = False
+
+
+class AnalysisCheckMode(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    economy_mode: bool
+    resume: bool = False
 
 
 class RecoverDeepseek(BaseModel):
@@ -114,6 +129,14 @@ class SaveVideos(BaseModel):
     destination: str | None = None
 
 
+class ReviewFeedback(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    operation_id: str
+    text: str = Field(min_length=1, max_length=2000)
+    part_index: int = Field(ge=1, strict=True)
+    source_time: float | None = Field(default=None, ge=0, allow_inf_nan=False, strict=True)
+
+
 class CreateProject(BaseModel):
     model_config = ConfigDict(extra='forbid')
     title: str = Field(min_length=1, max_length=200)
@@ -125,7 +148,7 @@ class CreateEpisode(BaseModel):
 
 
 class EpisodeSettings(CreateJob):
-    pass
+    economy_mode: bool | None = None
 
 
 class MusicSettings(BaseModel):
@@ -239,11 +262,20 @@ def safe_message(error: Exception, manager: JobManager) -> str:
     return text
 
 
-def public_job(job: dict, manager: JobManager | None = None) -> dict:
+def public_job(job: dict, manager: JobManager | None = None, *, include_progress: bool = True) -> dict:
     result = dict(job)
     result.setdefault("analysis_provider", "local")
-    identifier = job["id"]
+    result.setdefault("processing_mode", "full")
     if manager:
+        from .analysis_checks import economy_mode
+        result['economy_mode'] = economy_mode(manager.job_dir(job['id']))
+        settings = read_json(manager.job_dir(job['id']) / 'analysis-settings.json', {})
+        if job['status'] == 'completed' and 'economy_mode' not in settings:
+            result['economy_mode'] = False
+    else:
+        result.setdefault('economy_mode', True)
+    identifier = job["id"]
+    if manager and include_progress:
         from .job_progress import stage_progress, analysis_passes
         result['stage_progress'] = stage_progress(job, manager.job_dir(identifier))
         result['analysis_passes'] = analysis_passes(job, manager.job_dir(identifier))
@@ -259,6 +291,15 @@ def public_job(job: dict, manager: JobManager | None = None) -> dict:
                         if f"{Path(name).stem}.srt" in outputs else None,
                         "duration": durations.get(name)}
                        for name in outputs if name.endswith(".mp4")]
+    if manager and job['status'] == 'completed':
+        from .studio_render import ready_outputs
+        ready = ready_outputs(manager, identifier, saved_plan if outputs else None)
+        if ready:
+            result['base_files'] = result['files']
+            files = {item['name']: item for item in result['files']}
+            files.update({name: {k: v for k, v in item.items() if k != '_path'} for name, item in ready.items()})
+            result['files'] = [files[name] for name in sorted(files)]
+            result['finishing_applied'] = True
     return result
 
 
@@ -396,7 +437,9 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
 
     @application.get("/api/health")
     def health(request: Request):
-        return {**config.readiness(), "busy": get_manager(request).busy()}
+        from .processing import MODES
+        return {**config.readiness(), "busy": get_manager(request).busy(),
+                "processing_modes": sorted(MODES)}
 
     @application.get("/api/sources")
     def sources(request: Request, read_only: bool = False):
@@ -442,10 +485,11 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(409, str(error)) from None
 
     @application.post('/api/episodes/{identifier}/jobs', status_code=201)
-    def episode_job(request: Request, identifier: str):
-        if not config.readiness()['ready']:
+    def episode_job(request: Request, identifier: str, body: ProcessingMode | None = None):
+        body = body or ProcessingMode()
+        if body.processing_mode != 'plan_only' and not config.readiness()['ready']:
             raise HTTPException(503, 'Сначала выполните локальную настройку проекта')
-        return public_job(request.app.state.library.launch(identifier), get_manager(request))
+        return public_job(request.app.state.library.launch(identifier, body.processing_mode, body.reuse_job_id), get_manager(request))
 
     @application.get("/api/music")
     def music_settings():
@@ -584,16 +628,22 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             missing = [name for name in state['missing'] if name not in {
                 'Qwen3.5-9B для сокращения истории', 'Визуальный проектор Qwen 9B'}]
             state = {'missing': missing, 'ready': not missing}
-        if not state["ready"]:
+        if body.processing_mode != 'plan_only' and not state["ready"]:
             raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
         current = get_manager(request)
         return public_job(current.create(body.source_id, body.analysis_provider,
-                                         body.layout, body.caption_style), current)
+                                         body.layout, body.caption_style,
+                                         processing_mode=body.processing_mode, reuse_job_id=body.reuse_job_id,
+                                         economy_mode=body.economy_mode), current)
 
     @application.get("/api/jobs")
-    def jobs(request: Request):
+    def jobs(request: Request, summary: bool = False, progress_job_id: str | None = None):
         current = get_manager(request)
-        return [public_job(job, current) for job in current.list_jobs()]
+        # Project browsing needs status and files, not historical analysis maps.
+        # Keep full responses by default for existing API/MCP clients.
+        return [public_job(job, current,
+            include_progress=not summary or job['id'] == progress_job_id)
+            for job in current.list_jobs()]
 
     @application.get("/api/jobs/{identifier}")
     def job(request: Request, identifier: str):
@@ -631,25 +681,17 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         from .antigravity_exchange import snapshot
         return snapshot(current.job_dir(identifier))
 
+    @application.post('/api/jobs/{identifier}/analysis-checks')
+    def analysis_check_mode(request: Request, identifier: str, body: AnalysisCheckMode):
+        current = get_manager(request)
+        return public_job(request.app.state.library.change_analysis_economy(
+            identifier, body.economy_mode, resume=body.resume), current)
+
     @application.post('/api/jobs/{identifier}/analysis-provider')
     def manual_analysis_mode(request: Request, identifier: str, body: ManualAnalysisMode):
         current = get_manager(request)
-        from .antigravity_exchange import preserve_provider_checkpoints
-        from app.json_store import atomic_json
-        from .jobs import TERMINAL
-        with current.mutex:
-            current._assert_available()
-            job = current.get(identifier)
-            if job['status'] not in TERMINAL or job['status'] == 'completed':
-                raise BusyError('Сначала остановите обработку; готовое задание менять нельзя')
-            directory = current.job_dir(identifier)
-            old = job.get('analysis_provider', 'local')
-            preserve_provider_checkpoints(directory, old, body.provider)
-            settings = read_json(directory / 'analysis-settings.json', {})
-            atomic_json(directory / 'analysis-settings.json', {**settings, 'provider': body.provider})
-            job['analysis_provider'] = body.provider
-            atomic_json(directory / 'job.json', job)
-            return public_job(job, current)
+        return public_job(request.app.state.library.change_analysis_provider(
+            identifier, body.provider, resume=body.resume), current)
 
     @application.post('/api/jobs/{identifier}/antigravity/prepare')
     def prepare_manual_analysis(request: Request, identifier: str):
@@ -659,7 +701,7 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         return public_job(current.retry(identifier), current)
 
     @application.post('/api/jobs/{identifier}/antigravity/automation')
-    def automatic_file_reception(request: Request, identifier: str, enabled: bool):
+    def automatic_file_reception(request: Request, identifier: str, enabled: bool, managed: bool = False):
         current = get_manager(request)
         from app.json_store import atomic_json
         from .jobs import TERMINAL
@@ -673,7 +715,7 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
                 raise BusyError('Настройку можно менять только у остановленного задания')
             directory = current.job_dir(identifier)
             root = contained(directory / 'antigravity', directory)
-            atomic_json(root / 'automation.json', {'enabled': enabled})
+            atomic_json(root / 'automation.json', {'enabled': enabled, 'managed': managed})
             return snapshot(directory)
 
     @application.post('/api/jobs/{identifier}/antigravity/open')
@@ -719,6 +761,17 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
             raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
         current = get_manager(request)
         return public_job(current.retry(identifier), current)
+
+    @application.get('/api/jobs/{identifier}/feedback')
+    def feedback_history(request: Request, identifier: str):
+        from .review_feedback import history
+        return history(get_manager(request), identifier)
+
+    @application.post('/api/jobs/{identifier}/feedback', status_code=201)
+    def submit_feedback(request: Request, identifier: str, body: ReviewFeedback):
+        current = get_manager(request)
+        return public_job(current.create_feedback(identifier, body.operation_id, body.text,
+                                                 body.part_index, body.source_time), current)
 
     @application.get("/api/jobs/{identifier}/plan")
     def plan(request: Request, identifier: str):
@@ -786,6 +839,9 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         if item["status"] != "completed":
             raise HTTPException(404, "Готовые видео не найдены")
         registered = item.get("outputs", [])
+        from .studio_render import ready_outputs
+        ready = ready_outputs(current, identifier)
+        registered = [*registered, *[name for name in ready if name not in registered]]
         mp4_names = [name for name in registered
                      if isinstance(name, str) and Path(name).name == name
                      and "/" not in name and "\\" not in name and Path(name).suffix.lower() == ".mp4"]
@@ -805,7 +861,7 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         output_dir = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
         sources = []
         for name in names:
-            path = contained(output_dir / name, output_dir)
+            path = ready[name]['_path'] if name in ready else contained(output_dir / name, output_dir)
             if not path.is_file():
                 raise HTTPException(404, "Одно из готовых видео недоступно")
             sources.append((name, path))
@@ -901,7 +957,10 @@ app = create_app()
 def main():
     import uvicorn
     config.setup_environment()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8765, access_log=False))
+    # A paused browser download must not keep the instance lock forever.
+    # The idle-only shutdown route has already checked that no render is active.
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8765,
+        access_log=False, timeout_graceful_shutdown=5))
     # Uvicorn config replaces logging globally and closes the launcher's
     # file handlers. Restore them before server startup can emit app events.
     from .run_logging import configure_logging

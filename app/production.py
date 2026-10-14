@@ -24,8 +24,8 @@ def production_context(events, anchors, center, shots, transcript):
     from app.vision import storyboard_times
     left=right=center
     original=set(anchors)
-    while left-1 in original:left-=1
-    while right+1 in original:right+=1
+    while left-1 in original and abs(events[left-1]['end']-events[left]['start'])<=.002:left-=1
+    while right+1 in original and abs(events[right]['end']-events[right+1]['start'])<=.002:right+=1
     context={'start':events[left]['start'],'end':events[right]['end'],
              'original_windows':[events[i]['id'] for i in range(left,right+1)]}
     times=storyboard_times(context['start'],context['end'],shots,transcript)
@@ -144,13 +144,14 @@ def clean_sequences(events, transcript, shots, job_dir, vision, report, cancelle
                                if path.is_file() else {'path':str(path)})
     for index, event in enumerate(result):
         # Routing uses original evidence, never a preceding deletion/derived label.
-        nearby = [i for i in anchors if abs(i - index) <= 1]
-        if closing is not None and index > closing:
-            nearby.append(closing)
+        nearby = [i for i in anchors if events[i]['start'] <= event['end']+5
+                  and events[i]['end'] >= event['start']-5]
         if not nearby:
             continue
         context_index = min(nearby, key=lambda i: (not events[i].get('credit_montage', False), abs(i-index)))
         context,context_times = production_context(events,anchors,context_index,shots,transcript)
+        if len(context_times)>6:
+            context_times=[context_times[round(i*(len(context_times)-1)/5)] for i in range(6)]
         context_ids = {f'K{i}' for i in range(len(context_times))}
         kind = _credit_kind(events[context_index], duration)
         all_units = candidate_units(event['start'], event['end'], transcript, shots)
@@ -158,6 +159,8 @@ def clean_sequences(events, transcript, shots, job_dir, vision, report, cancelle
         protected = [u for u in all_units if _protected_speech(u, transcript) or (
             not own_anchor and any(w.get('probability',1) >= .6 for w in _spoken_words(u, transcript)))]
         units = [u for u in all_units if u not in protected]
+        from .review_scope import target_units
+        units = target_units(event,units,'credits')
         excluded, proofs, retained_evidence = [], [], []
         unconfirmed = False
         # Four rows keep the image legible and the structured answer compact.

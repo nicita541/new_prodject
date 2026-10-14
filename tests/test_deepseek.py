@@ -67,24 +67,42 @@ class DeepSeekTests(unittest.TestCase):
             self.assertEqual(self.vision.query('current',schema=SCHEMA),{'keep':['A']})
             self.vision.query('current',schema=SCHEMA)
         self.assertEqual(fetch.call_count,1)
-    def test_two_transport_retries_then_success(self):
+    def test_full_launch_isolates_prior_responses_but_resume_reuses_own(self):
+        with patch.object(self.vision, '_fetch', return_value=response()) as fetch:
+            self.vision.query('current', schema=SCHEMA)
+            api.atomic_json(self.root/'processing-settings.json', {'mode': 'full'})
+            self.vision.query('current', schema=SCHEMA)
+            self.vision.query('current', schema=SCHEMA)
+        self.assertEqual(fetch.call_count, 2)
+    def test_incremental_can_reuse_responses_from_full_analysis_lineage(self):
+        with patch.object(self.vision, '_fetch', return_value=response()) as fetch:
+            api.atomic_json(self.root/'processing-settings.json', {'mode': 'full'})
+            self.vision.query('full-only', schema=SCHEMA)
+            api.atomic_json(self.root/'processing-settings.json', {
+                'mode': 'incremental', 'response_cache_jobs': [self.root.name]})
+            self.vision.query('full-only', schema=SCHEMA)
+        fetch.assert_called_once()
+    def test_uncertain_transport_failure_does_not_resend_paid_source(self):
         error=api.RemoteError('network',category='transport')
         with patch.object(self.vision,'_fetch',side_effect=[error,error,response()]) as fetch:
-            self.vision.query('current',schema=SCHEMA)
-        self.assertEqual(fetch.call_count,3)
+            with self.assertRaisesRegex(api.RemoteError,'повтор запроса не выполнен'):
+                self.vision.query('current',schema=SCHEMA)
+        self.assertEqual(fetch.call_count,1)
     def test_exhaustion_does_not_disable_next_query(self):
         with patch.object(self.vision,'_fetch',side_effect=api.RemoteError('network',category='transport')) as fetch:
-            with self.assertRaisesRegex(api.RemoteError,'3 попыток'):self.vision.query('current',schema=SCHEMA)
-        self.assertEqual(fetch.call_count,3)
+            with self.assertRaises(api.RemoteError):self.vision.query('current',schema=SCHEMA)
+        self.assertEqual(fetch.call_count,1)
         with patch.object(self.vision,'_fetch',return_value=response()) as fetch:self.vision.query('current',schema=SCHEMA)
         fetch.assert_called_once()
     def test_schema_errors_retry_without_accepting_wrong_ids(self):
         with patch.object(self.vision,'_fetch',side_effect=[response('{"keep":["B"]}'),response('[]'),response()]) as fetch:
-            self.assertEqual(self.vision.query('current',schema=SCHEMA),{'keep':['A']})
-        self.assertEqual(fetch.call_count,3)
+            with self.assertRaises(api.ResponseContractError):
+                self.vision.query('current',schema=SCHEMA)
+        self.assertEqual(fetch.call_count,2)
     def test_truncated_json_and_missing_choices_retry(self):
-        with patch.object(self.vision,'_fetch',side_effect=[response('{'),{},response()]) as fetch:self.vision.query('current',schema=SCHEMA)
-        self.assertEqual(fetch.call_count,3)
+        with patch.object(self.vision,'_fetch',side_effect=[response('{'),{},response()]) as fetch:
+            with self.assertRaises(api.ResponseContractError):self.vision.query('current',schema=SCHEMA)
+        self.assertEqual(fetch.call_count,2)
     def test_auth_and_certificate_errors_do_not_retry(self):
         for error in (api.RemoteError('auth',category='http',http_status=401),api.RemoteError('auth',category='http',http_status=403),api.RemoteError('tls',category='transport',cause_type='SSLCertVerificationError')):
             with self.subTest(error=error.category),patch.object(self.vision,'_fetch',side_effect=error) as fetch:
@@ -145,11 +163,11 @@ class DeepSeekTests(unittest.TestCase):
         with patch.object(self.vision, '_fetch', return_value=response('{"keep":["B"]}')) as fetch:
             with self.assertRaises(api.ResponseContractError) as caught:
                 self.vision.query('current', schema=SCHEMA)
-        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(fetch.call_count, 2)
         self.assertFalse(_control_failure(caught.exception))
         records = [api._strict_json(p.read_text('utf-8')) for p in
                    (self.root / 'diagnostics' / 'deepseek-responses').glob('*.json')]
-        self.assertEqual(len(records), 3)
+        self.assertEqual(len(records), 2)
         self.assertTrue(all(row['accepted'] is False for row in records))
         self.assertTrue(all('$.keep[0]' in row['contract_issue'] for row in records))
         self.assertNotIn('test-key', str(records))
@@ -189,9 +207,12 @@ class DeepSeekTests(unittest.TestCase):
         self.assertIn('$.location_changed', api._contract_feedback(invalid, boundary_schema()))
         valid = {**invalid, 'location_changed': False}
         self.assertEqual(api._contract_feedback(valid, boundary_schema()), '')
-    def test_http_server_error_retries(self):
-        with patch.object(self.vision,'_fetch',side_effect=[api.RemoteError('server',category='http',http_status=503),response()]) as fetch:self.vision.query('current',schema=SCHEMA)
-        self.assertEqual(fetch.call_count,2)
+    def test_http_server_error_does_not_repeat_ambiguous_remote_work(self):
+        for status in (400,401,403,429,500,503):
+            with self.subTest(status=status),patch.object(self.vision,'_fetch',side_effect=[api.RemoteError('server',category='http',http_status=status),response()]) as fetch:
+                with self.assertRaises(api.RemoteError) as caught:self.vision.query('current',schema=SCHEMA)
+                self.assertEqual(caught.exception.http_status,status)
+                fetch.assert_called_once()
 
     def test_sharded_cache_lookup_and_write(self):
         with patch.object(self.vision, '_fetch', return_value=response()) as fetch:

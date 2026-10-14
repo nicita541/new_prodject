@@ -19,9 +19,9 @@ def _number(value) -> float:
     return number
 
 
-def validate_analysis(analysis: dict) -> None:
+def validate_analysis(analysis: dict, *, draft=False) -> None:
     gate = analysis.get('selection_gate')
-    if (gate is not None and gate.get('status') != 'passed'
+    if not draft and (gate is not None and gate.get('status') != 'passed'
             or any(e.get('analysis_unresolved') for e in analysis.get('events', []))):
         raise ValueError('analysis_unresolved: требуется дополнительная проверка понимания и выбора исходных фрагментов')
     duration = _number(analysis["probe"]["duration"])
@@ -43,7 +43,7 @@ def validate_analysis(analysis: dict) -> None:
             raise ValueError("Идентификаторы событий должны быть уникальны")
         if event["kind"] not in {"story", "opening", "ending", "recap", "filler", "eyecatch"}:
             raise ValueError("Неизвестный тип события")
-        if not 1 <= _number(event["importance"]) <= 5:
+        if not (0 if draft else 1) <= _number(event["importance"]) <= 5:
             raise ValueError("Некорректная важность события")
         if any(dep not in seen for dep in event.get("requires", [])):
             raise ValueError("Событие ссылается на неизвестное или последующее событие")
@@ -166,9 +166,14 @@ def _part_boundaries(intervals, events, segments, words, shots, duration):
                 return
             elapsed += interval['end'] - interval['start']
 
+    from .viewer_interest import score_source, interest_index, ending_cost
+    transcript = {'words': words, 'segments': segments}
+    interest = interest_index(events, transcript)
     for event in events:
         for ending in event.get('part_endings', []):
-            add(ending['time'], {'closure': 0, 'cliffhanger': 1, 'transition': 3}[ending['kind']], ending)
+            ranges = {event['id']: [{'start': max(event['start'], ending['time'] - 3), 'end': ending['time']}]}
+            value = score_source([event], ranges, transcript, index=interest)
+            add(ending['time'], ending_cost(ending, value), ending)
     for segment in segments:
         add(_speech_tail(segment['end'], [*segments, *words], duration), 12)
         add(_speech_lead(segment['start'], [*segments, *words]), 15)
@@ -218,8 +223,8 @@ def _part_boundaries(intervals, events, segments, words, shots, duration):
     return list(reversed(boundaries))
 
 
-def build_plan(analysis: dict) -> dict:
-    validate_analysis(analysis)
+def build_plan(analysis: dict, *, draft=False) -> dict:
+    validate_analysis(analysis, draft=draft)
     from .source_roles import apply_exclusions,confirmed_exclusions
     events, probe = apply_exclusions(analysis["events"]), analysis["probe"]
     words = analysis["transcript"].get("words", [])
@@ -228,8 +233,11 @@ def build_plan(analysis: dict) -> dict:
     if segments and not words:
         raise ValueError("Распознавание должно содержать временные отметки слов")
     by_id = {event["id"]: event for event in events}
+    from .viewer_interest import score_event
+    interest_scores = {e['id']: score_event(e, analysis['transcript']) for e in events}
     selected = {e["id"] for e in events if not e.get('pacing_excluded') and not e.get('global_excluded')
-                and ((e["kind"] == "story" and e["importance"] >= 3) or e["importance"] >= 4)}
+                and ((e["kind"] == "story" and (e["importance"] >= 3
+                     or interest_scores[e['id']]['viewer_interest_value'] > 0)) or e["importance"] >= 4)}
     warnings = [f"{event['id']}: {warning}" for event in events for key in ("focus_warnings", "story_warnings")
                 for warning in event.get(key, []) if isinstance(warning, str)]
     warnings.extend(warning for warning in analysis.get('warnings', []) if isinstance(warning, str))
@@ -258,7 +266,7 @@ def build_plan(analysis: dict) -> dict:
         # Legacy/fallback ranges have no validated omission partition: restore
         # their replies. Explicit whole-unit selections may omit redundant
         # exchanges; expand only selected replies and their speech handles.
-        if (event['kind'] == 'story' and not event.get('credit_montage') and not event.get('pacing_excluded')
+        if (not draft and event['kind'] == 'story' and not event.get('credit_montage') and not event.get('pacing_excluded')
                 and event.get('unit_selection_version') != 1):
             selections.extend(s for s in [*segments, *words]
                               if s['start'] < event['end'] and s['end'] > event['start'])
@@ -267,7 +275,7 @@ def build_plan(analysis: dict) -> dict:
                 start, end = selection['start'], selection['end']
             else:
                 start, end = _expand(selection["start"], selection["end"],
-                                     [] if event.get('unit_selection_version') == 1 else segments,
+                                     [] if draft or event.get('unit_selection_version') == 1 else segments,
                                      words, probe["duration"])
             for piece in _subtract([{'start':start,'end':end}], excluded_ranges):
                 left, right = piece['start'], piece['end']
@@ -280,9 +288,12 @@ def build_plan(analysis: dict) -> dict:
     from .speech_handles import expand_ranges, barriers
     semantic_ranges = [{'start':r['start'],'end':r['end']} for r in intervals]
     excluded_ranges = barriers(events,semantic_ranges)
+    from .review_scope import scope_barriers
+    excluded_ranges.extend(scope_barriers(analysis))
     expanded = []
     for interval in intervals:
-        for piece in expand_ranges([interval], analysis['transcript'], probe['duration'], excluded_ranges):
+        for piece in expand_ranges([interval], analysis['transcript'], probe['duration'], excluded_ranges,
+                                   overrides=analysis.get('speech_handle_overrides', [])):
             if expanded and piece['start'] <= expanded[-1]['end'] + .002:
                 expanded[-1]['end'] = max(expanded[-1]['end'],piece['end'])
                 expanded[-1]['event_ids'] = list(dict.fromkeys([*expanded[-1]['event_ids'],*interval['event_ids']]))
@@ -347,12 +358,26 @@ def build_plan(analysis: dict) -> dict:
             "events": [dict(e) for e in events if e["id"] in retained_ids],
             "parts": parts, "semantic_ranges":semantic_ranges, "warnings": list(dict.fromkeys(warnings))}
     from .planner_audit import planner_audit
+    if analysis.get('speech_handle_overrides'):
+        plan['speech_handle_overrides'] = analysis['speech_handle_overrides']
     plan['planner_diagnostics'] = planner_audit({**analysis, 'events': events}, plan, arcs=arcs, continuity=continuity)
-    validate_plan(plan, analysis)
+    for row in plan['planner_diagnostics']['candidates']:
+        row['score_components'] = interest_scores[row['event_id']]
+        row['score'] = interest_scores[row['event_id']]['total']
+    if draft:
+        plan['draft'] = True
+    validate_plan(plan, analysis, allow_draft=draft)
     return plan
 
 
-def validate_plan(plan: dict, analysis: dict) -> None:
+def validate_plan(plan: dict, analysis: dict, *, allow_draft=False) -> None:
+    if plan.get('draft') and not allow_draft:
+        raise ValueError('Черновой план не разрешён для экспорта: сначала проверьте выбранные фрагменты')
+    if analysis.get('review_scope'):
+        from .source_ranges import subtract_ranges
+        allowed = analysis['review_scope']['ranges']
+        if any(subtract_ranges([cut], allowed) for part in plan.get('parts',[]) for cut in part['cuts']):
+            raise ValueError('source_scope_unreviewed: план захватывает непроверенный исходный фрагмент')
     if plan.get("schema_version") != SCHEMA_VERSION or not plan.get("parts"):
         raise ValueError("Неизвестный или пустой монтажный план")
     ids = {e["id"] for e in analysis["events"]}

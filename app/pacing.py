@@ -10,6 +10,7 @@ import cv2
 from PIL import Image, ImageDraw
 
 from app.json_store import atomic_json
+from .editorial_reactions import REACTION_KINDS, preserve_reaction, reaction_instruction
 
 PACING_VERSION = 20
 REMOVABLE = {'waiting','repeat','scenery'}
@@ -95,6 +96,33 @@ def silent_units(event, transcript, shots):
     return result
 
 
+def pacing_targets(event, transcript, shots):
+    """Silence alone does not reopen accepted source-specific story proof."""
+    from .source_roles import verified_story_ranges
+    from .selection_adjudication import POSITIVE_KINDS
+    units = silent_units(event, transcript, shots)
+    protected = verified_story_ranges(event)
+    known = {u['id']: u for u in event.get('units', [])}
+    if event.get('selection_status') == 'accepted':
+        for proof in event.get('unit_evidence', []):
+            unit = known.get(proof.get('unit'))
+            if (unit and proof.get('decision') == 'keep' and proof.get('kind') in POSITIVE_KINDS
+                    and type(proof.get('confidence')) in (int, float) and proof['confidence'] >= .9
+                    and isinstance(proof.get('evidence'), str) and proof['evidence'].strip()
+                    and proof.get('frame_times')):
+                protected.append(unit)
+    result = []
+    for unit in units:
+        if any(unit['start'] < r['end'] and unit['end'] > r['start'] for r in protected):
+            continue
+        # An unresolved source interval still needs evidence before any trim;
+        # an accepted positive contribution above needs no second inspection.
+        uncertain = any(event.get(k) is True for k in
+                        ('selection_uncertain', 'analysis_unresolved', 'selection_needs_adjudication'))
+        result.append({**unit, 'review_reason': 'unresolved_selection' if uncertain else 'missing_positive_source_proof'})
+    return result
+
+
 def condense_beat(unit: dict, max_hold: float = 1.6) -> list[dict]:
     """Condense a long silent action / narrative bridge hold (>3.0s) down to key beats.
     
@@ -129,9 +157,11 @@ def apply_review(event, units, raw, editorial_profile=None):
             raise ValueError('Неверная классификация темпа')
         if 'reaction_or_humor' in item and type(item['reaction_or_humor']) is not bool:
             raise ValueError('Неверная оценка атмосферы сцены')
+        if 'reaction_kind' in item and item['reaction_kind'] not in ('none', *REACTION_KINDS):
+            raise ValueError('Неверный тип реакции в проверке темпа')
         verified=any(known[item['unit']]['start']<r['end'] and known[item['unit']]['end']>r['start']
                      for r in verified_story_ranges(event))
-        if (verified or item.get('reaction_or_humor') and (profile['preserve_reactions'] or profile['preserve_humor'])
+        if (verified or item.get('reaction_or_humor') and preserve_reaction(profile, item)
                 or item['reason']=='repeat' and not profile['remove_exact_repetition']
                 or item['reason'] in ('waiting','scenery') and not profile['remove_empty_holds']):
             blocked.add(item['unit'])
@@ -164,7 +194,8 @@ def apply_review(event, units, raw, editorial_profile=None):
     if any(not item['keep'] and item['reason']=='production_credit' for item in decisions):
         event.setdefault('story_warnings', []).append('Проверка темпа не удаляет неподтверждённые титры: нужны независимые признаки заставки')
     from app.source_ranges import subtract_ranges as _subtract
-    neutral = [known[item['unit']] for item in decisions if item.get('reaction_or_humor') is False
+    neutral = [known[item['unit']] for item in decisions if (item.get('reaction_or_humor') is False
+               or item.get('reaction_or_humor') is True and not preserve_reaction(profile,item))
                and item['reason'] != 'reaction']
     if event.get('protected_atmosphere_ranges'):
         event['protected_atmosphere_ranges'] = _subtract(event['protected_atmosphere_ranges'], neutral)
@@ -232,6 +263,8 @@ def neighboring_replies(unit, transcript, events=None, retained_ids=None):
     after=[s for s in segments if s['start'] >= unit['end']]
     neighbors={'before':max(before,key=lambda s:s['end']) if before else None,
                'after':min(after,key=lambda s:s['start']) if after else None}
+    neighbors = {name: ({k: reply[k] for k in ('id', 'start', 'end', 'text') if k in reply}
+                        if reply is not None else None) for name, reply in neighbors.items()}
     if events is not None:
         for name,reply in neighbors.items():
             if reply is not None:
@@ -275,13 +308,13 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
     for event in result:
         if event['id'] not in retained_ids or event.get('credit_montage') or event.get('pacing_excluded'):
             continue
-        for unit in silent_units(event, transcript, shots):
-            if not any(unit['start'] < r['end'] and unit['end'] > r['start'] for r in verified_story_ranges(event)):
-                units.append({**unit, 'event_id': event['id']})
+        for unit in pacing_targets(event, transcript, shots):
+            units.append({**unit, 'event_id': event['id']})
     groups, current = [], []
     speech = [*transcript.get('segments', []), *transcript.get('words', [])]
     for unit in units:
-        if current and (unit['end'] - current[0]['start'] > 180 or len(current) >= 24
+        if current and (unit['start'] > current[-1]['end']+.002
+                        or unit['end'] - current[0]['start'] > 180 or len(current) >= 24
                         or any(s['start'] < unit['start'] and s['end'] > current[-1]['end'] for s in speech)):
             groups.append(current)
             current = []
@@ -316,6 +349,7 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
                 'unit': {'type': 'string', 'enum': ids}, 'keep': {'type': 'boolean'},
                 'reason': {'type': 'string', 'enum': ['action', 'setup', 'reaction', 'waiting', 'repeat', 'scenery', 'narrative_bridge']},
                 'story_change': {'type': 'boolean'}, 'reaction_or_humor': {'type': 'boolean'},
+                'reaction_kind': {'type': 'string', 'enum': ['none', *REACTION_KINDS]},
                 'condense': {'type': 'boolean'},
                 'evidence': {'type': 'string'}, 'retained_witness': {'type': 'string', 'enum': ['none', *ids]}},
                 'required': ['unit', 'keep', 'reason', 'story_change', 'reaction_or_humor', 'evidence', 'retained_witness'],
@@ -354,7 +388,8 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
                     'or specific emotion would be lost. Keep at most the shortest sufficient establishing/arrival beat when it is needed. '
                     'Judge mood once for the sequence; alternate angles of the same mood are not independent payoffs. '
                     'A real specific response needs an observable stimulus and changed expression/gesture, not a face merely visible. '
-                    'Preserve developing consequential actions, genuine emotional aftermath, humor and actual causes of later dialogue. '
+                    'Preserve developing consequential actions and actual causes of later dialogue. '
+                    +reaction_instruction(profile)+
                     'For every whole source row give keep/omit, reason and concrete CURRENT-frame evidence. '
                     'Each page is consecutive rows of CONTEXT BEFORE, five CURRENT frames and CONTEXT AFTER. '
                     'Never delete speech or infer events from context frames as if they occur in the row. '
@@ -369,7 +404,9 @@ def refine_silent_sequences(source, events, transcript, shots, job_dir, vision, 
             apply_review(synthetic, group, raw, profile)
             excluded = synthetic.get('pacing_removed', [])
             neutral_ids = {d['unit'] for d in raw['decisions'] if not raw['uncertain']
-                           and d.get('reaction_or_humor') is False and d['reason'] != 'reaction'}
+                           and (d.get('reaction_or_humor') is False
+                                or d.get('reaction_or_humor') is True and not preserve_reaction(profile,d))
+                           and d['reason'] != 'reaction'}
             for event in result:
                 if raw['uncertain'] and any(u['event_id'] == event['id'] for u in group):
                     event['selection_uncertain'] = True
@@ -411,25 +448,30 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
     directory = job_dir / 'pacing'
     directory.mkdir(exist_ok=True)
     source_stat = source.stat()
+    # Cloud pages keep eight readable rows per image. Decisions still advance
+    # sequentially, with fresh retained witnesses after each complete batch.
+    rows_per_batch = (16 if getattr(vision, 'supports_query_batch', False) is True
+                      and getattr(vision, 'supports_image_pages', False) is True else 8)
     for index, event in enumerate(result):
         if cancelled():
             raise InterruptedError('Обработка отменена')
         if event.get('credit_montage') or event.get('global_excluded'):
             continue
-        units = silent_units(event, transcript, shots)
-        units=[u for u in units if not any(u['start']<r['end'] and u['end']>r['start']
-               for r in verified_story_ranges(event))]
+        units = pacing_targets(event, transcript, shots)
         if not units:
             continue
         # Bound collage/context size. Unexamined material is preserved.
-        for batch_index in range(0, len(units), 8):
-            # IDs are local to this independently reviewed eight-row sheet.
+        batch_index, batch_size = 0, rows_per_batch
+        while batch_index < len(units):
+            # IDs are local to this batch and continue across readable pages.
             # A model cannot confuse global s008..s015 with row s000..s007.
             # Actual source intervals remain the provenance, not row indices.
-            batch = [{**u,'id':chr(65+i)} for i,u in enumerate(units[batch_index:batch_index+8])]
+            batch = [{**u,'id':chr(65+i)} for i,u in enumerate(units[batch_index:batch_index+batch_size])]
             from .speech_context import _retained
             retained_ids=_retained(result)
-            previous = retained_context(result[:index],transcript,retained_ids)
+            # Exact source neighbors and earlier CURRENT rows are sufficient
+            # witnesses. Do not resend unrelated earlier scenes' dialogue.
+            previous = []
             neighbors = {}
             for unit in batch:
                 neighbor=neighboring_replies(unit,transcript,result,retained_ids)
@@ -459,13 +501,13 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                 if checkpoint.is_file():
                     raw = json.loads(checkpoint.read_text('utf-8'))
                 else:
-                    make_sheet(source, batch, image, cancelled)
                     schema = {'type':'object', 'properties': {
                         'decisions': {'type':'array', 'items': {'type':'object', 'properties': {
                             'unit': {'type':'string', 'enum':[u['id'] for u in batch]},
                             'keep': {'type':'boolean'},
                             'reason': {'type':'string', 'enum':['action','setup','reaction','waiting','repeat','scenery','production_credit','narrative_bridge']},
                             'story_change':{'type':'boolean'}, 'reaction_or_humor':{'type':'boolean'},
+                            'reaction_kind':{'type':'string','enum':['none', *REACTION_KINDS]},
                             'condense': {'type': 'boolean'},
                             'evidence': {'type':'string'},
                             'retained_witness':{'type':'string','enum':sorted({'none','before','after',
@@ -476,7 +518,7 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                                            if editorial_profile['remove_empty_holds'] else
                                            'The editorial profile disables empty-hold removal: keep neutral travel and holds even when they add no new plot fact.')
                     prompt = (
-                        instruction(editorial_profile)+' Condense this episode using ONLY the supplied speech-free source rows A..H, exactly once each. '
+                        instruction(editorial_profile)+f' Condense this episode using ONLY the supplied speech-free source rows A..{batch[-1]["id"] if len(batch)>8 else "H"}, exactly once each. '
                         'Keep narrative bridges: non-verbal transitions connecting state changes (e.g. capture, injury, departure, arrival). '
                         'If removing an action makes the next dialogue logically unexplained, classify reason as narrative_bridge and keep=true, story_change=true. '
                         'For long action or narrative bridge holds (>3s) with an intermediate static pause, set condense=true to preserve snappy initiation and payoff beats. '
@@ -496,7 +538,7 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                         'to an earlier empty courtyard, or let one needed departure frame protect every following unchanged view. '
                         'Retain the developing action and its distinct reaction. '+empty_hold_guidance+' '
                         'Evaluate narrative/emotional FUNCTION against actual neighboring replies and images. '
-                        'Preserve almost all specific character reactions, jokes, comic timing and emotional pauses carried by visible acting, even without plot progress. '
+                        +reaction_instruction(editorial_profile)+
                         'An unchanged pose, generic walking, repeated travel views, an empty hold or scenery alone is not a reaction or atmosphere. '
                         'Mark reaction_or_humor=true and keep only when CURRENT frames show a specific character reaction, joke, or emotional beat; do not use generic quietness or a scenic view as evidence. '
                         'Keep causes, consequential actions and their completion, revelations, relationship/goal changes and '
@@ -520,7 +562,21 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                         f'Earlier retained speech: {json.dumps(previous, ensure_ascii=False)}. '
                         f'Exact neighboring replies: {json.dumps(neighbors, ensure_ascii=False)}. '
                         f'Actual units: {json.dumps(batch)}.')
-                    raw = vision.query(prompt, image, max_tokens=800, schema=schema)
+                    if len(batch) > 8:
+                        import subprocess
+                        from .antigravity_exchange import SYSTEM
+                        if len(subprocess.list2cmdline([SYSTEM+'\n\n'+prompt]).encode('utf-16-le'))//2 > 26000:
+                            # Fit Windows without truncating dialogue/witnesses
+                            # and before doing any rendering or paid request.
+                            batch_size = 8
+                            continue
+                    pages = []
+                    for offset in range(0, len(batch), 8):
+                        page = image if offset == 0 else image.with_name(image.stem + f'.page{offset//8}.jpg')
+                        make_sheet(source, batch[offset:offset+8], page, cancelled)
+                        pages.append(page)
+                    raw = vision.query(prompt, pages if len(pages) > 1 else image,
+                        max_tokens=2400 if len(batch) > 8 else 800, schema=schema)
                     if cancelled():
                         raise InterruptedError('Обработка отменена')
                     # Validate all IDs before saving a reusable response.
@@ -548,6 +604,8 @@ def refine_pacing(source, events, transcript, shots, job_dir, vision, report, ca
                 raise
             except (ValueError, RuntimeError, OSError) as error:
                 event.setdefault('story_warnings', []).append('Проверка темпа не завершена; контекст сохранён: '+str(error)[:180])
+            batch_index += len(batch)
+            batch_size = rows_per_batch
     excluded = {e['id'] for e in result if e.get('pacing_excluded')}
     for event in result:
         event['requires'] = [identifier for identifier in event.get('requires', []) if identifier not in excluded]

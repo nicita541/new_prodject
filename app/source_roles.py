@@ -174,7 +174,7 @@ def _schema(units):
         'required':['decisions'],'additionalProperties':False}
 
 
-def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,*,retry_unresolved=False,event_ids=None):
+def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,*,retry_unresolved=False,event_ids=None,episode_duration=None):
     from app.story_review import candidate_units
     from .production import sequence_sheet
     from app.source_ranges import subtract_ranges as _subtract
@@ -184,7 +184,7 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,
     source.relative_to(ROOT.resolve())
     stat=source.stat()
     directory=job_dir/'source_roles';directory.mkdir(exist_ok=True)
-    duration=max((e['end'] for e in events),default=0)
+    duration=max((e['end'] for e in events),default=0) if episode_duration is None else episode_duration
     profile=load_profile(job_dir)
     for index,event in enumerate(result):
         if cancelled():raise InterruptedError('Обработка отменена')
@@ -192,7 +192,9 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,
             continue
         previous_failure=event.get('source_role_unresolved')
         retry=bool(retry_unresolved and previous_failure)
-        if not (retry or event.get('contains_credits') or event.get('credit_montage') or event['end']>=duration*.8):
+        if not (retry or event.get('contains_credits') or event.get('credit_montage')
+                or 'source_roles' in event.get('review_targets', [])
+                or any(event.get(key) for key in ('preview_candidate', 'promotion_candidate', 'source_role_candidate'))):
             continue
         event.pop('source_role_unresolved', None)
         # A downstream drop cannot resolve an earlier failed role inspection.
@@ -206,6 +208,8 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,
             'verified_current_story':any(u['start']<r['end'] and u['end']>r['start']
             for r in verified_story_ranges(event))} for u in units]
         units=[u for u in units if any(u['start']<r['end'] and u['end']>r['start'] for r in selections)]
+        from .review_scope import target_units
+        units=target_units(event,units,'source_roles')
         if retry and not units:
             event['source_role_unresolved']=copy.deepcopy(previous_failure)
         failed_ranges=[]
@@ -215,10 +219,10 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,
             # song or narrator belongs to the same production sequence.
             credit_confirmed=all(any(r['start']<=u['start'] and r['end']>=u['end']
                 for r in event.get('confirmed_credit_sequence_ranges',[])) for u in batch)
-            context_start=max(0,events[max(0,index-1)]['end']-2)
-            context_end=min(duration,events[min(len(events)-1,index+1)]['start']+2)
-            context_times=sorted({context_start,max(0,batch[0]['start']-1),
-                                  min(duration-.001,batch[-1]['end']+1),min(duration-.001,context_end)})
+            # Specialist input may be a sparse subset of the source catalog.
+            # List neighbors therefore never establish physical adjacency.
+            context_times=sorted({max(0,batch[0]['start']-1),
+                                  min(duration-.001,batch[-1]['end']+1)})
             paged=bool(getattr(vision,'supports_image_pages',False))
             identity={'version':VERSION,'source':str(source),'size':stat.st_size,'mtime':stat.st_mtime_ns,
                       'units':batch,'context':context_times,'credit_confirmed':credit_confirmed,'policy':profile,
@@ -262,6 +266,12 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,
                     confirmation={'decisions':[]}
                     if proposed:
                         proposed_units=[u for u in batch if u['id'] in {d['unit'] for d in proposed}]
+                        confirmation_times=sorted({t for u in proposed_units for t in
+                            (max(0,u['start']-1), min(duration-.001,u['end']+1))})
+                        confirmation_pages=sequence_sheet(source,proposed_units,confirmation_times,
+                            directory/(key+'.confirmation.jpg'),cancelled,
+                            page_size=8 if paged else None,readable=paged)
+                        confirmation_media=confirmation_pages if paged else confirmation_pages[0]
                         confirmation=vision.query('Independent skeptical review. Do NOT trust the previous role claims. '
                             'Verify whether EACH whole proposed unit is entirely uploader/promo, NEXT-episode preview, visibly narrated title, confirmed song/ASR artifact or production_credit. '
                             'production_credit requires actual staff/theme/series-title text, typed marker_type, same_production_sequence=true and confirmed adjacent sequence context. '
@@ -274,7 +284,7 @@ def refine_source_roles(events,transcript,shots,job_dir,vision,report,cancelled,
                             'Set meaningful_story/reaction_or_humor only for CURRENT-episode content, not preview/promo banter. '
                             'Images cannot prove raw audio. Quote only supplied ASR; transcribe visible markers. Return every proposed ID once. '
                             +json.dumps({'units':proposed_units,'credit_confirmed':credit_confirmed},ensure_ascii=False),
-                            media,max_tokens=1600,schema=_schema(proposed_units))
+                            confirmation_media,max_tokens=1600,schema=_schema(proposed_units))
                         validate_role_decisions(confirmation,proposed_units,credit_confirmed)
                     if cancelled():raise InterruptedError('Обработка отменена')
                     atomic_json(checkpoint,{'decision':raw,'confirmation':confirmation})

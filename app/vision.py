@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -18,11 +19,14 @@ import urllib.request
 from app.config import FFMPEG, LLAMA, ROOT, VLM_MODEL, VLM_PROJECTOR, STORY_MODEL
 from app.media_probe import run_process
 from app.story_review import candidate_units
+from app.bounded_storyboard import MAX_PAGED_INFERENCE_FRAMES
 
 
 class LocalVision:
     supports_image_pages = True
     supports_thinking_override = True
+    max_current_frames = MAX_PAGED_INFERENCE_FRAMES
+    max_boundary_batch = 3
 
     def __init__(self, job_dir: Path, cancelled, cpu_projector=False, model=None, projector=None, gpu_layers=99, thinking=False):
         self.job_dir = job_dir
@@ -123,6 +127,11 @@ class LocalVision:
     def _query_impl(self, prompt, image, max_tokens, schema, trace, effective_thinking):
         if self.cancelled():
             raise InterruptedError('Обработка отменена')
+        from .request_payload import compact_prompt, record_payload
+        canonical = prompt
+        prompt = compact_prompt(prompt)
+        record_payload(getattr(self, 'job_dir', None), 'local', canonical, prompt,
+                       len(image) if isinstance(image, (list,tuple)) else int(image is not None))
         content = [{'type': 'text', 'text': prompt}]
         if image is not None:
             images = image if isinstance(image, (list, tuple)) else [image]
@@ -194,15 +203,62 @@ class LocalVision:
             return len(json.load(response)['tokens'])
 
 
+class AnalysisVisionSessions:
+    """One analysis owns at most one live local model, across sequential stages."""
+
+    def __init__(self, job_dir, cancelled, factory=None):
+        self.job_dir, self.cancelled = job_dir, cancelled
+        self.factory = factory or vision_session
+        self._context = self._vision = self._key = None
+
+    def __enter__(self):
+        return self
+
+    def close(self):
+        context = self._context
+        self._context = self._vision = self._key = None
+        if context is not None:
+            context.__exit__(None, None, None)
+
+    def __exit__(self, *args):
+        self.close()
+
+    @contextmanager
+    def session(self, job_dir, cancelled, provider='local', **settings):
+        # Non-local transports retain their original per-stage lifetime.
+        # Reuse only the ordinary local route; experimental routes own fallbacks.
+        if provider != 'local':
+            self.close()
+            with self.factory(job_dir, cancelled, provider, **settings) as vision:
+                yield vision
+            return
+        if cancelled():
+            raise InterruptedError('Обработка отменена')
+        key = (Path(settings.get('model') or VLM_MODEL).resolve(),
+               Path(settings.get('projector') or VLM_PROJECTOR).resolve(),
+               settings.get('gpu_layers', 99), settings.get('cpu_projector', False))
+        if key != self._key:
+            self.close()
+            context = self.factory(job_dir, cancelled, provider, **settings)
+            vision = context.__enter__()
+            self._context, self._vision, self._key = context, vision, key
+        # Queries are sequential. Stage defaults preserve cache identities and
+        # per-request overrides without altering an in-flight request.
+        self._vision.thinking = settings.get('thinking', False)
+        yield self._vision
+
+
 def vision_session(job_dir: Path, cancelled, provider='local', **local_settings):
     if provider == 'antigravity_manual':
         if Path(local_settings.get('model', VLM_MODEL)) == STORY_MODEL:
             from .antigravity_exchange import ManualVision
-            return ManualVision(job_dir, cancelled, **local_settings)
+            from .analysis_continuation import attach_replies
+            return attach_replies(ManualVision(job_dir, cancelled, **local_settings), job_dir, provider, cancelled)
         provider = 'local'
     if provider in ('deepseek', 'deepseek_plan'):
         from .deepseek import DeepSeekVision
-        return DeepSeekVision(job_dir, cancelled)
+        from .analysis_continuation import attach_replies
+        return attach_replies(DeepSeekVision(job_dir, cancelled), job_dir, provider, cancelled)
     if provider == 'local_fast_story':
         # Explicit experimental mode: 4B handles semantic story selection,
         # while the ordinary independent source-contract checks still apply.
@@ -284,7 +340,7 @@ def inference_samples(start, end, units, *, recovery=False):
 
 
 def inference_storyboard(source, start, end, units, destination, cancelled, *,
-                         recovery=False, context=False, sample_limit=None):
+                         recovery=False, context=False, sample_limit=None, max_frames=None):
     from .bounded_storyboard import build_bounded_storyboard
     from app.json_store import analysis_json as atomic_json, load_json
     times = None if context else inference_samples(start,end,units,recovery=recovery)
@@ -295,7 +351,8 @@ def inference_storyboard(source, start, end, units, destination, cancelled, *,
         # distribute all other choices across the full original interval.
         times = [times[round(i * (len(times) - 1) / (sample_limit - 1))]
                  for i in range(sample_limit)]
-    timestamps = build_bounded_storyboard(source,start,end,destination,cancelled,times=times,context=context)
+    frame_limit = {'max_frames': max_frames} if max_frames is not None else {}
+    timestamps = build_bounded_storyboard(source,start,end,destination,cancelled,times=times,context=context,**frame_limit)
     board = load_json(destination.with_suffix('.storyboard.json'))
     for frame in board['frames']:
         frame['unit_ids'] = [u['id'] for u in units if u['start'] <= frame['time'] < u['end']]
@@ -321,6 +378,9 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
                          if left+(i+.5)*sampling_interval < right]
         requested.extend(dense_samples)
     candidates = sorted({min(last, max(first, timestamp)) for timestamp in requested})
+    from .bounded_storyboard import source_frame_files
+    _, source_records, source_images = source_frame_files(source, left, right, destination.parent,
+        cancelled, candidates, width=480, height=270)
     # Retain a canonical overview for legacy consumers; keep detailed pages
     # readable for providers that accept image arrays. Avoid JPEG's 65500px
     # dimension limit on a dense action scene.
@@ -331,24 +391,19 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
     if len(candidates) > 36:
         pages = [Image.new('RGB', (960, 294*math.ceil(min(36, len(candidates)-offset)/2)), '#111111')
                  for offset in range(0, len(candidates), 36)]
-    stat = source.stat()
-    source_key = hashlib.sha256(json.dumps({'path': str(source.resolve()), 'size': stat.st_size,
-        'mtime_ns': stat.st_mtime_ns}, sort_keys=True).encode('utf-8')).hexdigest()[:16]
-    for i, timestamp in enumerate(candidates):
-        frame = destination.parent / f'{destination.stem}_{source_key}_{timestamp:.6f}.jpg'
-        if not frame.exists():
-            run_process([FFMPEG, '-y', '-v', 'error', '-ss', f'{timestamp:.6f}', '-i', source, '-frames:v', '1', '-vf', 'scale=480:270:force_original_aspect_ratio=decrease,pad=480:270:(ow-iw)/2:(oh-ih)/2', '-pix_fmt', 'yuvj420p', frame], destination.parent / 'frames.log', cancelled, timeout=30)
-        if not frame.is_file() or frame.stat().st_size == 0:
-            raise ValueError('FFmpeg не создал исходный видеокадр')
+    for i, (timestamp, frame) in enumerate(zip(candidates, source_images)):
+        if cancelled():
+            raise InterruptedError('Обработка отменена')
         x, y = (i % columns) * 480, (i // columns) * 294
+        actual_time = source_records[i]['time']
         with Image.open(frame) as picture:
             canvas.paste(picture, (x, y + 24))
             if pages:
                 position = i % 36
                 page_x, page_y = position % 2 * 480, position // 2 * 294
                 pages[i//36].paste(picture, (page_x, page_y+24))
-                ImageDraw.Draw(pages[i//36]).text((page_x+6, page_y+5), f'Frame {i+1} | source {timestamp:.2f}s', fill='white')
-        draw.text((x + 6, y + 5), f'Frame {i + 1} | source {timestamp:.2f}s', fill='white')
+                ImageDraw.Draw(pages[i//36]).text((page_x+6, page_y+5), f'Frame {i+1} | source {actual_time:.2f}s', fill='white')
+        draw.text((x + 6, y + 5), f'Frame {i + 1} | source {actual_time:.2f}s', fill='white')
     canvas.save(destination, quality=84)
     page_paths = []
     for number, page in enumerate(pages):
@@ -360,10 +415,12 @@ def storyboard(source: Path, start: float, end: float, shots: list, transcript: 
     audit = []
     for timestamp in candidates:
         matching = [s for s in samples if min(last, max(first, s['time'])) == timestamp]
-        audit.append({'time': timestamp,
+        actual = source_records[len(audit)]
+        audit.append({'time': actual['time'], 'requested_time': timestamp,
+                      'pts': actual['pts'], 'time_base': actual['time_base'],
                       'reasons': sorted({r for s in matching for r in s['reasons']}
                                         | ({'recovery_dense_sample'} if timestamp in dense_samples else set())) or ['frame_bounds_clamp'],
                       'unit_ids': sorted({u for s in matching for u in s['unit_ids']})})
     atomic_json(destination.with_suffix('.storyboard.json'), {'start': start, 'end': end, 'frames': audit,
                                                             'pages': page_paths or [str(destination)], 'sampling_interval': sampling_interval})
-    return candidates
+    return [frame['time'] for frame in audit]

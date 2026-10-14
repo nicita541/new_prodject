@@ -98,6 +98,15 @@ class SemanticIdentityTests(unittest.TestCase):
                     with self.subTest(helper=module.__name__, component=name):
                         self.assertNotEqual(original[name], component_identity(name)['digest'])
 
+    def test_viewer_interest_policy_invalidates_selection_and_planning_not_raw_media(self):
+        from app import viewer_interest
+        names = ('story_structure', 'story', 'global_story', 'planner', 'ending')
+        original = {name: component_identity(name) for name in (*names, 'shot_detector')}
+        with changed_source(viewer_interest, "'reversal': 16", "'reversal': 15"):
+            for name in names:
+                self.assertNotEqual(original[name]['digest'], component_identity(name)['digest'])
+            self.assertEqual(original['shot_detector'], component_identity('shot_detector'))
+
     def test_literal_fallback_equals_loaded_policy_without_importing_components(self):
         expected = component_identity('episode_profile')
         with patch.dict(sys.modules, {'app.episode_profile': None}):

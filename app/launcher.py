@@ -15,6 +15,21 @@ URL = "http://127.0.0.1:8765"
 IDENTITY_URL = URL + "/api/studio/identity"
 
 
+def instance_released() -> bool:
+    """A closed listener alone does not prove the previous server exited."""
+    from .config import ROOT
+    from .jobs import BusyError, InstanceLock
+    path = ROOT / "data" / ".server.lock"
+    if not path.exists():
+        return True
+    try:
+        lock = InstanceLock(path)
+    except (BusyError, OSError):
+        return False
+    lock.close()
+    return True
+
+
 def port_occupied() -> bool:
     try:
         with socket.create_connection(("127.0.0.1", 8765), timeout=0.5):
@@ -96,6 +111,10 @@ def main() -> None:
         logger.error("Port occupied by another process; refusing to open an unrelated server",
                      extra={"action": "startup_refused", "status": "occupied"})
         raise SystemExit(2)
+    if not instance_released():
+        print("[ERROR] Previous KADR Studio still holds its instance lock. "
+              "Wait for shutdown or press Ctrl+C in its original console.", flush=True)
+        raise SystemExit(2)
     print("Starting current KADR Studio on port 8765.", flush=True)
     threading.Thread(target=open_when_ready, daemon=True).start()
     from .server import main as serve
@@ -122,6 +141,10 @@ def stop_studio() -> int:
     logger = logging.getLogger("app.launcher")
     status = studio_status()
     if status == "missing":
+        if not instance_released():
+            print("[ERROR] KADR listener is closed, but the previous server is still stopping. "
+                  "Press Ctrl+C in its original console.", flush=True)
+            return 2
         print("KADR Studio is already stopped.", flush=True)
         return 0
     if status != "current":
@@ -153,7 +176,7 @@ def stop_studio() -> int:
         return 2
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        if studio_status() != "current":
+        if studio_status() == "missing" and instance_released():
             logger.info("Studio stopped", extra={"action": "shutdown_complete", "status": "stopped"})
             print("KADR Studio stopped. Saved projects and outputs remain available.", flush=True)
             return 0

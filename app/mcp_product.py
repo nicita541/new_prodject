@@ -120,6 +120,14 @@ class Product:
             {**EPISODE, 'revision': (Annotated[str, Field(pattern=r'^[0-9a-f]{64}$')], ...), 'source_id': (ID, ...),
              'analysis_provider': (PROVIDER, ...), 'layout': (Literal['portrait', 'cinema'], ...),
              'caption_style': (Literal['classic', 'accent'], ...)}, self.update_settings, mutating=True)
+        async def switch_analysis_provider(provider, resume=True, **ids):
+            target = await self.target(**ids)
+            result = await self.mutate('POST', f"/api/jobs/{ids['job_id']}/analysis-provider",
+                                       json={'provider': provider, 'resume': resume})
+            return {'target': target, 'result': result}
+        add('switch_analysis_provider', 'Switch the owned job between DeepSeek, Antigravity and local analysis, preserving checkpoints. Explicit continuation stops the current worker and resumes.',
+            {**JOB, 'provider': (Literal['local', 'deepseek_plan', 'deepseek', 'antigravity_manual'], ...),
+             'resume': (bool, True)}, switch_analysis_provider, mutating=True)
         for name, endpoint, fields in [('start_job', 'jobs', EPISODE), ('resume_job', 'retry', JOB), ('cancel_job', 'cancel', JOB), ('prepare_analysis', 'antigravity/prepare', JOB)]:
             async def action(endpoint=endpoint, **ids):
                 target = await self.target(**ids)

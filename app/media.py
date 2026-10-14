@@ -49,7 +49,7 @@ def video_frame_bounds(source: Path, workdir: Path, cancelled=lambda: False) -> 
     return bounds
 
 
-def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: float | None = None) -> str:
+def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: float | None = None, *, on_tick=None) -> str:
     cwd.mkdir(parents=True, exist_ok=True)
     log = cwd / ("process_" + uuid.uuid4().hex + ".log")
     if cancelled():
@@ -73,9 +73,12 @@ def run_command(argv: list[str], cwd: Path, cancelled=lambda: False, timeout: fl
                     raise TimeoutError("Превышено время выполнения " + Path(argv[0]).name)
                 try:
                     output, _ = process.communicate(timeout=0.2)
+                    if on_tick:
+                        on_tick()
                     break
                 except subprocess.TimeoutExpired:
-                    pass
+                    if on_tick:
+                        on_tick()
         except BaseException:
             logging.getLogger("app.media").exception(
                 "External tool cancelled/failed: %s", tool,
@@ -192,9 +195,32 @@ def choose_encoder(workdir: Path, cancelled=lambda: False) -> str:
         return "libx264"
 
 
+def run_render_command(args, workdir, duration, cancelled, on_progress=None):
+    """Read FFmpeg's output clock without parsing noisy diagnostic stderr."""
+    if on_progress is None:
+        return run_command(args, workdir, cancelled)
+    progress = workdir / ('progress_' + uuid.uuid4().hex + '.txt')
+    args = [*args[:-1], '-progress', str(progress.resolve()), '-nostats', args[-1]]
+    last = -1.0
+    def tick():
+        nonlocal last
+        try:
+            with progress.open('rb') as handle:
+                handle.seek(max(0, progress.stat().st_size - 4096))
+                lines = handle.read().decode('ascii', 'ignore').splitlines()
+            values = [int(line.split('=', 1)[1]) for line in lines if line.startswith('out_time_us=')]
+            value = min(.999, max(0, values[-1] / 1_000_000 / duration)) if values else 0
+        except (OSError, ValueError):
+            return
+        if value > last:
+            last = value
+            on_progress(value)
+    return run_command(args, workdir, cancelled, on_tick=tick)
+
+
 def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir: Path,
                 encoder: str, cancelled=lambda: False,
-                background_music: dict | None = None, finishing: dict | None = None) -> Path:
+                background_music: dict | None = None, finishing: dict | None = None, *, on_progress=None) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
     basename = f"part_{part['index']:03}"
@@ -213,7 +239,8 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     social_box = None
     if social:
         from app.social_frame import write_card
-        social_box = write_card(workdir / "social-card.png", probe["width"], probe["height"], visual_config)
+        social_box = write_card(workdir / "social-card.png", probe["width"], probe["height"], visual_config,
+                                avatar=(finishing or {}).get('avatar_path'), duration=part['duration'])
     blur_amount = max(0, round(float(visual_config.get("blur", 24)) / 2))
     background_blur = f",boxblur={blur_amount}:2" if blur_amount else ""
     for i, cut in enumerate(part["cuts"]):
@@ -318,12 +345,12 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     args.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart",
                  "-max_muxing_queue_size", "4096", str(partial.resolve())])
     try:
-        run_command(args, workdir, cancelled)
+        run_render_command(args, workdir, part['duration'], cancelled, on_progress)
     except RuntimeError:
         if encoder != "h264_nvenc":
             raise
         return render_part(source, part, probe, output_dir, workdir, "libx264", cancelled,
-                           background_music=background_music, finishing=finishing)
+                           background_music=background_music, finishing=finishing, on_progress=on_progress)
     validate_export(partial, part["duration"], workdir, cancelled,
                     max_duration=150.0 if part.get("duration", 0) > MAX_DURATION else None)
     if cancelled():

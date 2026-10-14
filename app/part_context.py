@@ -150,6 +150,8 @@ def with_context(plan):
 
 def generate(plan, job_dir: Path, report, cancelled):
     """Called by every montage after final planning; cache is separate from MP4."""
+    from app.analysis_checks import economy_mode
+    economical = economy_mode(job_dir)
     from app.analysis_provider import analysis_provider
     from app.vision import vision_session
     from app.json_store import analysis_json as atomic_json
@@ -191,7 +193,7 @@ def generate(plan, job_dir: Path, report, cancelled):
                         brief = validate(saved['brief'])
                 except (OSError, KeyError, TypeError, ValueError):
                     pass
-            if brief is None and not unavailable and (facts['scenes'] or facts['dialogue'] or source):
+            if brief is None and not economical and not unavailable and (facts['scenes'] or facts['dialogue'] or source):
                 try:
                     report('planning', .69, f"Контекст для заставки: часть {part['index']} из {len(plan['parts'])}")
                     image = frames(source, part['cuts'], directory, cancelled) if source else None

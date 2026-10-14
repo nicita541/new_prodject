@@ -82,14 +82,14 @@ class TitleTests(unittest.TestCase):
                     result=refine_titles(events,transcript,shots,directory,vision,lambda *a:None,lambda:False)
                 self.assertEqual(result[0]['selected_ranges'],[{'start':10 if excluded else 0,'end':30}])
 
-    def test_disjoint_runs_share_screen_but_only_candidates_can_be_removed(self):
+    def test_disjoint_runs_do_not_send_intervening_source(self):
         directory,events,_,shots,_=fixture()
         events[0]['selected_ranges']=[{'start':10,'end':14},{'start':18,'end':22}]
         vision=Vision([decision(False),decision(False)])
         with patch('app.vision.storyboard',side_effect=frames) as render:
             result=refine_titles(events,{'words':[],'segments':[]},shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(result,events)
-        self.assertEqual([(c.args[1],c.args[2]) for c in render.call_args_list],[(10,22)])
+        self.assertEqual([(c.args[1],c.args[2]) for c in render.call_args_list],[(10,14),(18,22)])
 
     def test_short_bumper_is_removed_at_different_source_positions(self):
         for offset in (0, 37, 180):

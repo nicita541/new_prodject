@@ -157,7 +157,7 @@ class WholeSequenceTests(unittest.TestCase):
         vision=Vision()
         corrected=verify_boundaries(initial,self.units,['original full pages'],vision,25,
                                      boundary_pages=['dense before/current/after pages'])
-        self.assertEqual(vision.pages,['original full pages','dense before/current/after pages'])
+        self.assertEqual(vision.pages,['dense before/current/after pages'])
         self.assertEqual(corrected['last_unit'],'U003')
         self.assertEqual(corrected['after_unit'],'U004')
         self.assertEqual(sequence_decision(corrected,self.units,25)[0],{'U001','U002','U003'})
@@ -205,10 +205,10 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertEqual([u['id'] for u in captured[1][0]],
                          [*(f'U{i:03}' for i in range(2,7)),*(f'U{i:03}' for i in range(8,19))])
         self.assertEqual(captured[1][2],{'page_size':8,'readable':True})
-        self.assertEqual(len(vision.calls[1][1]),8)
+        self.assertEqual(len(vision.calls[1][1]),6)
         self.assertLessEqual(len(vision.calls[1][1]),8)
 
-    def test_large_overview_uses_complete_legacy_dense_pages_within_provider_cap(self):
+    def test_large_overview_is_not_resent_for_independent_boundary_review(self):
         import math
         directory,event,_=edge_fixture(start=0,end=480)
         event.update(contains_credits=True,credit_montage=True)
@@ -228,7 +228,7 @@ class WholeSequenceTests(unittest.TestCase):
             clean_whole_sequences([event],{'words':[],'segments':[]},shots,directory,vision,lambda *a:None,lambda:False)
         self.assertEqual(len(captured[0][1]),96)
         self.assertEqual(len(captured[1][0]),16)
-        self.assertEqual(captured[1][2],{'page_size':24,'readable':False})
+        self.assertEqual(captured[1][2],{'page_size':8,'readable':True})
         self.assertEqual(len(vision.calls[1][1]),6)
 
     def test_boundary_disagreement_and_malformed_second_review_fail_closed(self):
@@ -353,7 +353,7 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertEqual(result[0]['selected_ranges'],[{'start':0,'end':25}])
         self.assertTrue(result[0]['story_warnings'])
 
-    def test_overlapping_clusters_keep_both_confirmed_exclusions_through_planning(self):
+    def test_distant_clusters_use_local_source_context_and_keep_both_exclusions(self):
         directory, base, _ = edge_fixture(start=0, end=70)
         events = [{**copy.deepcopy(base), 'id': f'event_{i:04d}',
                    'start': i * 10, 'end': (i + 1) * 10, 'focus': [],
@@ -371,9 +371,9 @@ class WholeSequenceTests(unittest.TestCase):
                     'boundary_evidence': 'Theme between chronological story scenes.'}
 
         anchor = {'confirmed': True, 'confidence': .95, 'evidence': 'Visible credit.'}
-        # Original clusters at events 0 and 4 have contexts [0,2] and [2,6].
-        # Their only shared event contains two independently confirmed cuts.
-        vision = FakeVision([sequence(4, 3, 5), sequence(4, 3, 5), anchor,
+        # Actual five-second neighborhoods are 0..15 and35..55. The second
+        # target must not borrow the first target's distant list context.
+        vision = FakeVision([sequence(1, 0, 2), sequence(1, 0, 2), anchor,
                              sequence(1, 0, 2), sequence(1, 0, 2), anchor])
         vision.model = vision.projector = 'test'
         vision.thinking = False
@@ -389,8 +389,8 @@ class WholeSequenceTests(unittest.TestCase):
                                      'has_audio': True},
                            'events': output, 'transcript': transcript, 'shots': shots})
         cuts = [(cut['start'], cut['end']) for part in plan['parts'] for cut in part['cuts']]
-        self.assertEqual(cuts, [(0.0, 20), (30, 70)])
-        self.assertTrue(all(end <= 20 or start >= 30 for start, end in cuts))
+        self.assertEqual(cuts, [(0.0, 5), (10, 40), (45, 70)])
+        self.assertTrue(all(end <= 5 or start >= 10 and end <= 40 or start >= 45 for start, end in cuts))
 
     def test_story_identity_tracks_sequence_version_provider_capability_and_editorial_policy(self):
         from app.production_sequence import VERSION
@@ -408,7 +408,7 @@ class WholeSequenceTests(unittest.TestCase):
         self.assertEqual(bumped['edge'], base['edge'])
         self.assertNotEqual(bumped['production_sequence'], base['production_sequence'])
 
-    def test_sequence_clusters_identifies_boundary_and_musical_events_in_full_episode(self):
+    def test_sequence_clusters_requires_a_concrete_hint_not_position_or_silence(self):
         from app.production_sequence import sequence_clusters
         events = [{'id': f'e_{i}', 'start': i * 40, 'end': (i + 1) * 40} for i in range(36)]
         # Total duration: 36 * 40 = 1440s (~24 min anime)
@@ -418,13 +418,10 @@ class WholeSequenceTests(unittest.TestCase):
             ]
         }
         clusters = sequence_clusters(events, transcript, duration=1440)
-        # Should contain beginning events (< 240s -> events 0..5)
         flat_indices = [idx for group in clusters for idx in group]
-        self.assertIn(0, flat_indices)
-        self.assertIn(1, flat_indices)
-        # Should contain end events (> 1260s -> events 32..35)
-        self.assertIn(34, flat_indices)
-        self.assertIn(35, flat_indices)
+        self.assertEqual(flat_indices, [])
+        events[10]['contains_credits'] = True
+        self.assertEqual(sequence_clusters(events,transcript,duration=1440),[[10]])
         # All groups must be bounded to <= 4
         for group in clusters:
             self.assertLessEqual(len(group), 4)

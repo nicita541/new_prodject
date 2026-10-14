@@ -54,6 +54,14 @@ def fixture():
                             {"start": 8, "end": 12, "text": "Повтор."},
                             {"start": 15, "end": 19, "text": "Согласие."}]}
     events[0]['units'] = authored_units([0, 6, 12, 19, 20], transcript)
+    # Source proof tests need a real indexed tile layout: an unstructured
+    # thumbnail cannot be safely reduced to an omission's original frames.
+    from app.vision import storyboard_times
+    import math
+    times = storyboard_times(0, 20, [], transcript)
+    Image.new('RGB', (960, 294*math.ceil(len(times)/2)), 'white').save(directory/'visual/event_0000.jpg')
+    (directory/'visual/event_0000.storyboard.json').write_text(json.dumps(
+        {'frames': [{'time': t} for t in times]}), encoding='utf-8')
     return directory, events, transcript
 
 
@@ -496,6 +504,7 @@ class StoryRefinementTests(unittest.TestCase):
         visual.mkdir(exist_ok=True)
         (visual / "event_0000.jpg").write_bytes(b"saved visual evidence")
         events[0]["requires"] = ["old-context"]
+        events[0]['contains_credits'] = True
         vision = FakeVision([{"credit_montage": True, "continuous_narrative": False, "confidence": 0.95}])
         result = refine_story(events, {"words": [], "segments": []}, [], directory, vision, lambda *a: None, lambda: False)
         self.assertTrue(result[0]["credit_montage"])
@@ -523,6 +532,7 @@ class StoryRefinementTests(unittest.TestCase):
 
     def test_mixed_production_text_marker_is_independent_from_pure_credits(self):
         directory, events, _ = fixture()
+        events[0]['visible_production_title'] = True
         (directory/'visual').mkdir(exist_ok=True)
         Image.new('RGB', (48, 27)).save(directory/'visual/event_0000.jpg')
         vision = FakeVision([credit(False, True), decision(['u000'])])

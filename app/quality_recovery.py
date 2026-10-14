@@ -3,28 +3,35 @@ from __future__ import annotations
 
 import copy
 
-from .final_quality import _planned_source, gate_identity
+from .final_quality import _planned_source
 from app.source_ranges import merge_ranges
-from .source_roles import confirmed_exclusions
 from .selection_gate import positive_ranges
 
 
 def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report, cancelled):
     """Return new source analysis; a recovery result never silently enlarges cuts."""
     from .analysis_result import analysis_result
-    from .editorial_pipeline import finalize_editorial_selection
     from app.json_store import analysis_json as atomic_json
     from .pipeline_diagnostics import Diagnostics
     from .continuity_verification import verify_omitted_continuity
     events = copy.deepcopy(analysis['events'])
+    original_events = {e['id']:copy.deepcopy(e) for e in events}
     diagnostics = Diagnostics(job_dir)
     stages = {problem['recovery_stage'] for problem in gate['problems']}
     history = []
+    targets = {p['event'] for p in gate['problems'] if p.get('event')}
+    for problem in gate['problems']:
+        window = problem.get('range')
+        if isinstance(window,dict) and 'start' in window and 'end' in window:
+            targets.update(e['id'] for e in events if e['start'] < window['end'] and e['end'] > window['start'])
     if 'source_roles' in stages:
         from .source_roles import refine_source_roles
         pending={p['event'] for p in gate['problems'] if p['recovery_stage']=='source_roles' and p.get('event')}
-        events=refine_source_roles(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled,
-                                   retry_unresolved=True,event_ids=pending or None)
+        if pending:
+            events=refine_source_roles(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled,
+                                       retry_unresolved=True,event_ids=pending,episode_duration=analysis['probe']['duration'])
+        else:
+            history.append({'stage':'source_roles','status':'unresolved','reason':'problem_owner_missing'})
         history.append({'stage':'source_roles','reviewed_event_ids':sorted(pending)})
     if 'continuity' in stages and plan is not None:
         runtime,selected = _planned_source(events,[cut for part in plan['parts'] for cut in part['cuts']])
@@ -39,6 +46,7 @@ def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report,
             history.append(audit)
             if audit['status'] != 'accepted':
                 continue
+            targets.update(ref['event'] for ref in audit['restored_refs'])
             by_id = {e['id']:e for e in events}
             for verified in runtime:
                 original = by_id[verified['id']]
@@ -64,65 +72,47 @@ def recover_final_quality(source, analysis, plan, gate, job_dir, vision, report,
                         original.pop(key,None)
                     selected.add(original['id'])
     if 'semantic_boundary' in stages:
-        # Reinspect the disputed source geometry. A failure remains explicit;
-        # source ambiguity cannot be hidden by greater retention.
-        from .scene_detection import scene_checkpoint
-        from app.json_store import load_json
-        fingerprint = load_json(job_dir/'source-fingerprint.json') if (job_dir/'source-fingerprint.json').is_file() else gate_identity(analysis['probe'])
-        cache = job_dir/'scenes.meta.json'
-        if cache.is_file():
-            cached = load_json(cache)
-            fingerprint = cached.get('source', {}).get('fingerprint', fingerprint)
-        recovered_scenes = scene_checkpoint(source,fingerprint,analysis['probe']['duration'],analysis['shots'],analysis['transcript'],
-            job_dir,cancelled,settings=analysis['episode_profile'].get('scene_settings'),vision=vision,
-            perception=analysis.get('perception'),audio_stream=analysis['probe'].get('audio_stream',0),force_boundary_review=True)
-        geometry = [(row['id'],row['start'],row['end']) for row in recovered_scenes]
-        previous_geometry = [(event.get('scene_id'),event['start'],event['end']) for event in events]
-        if geometry != previous_geometry:
-            # New scene ownership invalidates old unit IDs and their derived
-            # relations. Rebuild in the already owned provider session.
-            from .scene_analysis import analyze_scenes
-            from .scene_refinement import refine_scene_story
-            from .story import preserve_dialogue_in_credits, clean_credit_continuations
-            from .eyecatch import detect_eyecatches, apply_eyecatch_exclusions
-            from .titles import refine_titles
-            from .closing import refine_closing_novelty
-            from .source_roles import refine_source_roles
-            from .global_verification import verify_global_visual
-            exclusions = [r for event in events for r in confirmed_exclusions(event)]
-            signature = gate_identity({'source':fingerprint,'scenes':recovered_scenes,'transcript':analysis['transcript']})
-            events = analyze_scenes(source,recovered_scenes,analysis['transcript'],analysis['shots'],
-                                    job_dir,vision,signature,report,cancelled)
-            for event in events:
-                event['excluded_review_ranges'] = [{'start':max(event['start'],r['start']),
-                    'end':min(event['end'],r['end'])} for r in exclusions
-                    if r['start'] < event['end'] and r['end'] > event['start']]
-            events = refine_scene_story(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled)
-            events = preserve_dialogue_in_credits(events,analysis['transcript'])
-            events = clean_credit_continuations(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled)
-            eyecatches = detect_eyecatches(events,analysis['transcript'],analysis['shots'],analysis['probe']['duration'])
-            if eyecatches:
-                events = apply_eyecatch_exclusions(events,eyecatches)
-            events = refine_titles(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled)
-            events = refine_closing_novelty(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled)
-            events = refine_source_roles(events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled)
-            events = verify_global_visual(source,events,analysis['transcript'],analysis['shots'],job_dir,vision,report,cancelled)
-            history.append({'stage':'semantic_boundary','ownership_rebuilt':True,
-                            'previous_geometry':previous_geometry,'source_geometry':geometry})
+        # The native boundary API cannot rebuild one disputed boundary yet. A
+        # local repair must not silently become a paid whole-episode rebuild.
+        history.append({'stage':'semantic_boundary','status':'unresolved',
+                        'reason':'scoped_boundary_recovery_unavailable',
+                        'scenes':[p.get('scene') for p in gate['problems'] if p['recovery_stage']=='semantic_boundary']})
     if 'selection_adjudication' in stages:
         from .selection_adjudication import adjudicate_event
         from .selection_gate import source_selection_readiness
-        pending = {r['event'] for r in source_selection_readiness(events)['unresolved']}
+        pending = {r['event'] for r in source_selection_readiness(events)['unresolved']} & targets
         for index,event in enumerate(events):
             if event['id'] not in pending:
                 continue
             questions = ['Разреши конкретную проблему финальной проверки: '+p['code']
-                         for p in gate['problems'] if p.get('event') in (None,event['id'])][:18]
+                         for p in gate['problems'] if p.get('event') == event['id']
+                         or isinstance(p.get('range'),dict) and p['range']['start'] < event['end']
+                         and p['range']['end'] > event['start']]
             if questions:
                 events[index] = adjudicate_event(source,event,analysis['transcript'],analysis['shots'],
                     job_dir,vision,cancelled,questions=questions)
-    events = finalize_editorial_selection(source,events,analysis['transcript'],analysis['shots'],analysis['probe'],
-        job_dir,vision,report,cancelled,diagnostics,analysis.get('provider','local'))
+    # Native relation APIs own complete coverage and cross-owner dependencies.
+    # They do not yet support merging a partial repair with exact accepted
+    # endpoint ownership. Keep unaffected owners intact and require explicit
+    # downstream resolution rather than presenting a partial episode as complete.
+    from .source_roles import confirmed_exclusions
+    from .content_identity import stable_semantics
+    def inherited_source(event):
+        return stable_semantics({key:event.get(key) for key in ('units','selected_ranges','unit_evidence',
+            'source_identity','source_evidence','state_before','state_after','causal_links')} |
+            {'confirmed_exclusions':confirmed_exclusions(event)})
+    for event in events:
+        if inherited_source(event) == inherited_source(original_events[event['id']]):
+            continue
+        for name in ('story_structure','dialogue_relations'):
+            previous = copy.deepcopy(event.get(name,{}))
+            event[name] = {**previous,'status':'unresolved','reason':'source_changed_requires_scoped_relation_recovery'}
+        event['analysis_unresolved'] = True
+        event['analysis_unresolved_reasons'] = list(dict.fromkeys([*event.get('analysis_unresolved_reasons',[]),
+            'story_structure_unresolved','dialogue_relations_unresolved']))
+        history.append({'stage':'relations','event':event['id'],'status':'unresolved',
+                        'reason':'scoped_cross_owner_relation_recovery_unavailable'})
     atomic_json(job_dir/'events.json',events)
     diagnostics.append('final_quality_recovery.jsonl',{'problems':gate['problems'],'continuity_history':history})
-    return analysis_result(job_dir,analysis.get('provider','local'),analysis['probe'],analysis['transcript'],analysis['shots'],events)
+    refreshed = analysis_result(job_dir,analysis.get('provider','local'),analysis['probe'],analysis['transcript'],analysis['shots'],events,scenes=analysis.get('scenes'))
+    return {**analysis,**refreshed}

@@ -6,11 +6,13 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import urllib.error
 
 from .config import ROOT, VLM_MODEL, VLM_PROJECTOR
 from .story import _protected_speech, _spoken_words, _unit_ids
+from .editorial_reactions import preserve_reaction, preserve_unit_reaction, reaction_instruction
 
 CLOSING_VERSION = 6
 CONTEXT_LIMIT = 5300
@@ -69,8 +71,8 @@ def _prompt(units, prior, vision, anchored, editorial_profile=None, input_limit=
         policy_instruction(editorial_profile or DEFAULT_PROFILE)+' Compare CURRENT timestamped units/images with earlier RETAINED chronological story facts. '
         + ('This window is within/after established ending credits. ' if anchored else
            'This is a late episode window; whether it is ending montage is UNCONFIRMED. ')
-        + 'Retain current episode causes, consequences, decisions, information, relationship changes and nearly all reactions/jokes/atmospheric beats. '
-        'New plot information is not required for an emotional pause, reaction or joke to remain. '
+        + 'Retain current episode causes, consequences, decisions, information and relationship changes. '
+        +reaction_instruction(editorial_profile or DEFAULT_PROFILE)+
         'Routine locations and familiar character actions alone do not prove either novelty or production montage. '
         'Exact restatement without any distinct story/reaction/humor may be omitted only when the applied profile permits it. '
         'Credits may contain NEW narrative and silent consequences: retain those. '
@@ -96,24 +98,29 @@ def _prompt(units, prior, vision, anchored, editorial_profile=None, input_limit=
         length = max(24, length // 2)
 
 
+def _relevant_prior(event, units, prior):
+    """Retrieve bounded retained witnesses; an episode recap is not context."""
+    def terms(text):
+        return {word.lower() for word in re.findall(r'[\w]+', str(text)) if len(word) >= 4}
+    query = terms(event.get('summary', '')) | terms(' '.join(u.get('text', '') for u in units))
+    required = set(event.get('requires', []))
+    ranked = []
+    for value in prior:
+        overlap = query & terms(value.get('summary', ''))
+        if value['id'] in required or overlap:
+            ranked.append((value['id'] in required, len(overlap), value['end'], value))
+    chosen = [row[-1] for row in sorted(ranked, key=lambda row: row[:3], reverse=True)[:4]]
+    return sorted(chosen, key=lambda value: value['start'])
+
+
 def _keep_ranges(event, units, omitted):
-    ranges = []
     selections = event.get('selected_ranges', [{'start': event['start'], 'end': event['end']}])
     # Reopen a falsely classified pure-title window if the current comparison
     # identifies actual new action. All boundaries still come from source units.
     if event.get('credit_montage'):
         selections = [{'start': event['start'], 'end': event['end']}]
-    for selection in selections:
-        for unit in units:
-            if unit['id'] in omitted:
-                continue
-            left, right = max(selection['start'], unit['start']), min(selection['end'], unit['end'])
-            if left < right:
-                if ranges and left <= ranges[-1]['end']:
-                    ranges[-1]['end'] = max(ranges[-1]['end'], right)
-                else:
-                    ranges.append({'start': left, 'end': right})
-    return ranges
+    from app.source_ranges import subtract_ranges
+    return subtract_ranges(selections,[u for u in units if u['id'] in omitted])
 
 
 def _novelty_schema(ids):
@@ -127,7 +134,8 @@ def _novelty_schema(ids):
                     'narrated_title_units','visible_title_units','reaction_or_humor_units','reason','confidence','uncertain']}
 
 
-def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, report, cancelled):
+def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, report, cancelled,
+                          *, event_ids=None, episode_duration=None):
     """Check late silent candidates; establish montage only from evidence."""
     from app.story_review import candidate_units
     from app.vision import storyboard
@@ -135,14 +143,16 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
     editorial_profile=load_profile(job_dir)
     from .source_roles import apply_exclusions,verified_story_ranges
     result = apply_exclusions(events)
-    duration = max((event['end'] for event in events), default=0)
+    duration = max((event['end'] for event in events), default=0) if episode_duration is None else episode_duration
     anchor = next((index for index, event in enumerate(events) if _ending_anchor(event, duration)), None)
     all_units = [(copy.deepcopy(event.get('units')) if event.get('analysis_chunks') else None)
                  or candidate_units(event['start'], event['end'], transcript, shots)
                  for event in events]
+    from .review_scope import target_units
+    all_units = [target_units(event,units,'closing') for event,units in zip(events,all_units)]
     from .source_roles import confirmed_exclusions
     from app.source_ranges import subtract_ranges as _subtract
-    if editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor']:
+    if preserve_reaction(editorial_profile, {'reaction_or_humor':True}):
         for event,units in zip(result,all_units):
             protected=[*event.get('protected_atmosphere_ranges',[]),
                 *(u for u in units if u['id'] in event.get('protected_atmosphere_units',[]))]
@@ -151,8 +161,10 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                 # evidence when a later query fails. Proven cuts still win.
                 event.update(credit_montage=False,kind='story',importance=max(4,event['importance']))
                 event['selected_ranges']=_subtract(event.get('selected_ranges', [event]),confirmed_exclusions(event))
-    candidates = {index for index, event in enumerate(events) if event['end'] > duration * .8
-                  and _long_silence(all_units[index], transcript)}
+    candidates = {index for index, event in enumerate(events) if
+                  _ending_anchor(event, duration)
+                  or event.get('closing_candidate') or event.get('closing_novelty_anchor')
+                  or 'closing' in event.get('review_targets', [])}
     if anchor is None and not candidates:
         return result
     directory = job_dir / 'closing_novelty'
@@ -174,7 +186,9 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
     if getattr(vision, 'cache_profile', None) is not None:
         models.append({'provider_profile': vision.cache_profile})
     for index in range(len(result)):
-        if (anchor is not None and index < anchor) or (anchor is None and index not in candidates):
+        if event_ids is not None and result[index]['id'] not in event_ids:
+            continue
+        if index not in candidates:
             continue
         if cancelled():
             raise InterruptedError('Обработка отменена')
@@ -185,8 +199,39 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
             event.setdefault('story_warnings', []).append(warning + 'текущие изображения отсутствуют; материал сохранён')
             continue
         units = all_units[index]
+        if not units:
+            continue
         views = [(image,units)]
-        if event.get('analysis_chunks'):
+        scoped = units[0]['start'] > event['start'] or units[-1]['end'] < event['end'] or any(
+            b['start']-a['end'] > .002 for a,b in zip(units,units[1:]))
+        if scoped:
+            source = Path(source_name).resolve() if source_name else None
+            if source is None or not source.is_file() or not source.is_relative_to(ROOT.resolve()):
+                event.setdefault('story_warnings',[]).append(warning+'целевые изображения недоступны; материал сохранён')
+                continue
+            groups=[]
+            for unit in units:
+                if groups and abs(groups[-1][-1]['end']-unit['start'])<=.002:
+                    groups[-1].append(unit)
+                else:
+                    groups.append([unit])
+            views=[]
+            for group in groups:
+                name=hashlib.sha256(json.dumps(group,sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
+                current_image=directory/(name+'.target.jpg')
+                try:
+                    storyboard(source,group[0]['start'],group[-1]['end'],shots,transcript,current_image,cancelled)
+                except (ValueError,RuntimeError,OSError,TimeoutError) as error:
+                    from .scene_understanding import _control_failure
+                    if _control_failure(error):
+                        raise
+                    event.setdefault('story_warnings',[]).append(warning+'целевые кадры не подготовлены; материал сохранён')
+                    views=[]
+                    break
+                views.append((current_image,group))
+            if not views:
+                continue
+        elif event.get('analysis_chunks'):
             views = []
             for number,chunk in enumerate(event['analysis_chunks']):
                 chunk_image = job_dir/'visual'/f'{event["id"]}_chunk_{number:03d}.jpg'
@@ -200,8 +245,8 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                 event['selection_needs_adjudication'] = True
                 continue
         context_end = anchor if anchor is not None else index
-        prior = [value for value in events[:context_end] if not value.get('credit_montage')
-                 and (value.get('selected_ranges') or value.get('importance', 0) >= 3)]
+        prior = _relevant_prior(event, units, [value for value in events[:context_end]
+                 if not value.get('credit_montage') and value.get('selected_ranges', [value])])
         known = {unit['id'] for unit in units}
         identity = {'version': CLOSING_VERSION, 'source': source_identity, 'models': models,
                     'editorial_profile':editorial_profile,
@@ -254,7 +299,7 @@ def refine_closing_novelty(events, transcript, shots, job_dir: Path, vision, rep
                         event.setdefault('story_warnings',[]).append(f"{unit['id']}: сохранён независимо подтверждённый сюжет")
                         continue
                     atmosphere=unit['id'] in set(event.get('protected_atmosphere_units',[]))|set(raw.get('reaction_or_humor_units',[]))
-                    if (atmosphere and (editorial_profile['preserve_reactions'] or editorial_profile['preserve_humor'])
+                    if (preserve_unit_reaction(editorial_profile,event,unit['id'],flagged=atmosphere)
                             or not editorial_profile['remove_empty_holds'] or not editorial_profile['remove_exact_repetition']):
                         omitted.remove(unit['id'])
                         event.setdefault('story_warnings',[]).append(f"{unit['id']}: сохранена атмосфера или запрещено сокращение профилем")

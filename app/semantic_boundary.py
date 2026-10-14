@@ -50,6 +50,13 @@ movement and ordinary pose/expression changes use minor_motion, not capture,
 binding or a new story state. Missing landmarks in a close-up cannot establish
 a changed location. Describe evidence first and choose change_scope before its
 consistent flags. Return the required JSON only.'''
+BOUNDARY_BATCH_PROMPT = '''Inspect each supplied boundary independently. Each image is a separate
+BEFORE/BOUNDARY/AFTER comparison, in the same order as the boundary entries below. Never transfer
+landmarks, people, state, speech or decisions between entries. Return {"boundaries": [...]} with
+exactly one decision per supplied boundary_id; preserve each ID. In each evidence briefly compare
+BEFORE landmarks with AFTER landmarks, then report the consistent scope and flags. All original
+semantic requirements above apply separately to each entry.'''
+MAX_BOUNDARY_BATCH = 3
 FLAGS = ('same_location', 'location_changed', 'same_characters', 'character_state_changed',
          'object_state_changed', 'physical_transition')
 TRANSITIONS = ('none', 'capture', 'binding', 'handover', 'enter_vehicle', 'entry', 'exit',
@@ -224,10 +231,14 @@ def boundary_frames(source, time, before, after, job_dir, cancelled):
                           'sha256': f['sha256']} for f in frames]
 
 
-def verify_boundary(source, time, before, after, transcript, measured, job_dir, vision, cancelled):
-    diagnostics = Diagnostics(job_dir)
+def _prepare_boundary(source, time, before, after, transcript, measured, job_dir, vision, cancelled):
+    if cancelled():
+        raise InterruptedError('Обработка отменена')
     image, frames = boundary_frames(Path(source), time, before, after, Path(job_dir), cancelled)
-    speech = [row for row in transcript.get('segments', []) if row['start'] < after and row['end'] > before]
+    # Include complete utterances crossing this measured boundary, rather than
+    # the two potentially long scene windows passed as extraction limits.
+    speech = [row for row in transcript.get('segments', [])
+              if row['start'] < min(after,time+2) and row['end'] > max(before,time-2)]
     payload = {'source_boundary': time, 'frame_times': [f['time'] for f in frames],
                'measured_signals': measured, 'transcript': speech}
     prompt = BOUNDARY_PROMPT+'\n'+json.dumps(payload, ensure_ascii=False, allow_nan=False)
@@ -237,16 +248,46 @@ def verify_boundary(source, time, before, after, transcript, measured, job_dir, 
     directory = Path(job_dir)/'boundary-verification'
     directory.mkdir(parents=True, exist_ok=True)
     checkpoint = directory/(signature+'.json')
+    return {'time':time, 'frames':frames, 'image':image, 'speech':speech, 'payload':payload,
+            'prompt':prompt, 'signature':signature, 'checkpoint':checkpoint, 'measured':measured}
+
+
+def _cached_boundary(prepared, diagnostics):
+    checkpoint, signature = prepared['checkpoint'], prepared['signature']
     if checkpoint.is_file():
         try:
             saved = load_json(checkpoint)
             decision = validate_boundary(saved['decision'])
             if saved.get('signature') == signature and not decision['uncertain'] and decision['confidence'] >= .88:
-                diagnostics.event('semantic_boundary', 'cache_hit', source_time=time, signature=signature)
-                return {**decision, 'source': 'semantic_boundary_verification', 'frames': frames,
-                        'signature': signature, 'level_a': measured}
+                diagnostics.event('semantic_boundary', 'cache_hit', source_time=prepared['time'], signature=signature)
+                return {**decision, 'source': 'semantic_boundary_verification', 'frames': prepared['frames'],
+                        'signature': signature, 'level_a': prepared['measured']}
         except (ValueError, KeyError, OSError):
             pass
+    return None
+
+
+def _recover_boundary(prepared, decision, job_dir, vision, cancelled, diagnostics):
+    if cancelled():
+        raise InterruptedError('Обработка отменена')
+    time,frames = prepared['time'],prepared['frames']
+    diagnostics.append('boundary_verification.jsonl',{'source_time':time,
+        'pass':'initial_uncertain','decision':decision,'frames':frames,'signature':prepared['signature']})
+    recovery = BOUNDARY_RECOVERY_PROMPT+'\n'+json.dumps({
+        'source_boundary':time,'frame_times':[frames[0]['time'],frames[-1]['time']],
+        'disputed_hypothesis':decision,'transcript':prepared['speech']},ensure_ascii=False)
+    pair = [Path(job_dir)/frames[0]['frame'],Path(job_dir)/frames[-1]['frame']]
+    return validate_boundary(vision.query(recovery,pair,max_tokens=700,schema=boundary_schema()))
+
+
+def verify_boundary(source, time, before, after, transcript, measured, job_dir, vision, cancelled):
+    diagnostics = Diagnostics(job_dir)
+    prepared = _prepare_boundary(source,time,before,after,transcript,measured,job_dir,vision,cancelled)
+    cached = _cached_boundary(prepared, diagnostics)
+    if cached is not None:
+        return cached
+    image, frames, speech, prompt, signature, checkpoint = (
+        prepared[key] for key in ('image','frames','speech','prompt','signature','checkpoint'))
     diagnostics.event('semantic_boundary', 'cache_miss', source_time=time, signature=signature,
                       provider=type(vision).__name__, model=str(getattr(vision,'model','unknown')))
     try:
@@ -254,16 +295,7 @@ def verify_boundary(source, time, before, after, transcript, measured, job_dir, 
             raw = vision.query(prompt, image, max_tokens=700, schema=boundary_schema())
             decision = validate_boundary(raw)
             if decision['uncertain'] or decision['confidence'] < .88:
-                if cancelled():
-                    raise InterruptedError('Обработка отменена')
-                diagnostics.append('boundary_verification.jsonl', {'source_time': time,
-                    'pass': 'initial_uncertain', 'decision': decision, 'frames': frames, 'signature': signature})
-                recovery = BOUNDARY_RECOVERY_PROMPT+'\n'+json.dumps({
-                    'source_boundary': time, 'frame_times': [frames[0]['time'],frames[-1]['time']],
-                    'disputed_hypothesis': decision, 'transcript': speech}, ensure_ascii=False)
-                pair = [Path(job_dir)/frames[0]['frame'], Path(job_dir)/frames[-1]['frame']]
-                decision = validate_boundary(vision.query(recovery, pair, max_tokens=700,
-                                                         schema=boundary_schema()))
+                decision = _recover_boundary(prepared,decision,job_dir,vision,cancelled,diagnostics)
     except (ValueError, RuntimeError, OSError, TimeoutError) as error:
         from .scene_understanding import _control_failure
         if _control_failure(error):
@@ -279,3 +311,163 @@ def verify_boundary(source, time, before, after, transcript, measured, job_dir, 
                        'frames': frames, 'prompt_hash': hashlib.sha256(prompt.encode()).hexdigest(), 'signature': signature})
     return {**decision, 'source': 'semantic_boundary_verification', 'frames': frames,
             'signature': signature, 'level_a': measured}
+
+
+def boundary_batch_schema(ids):
+    item = copy.deepcopy(boundary_schema())
+    for branch in (item, *item['oneOf']):
+        branch['properties']['boundary_id'] = {'type':'string', 'enum':list(ids)}
+        branch['required'].append('boundary_id')
+    return {'type':'object', 'properties':{'boundaries':{'type':'array', 'items':item,
+            'minItems':len(ids), 'maxItems':len(ids)}}, 'required':['boundaries'], 'additionalProperties':False}
+
+
+def verify_scoped_boundary(source, time, before, after, transcript, measured, job_dir, vision, cancelled):
+    """Qualify a native boundary reply with its actual source/frame/ASR proof."""
+    from .source_identity import source_identity
+    source, job_dir = Path(source).resolve(), Path(job_dir).resolve()
+    stamp = source_identity(source, cancelled)
+    raw = verify_boundary(source,time,before,after,transcript,measured,job_dir,vision,cancelled)
+    decision = validate_boundary(raw)
+    frames = raw.get('frames')
+    if (not isinstance(frames,list) or len(frames)<2 or not raw.get('signature')
+            or raw.get('source') != 'semantic_boundary_verification'):
+        raise ValueError('Boundary reply has no native source-frame proof')
+    artifacts=[]
+    for frame in frames:
+        timestamp=frame.get('time')
+        path=(job_dir/str(frame.get('frame',''))).resolve()
+        if (type(timestamp) not in (int,float) or not math.isfinite(timestamp)
+                or not before-.001 <= timestamp < after+.001 or not path.is_relative_to(job_dir)
+                or not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=frame.get('sha256')):
+            raise ValueError('Boundary source-frame ownership/hash is missing')
+        artifacts.append({'time':timestamp,'frame':path.relative_to(job_dir).as_posix(),'sha256':frame['sha256']})
+    if not min(f['time'] for f in artifacts) <= time <= max(f['time'] for f in artifacts):
+        raise ValueError('Boundary proof does not show both source sides')
+    if source_identity(source,cancelled)!=stamp:
+        raise ValueError('Source changed during scoped boundary recovery')
+    speech=[row for row in transcript.get('segments',[]) if row['start']<min(after,time+2)
+            and row['end']>max(before,time-2)]
+    physical=any(decision[key] for key in ('physical_transition','character_state_changed','object_state_changed'))
+    trusted=not decision['uncertain'] and decision['confidence']>=.88
+    return {**decision,'accepted':trusted and bool(decision['location_changed'] or physical),
+            'uncertain':not trusted,'source':'semantic_boundary_verification','signature':raw['signature'],
+            'frames':artifacts,'level_a':copy.deepcopy(measured),
+            'reasons':(['verified_physical_transition'] if physical else ['verified_location_change']
+                       if decision['location_changed'] else ['verified_same_scene']) if trusted
+                       else ['semantic_boundary_unresolved'],
+            'source_evidence':{'source':stamp,'boundary':time,'before':before,'after':after,
+                'asr_sha256':hashlib.sha256(json.dumps(speech,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),
+                'native_signature':raw['signature'],'producer':_identity(vision)}}
+
+
+def _batch_decisions(raw, ids):
+    if not isinstance(raw,dict) or not isinstance(raw.get('boundaries'),list):
+        raise ValueError('Invalid boundary batch envelope')
+    results = {}
+    for value in raw['boundaries']:
+        if not isinstance(value,dict):
+            raise ValueError('Invalid boundary batch entry')
+        value = dict(value)
+        identifier = value.pop('boundary_id',None)
+        if not isinstance(identifier,str) or identifier not in ids or identifier in results:
+            raise ValueError('Wrong or duplicated boundary batch ID')
+        results[identifier] = validate_boundary(value)
+    if set(results) != set(ids):
+        raise ValueError('Missing boundary batch result')
+    return results
+
+
+def _batch_capacity(vision):
+    capacity = getattr(vision,'max_boundary_batch',1)
+    return min(capacity,MAX_BOUNDARY_BATCH) if type(capacity) is int and capacity > 0 else 1
+
+
+def verify_boundaries(source, rows, transcript, job_dir, vision, cancelled):
+    """Local independent checks in bounded batches; legacy provider/cache contract remains scalar."""
+    capacity = _batch_capacity(vision)
+    results, seen = {}, set()
+    for row in rows:
+        key = round(float(row['time']),6)
+        if key in seen:
+            raise ValueError('Repeated source boundary ID')
+        seen.add(key)
+    diagnostics = Diagnostics(job_dir)
+    def scalar(row):
+        return verify_boundary(source,row['time'],row['before'],row['after'],transcript,
+                               row['measured'],job_dir,vision,cancelled)
+    if capacity == 1:
+        return {round(row['time'],6):scalar(row) for row in rows}
+    for offset in range(0,len(rows),capacity):
+        pending = []
+        for row in rows[offset:offset+capacity]:
+            prepared = _prepare_boundary(source,row['time'],row['before'],row['after'],transcript,
+                                         row['measured'],job_dir,vision,cancelled)
+            # Validated individual decisions from old runs remain reusable.
+            cached = _cached_boundary(prepared,diagnostics)
+            if cached is None:
+                signature = hashlib.sha256(json.dumps({'scalar':prepared['signature'],
+                    'batch_prompt':BOUNDARY_BATCH_PROMPT},sort_keys=True).encode()).hexdigest()
+                prepared['signature'] = signature
+                prepared['checkpoint'] = prepared['checkpoint'].parent/('batch-'+signature+'.json')
+                cached = _cached_boundary(prepared,diagnostics)
+            if cached is not None:
+                results[round(row['time'],6)] = cached
+            else:
+                pending.append((row,prepared))
+        if not pending:
+            continue
+        if len(pending) == 1:
+            row,_ = pending[0]
+            results[round(row['time'],6)] = scalar(row)
+            continue
+        ids = [f"boundary_{row['time']:.6f}" for row,_ in pending]
+        payload = {'boundaries':[{'boundary_id':identifier,**prepared['payload']}
+                   for identifier,(_,prepared) in zip(ids,pending)]}
+        prompt = BOUNDARY_PROMPT+'\n'+BOUNDARY_BATCH_PROMPT+'\n'+json.dumps(payload,ensure_ascii=False,allow_nan=False)
+        try:
+            if cancelled():
+                raise InterruptedError('Обработка отменена')
+            with diagnostics.stage('semantic_boundary_batch', boundaries=len(pending), boundary_ids=ids):
+                raw = vision.query(prompt,[prepared['image'] for _,prepared in pending],
+                                   max_tokens=700*len(pending),schema=boundary_batch_schema(ids))
+                decisions = _batch_decisions(raw,ids)
+        except (ValueError,RuntimeError,OSError,TimeoutError) as error:
+            from .scene_understanding import _control_failure
+            if _control_failure(error):
+                raise
+            diagnostics.event('semantic_boundary_batch','scalar_fallback',boundary_ids=ids,
+                              error_type=type(error).__name__,error=str(error))
+            for row,_ in pending:
+                results[round(row['time'],6)] = scalar(row)
+            continue
+        for identifier,(row,prepared) in zip(ids,pending):
+            if cancelled():
+                raise InterruptedError('Обработка отменена')
+            decision = decisions[identifier]
+            if decision['uncertain'] or decision['confidence'] < .88:
+                # Preserve the independent original two-frame recovery for a
+                # disputed boundary, not another group-wide vote.
+                diagnostics.event('semantic_boundary_batch','targeted_recovery',source_time=row['time'])
+                try:
+                    decision = _recover_boundary(prepared,decision,job_dir,vision,cancelled,diagnostics)
+                except (ValueError,RuntimeError,OSError,TimeoutError) as error:
+                    from .scene_understanding import _control_failure
+                    if _control_failure(error):
+                        raise
+                    diagnostics.event('semantic_boundary','verification_unresolved',source_time=row['time'],
+                                      error_type=type(error).__name__,error=str(error))
+                    results[round(row['time'],6)] = {'confidence':0,'uncertain':True,
+                        'source':'semantic_boundary_verification','evidence':'verification_failed',
+                        'frames':prepared['frames'],'level_a':row['measured'],'error_type':type(error).__name__}
+                    continue
+            signature,frames = prepared['signature'],prepared['frames']
+            atomic_json(prepared['checkpoint'],{'signature':signature,'decision':decision,'frames':frames,
+                'prompt_hash':hashlib.sha256(prompt.encode()).hexdigest(), 'transport':'independent_batch',
+                'boundary_id':identifier,'boundary_ids':ids})
+            diagnostics.append('boundary_verification.jsonl',{'source_time':row['time'],'decision':decision,
+                'frames':frames,'signature':signature,'boundary_id':identifier,'transport':'independent_batch',
+                'prompt_hash':hashlib.sha256(prompt.encode()).hexdigest()})
+            results[round(row['time'],6)] = {**decision,'source':'semantic_boundary_verification',
+                'frames':frames,'signature':signature,'level_a':row['measured']}
+    return results

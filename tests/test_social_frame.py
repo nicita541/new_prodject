@@ -17,6 +17,15 @@ from app.social_frame import geometry, write_card
 
 
 class SocialFrameTests(unittest.TestCase):
+    def test_avatar_preserves_transparent_and_semitransparent_pixels(self):
+        from app.finishing_avatar import draw_avatar
+        path = self.root / 'transparent.png'
+        for alpha in (0, 128, 255):
+            Image.new('RGBA', (64, 64), (240, 30, 10, alpha)).save(path)
+            avatar = draw_avatar({'avatar_style': 'image'}, 84, path)
+            self.assertEqual(avatar.getpixel((42, 42))[3], alpha)
+            self.assertEqual(avatar.getpixel((0, 0))[3], 0)
+
     def setUp(self):
         self.root = TEMP / ("social-frame-" + uuid.uuid4().hex)
         self.root.mkdir(parents=True)
@@ -52,11 +61,27 @@ class SocialFrameTests(unittest.TestCase):
                 with Image.open(card) as image:
                     self.assertEqual(image.size, (1080, 1920))
                     self.assertEqual(image.getpixel((540, box["y"] + box["height"] // 2))[3], 0)
-                    self.assertEqual(image.getpixel((540, box["card_top"] + 5)),
-                                     (20, 33, 42, 255) if variant == "post" else (8, 11, 15, 255))
+                    self.assertEqual(image.getpixel((540, box["card_top"] + 5)), (27, 48, 66, 255))
+                    self.assertGreater(image.getpixel((540, box['card_bottom'] + 15))[3], 0,
+                                       'the message has a real soft shadow outside the bubble')
+                    self.assertGreater(image.getpixel((box['x'], box['y']))[3], 0,
+                                       'rounded media corners are covered by the bubble')
                     self.assertEqual(box["y"], box["card_top"] + (400 if variant == "post" else 280))
                 self.assertLessEqual(abs(box["width"] / box["height"] - width / height), .01)
                 self.assertLessEqual(box["height"], 800)
+
+    def test_custom_avatar_and_presets_are_rendered_into_the_card(self):
+        avatar = self.root / 'avatar.png'
+        Image.new('RGB', (128, 64), '#fa2314').save(avatar)
+        for kind in ('image', 'initials', 'star', 'play', 'chat'):
+            path = self.root / (kind + '.png')
+            box = write_card(path, 1920, 1080, {'channel_name': 'Канал', 'avatar_style': kind},
+                             avatar=avatar if kind == 'image' else None, duration=102)
+            with Image.open(path) as picture:
+                pixel = picture.getpixel((136, box['card_top'] + 72))
+                if kind == 'image':
+                    self.assertEqual(pixel[:3], (250, 35, 20))
+                self.assertEqual(pixel[3], 255)
 
     def test_user_text_never_enters_filters_and_music_input_index_remains_correct(self):
         source = self.root / "source.mp4"
@@ -94,6 +119,7 @@ class SocialFrameTests(unittest.TestCase):
         with patch("app.analysis.analyze", return_value=analysis), \
              patch("app.pipeline.choose_encoder", return_value="libx264"), \
              patch("app.pipeline.render_part", side_effect=rendered) as renderer, \
+             patch('app.pipeline.prepare_clean_part', side_effect=lambda s, p, pr, *a: (s, p, pr, False)), \
              patch("app.pipeline.validate_export"), \
              patch("app.finishing_profile.load_video_finish", return_value=style):
             run_job(self.root, lambda *args: None, lambda: False)

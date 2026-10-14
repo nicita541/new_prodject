@@ -39,10 +39,10 @@ class _QueryProducer:
         return reply.result()
 
 
-def refine_in_batches(events, transcript, shots, job_dir, vision, report, cancelled, refiner):
+def refine_in_batches(events, transcript, shots, job_dir, vision, report, cancelled, refiner, *, episode_duration=None):
     if not events:
         return []
-    duration = max(event['end'] for event in events)
+    duration = max(event['end'] for event in events) if episode_duration is None else episode_duration
     def work(event, proxy, stop_check):
         # Original per-child logic and episode edge tests remain intact.
         # Worker threads never report through the multiprocessing status pipe.
@@ -73,6 +73,43 @@ def adjudicate_in_batches(source, events, transcript, shots, job_dir, vision, re
     def progress(completed, total):
         report('analyze', .5, f'Проверка конкретного выбора · обработано событий: {completed} из {total}')
     return run_independent_batches(events, vision, cancelled, work, progress)
+
+
+def review_events_in_batches(events, transcript, shots, job_dir, vision, report, cancelled,
+                            *, refiner, label, full_context=False):
+    """Use unchanged event proofs; retain the complete original neighbor context.
+
+    Full-context refiners explicitly select an event, rather than receiving a
+    singleton episode that changes duration, prior story or neighbor evidence.
+    """
+    if getattr(vision, 'supports_query_batch', False) is not True:
+        return refiner(events, transcript, shots, job_dir, vision, report, cancelled)
+    if len({event['id'] for event in events}) != len(events):
+        raise ValueError('Пакетная проверка требует уникальных событий')
+    import copy
+    def work(index, proxy, stop_check):
+        if full_context:
+            return refiner(events, transcript, shots, job_dir, proxy,
+                lambda *args: None, stop_check, event_ids={events[index]['id']})[index]
+        return refiner([copy.deepcopy(events[index])], transcript, shots, job_dir,
+            proxy, lambda *args: None, stop_check)[0]
+    def progress(completed, total):
+        report('condense', .49, f'{label} · обработано событий: {completed} из {total}')
+    spans = sorted((event['start'], event['end']) for event in events)
+    if any(right > following for (_, right), (following, _) in zip(spans, spans[1:])):
+        # Legacy overlapping events can name the same native image/cache files.
+        return refiner(events, transcript, shots, job_dir, vision, report, cancelled)
+    return run_independent_batches(list(range(len(events))), vision, cancelled, work, progress)
+
+
+def closing_in_batches(events, transcript, shots, job_dir, vision, report, cancelled, *, refiner):
+    from .closing import _ending_anchor
+    duration = max((event['end'] for event in events), default=0)
+    if not any(_ending_anchor(event, duration) for event in events):
+        # Accepted omissions can establish the anchor used by later events.
+        return refiner(events, transcript, shots, job_dir, vision, report, cancelled)
+    return review_events_in_batches(events, transcript, shots, job_dir, vision, report,
+        cancelled, refiner=refiner, label='Проверка новых событий в финале', full_context=True)
 
 
 def run_independent_batches(items, vision, cancelled, work, progress):

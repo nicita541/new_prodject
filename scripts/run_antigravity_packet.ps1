@@ -6,12 +6,13 @@ param(
     [switch]$Smoke,
     [switch]$JsonText,
     [switch]$EmptyResponseRetryUsed,
+    [switch]$AllowQuotaWait,
     [string]$StopFile,
     [string]$RunnerStopFile,
     [ValidateRange(1,240)][int]$TimeLimitSeconds = 240
 )
 
-# Standalone direct scripting: invoked by the user, never by KADR.
+# Official headless CLI request with strict native response validation.
 $ErrorActionPreference = 'Stop'
 if ($Smoke -and $JsonText) { throw 'JsonText is for real analysis packets, not the structured smoke check' }
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -29,6 +30,29 @@ $env:TEMP = Join-Path $workspace 'temp'
 $env:TMP = $env:TEMP
 $env:TMPDIR = $env:TEMP
 New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+# Atomic rename replaces content without copying destination ACL metadata.
+# ReplaceFile requires additional ACL rights on some Windows installations.
+if (-not ('KadrAtomicFile' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class KadrAtomicFile {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool MoveFileEx(string source, string destination, int flags);
+}
+"@
+}
+function Publish-AtomicFile([string]$Source, [string]$Destination) {
+    for ($publishAttempt=0; $publishAttempt -lt 20; $publishAttempt++) {
+        if ([KadrAtomicFile]::MoveFileEx($Source, $Destination, 9)) { return }
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errorCode -notin @(5,32,33) -or $publishAttempt -eq 19) {
+            throw (New-Object ComponentModel.Win32Exception($errorCode))
+        }
+        Start-Sleep -Milliseconds 50
+    }
+}
+
 Set-Location -LiteralPath $packet
 $attempt = Join-Path $packet ('cli-attempts\' + (Get-Date).ToUniversalTime().ToString('yyyyMMdd_HHmmss') + '_' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $attempt | Out-Null
@@ -85,9 +109,48 @@ function Publish-Failure([string]$Code) {
     $failureRecord = @{packet=$request.id;code=$Code;attempt=(Split-Path $attempt -Leaf);
         response_mode=$(if ($JsonText) { 'json_string' } else { 'structured' })}
     if ($Code -eq 'process_exit') { $failureRecord.exit_code = $cliExit }
+    $script:knownQuotaReset = $false
+    if ($Code -eq 'quota') {
+        $quotaError = if ($envelope) { [string]$envelope.error } else { [string]$result.error }
+        $reset = [regex]::Match($quotaError, '(?i)\bresets\s+in\s+((?:\d+\s*[hms]\s*){1,3})(?:[.!]|$)')
+        if ($reset.Success -and $cliFinishedAt) {
+            $seconds = 0; $seen = @{}; $order = -1; $valid = $true
+            foreach ($part in [regex]::Matches($reset.Groups[1].Value.ToLowerInvariant(), '(\d+)\s*([hms])')) {
+                $unit = $part.Groups[2].Value; $position = 'hms'.IndexOf($unit)
+                if ($seen.ContainsKey($unit) -or $position -le $order) { $valid = $false }
+                $seen[$unit] = $true; $order = $position
+                $seconds += [long]$part.Groups[1].Value * @{h=3600;m=60;s=1}[$unit]
+            }
+            if ($valid -and $seconds -gt 0 -and $seconds -le 86400) {
+                $finished = [DateTimeOffset]::Parse($cliFinishedAt).ToUniversalTime()
+                $failureRecord.quota_finished_at = $finished.ToString('o')
+                $failureRecord.quota_delay_seconds = $seconds
+                $failureRecord.quota_reset_at = $finished.AddSeconds($seconds).ToString('o')
+                $failureRecord.quota_retry_at = $finished.AddSeconds($seconds + 30).ToString('o')
+                $script:knownQuotaReset = $true
+                if ($AllowQuotaWait -and (Split-Path (Split-Path $packet -Parent) -Leaf) -eq 'packets') {
+                    $exchangeRoot = Split-Path (Split-Path $packet -Parent) -Parent
+                    if ((Split-Path $exchangeRoot -Leaf) -ne 'antigravity' -or
+                        -not $exchangeRoot.StartsWith($workspace + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                        throw 'Quota cooldown must belong to the workspace exchange'
+                    }
+                    $cooldown = Join-Path $exchangeRoot 'quota-cooldown.json'
+                    $publish = $true
+                    if (Test-Path -LiteralPath $cooldown) {
+                        $previous = Get-Content -LiteralPath $cooldown -Raw -Encoding UTF8 | ConvertFrom-Json
+                        $publish = [DateTimeOffset]::Parse($previous.quota_retry_at) -lt $finished.AddSeconds($seconds+30)
+                    }
+                    if ($publish) {
+                        $pendingCooldown = Join-Path $exchangeRoot ('.quota-' + [Guid]::NewGuid().ToString('N') + '.pending')
+                        [IO.File]::WriteAllText($pendingCooldown, ($failureRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+                        Publish-AtomicFile $pendingCooldown $cooldown
+                    }
+                }
+            }
+        }
+    }
     [IO.File]::WriteAllText($failurePending, ($failureRecord | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-    if (Test-Path -LiteralPath $failure) { [IO.File]::Replace($failurePending,$failure,[NullString]::Value) }
-    else { [IO.File]::Move($failurePending,$failure) }
+    Publish-AtomicFile $failurePending $failure
 }
 if (-not $Smoke -and (Test-Path -LiteralPath (Join-Path $packet 'failure.json'))) {
     $previousFailure = Get-Content -LiteralPath (Join-Path $packet 'failure.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -250,7 +313,24 @@ if ($abortReason) {
         -not ($RunnerStopFile -and (Test-Path -LiteralPath $RunnerStopFile))) { Publish-Failure 'timeout' }
     throw "$abortReason; inspect $attempt"
 }
-if ($cliExit -ne 0) { Publish-Failure 'process_exit'; throw "agy failed (exit $cliExit); inspect $attempt" }
+if ($cliExit -ne 0) {
+    # Official CLI reports auth/quota/context failures in a valid ERROR
+    # envelope even with exit1. Keep its actionable category, never its body.
+    $exitFailure = 'process_exit'
+    if ($envelope.status -eq 'ERROR') {
+        $exitReason = [string]$envelope.error
+        if ($exitReason -match 'not.logged.in|UNAUTHENTICATED|authentication') { $exitFailure = 'authentication' }
+        elseif ($exitReason -match 'quota|rate.limit|RESOURCE_EXHAUSTED|429') { $exitFailure = 'quota' }
+        elseif ($exitReason -match 'timed.out|deadline.exceeded') { $exitFailure = 'timeout' }
+        elseif ($exitReason -match 'context.*(exceed|too.long)') { $exitFailure = 'context_limit' }
+    }
+    Publish-Failure $exitFailure
+    if ($AllowQuotaWait -and $exitFailure -eq 'quota' -and $script:knownQuotaReset) {
+        Write-Host 'Provider quota reset recorded; owned worker will resume after cooldown.'
+        return
+    }
+    throw "agy failed ($exitFailure, exit $cliExit); inspect $attempt"
+}
 if ($streamError) { Publish-Failure 'invalid_json'; throw "$streamError; inspect $attempt" }
 try { $result = Get-Content -LiteralPath (Join-Path $attempt $outputName) -Raw -Encoding UTF8 | ConvertFrom-Json }
 catch { Publish-Failure 'invalid_json'; throw "Antigravity returned invalid JSON; inspect $attempt" }
@@ -295,6 +375,10 @@ if ($result.status -ne 'SUCCESS' -or -not $hasAnswer) {
     elseif ($reason -match 'timed.out|deadline.exceeded') { $failureCode = 'timeout' }
     elseif ($reason -match 'context.*(exceed|too.long)') { $failureCode = 'context_limit' }
     Publish-Failure $failureCode
+    if ($AllowQuotaWait -and $failureCode -eq 'quota' -and $script:knownQuotaReset) {
+        Write-Host 'Provider quota reset recorded; owned worker will resume after cooldown.'
+        return
+    }
     throw "No successful structured result; do not import $attempt"
 }
 if ($Smoke -and $result.structured_output.ok -ne $true) { throw 'Smoke answer is not ok=true' }
@@ -317,8 +401,7 @@ if (-not $Smoke -and @($request.images).Count -gt 0) {
 $destination = Join-Path $packet $outputName
 $pending = $destination + '.pending'
 Copy-Item -LiteralPath (Join-Path $attempt $outputName) -Destination $pending -Force
-if (Test-Path -LiteralPath $destination) { [IO.File]::Replace($pending, $destination, [NullString]::Value) }
-else { [IO.File]::Move($pending, $destination) }
+Publish-AtomicFile $pending $destination
 Write-Host ('Result: ' + (Join-Path $packet $outputName))
 Write-Host ('CLI wall seconds: ' + [Math]::Round($started.Elapsed.TotalSeconds, 3))
 if ($result.usage) { $result.usage | ConvertTo-Json -Compress | Write-Host }

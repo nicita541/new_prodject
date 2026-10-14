@@ -45,7 +45,10 @@ class EndingTests(unittest.TestCase):
              patch('app.endings.recover_fallback_endings', side_effect=lambda result, *args: result):
             refine_endings(data['events'], data['transcript'], data['shots'], data['probe'],
                            directory, vision, lambda *a: None, lambda: False)
-        self.assertEqual(seen, [c['id'] for c in candidates])
+        from app.endings import _pending_endings
+        target = _pending_endings(data['events'], data['transcript'], data['shots'], data['probe'])[0]
+        nearby = [c for c in candidates if abs(c['output_time']-target['output_time']) <= 45]
+        self.assertEqual(seen, [c['id'] for c in sorted(nearby, key=lambda c: (abs(c['time']-target['time']), c['time']))])
 
     def test_rejected_proposals_recover_complete_response_and_reuse_exact_cache(self):
         data = fixture()
@@ -121,7 +124,7 @@ class EndingTests(unittest.TestCase):
         second = refine_endings(data['events'], data['transcript'], data['shots'], data['probe'],
                                 directory, vision, lambda *a: None, lambda: False)
         self.assertEqual(first, second)
-        self.assertEqual(vision.query.call_count, 3)
+        self.assertEqual(vision.query.call_count, 2)
         self.assertEqual(data, original)
         plan = build_plan({**data, 'events': first})
         self.assertEqual([p['duration'] for p in plan['parts']], [110, 90])

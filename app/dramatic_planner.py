@@ -24,6 +24,7 @@ from .pacing import condense_beat
 from .source_roles import apply_exclusions, confirmed_exclusions
 from app.source_ranges import subtract_ranges as _subtract
 from .episode_profile import build_episode_profile, adaptive_retention_budget
+from app.viewer_interest import score_event, score_source, ending_cost, interest_index
 
 TARGET_SHORT_MIN = 60.0
 TARGET_SHORT_OPTIMAL = 85.0
@@ -51,25 +52,7 @@ def _align_words_to_shot_boundaries(words: list[dict], shots: list[dict]) -> lis
 
 
 def _event_dramatic_score(event: dict, segments: list[dict]) -> float:
-    score = 0.0
-    if event.get('narrative_bridge'):
-        score += 25.0
-    score += float(event.get('importance', 3)) * 6.0
-    for ending in event.get('part_endings', []):
-        kind = ending.get('kind')
-        conf = float(ending.get('confidence', 0.9))
-        if kind == 'cliffhanger':
-            score += 15.0 * conf
-        elif kind == 'closure':
-            score += 10.0 * conf
-        elif kind == 'transition':
-            score += 4.0 * conf
-    ev_start, ev_end = _number(event['start']), _number(event['end'])
-    ev_speech = [s for s in segments if s['start'] < ev_end and s['end'] > ev_start]
-    speech_dur = sum(s['end'] - s['start'] for s in ev_speech)
-    ev_dur = max(0.1, ev_end - ev_start)
-    score += min(15.0, (speech_dur / ev_dur) * 15.0)
-    return score
+    return score_event(event, {'segments': segments, 'words': segments})['total']
 
 
 def _normalize_shots(shots: list[dict], duration: float) -> list[dict]:
@@ -285,19 +268,27 @@ def _build_dramatic_boundaries(
             elapsed += interval['end'] - interval['start']
 
     # Story arcs exist before Shorts, and provide complete candidate exits.
+    interest_transcript = {'segments': segments, 'words': words}
+    interest = interest_index(events, interest_transcript)
     for arc in arcs or []:
         if not arc.get('uncertain', True):
             verified = next((e for e in arc.get('endings', []) if e.get('verified') and abs(e['time']-arc['end']) < .002), None)
-            add(arc['end'], .5, verified or {'kind': 'transition', 'time': arc['end'],
+            exit_evidence = verified or {'kind': 'transition', 'time': arc['end'],
                 'evidence': ', '.join(arc['boundary_reason']) if isinstance(arc['boundary_reason'], list) else arc['boundary_reason'],
-                'confidence': arc.get('confidence', .85), 'arc_id': arc['id']})
+                'confidence': arc.get('confidence', .85), 'arc_id': arc['id']}
+            ranges = {i: [{'start': max(arc['start'], arc['end'] - 3), 'end': arc['end']}]
+                      for i in arc['event_ids']}
+            arc_interest = score_source(events, ranges, interest_transcript, index=interest)
+            add(arc['end'], ending_cost(exit_evidence, arc_interest), exit_evidence)
 
     # Verified/supplied endings still pass action and dialogue guards.
     for event in events:
         for ending in event.get('part_endings', []):
-            kind = ending.get('kind', 'transition')
-            cost = {'cliffhanger': 0.0, 'closure': 1.0, 'transition': 3.0}.get(kind, 3.0)
             end_t = _number(ending['time'])
+            # Only the beat at this exit can improve its interest; a distant
+            # joke in the same parent scene cannot promote a routine answer.
+            exit_ranges = {event['id']: [{'start': max(event['start'], end_t - 3), 'end': end_t}]}
+            cost = ending_cost(ending, score_source([event], exit_ranges, interest_transcript, index=interest))
             shot_snap = next((s for s in shot_starts if end_t - 0.02 <= s <= end_t + 0.85), None)
             if shot_snap and _safe(shot_snap, words):
                 add(shot_snap, cost, {**ending, 'time': shot_snap})
@@ -489,13 +480,22 @@ def build_dramatic_plan(analysis: dict) -> dict:
     from .story_structure import build_story_arcs, resolve_continuity
     arcs = build_story_arcs(events, analysis['transcript'])
     arc_by_event = {identifier: [arc for arc in arcs if identifier in arc['event_ids']] for identifier in by_id}
+    event_scores = {e['id']: score_event(e, analysis['transcript']) for e in events}
 
     # 1. Base eligibility: non-excluded story events and narrative bridges
     eligible = [
         e for e in events
         if not e.get('pacing_excluded') and not e.get('global_excluded')
-        and (e.get('narrative_bridge') or (e["kind"] == "story" and e.get("importance", 3) >= 3) or e.get("importance", 3) >= 4)
+        and (e.get('narrative_bridge') or (e["kind"] == "story" and
+             (e.get("importance", 3) >= 3 or event_scores[e['id']]['viewer_interest_value'] > 0))
+             or e.get("importance", 3) >= 4)
     ]
+    # Rank the whole supported setup/payoff, including low-importance members.
+    eligible_ids = {e['id'] for e in eligible}
+    supporting_ids = {i for arc in arcs if arc.get('source_unit_refs') and not arc.get('uncertain', True)
+                      and set(arc['event_ids']) & eligible_ids for i in arc['event_ids']}
+    eligible = [e for e in events if e['id'] in eligible_ids or e['id'] in supporting_ids
+                and not e.get('pacing_excluded') and not e.get('global_excluded')]
     if not eligible:
         eligible = [e for e in events if e["kind"] == "story"
                     and not e.get('global_excluded') and not e.get('pacing_excluded')]
@@ -505,7 +505,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
     # Scored dramatic events
     scored_events = sorted(
         eligible,
-        key=lambda e: _event_dramatic_score(e, segments),
+        key=lambda e: event_scores[e['id']]['total'],
         reverse=True
     )
 
@@ -514,7 +514,8 @@ def build_dramatic_plan(analysis: dict) -> dict:
                         for e in eligible}
     from .retention_allocation import allocate_retention
     allocation = allocate_retention(events, candidate_ranges, [event['id'] for event in scored_events],
-        arcs, analysis['transcript'], duration, retention_budget, resolve_continuity)
+        arcs, analysis['transcript'], duration, retention_budget, resolve_continuity,
+        speech_overrides=analysis.get('speech_handle_overrides', []))
     continuity = allocation['continuity']
     selection_reasons = allocation['selection_reasons']
     events, selected_ids = continuity['events'], set(continuity['selected_ids'])
@@ -554,9 +555,12 @@ def build_dramatic_plan(analysis: dict) -> dict:
     from .speech_handles import expand_ranges, barriers
     semantic_ranges = [{'start':r['start'],'end':r['end']} for r in intervals]
     excluded_ranges = barriers(events,semantic_ranges)
+    from .review_scope import scope_barriers
+    excluded_ranges.extend(scope_barriers(analysis))
     expanded = []
     for interval in intervals:
-        for piece in expand_ranges([interval],analysis['transcript'],duration,excluded_ranges):
+        for piece in expand_ranges([interval],analysis['transcript'],duration,excluded_ranges,
+                                   overrides=analysis.get('speech_handle_overrides', [])):
             if expanded and piece['start'] <= expanded[-1]['end']+.002:
                 expanded[-1]['end'] = max(expanded[-1]['end'],piece['end'])
                 expanded[-1]['event_ids'] = list(dict.fromkeys([*expanded[-1]['event_ids'],*interval['event_ids']]))
@@ -663,6 +667,8 @@ def build_dramatic_plan(analysis: dict) -> dict:
         "retention_budget_exceeded": total_retained > retention_budget['max'] + 0.002
     }
     from .planner_audit import planner_audit
+    if analysis.get('speech_handle_overrides'):
+        plan['speech_handle_overrides'] = analysis['speech_handle_overrides']
     eligible_ids = {e['id'] for e in eligible}
     candidates = []
     for event in events:
@@ -671,7 +677,8 @@ def build_dramatic_plan(analysis: dict) -> dict:
             reasons = ['adaptive_optimal_budget_reached' if event['id'] in eligible_ids else
                        'global_omission' if event.get('global_excluded') else
                        'confirmed_nonstory' if event.get('credit_montage') or event['kind'] != 'story' else 'below_story_threshold']
-        candidates.append({'event_id': event['id'], 'score': _event_dramatic_score(event, segments),
+        candidates.append({'event_id': event['id'], 'score': event_scores[event['id']]['total'],
+            'score_components': event_scores[event['id']],
             'selected': event['id'] in retained_ids, 'arc_ids': [a['id'] for a in arc_by_event.get(event['id'], [])],
             'arc_id': next((a['id'] for a in arc_by_event.get(event['id'], [])), None),
             'reasons': reasons, 'candidate_duration': sum(r['end']-r['start'] for r in candidate_ranges.get(event['id'], []))})

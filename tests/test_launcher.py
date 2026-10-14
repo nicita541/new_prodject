@@ -9,6 +9,34 @@ from app.studio_identity import server_identity
 
 
 class LauncherTests(unittest.TestCase):
+    def setUp(self):
+        probe = patch.object(launcher, 'instance_released', return_value=True)
+        self.instance_released = probe.start()
+        self.addCleanup(probe.stop)
+
+    def test_start_refuses_a_closed_listener_with_a_held_instance_lock(self):
+        self.instance_released.return_value = False
+        with patch.object(launcher, 'studio_status', return_value='missing'), \
+                patch('app.server.main') as server:
+            with self.assertRaises(SystemExit) as error:
+                launcher.main()
+        self.assertEqual(error.exception.code, 2)
+        server.assert_not_called()
+
+    def test_stop_waits_for_lock_release_after_listener_closes(self):
+        self.instance_released.side_effect = [False, True]
+        with patch.object(launcher, 'studio_status', side_effect=['current', 'missing', 'missing']), \
+                patch.object(launcher.urllib.request, 'build_opener') as factory, \
+                patch.object(launcher.time, 'sleep') as sleep:
+            factory.return_value.open.return_value.__enter__.return_value.status = 202
+            self.assertEqual(launcher.stop_studio(), 0)
+        sleep.assert_called_once_with(0.25)
+
+    def test_missing_listener_with_held_lock_is_not_reported_as_stopped(self):
+        self.instance_released.return_value = False
+        with patch.object(launcher, 'studio_status', return_value='missing'):
+            self.assertEqual(launcher.stop_studio(), 2)
+
     def test_missing_server_starts_server_and_schedules_browser_after_readiness(self):
         with patch.object(launcher, 'studio_status', return_value='missing'), \
                 patch.object(launcher.threading, 'Thread') as thread, \

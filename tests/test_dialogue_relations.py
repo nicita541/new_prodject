@@ -330,6 +330,7 @@ class DialogueProviderTests(unittest.TestCase):
             evidence = 'The actual accepted source response resolves the observed source question.'
             return {'resolved': True, 'understanding_confidence': .95, 'structure_confidence': .95,
                 'units': [{'ref': n['ref'], 'roles': ['setup' if n['ref'] == q['ref'] else 'payoff'],
+                    'viewer_interest': [],
                     'before': copy.deepcopy(facts), 'after': copy.deepcopy(facts), 'confidence': .95,
                     'evidence': evidence, 'support': [support(n)]} for n in payload['CURRENT']],
                 'relations': [{'type': 'response', 'from': q['ref'], 'to': a['ref'], 'confidence': .95,
@@ -657,7 +658,7 @@ class DialogueProviderTests(unittest.TestCase):
         events[0]['source_identity']['sha256'] = 'changed-source'; self.infer(events, transcript, vision)
         transcript['words'][0]['text'] = 'Где?'
         self.infer(events, transcript, vision)
-        self.assertEqual(len(vision.calls), 6)
+        self.assertEqual(len(vision.calls), 5)
 
     def test_embedded_code_change_invalidates_without_manual_version_bump(self):
         events, transcript = fixture(); vision = FakeProvider(); self.infer(events, transcript, vision)

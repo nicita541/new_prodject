@@ -298,8 +298,8 @@ def test_cloud_relation_batches_cover_every_current_ref_with_native_validation(t
     if stage=='story_structure':
         from tests.test_story_structure_pass import fixture,FakeProvider
         from app.story_structure_pass import infer_story_structure as infer
-        count=12
-        native_units,cloud_units,native_budget,cloud_budget=3,6,3200,6400
+        count=24
+        native_units,cloud_units,native_budget,cloud_budget=3,8,3200,8500
     else:
         from tests.test_dialogue_relations import fixture,FakeProvider
         from app.dialogue_relations import infer_dialogue_relations as infer
@@ -318,7 +318,7 @@ def test_cloud_relation_batches_cover_every_current_ref_with_native_validation(t
     with patch.object(vision,'query',side_effect=cloud.query):
         accelerated=infer(events,transcript,tmp_path/'cloud',complete,lambda:False)
     assert baseline['status']==accelerated['status']=='accepted'
-    assert len(cloud.calls)*2==native_calls
+    assert len(cloud.calls)*cloud_units==native_calls*native_units
     current=[n['ref'] for p in cloud.payloads for n in p['CURRENT']]
     assert len(current)==count and len({(r['event'],r['unit']) for r in current})==count
     assert all(len(p['CURRENT'])<=cloud_units for p in cloud.payloads)
@@ -376,7 +376,7 @@ def test_output_limit_splits_whole_units_until_native_coverage_succeeds(tmp_path
     assert len(successful_refs) == len(set(successful_refs)) == count
     assert 1 <= len([h for h in result['history'] if h.get('status') == 'split']) <= count
     assert sizes[0] > min(sizes[1:])
-    assert max(sizes[-3:]) <= 2
+    assert max(sizes[-2:]) <= 2
 
 
 @pytest.mark.parametrize('stage', ['story_structure','dialogue_relations'])
@@ -385,7 +385,7 @@ def test_smaller_packets_are_local_to_failed_window_and_progress_never_skips(tmp
     if stage == 'story_structure':
         from tests.test_story_structure_pass import fixture, FakeProvider, response
         from app.story_structure_pass import infer_story_structure as infer
-        size = 6
+        size = 8
     else:
         from tests.test_dialogue_relations import fixture, FakeProvider, provider_response as response
         from app.dialogue_relations import infer_dialogue_relations as infer
@@ -457,7 +457,7 @@ def test_single_unit_output_limit_pauses_instead_of_retrying_forever(tmp_path, k
     assert len(authored.calls) == 1
 
 
-def test_cloud_natural_endings_do_not_enter_fallback_due_to_local_byte_budget(tmp_path):
+def test_cloud_natural_endings_send_boundary_evidence_without_whole_story_summary(tmp_path):
     from app.endings import refine_endings
     from tests.test_endings import fixture
     data=fixture()
@@ -468,12 +468,13 @@ def test_cloud_natural_endings_do_not_enter_fallback_due_to_local_byte_budget(tm
         result=refine_endings(data['events'],data['transcript'],data['shots'],data['probe'],tmp_path,
             vision.complete_text_context(),lambda *args:None,lambda:False)
     assert query.call_count>0
-    assert len(query.call_args.args[0].encode('utf-8'))>5300
-    assert data['events'][0]['summary'] in query.call_args.args[0]
+    assert len(query.call_args.args[0].encode('utf-8'))<5300
+    assert data['events'][0]['summary'] not in query.call_args.args[0]
+    assert 'last_reply' in query.call_args.args[0] and 'next_reply' in query.call_args.args[0]
     assert not result[0].get('endings_degraded')
 
 
-@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize', 'output_limit', 'quota', 'json_string', 'empty_once', 'empty_twice', 'empty_nonzero'])
+@pytest.mark.parametrize('mode', ['success', 'malformed', 'cancel', 'image_oversize', 'output_limit', 'quota', 'json_string', 'empty_once', 'empty_twice', 'empty_nonzero', 'authentication_exit', 'quota_exit', 'quota_reset'])
 def test_packet_stream_stdin_unicode_final_envelope_and_native_cancel(tmp_path, mode):
     import os
     import subprocess
@@ -510,10 +511,17 @@ if mode.startswith('empty_'):
         if mode=='empty_nonzero': usage['total_tokens']=1
         print(json.dumps({'event':'result','result':{'status':'SUCCESS','duration_seconds':0,'structured_output':None,'response':'','usage':usage}}),flush=True)
         sys.exit(0)
-if mode=='cancel':
+if mode=='quota_reset':
+    print(json.dumps({'event':'result','result':{'status':'ERROR','error':'Individual quota reached. Resets in 1s.','usage':{'input_tokens':7,'output_tokens':2,'total_tokens':9}}}),flush=True)
+    sys.exit(3)
+elif mode=='cancel':
     time.sleep(60)
 elif mode=='malformed':
     print('not JSON',flush=True)
+elif mode in ('authentication_exit','quota_exit'):
+    reason='authentication failed or timed out' if mode=='authentication_exit' else 'RESOURCE_EXHAUSTED quota'
+    print(json.dumps({'event':'result','result':{'status':'ERROR','error':reason,'usage':{'total_tokens':0}}}),flush=True)
+    sys.exit(1)
 elif mode in ('output_limit','quota'):
     error='Your previous response was cut off because it exceeded the output token limit' if mode=='output_limit' else 'RESOURCE_EXHAUSTED quota'
     print(json.dumps({'event':'result','result':{'status':'ERROR','error':error,'structured_output':{'ok':True},'usage':{'input_tokens':7,'output_tokens':2,'total_tokens':9}}}),flush=True)
@@ -536,6 +544,8 @@ else:
         '-DefaultAgent','-StopFile',str(stop),'-TimeLimitSeconds','30']
     if mode == 'json_string':
         command.append('-JsonText')
+    if mode == 'quota_reset':
+        command.append('-AllowQuotaWait')
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         if mode == 'cancel':
@@ -545,7 +555,7 @@ else:
             assert (packet/'child-started').exists()
             stop.touch()
         stdout, stderr = process.communicate(timeout=20)
-        assert process.returncode == (0 if mode in ('success','output_limit','json_string','empty_once','empty_twice') else 1), stderr.decode(errors='replace')
+        assert process.returncode == (0 if mode in ('success','output_limit','json_string','empty_once','empty_twice','quota_reset') else 1), stderr.decode(errors='replace')
         if mode == 'image_oversize':
             assert b'Stream image parity is not verified' in stderr
             assert not (packet/'child-started').exists()
@@ -574,6 +584,18 @@ else:
             assert read_json(packet/'failure.json') == {'packet':'a'*64,'code':mode,'attempt':records[0].parent.name,'response_mode':'structured'}
             assert telemetry['usage']['total_tokens']==9
             assert not (packet/'agy-result.json').exists()
+        elif mode == 'quota_reset':
+            assert process.returncode == 0
+            failure=read_json(packet/'failure.json')
+            assert failure['code']=='quota' and failure['quota_delay_seconds']==1
+            from datetime import datetime
+            assert (datetime.fromisoformat(failure['quota_retry_at'])-datetime.fromisoformat(failure['quota_reset_at'])).total_seconds()==30
+            assert not (packet/'agy-result.json').exists()
+        elif mode in ('authentication_exit','quota_exit'):
+            failure=read_json(packet/'failure.json')
+            assert failure['code']==('authentication' if mode=='authentication_exit' else 'quota')
+            assert not (packet/'agy-result.json').exists()
+            assert telemetry['exit_code']==1
         elif mode == 'json_string':
             result=json.loads((packet/'agy-result.json').read_text('utf-8-sig'))['result']
             assert json.loads(result['structured_output']['kadr_answer_json'])=={'ok':True}
@@ -686,6 +708,34 @@ def test_batch_windows_bound_counts_utf16_units(tmp_path):
         vision.query_many(tasks)
     assert len(calls)==2 and all(not members for _,members in calls)
     assert sorted(request['prompt'] for request,_ in calls)==sorted(task['prompt'] for task in tasks)
+
+
+def test_inline_instructions_and_identical_schema_share_once_without_contract_loss(tmp_path):
+    import copy
+    import subprocess
+    vision=session(tmp_path)
+    schema=copy.deepcopy(SCHEMA)
+    schema['description']='Original complete contract; retain actual source evidence. '*60
+    shared='Inspect CURRENT source frames and exact supplied speech independently. '*110
+    tasks=[{'prompt':shared+json.dumps({'event':i,'source_evidence':'x'*1500}),
+            'image':tmp_path/'evidence.jpg','schema':schema} for i in range(4)]
+    originals=[vision._prepare_request(**task)[1] for task in tasks]
+    calls=[]
+    with patch.object(vision,'_receive',side_effect=batch_receiver(vision,calls)):
+        assert vision.query_many(tasks)==[{'keep_units':['u1']}]*4
+        assert vision.query_many(tasks)==[{'keep_units':['u1']}]*4
+    assert len(calls)==1
+    request,members=calls[0]
+    assert set(members)==set(originals)
+    assert len(subprocess.list2cmdline([request['prompt']]).encode('utf-16-le'))//2 < 28000
+    payload=json.loads(request['prompt'].split('\n',1)[1])
+    assert payload['shared_schema']==schema
+    restored={}
+    for contract in payload['tasks']:
+        restored[contract['request_id']]=payload['shared_instructions']+contract['prompt']
+        assert 'schema' not in contract
+        assert request['schema']['properties']['q_'+contract['request_id']]['properties']['answer']==schema
+    assert restored==dict(zip(originals,[t['prompt'] for t in tasks],strict=True))
 
 
 def test_export_import_resume_uses_same_packet_and_native_contract(tmp_path):
@@ -901,7 +951,8 @@ def test_worker_persists_waiting_state_without_marking_cancelled(tmp_path):
             patch('app.pipeline.run_job', side_effect=AnalysisPending('waiting for packet')):
         assert main() == 0
     job = json.loads((directory / 'job.json').read_text())
-    assert job['status'] == job['stage'] == 'waiting_analysis'
+    assert job['status'] == 'waiting_analysis'
+    assert job['stage'] == job['waiting_stage'] == 'analyze'
     assert job['cancel_requested'] is False
     assert job['error'] is None
 
@@ -1072,7 +1123,7 @@ def test_actual_standalone_workers_overlap_stop_and_do_not_retry(tmp_path, mode)
     shutil.copyfile(root / 'scripts/run_antigravity_job.ps1', scripts / 'run_antigravity_job.ps1')
     # Replace only the external paid-call boundary, leaving native queue,
     # Start-Job, completion, locking, cancellation and error handling intact.
-    stub = r'''param($PacketDirectory, $AgyExe, $Model, [switch]$DefaultAgent, $StopFile, $RunnerStopFile, $TimeLimitSeconds)
+    stub = r'''param($PacketDirectory, $AgyExe, $Model, [switch]$DefaultAgent, $StopFile, $RunnerStopFile, $TimeLimitSeconds, [switch]$AllowQuotaWait)
     $ErrorActionPreference='Stop'
     $stamp=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     [IO.File]::WriteAllText((Join-Path $PacketDirectory 'started.json'), "$stamp")
@@ -1177,3 +1228,74 @@ def test_locked_runner_hint_does_not_abort_receipt_or_ui_snapshot(tmp_path):
         state = snapshot(tmp_path)
         assert state['runner'] == {}
         assert state['packets'][0]['status'] == 'ready'
+
+
+def test_managed_batch_auth_failure_keeps_the_actionable_reason(tmp_path):
+    vision=session(tmp_path)
+    tasks=[{'prompt':'auth-test'+str(i),'schema':SCHEMA} for i in range(2)]
+    atomic_json(tmp_path/'antigravity/automation.json',{'enabled':True,'managed':True})
+    def failed(directory,identifier,**kwargs):
+        raise AnalysisPending('Antigravity: требуется восстановить авторизацию в официальном CLI')
+    with patch.object(vision,'_receive',side_effect=failed):
+        with pytest.raises(AnalysisPending,match='требуется восстановить авторизацию'):
+            vision.query_many(tasks)
+    assert not list((tmp_path/'antigravity/packets').glob('*/result.json'))
+
+
+def test_legacy_exit_auth_is_actionable_on_read_without_changing_artifacts(tmp_path):
+    vision=session(tmp_path)
+    identifier=prepare(vision)
+    directory=packet_dir(tmp_path,identifier)
+    original={'packet':identifier,'code':'process_exit','exit_code':1}
+    atomic_json(directory/'failure.json',original)
+    attempt=directory/'cli-attempts/known';attempt.mkdir(parents=True)
+    atomic_json(attempt/'agy-result.json',{'event':'result','result':{'status':'ERROR','error':'authentication failed or timed out'}})
+    packets=snapshot(tmp_path)['packets']
+    assert 'требуется восстановить авторизацию' in packets[0]['error']
+    assert read_json(directory/'failure.json')==original
+    assert not (directory/'result.json').exists()
+
+
+@pytest.mark.skipif(__import__('os').name!='nt',reason='actual Windows managed exchange')
+def test_managed_native_exchange_validates_and_reuses_answer_end_to_end(tmp_path):
+    from app.antigravity_runner import ManagedRunner
+    import shutil
+    root=Path(__file__).resolve().parents[1]
+    scripts=tmp_path/'scripts';scripts.mkdir()
+    persona=tmp_path/'.agents/agents/kadr-json';persona.mkdir(parents=True)
+    shutil.copyfile(root/'.agents/agents/kadr-json/agent.md',persona/'agent.md')
+    shutil.copyfile(root/'scripts/run_antigravity_job.ps1',scripts/'run_antigravity_job.ps1')
+    fake=tmp_path/'fake_cli.py'
+    fake.write_text("""import json,sys
+from pathlib import Path
+payload=json.loads(sys.stdin.buffer.readline().decode('utf-8'))
+assert 'managed-contract' in payload['message']['content'][0]['text']
+counter=Path('test-calls');counter.write_text(str(int(counter.read_text())+1 if counter.exists() else 1))
+print(json.dumps({'event':'result','result':{'status':'SUCCESS','structured_output':{'keep_units':['u1']},'usage':{'input_tokens':5,'output_tokens':2,'total_tokens':7}}}),flush=True)
+""",encoding='utf-8')
+    wrapper=(root/'scripts/run_antigravity_packet.ps1').read_text('utf-8')
+    wrapper=wrapper.replace('$startInfo.WorkingDirectory = $packet',"$startInfo.Arguments = '"+str(fake)+"'\n$startInfo.WorkingDirectory = $packet")
+    (scripts/'run_antigravity_packet.ps1').write_text(wrapper,encoding='utf-8-sig')
+    directory=tmp_path/'job';vision=session(directory)
+    atomic_json(directory/'job.json',{'status':'running','analysis_provider':PROVIDER})
+    atomic_json(directory/'antigravity/automation.json',{'enabled':True,'managed':True})
+    prompt='managed-contract '+('independent original context '*1500)
+    with patch('app.antigravity_runner.ROOT',tmp_path),patch('app.antigravity_runner.cli_executable',return_value=root/'tools/python/python.exe'):
+        runner=ManagedRunner(directory,lambda:False)
+        try:
+            runner.start()
+            try:
+                answer=vision.query(prompt,schema=SCHEMA)
+            except AnalysisPending:
+                pytest.fail((runner.root/'runner.log').read_text('utf-8',errors='replace'))
+            assert answer=={'keep_units':['u1']}
+            assert vision.query(prompt,schema=SCHEMA)=={'keep_units':['u1']}
+            atomic_json(directory/'job.json',{'status':'completed','analysis_provider':PROVIDER})
+        finally:runner.close()
+    packets=list((directory/'antigravity/packets').iterdir())
+    assert len(packets)==1
+    assert (packets[0]/'test-calls').read_text()=='1'
+    accepted=read_json(packets[0]/'result.json')
+    assert accepted['answer']=={'keep_units':['u1']}
+    assert runner.process.poll()==0
+    assert read_json(directory/'antigravity/runner.json')['status']=='completed'

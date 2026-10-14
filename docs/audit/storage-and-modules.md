@@ -66,6 +66,7 @@ flowchart TD
 | `music/config.json`, `data/settings/music.json` | Базовый config и сохранённые предпочтения | [music](../../app/music.py) |
 | `finishing/episodes/<episode>.json` | Разделяемый профиль оформления с revision | [finishing](../../app/finishing.py) |
 | `finishing/exports-index/ex_<id>.json` | export UUID → source_job_id | [studio_render](../../app/studio_render.py) |
+| `finishing/avatars/av_<episode_hex>_<uuid_hex>.png` | Неизменяемая иконка, принадлежит серии; canonical PNG, до 4 МБ входных данных | [finishing_avatar](../../app/finishing_avatar.py) |
 | `cache/deepseek/<prefix>/<digest>.json` | Подписанный успешный remote response; старый flat lookup совместим | [deepseek.target_cache_path / cache_file_path](../../app/deepseek.py) |
 | `logs/LATEST.txt`, `logs/startup.log` | Последняя log session / старт батника | [run_logging](../../app/run_logging.py), [start.bat](../../start.bat) |
 
@@ -93,9 +94,12 @@ flowchart TD
 | `events.json`, `events.meta.json`, `focus/` | Финальные events и layout/provider signature, focus samples | Да |
 | `episode_profile.json`, `story_structure-result.json`, `dialogue_relations-result.json` | Фактический профиль и принятое отношение source units | Да |
 | `analysis-final.json`, `plan.json`, `final_quality_gate.json` | Проверенный final analysis, монтаж и quality history | Обязательно |
+| `analysis-final.meta.json`, `processing-settings.json`, `preparation.meta.json` | Привязка анализа к исходнику/настройкам, режим и линия кэша, зависимости подготовки/ASR | Для проверки повторного использования |
+| `feedback/<operation_id>.json`, `correction-request.json`, `correction-base-analysis.json`, `correction-base-plan.json`, `feedback-intent.json`, `feedback-analysis.json`, `feedback-result.json` | Замечания, связь версий, неизменяемая база, проверенное исправление и ответ помощника | Сохранять вместе с версией; GET только читает |
+| `speech-handle-overrides.json` | Ограниченные исходные запасы звука для исправлений речи | Сохранять при incremental/plan-only reuse |
 | `part-context/part_NNN.json`, картинки | Optional title/synopsis/image prompt cache | Да для reuse; не готовая графическая обложка |
 | `render/part_NNN/` | filter script, ASS, partial MP4, render-info, process logs | Checkpoint и metadata сохранять; partial только после остановки |
-| `render/part_NNN.json` | Fingerprint, size/mtime, SRT hash, encoder/run_id | Обязательно для безопасного cached export |
+| `render/part_NNN.json` | Fingerprint входов конкретной части, size/mtime, SRT hash, encoder/run_id | Обязательно для безопасного cached export |
 | `output/part_NNN.mp4`, `.srt`, внутренний `.ass`, `plan.json` | Готовые файлы и финальные music metadata; публичный file API регистрирует только MP4/SRT | Обязательно |
 | `previous_exports/<UUID>/` | Архив obsolete checkpoint-verified parts после успешной замены | По retention, не до подтверждения нового результата |
 | `runs/<UUID>.json`, `timings.json` | Попытки, source/code/settings provenance, timings | Обязательно для сравнения прогона |
@@ -103,6 +107,7 @@ flowchart TD
 | `diagnostics/pipeline/` | Timeline, decisions, selection snapshots, summary/warnings | Да; подробные данные частные |
 | `diagnostics/analysis-v.../` | Архив несовместимых derived checkpoints при старой analysis version | Не считать мусором без проверки lineage |
 | `finishing/captions_NNN.json` | Пользовательские subtitle overrides с revision | Обязательно |
+| `clean/part_NNN/<identity>/clean.mkv`, `clean.json` | Чистые нарезанные части исходного разрешения: lossless H.264, PCM, без добавленного оформления | Можно восстановить из исходника и плана; удаление требует повторной однократной нарезки |
 | `finishing/previews/pv_<id>/`, `finishing/exports/ex_<id>/` | Isolated status/output/work, render-error.log | Готовые пользовательские exports сохранять |
 
 Названия отдельных proof каталогов определены внутри stage modules и могут меняться по версии; исходные JSON/stage signature надо читать до prune. Нет правила «всё кроме output — мусор»: эти файлы предотвращают повторный многочасовой/платный анализ.
@@ -134,6 +139,8 @@ Source hash — доказательство байтового совпаден
 | [library](../../app/library.py) | Project/episode ownership, сохранённые настройки и tombstones |
 | [worker](../../app/worker.py) | Один pipeline job в child, status/progress/error publication |
 | [pipeline](../../app/pipeline.py) | Run manifests, analysis→plan→quality→context→render, ordered checkpoints |
+| [processing](../../app/processing.py) | Режимы запуска, разрешённые контрольные точки и привязка snapshots к исходнику |
+| [review_feedback](../../app/review_feedback.py) | Замечания, ограниченное понимание намерения, проверки OP/речи, история и возобновление исправления |
 | [json_store](../../app/json_store.py) | Единственная атомарная запись JSON, чтение и явные контракты encodings |
 | [source_ranges](../../app/source_ranges.py) | Общая математика исходных диапазонов: merge/intersection/ordered subtraction |
 | [http_media](../../app/http_media.py) | HTTP byte-range выдача уже разрешённого пути без композиции server |
@@ -165,13 +172,14 @@ Source hash — доказательство байтового совпаден
 | [speech_context](../../app/speech_context.py) | Source ASR prefixes и question/answer protections |
 | [pacing](../../app/pacing.py) | Silent margins/sequences/repetition с before/current/after evidence |
 | [endings](../../app/endings.py) | Source-bounded концовки parts и восстановление fallback границ |
-| [story_structure_pass](../../app/story_structure_pass.py) | Inference канонических facts/relations/arcs по принятому source evidence |
+| [story_structure_pass](../../app/story_structure_pass.py) | Inference канонических facts/relations/arcs и viewer-interest категорий по принятому source evidence |
 | [dialogue_relations](../../app/dialogue_relations.py) | Source-unit отношения диалога, pure candidate pass + provider pass |
 | [story_structure](../../app/story_structure.py) | Pure story arcs/continuity, без model/media I/O |
 | [source_continuity](../../app/source_continuity.py) | Pure state paths между CURRENT units, unresolved gaps |
 | [continuity_verification](../../app/continuity_verification.py) | Проверка omitted original units, включая omitted внутри retained parent |
 | [episode_profile](../../app/episode_profile.py) | Factual pace metrics, adaptive grouping/retention budget |
 | [retention_allocation](../../app/retention_allocation.py) | Mandatory ranges и ranked optional ranges с ценой context |
+| [viewer_interest](../../app/viewer_interest.py) | Отдельная оценка сюжетной ценности и зрительского интереса по конкретным units/proofs; не разрешает удаления или экспорт |
 | [planner](../../app/planner.py) | Deterministic timeline, validation, protected boundaries, cuts/subtitles |
 | [dramatic_planner](../../app/dramatic_planner.py) | Dramatic score/hook/part objectives поверх source contract |
 | [planner_audit](../../app/planner_audit.py) | Объяснение сохранённых/удалённых интервалов, alternatives |
@@ -187,6 +195,7 @@ Source hash — доказательство байтового совпаден
 | [quality](../../app/quality.py) | Плановые quality_summary/debug_timeline для реально retained footage |
 | [finishing](../../app/finishing.py) | Versioned editor state/caption overrides, preview/export/music routes |
 | [finishing_profile](../../app/finishing_profile.py) | Общая валидация видеопрофиля и чтение профиля серии без HTTP/анализа |
+| [finishing_avatar](../../app/finishing_avatar.py) | Валидация и декодирование иконок, принадлежность серии, локальные пресеты и круговая маска с сохранением alpha |
 | [social_frame](../../app/social_frame.py) | Геометрия и растровая тёмная карточка публикации: канал, подпись, весь кадр; пользовательский текст не попадает в FFmpeg expression |
 | [studio_render](../../app/studio_render.py) | Isolated finishing threads/queue/semaphore/status и reuse base plan без ИИ |
 | [deepseek](../../app/deepseek.py) | Remote JSON/image adapter, successful content cache, до 2 retries, disabled monetary compatibility |

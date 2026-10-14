@@ -229,7 +229,7 @@ def _merge_parent(parent, children, profile, transcript):
     return result
 
 
-def refine_scene_story(events, transcript, shots, job_dir, vision, report, cancelled):
+def refine_scene_story(events, transcript, shots, job_dir, vision, report, cancelled, *, episode_duration=None):
     """Refine existing child collages and return one event per semantic parent.
 
     Flatten all children in one call so the existing refiner still sees the
@@ -270,9 +270,11 @@ def refine_scene_story(events, transcript, shots, job_dir, vision, report, cance
         owners.append((first, len(children), True))
     if children and getattr(vision, 'supports_query_batch', False):
         from .antigravity_batch import refine_in_batches
-        refined = refine_in_batches(children, transcript, shots, Path(job_dir), vision, report, cancelled, refine_story)
+        refined = refine_in_batches(children, transcript, shots, Path(job_dir), vision, report, cancelled, refine_story,
+                                    episode_duration=episode_duration)
     else:
-        refined = refine_story(children, transcript, shots, Path(job_dir), vision, report, cancelled) if children else []
+        settings = {'episode_duration': episode_duration} if episode_duration is not None else {}
+        refined = refine_story(children, transcript, shots, Path(job_dir), vision, report, cancelled, **settings) if children else []
     if len(refined) != len(children) or any((a['id'], a['start'], a['end']) != (b['id'], b['start'], b['end'])
                                           for a, b in zip(children, refined)):
         raise ValueError('Сокращение изменило владельца или границы исходного фрагмента')

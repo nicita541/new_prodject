@@ -21,14 +21,17 @@ let librarySnapshot={
 const db={projects:[],episodes:[],sources:[],jobs:[],plans:{},music:{tracks:['FAKE DEMO.mp3']},
           deepseek:{configured:true,remaining_usd:999}};
 const ui={projectId:null,episodeId:null,jobId:null};
+const jobListRequests=[];
 win.fetch=async(input,opts={})=>{
   const url=String(input);
   if(['/api/music','/api/health','/api/deepseek'].includes(url))throw new Error('503 optional service');
   let data;
   if(url==='/api/library')data=librarySnapshot;
   else if(url==='/api/sources')data=sources;
-  else if(url==='/api/jobs')data=[{id:job,created_at:'2026-10-09T01:00:00Z',status,
-                                   source_id:'source-1'}];
+  else if(url.startsWith('/api/jobs?')){
+    jobListRequests.push(url);
+    data=[{id:job,created_at:'2026-10-09T01:00:00Z',status,source_id:'source-1'}];
+  }
   else if(url==='/api/jobs/'+job&&opts.method==='GET')data={
     id:job,created_at:'2026-10-09T01:00:00Z',status,source_id:'source-1',
   };
@@ -36,12 +39,19 @@ win.fetch=async(input,opts={})=>{
     status='queued';
     data={id:job,status};
   }
+  else if(url==='/api/jobs/'+job+'/analysis-provider'&&opts.method==='POST'){
+    const body=JSON.parse(opts.body);
+    assert.equal(body.provider,'deepseek_plan');assert.equal(body.resume,true);
+    status='running';data={id:job,status,analysis_provider:body.provider};
+  }
   else if(url==='/api/jobs/'+job+'/plan')data={source:{duration:8},parts:[]};
   else throw new Error('Unexpected call '+url+' '+opts.method);
   return {ok:true,headers:{get:()=> 'application/json'},json:async()=>data};
 };
 
 await win.KadrBridge.refresh(db,ui);
+assert.equal(jobListRequests[0],'/api/jobs?summary=true',
+  'Opening projects must not load historical diagnostic maps');
 assert.equal(db.projects[0].title,'Real project');
 assert.equal(db.music.tracks.length,0,'Fake demo audio must not survive music API outage');
 assert.equal(db.music.enabled,false);
@@ -51,6 +61,11 @@ assert.equal(db.deepseek.configured,false,'Never show fake configured DeepSeek')
 assert.equal(db.deepseek.remaining_usd,null);
 assert.equal(ui.jobId,job);
 assert.equal(db.jobs[0].episode_id,episode,'Link legacy job to library episode');
+ui.screen='processing';
+await win.KadrBridge.refresh(db,ui);
+assert.equal(jobListRequests.at(-1),'/api/jobs?summary=true&progress_job_id='+job,
+  'Processing must request detailed counters only for its selected job');
+ui.screen='projects';
 
 sources=[{id:'source-2',name:'new.mp4'}];
 await win.KadrBridge.request('GET','/api/sources',null,db,ui);
@@ -64,6 +79,11 @@ db.plans[job]={duration:999,parts:[{index:1}]};
 await win.KadrBridge.request('POST','/api/jobs/'+job+'/retry',{},db,ui);
 assert.equal(db.jobs[0].status,'queued');
 assert.equal(db.plans[job],undefined,'Retry must not reuse stale plan cuts');
+db.plans[job]={duration:999,parts:[{index:1}]};
+await win.KadrBridge.request('POST','/api/jobs/'+job+'/analysis-provider',
+                            {provider:'deepseek_plan',resume:true},db,ui);
+assert.equal(db.jobs[0].status,'running');
+assert.equal(db.plans[job],undefined,'Provider switch must invalidate the visible prior plan');
 
 librarySnapshot={
  projects:[...librarySnapshot.projects,{id:archivedProject,title:'Archived',archived_at:'2026-10-09T00:00:00Z'}],

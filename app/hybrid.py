@@ -145,10 +145,14 @@ class HybridVision:
         if self.cancelled():
             raise InterruptedError('Обработка отменена')
         image_hash = None
+        image_paths = list(image) if isinstance(image, (list,tuple)) else ([image] if image is not None else [])
         if image is not None:
-            path = Path(image).resolve()
-            path.relative_to(ROOT.resolve())
-            image_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            hashes = []
+            for value in image_paths:
+                path = Path(value).resolve()
+                path.relative_to(ROOT.resolve())
+                hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
+            image_hash = hashes if isinstance(image,(list,tuple)) else hashes[0]
         models = []
         for attr in ('model', 'projector'):
             path = Path(getattr(self.local, attr, 'unknown'))
@@ -173,11 +177,13 @@ class HybridVision:
                 raise local_error
             return local
         entry = {'reason': reason, 'outcome': 'local_fallback',
-                 'input_image': str(Path(image).resolve().relative_to(ROOT.resolve())) if image is not None else None,
+                 'input_image': str(Path(image_paths[0]).resolve().relative_to(ROOT.resolve())) if len(image_paths)==1 else None,
                  'stage': 'framing' if _focus_schema(schema) else 'story',
                  'local_uncertain': local.get('uncertain') is True if local is not None else None}
         if local is not None and type(local.get('confidence')) in (int, float):
             entry['local_confidence'] = local['confidence']
+        if len(image_paths)>1:
+            entry['input_images'] = [str(Path(p).resolve().relative_to(ROOT.resolve())) for p in image_paths]
         # Persist before attempting remote review. Restarting this job must not
         # automatically repeat an interrupted or unconfirmed billable request.
         self._save(digest, entry)

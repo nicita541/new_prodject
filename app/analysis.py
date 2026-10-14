@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 import sys
 
-from .analysis_provider import analysis_provider, provider_identity, framing_provider, _model_files_for_provider
+from .analysis_provider import analysis_provider, provider_identity, framing_provider, perception_provider, _model_files_for_provider
 from .analysis_result import analysis_result
 from .editorial_pipeline import finalize_editorial_selection
 
@@ -25,7 +25,7 @@ from app.json_store import analysis_json as atomic_json, load_json
 from app.media_probe import run_process, probe_media, shot_checkpoint, normalize_transcript
 
 # Model sessions
-from app.vision import LocalVision, vision_session
+from app.vision import LocalVision, vision_session, AnalysisVisionSessions
 
 # Global review
 from app.story_review import apply_global_selection, global_story_review
@@ -37,14 +37,14 @@ STORYBOARD_VERSION = 3
 EDITORIAL_POLICY = 'evidenced-semantic-selection-v2'
 
 
-def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_POLICY):
+def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_POLICY, *, economy_mode=False, review_settings=None):
     """Every semantic dependency that can bypass a story-stage checkpoint."""
     from .story import STORY_VERSION, EDGE_VERSION
     from .scene_refinement import SCENE_REFINEMENT_VERSION
     from .global_verification import GLOBAL_VERIFICATION_VERSION
     from .scene_understanding import SCENE_UNDERSTANDING_VERSION
     from .episode_profile import EPISODE_PROFILE_VERSION
-    from .semantic_identity import semantic_identity
+    from .semantic_identity import scoped_identity
     from .framing import FOCUS_VERSION
     from .closing import CLOSING_VERSION
     from .titles import TITLES_VERSION
@@ -63,7 +63,7 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
         paged = bool(getattr(LocalVision, 'supports_image_pages', False))
     else:
         raise ValueError('Неизвестный способ анализа')
-    return {**({'manual_transport': provider_identity(provider)} if provider == 'antigravity_manual' else {}), 'visual': analysis_key, 'semantic_components': semantic_identity(), 'story': STORY_VERSION, 'edge': EDGE_VERSION,
+    return {**({'manual_transport': provider_identity(provider)} if provider == 'antigravity_manual' else {}), 'visual': analysis_key, 'semantic_components': scoped_identity('story'), 'story': STORY_VERSION, 'edge': EDGE_VERSION,
             'scene_refinement': SCENE_REFINEMENT_VERSION,
             'scene_understanding': SCENE_UNDERSTANDING_VERSION,
             'episode_profile': EPISODE_PROFILE_VERSION,
@@ -72,7 +72,8 @@ def derived_story_identity(analysis_key, provider, editorial_policy=EDITORIAL_PO
             'production_sequence': SEQUENCE_VERSION, 'credit_context_radius': CONTEXT_RADIUS,
             'source_roles': SOURCE_ROLE_VERSION,
             'credit_capability': 'image-pages' if paged else 'single-image',
-            'editorial_policy': editorial_policy, 'global_story': GLOBAL_STORY_VERSION,
+            'editorial_policy': editorial_policy, 'check_policy': {'version': 2, 'economy_mode': economy_mode,
+                'candidate_scope': review_settings if economy_mode else None}, 'global_story': GLOBAL_STORY_VERSION,
             'closing': CLOSING_VERSION, 'titles': TITLES_VERSION, 'speech_context': 4,
             'storyboard': STORYBOARD_VERSION,
             'focus': FOCUS_VERSION, 'focus_model': str(STORY_MODEL),
@@ -128,6 +129,11 @@ def _recoverable_checkpoint(path: Path, expected_type=dict):
 
 
 def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
+    with AnalysisVisionSessions(job_dir, cancelled, factory=vision_session) as sessions:
+        return _analyze(job_dir, source, report, cancelled, sessions)
+
+
+def _analyze(job_dir: Path, source: Path, report, cancelled, sessions) -> dict:
     setup_environment()
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)
@@ -136,13 +142,17 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     from .editing import load_options
     layout = load_options(job_dir)['layout']
     provider = analysis_provider(job_dir)
+    from .analysis_checks import economy_mode, AnalysisChecks
+    economical = economy_mode(job_dir)
     # Early perception remains the exact local4B contract and cache namespace.
-    provider_profile = provider_identity('local' if provider == 'antigravity_manual' else provider)
+    visual_provider = perception_provider(provider)
+    provider_profile = provider_identity(visual_provider)
     source = source.resolve()
     if not source.is_relative_to(ROOT):
         raise ValueError('Исходное видео должно находиться внутри папки проекта')
-    with source.open('rb') as stream:
-        fingerprint = hashlib.file_digest(stream, 'sha256').hexdigest()
+    report('prepare', .02, 'Проверяем исходник и сохранённые результаты обработки')
+    from .source_identity import source_identity
+    fingerprint = source_identity(source, cancelled)['sha256']
     diagnostics.write('run.json', {**load_json(diagnostics.path/'run.json'),
         'source_sha256': fingerprint, 'source_name': source.name, 'provider': provider,
         'analysis_version': ANALYSIS_VERSION, 'storyboard_version': STORYBOARD_VERSION})
@@ -172,13 +182,25 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             or not all(key in probe for key in ('duration', 'width', 'height', 'fps', 'has_audio'))):
         probe = probe_media(source)
     atomic_json(probe_path, probe)
+    settings = load_json(job_dir/'analysis-settings.json') if (job_dir/'analysis-settings.json').is_file() else {}
+    from .processing import preparation_identity
+    preparation = preparation_identity(fingerprint, probe, settings)
+    preparation_path = job_dir/'preparation.meta.json'
+    previous_preparation = _recoverable_checkpoint(preparation_path)
+    if previous_preparation is not None:
+        if previous_preparation.get('audio') != preparation['audio']:
+            (job_dir/'audio.wav').unlink(missing_ok=True)
+        if (settings.get('transcript_mode') != 'provided'
+                and previous_preparation.get('transcript') != preparation['transcript']):
+            (job_dir/'transcript.json').unlink(missing_ok=True)
     audio = job_dir / 'audio.wav'
     if not audio.exists():
         partial = job_dir / 'audio.partial.wav'
         run_process([FFMPEG, '-y', '-v', 'error', '-i', source, '-map', f"0:a:{probe.get('audio_stream', 0)}", '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', partial], job_dir / 'audio.log', cancelled)
         partial.replace(audio)
     transcript_path = job_dir / 'transcript.json'
-    report('transcribe', 0.06, 'Распознавание русских реплик')
+    report('transcribe', 0.06, 'Реплики из кэша: распознавание повторять не требуется'
+           if transcript_path.is_file() else 'Распознавание русских реплик')
     if not transcript_path.exists():
         run_process([sys.executable, '-m', 'app.inference', audio, transcript_path], job_dir / 'asr.log', cancelled, timeout=7200)
     transcript = load_json(transcript_path)
@@ -197,9 +219,31 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         transcript = load_json(transcript_path)
     transcript = normalize_transcript(transcript, probe['duration'])
     atomic_json(transcript_path, transcript)
+    atomic_json(preparation_path, preparation)
+    from .media_probe import raw_shot_evidence
+    from .episode_profile import build_episode_profile, scene_settings
+    from .analysis_continuation import StageJournal
+    journal = saved_perception = None
+    stored_shots = _recoverable_checkpoint(job_dir/'shots.json', list)
+    stored_media = _recoverable_checkpoint(job_dir/'media-evidence.json')
+    shots_meta = _recoverable_checkpoint(job_dir/'shots.meta.json') or {}
+    media_meta = _recoverable_checkpoint(job_dir/'media-evidence.meta.json') or {}
+    if (stored_shots is not None and stored_media is not None
+            and shots_meta.get('source') == fingerprint
+            and media_meta.get('source', {}).get('sha256') == fingerprint):
+        trial_profile = build_episode_profile(probe['duration'], transcript, stored_shots,
+            raw_candidates=raw_shot_evidence(stored_shots, job_dir), perception=stored_media)
+        trial_inputs = {'settings': scene_settings(trial_profile), 'profile': trial_profile}
+        journal = StageJournal(job_dir, fingerprint, transcript, stored_shots, editorial_profile,
+                               diagnostics, report, cancelled)
+        saved_perception = journal.perception(trial_inputs, allow_legacy=True)
     report('scenes', 0.19, 'Определение смены планов')
     with diagnostics.stage('shot_detection', source_duration=probe['duration']):
-        shots = shot_checkpoint(source, fingerprint, probe['duration'], job_dir, cancelled)
+        if saved_perception is not None:
+            shots = stored_shots
+            diagnostics.event('shot_detection', 'cache_hit', scope='accepted_perception')
+        else:
+            shots = shot_checkpoint(source, fingerprint, probe['duration'], job_dir, cancelled)
     from .media_probe import raw_shot_evidence
     raw_candidates = raw_shot_evidence(shots, job_dir)
     diagnostics.write('shots.json', {'accepted_shots': shots, 'raw_candidates': raw_candidates,
@@ -208,21 +252,37 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     from .episode_profile import build_episode_profile, scene_settings
     from .media_evidence import perception_checkpoint
     with diagnostics.stage('media_perception', source_duration=probe['duration']):
-        perception = perception_checkpoint(source, probe['duration'], shots, transcript, job_dir, cancelled,
-                                           audio_stream=probe.get('audio_stream', 0))
+        if saved_perception is not None:
+            perception = stored_media
+            diagnostics.event('media_perception', 'cache_hit', scope='accepted_perception')
+        else:
+            perception = perception_checkpoint(source, probe['duration'], shots, transcript, job_dir, cancelled,
+                                               audio_stream=probe.get('audio_stream', 0))
     diagnostics.write('media_evidence.json', perception)
     initial_profile = build_episode_profile(probe['duration'], transcript, shots,
         raw_candidates=raw_candidates, perception=perception)
     grouping_settings = scene_settings(initial_profile)
+    from .analysis_continuation import StageJournal
+    if saved_perception is None:
+        journal = StageJournal(job_dir, fingerprint, transcript, shots, editorial_profile,
+                               diagnostics, report, cancelled)
+    perception_inputs = {'settings': grouping_settings, 'profile': initial_profile}
+    if saved_perception is None:
+        saved_perception = journal.perception(perception_inputs, allow_legacy=True)
     diagnostics.write('episode_profile.json', {'initial': initial_profile, 'scene_settings': grouping_settings})
     report('scenes', .21, 'Объединение планов в смысловые сцены')
     scene_cache = {}
     with diagnostics.stage('scene_detection', shots=len(shots)):
-        with inference_purpose("semantic_boundary"), vision_session(job_dir, cancelled, provider) as boundary_vision:
-            scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled,
-                                      settings=grouping_settings, cache_status=scene_cache,
-                                      vision=boundary_vision, perception=perception,
-                                      audio_stream=probe.get('audio_stream', 0))
+        if saved_perception is not None:
+            scenes = saved_perception['scenes']
+            scene_cache['cache_hit'] = True
+            report('scenes', .21, 'Границы и понимание сцен сохранены — запросы 4B не повторяем')
+        else:
+            with inference_purpose("semantic_boundary"), sessions.session(job_dir, cancelled, visual_provider) as boundary_vision:
+                scenes = scene_checkpoint(source, fingerprint, probe['duration'], shots, transcript, job_dir, cancelled,
+                                          settings=grouping_settings, cache_status=scene_cache,
+                                          vision=boundary_vision, perception=perception,
+                                          audio_stream=probe.get('audio_stream', 0))
     diagnostics.event('scene_detection', 'cache_hit' if scene_cache.get('cache_hit') else 'cache_miss', **scene_cache)
     diagnostics.write('scenes.json', scenes)
     for scene in scenes:
@@ -233,15 +293,17 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     events_path = job_dir / 'events.json'
     model_identity = [{'path': str(path), 'size': path.stat().st_size, 'mtime_ns': path.stat().st_mtime_ns}
                       for path in _model_files_for_provider(provider)]
-    from .semantic_identity import semantic_identity
-    component_signatures = semantic_identity()
+    from .semantic_identity import scoped_identity
+    component_signatures = scoped_identity('perception')
     diagnostics.event('analysis', 'semantic_identity', components=component_signatures)
     analysis_key = hashlib.sha256(json.dumps({'identity': identity, 'models': model_identity,
         'semantic_components': component_signatures,
         'provider': provider_profile,
         'transcript': transcript, 'shots': shots, 'scenes': scenes, 'scene_detector': SCENE_DETECTOR_VERSION,
         'episode_profile': initial_profile, 'scene_settings': grouping_settings}, sort_keys=True, ensure_ascii=False).encode('utf-8')).hexdigest()
-    derived_key = hashlib.sha256(json.dumps(derived_story_identity(analysis_key, provider, editorial_profile),
+    review_settings = {'version':2, 'planning': _recoverable_checkpoint(job_dir/'planning-preferences.json') or {}}
+    derived_key = hashlib.sha256(json.dumps(derived_story_identity(analysis_key, provider, editorial_profile,
+        economy_mode=economical, review_settings=review_settings),
         sort_keys=True).encode('utf-8')).hexdigest()
     derived_meta = job_dir / 'events.meta.json'
     # Story decisions retain their established signature. Only final focus
@@ -254,6 +316,13 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         if recovery_status()['halted']:
             pacing_provider = 'local'
     focus_key = derived_key + f':pacing-v{PACING_VERSION}:endings-v{ENDINGS_VERSION}:ending-recovery-v{ENDING_RECOVERY_VERSION}:' + layout + ':' + pacing_provider
+    # These consumers run after the story checkpoint. Code changes here must
+    # repeat their own checks without discarding upstream scene/story results.
+    late_files = ('framing', 'editorial_pipeline', 'analysis_result', 'eyecatch')
+    late_identity = {'components': scoped_identity('late_analysis'),
+                     'code': {name: hashlib.sha256((ROOT/'app'/(name+'.py')).read_bytes()).hexdigest()
+                              for name in late_files}}
+    focus_key += ':' + hashlib.sha256(json.dumps(late_identity, sort_keys=True).encode()).hexdigest()
     saved_events_meta = _recoverable_checkpoint(derived_meta)
     saved_events = _recoverable_checkpoint(events_path, list)
     if (saved_events_meta is not None and saved_events is not None
@@ -261,17 +330,35 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             and saved_events_meta.get('quality_state') != 'degraded'
             and all(isinstance(event, dict) and 'id' in event for event in saved_events)):
         diagnostics.event('analysis', 'cache_hit', signature=focus_key)
-        return analysis_result(job_dir, provider, probe, transcript, shots, saved_events)
+        report('analyze', .65, 'Анализ сцен и сюжета из кэша: зависимости не изменились')
+        result = analysis_result(job_dir, provider, probe, transcript, shots, saved_events, scenes=scenes)
+        result['check_policy'] = {'version': 2, 'economy_mode': economical}
+        if economical:
+            from .review_scope import attach_scope
+            attach_scope(result)
+        return result
     diagnostics.event('analysis', 'cache_miss', signature=focus_key)
     from .scene_analysis import analyze_scenes
     report('analyze', .22, 'Анализ смысловых сцен с соседним контекстом')
     visual_signature = _visual_checkpoint_signature(job_dir, analysis_key)
-    with inference_purpose("scene_analysis"), vision_session(job_dir, cancelled, provider) as vision:
-        events = analyze_scenes(source, scenes, transcript, shots, job_dir, vision,
-                                visual_signature, report, cancelled)
+    if saved_perception is not None:
+        events = saved_perception['events']
+        diagnostics.event('visual_analysis', 'cache_hit', scope='stage', producer='local')
+        report('analyze', .48, 'Используем 4B-анализ из сохранённых результатов')
+    else:
+        with inference_purpose("scene_analysis"), sessions.session(job_dir, cancelled, visual_provider) as vision:
+            events = analyze_scenes(source, scenes, transcript, shots, job_dir, vision,
+                                    visual_signature, report, cancelled)
+        journal.save('visual_analysis', perception_inputs, {'scenes': scenes, 'events': events}, visual_provider)
     # Larger model decides story retention; release the visual model before
-    # loading it. Framing uses a separate, non-thinking 9B session: short real
+    # loading it. Framing uses the same 9B model with thinking disabled: short real
     # comparisons reproduced clipped faces with 4B and improved them with 9B.
+    checks = AnalysisChecks(job_dir, journal, diagnostics, report)
+    if economical:
+        from .review_scope import prepare_review_scope
+        events = prepare_review_scope(events,transcript,shots,probe,job_dir,source,journal,checks,
+                                      diagnostics,report,cancelled)
+    duration_settings = {'episode_duration':probe['duration']}
     story_checkpoint = job_dir / 'story-events.json'
     saved_story = _recoverable_checkpoint(story_checkpoint) or {}
     if (saved_story.get('signature') == derived_key
@@ -279,46 +366,54 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
             and isinstance(saved_story.get('events'), list)
             and all(isinstance(event, dict) and 'id' in event for event in saved_story['events'])):
         diagnostics.event('story_refinement', 'cache_hit', signature=derived_key)
+        report('condense', .52, 'Отбор истории из кэша: проверяем последующие этапы')
         events = saved_story['events']
     else:
         diagnostics.event('story_refinement', 'cache_miss', signature=derived_key)
-        with inference_purpose("story_refinement"), vision_session(job_dir, cancelled, provider, model=STORY_MODEL, projector=STORY_PROJECTOR, thinking=True) as vision:
+        with inference_purpose("story_refinement"), sessions.session(job_dir, cancelled, provider, model=STORY_MODEL, projector=STORY_PROJECTOR, thinking=True) as vision:
             from app.story import preserve_dialogue_in_credits, clean_credit_continuations
             from .scene_refinement import refine_scene_story
             with diagnostics.stage('story_refinement', provider=provider, model=str(STORY_MODEL)):
-                events = refine_scene_story(events, transcript, shots, job_dir, vision, report, cancelled)
+                events = checks.run('story_refinement', events, lambda: refine_scene_story(events, transcript, shots, job_dir, vision, report, cancelled, **duration_settings), provider)
             selection_snapshot(diagnostics, 'story_refinement', events)
             events = preserve_dialogue_in_credits(events, transcript)
-            events = clean_credit_continuations(events, transcript, shots, job_dir, vision, report, cancelled)
+            events = checks.targeted('credit_continuations', events, lambda current: clean_credit_continuations(current, transcript, shots, job_dir, vision, report, cancelled), provider, task='credits')
             from app.eyecatch import detect_eyecatches, apply_eyecatch_exclusions
             eyecatches = detect_eyecatches(events, transcript, shots, probe.get('duration'))
             if eyecatches:
                 events = apply_eyecatch_exclusions(events, eyecatches)
             from app.titles import refine_titles
             from app.closing import refine_closing_novelty
+            from functools import partial
+            refine_closing_novelty = partial(refine_closing_novelty, **duration_settings)
+            from .antigravity_batch import review_events_in_batches, closing_in_batches
             with diagnostics.stage('titles', provider=provider):
-                events = refine_titles(events, transcript, shots, job_dir, vision, report, cancelled)
+                events = checks.targeted('titles', events, lambda current: review_events_in_batches(current, transcript, shots, job_dir, vision, report,
+                    cancelled, refiner=refine_titles, label='Поиск титров'), provider, task='titles')
             with diagnostics.stage('closing_novelty', provider=provider):
-                events = refine_closing_novelty(events, transcript, shots, job_dir, vision, report, cancelled)
+                events = checks.targeted('closing_novelty', events, lambda current: closing_in_batches(current, transcript, shots, job_dir, vision, report,
+                    cancelled, refiner=refine_closing_novelty), provider, task='closing')
             from .source_roles import refine_source_roles
+            refine_source_roles = partial(refine_source_roles, retry_unresolved=True, **duration_settings)
             with diagnostics.stage('source_roles', provider=provider):
-                events = refine_source_roles(events, transcript, shots, job_dir, vision, report, cancelled)
+                events = checks.targeted('source_roles', events, lambda current: review_events_in_batches(current, transcript, shots, job_dir, vision, report,
+                    cancelled, refiner=refine_source_roles, label='Проверяем сюжетную речь', full_context=True), provider, task='source_roles')
             selection_snapshot(diagnostics, 'source_roles', events)
             report('analyze', 0.49, 'Проверка связности истории целиком')
             from .global_verification import verify_global_visual
             with diagnostics.stage('global_visual_verification', provider=provider):
-                events = verify_global_visual(source,events,transcript,shots,job_dir,vision,report,cancelled)
+                events = checks.run('global_visual_verification', events, lambda: verify_global_visual(source,events,transcript,shots,job_dir,vision,report,cancelled), provider)
             selection_snapshot(diagnostics, 'global_visual_verification', events)
             from .selection_gate import adjudicate_selections
             from .antigravity_batch import adjudicate_in_batches
             with diagnostics.stage('selection_adjudication', provider=provider):
-                events = adjudicate_in_batches(source, events, transcript, shots, job_dir, vision, report,
-                                               cancelled, refiner=adjudicate_selections)
+                events = checks.run('selection_adjudication', events, lambda: adjudicate_in_batches(source, events, transcript, shots, job_dir, vision, report,
+                                               cancelled, refiner=adjudicate_selections), provider)
             selection_snapshot(diagnostics, 'selection_adjudication', events)
             # Global pass references only existing event IDs, never generated time ranges.
             with inference_purpose("global_story"), diagnostics.stage('global_story', provider=provider, model=str(STORY_MODEL)):
-                decisions = (vision.review_global_story(events, editorial_profile)
-                    if hasattr(vision, 'review_global_story') else global_story_review(vision, events, editorial_profile))
+                decisions = checks.run('global_story', events, lambda: (vision.review_global_story(events, editorial_profile)
+                    if hasattr(vision, 'review_global_story') else global_story_review(vision, events, editorial_profile)), provider)
             apply_global_selection(events, decisions, editorial_profile)
             global_path = diagnostics.path/'global_story.json'
             global_audit = load_json(global_path) if global_path.exists() else {'events':{}}
@@ -362,18 +457,18 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
         atomic_json(story_checkpoint, {'signature': derived_key, 'events': events,
             'quality_state': 'degraded' if any(e.get('analysis_unresolved') or e.get('source_role_unresolved') for e in events) else 'complete'})
     from .pacing import refine_pacing, refine_silent_sequences, BudgetPacingVision
-    with inference_purpose("pacing"), vision_session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
+    with inference_purpose("pacing"), sessions.session(job_dir, cancelled, pacing_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
         with diagnostics.stage('pacing', provider=pacing_provider):
             if pacing_provider in ('deepseek', 'deepseek_plan'):
                 with BudgetPacingVision(vision, job_dir, cancelled) as paced:
-                    events = refine_pacing(source, events, transcript, shots, job_dir, paced, report, cancelled)
+                    events = checks.run('pacing', events, lambda: refine_pacing(source, events, transcript, shots, job_dir, paced, report, cancelled), pacing_provider)
             else:
-                events = refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled)
+                events = checks.run('pacing', events, lambda: refine_pacing(source, events, transcript, shots, job_dir, vision, report, cancelled), pacing_provider)
         with diagnostics.stage('silent_sequences', provider=pacing_provider):
-            events = refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled)
+            events = checks.run('silent_sequences', events, lambda: refine_silent_sequences(source, events, transcript, shots, job_dir, vision, report, cancelled), pacing_provider)
         selection_snapshot(diagnostics, 'pacing', events)
         events = finalize_editorial_selection(source, events, transcript, shots, probe,
-            job_dir, vision, report, cancelled, diagnostics, pacing_provider)
+            job_dir, vision, report, cancelled, diagnostics, pacing_provider, journal=checks)
     if pacing_provider != provider:
         for event in events:
             if event.get('pacing_removed'):
@@ -381,12 +476,17 @@ def analyze(job_dir: Path, source: Path, report, cancelled) -> dict:
     from app.framing import refine_focus
     focus_provider = framing_provider(provider)
     if layout == 'portrait':
-        with inference_purpose("framing"), vision_session(job_dir, cancelled, focus_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
-            events = refine_focus(source, probe, transcript, shots, events, job_dir, vision, report, cancelled)
+        with inference_purpose("framing"), sessions.session(job_dir, cancelled, focus_provider, model=STORY_MODEL, projector=STORY_PROJECTOR) as vision:
+            events = checks.run('framing', {'events': events, 'probe': probe, 'layout': layout}, lambda: refine_focus(source, probe, transcript, shots, events, job_dir, vision, report, cancelled), focus_provider)
     else:
         report('framing', 0.65, 'Сохраняем исходный кадр целиком на мягком вертикальном фоне')
     atomic_json(events_path, events)
     atomic_json(derived_meta, {'signature': focus_key,
         'quality_state': 'degraded' if any(e.get('analysis_unresolved') or e.get('source_role_unresolved') or e.get('pacing_degraded') or e.get('endings_degraded') for e in events) else 'complete',
         'requested_provider': provider, 'pacing_providers': sorted({p for e in events for p in e.get('pacing_providers', [])})})
-    return analysis_result(job_dir, provider, probe, transcript, shots, events)
+    result = analysis_result(job_dir, provider, probe, transcript, shots, events, scenes=scenes)
+    result['check_policy'] = {'version': 2, 'economy_mode': economical}
+    if economical:
+        from .review_scope import attach_scope
+        attach_scope(result)
+    return result

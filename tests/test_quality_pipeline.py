@@ -74,6 +74,8 @@ class QualityPipelineTests(unittest.TestCase):
         with ExitStack() as stack:
             self.builder = stack.enter_context(patch.object(pipeline, 'build_plan', side_effect=build))
             self.renderer = stack.enter_context(patch.object(pipeline, 'render_part', side_effect=render))
+            stack.enter_context(patch.object(pipeline, 'prepare_clean_part',
+                side_effect=lambda s, p, pr, *a: (s, p, pr, False)))
             self.recovery = stack.enter_context(patch.object(quality_recovery, 'recover_final_quality', side_effect=recovery))
             self.encoder = stack.enter_context(patch.object(pipeline, 'choose_encoder', return_value='authored_stub_encoder'))
             stack.enter_context(patch.object(pipeline, '_run_identity', return_value={'verification_kind': 'authored_pipeline_mechanism'}))
@@ -156,8 +158,8 @@ class QualityPipelineTests(unittest.TestCase):
             quality_recovery.recover_final_quality(self.source,analysis,None,gate,self.job,provider,
                                                lambda *a:None,lambda:False)
         self.assertIs(roles.call_args.args[4],provider)
-        self.assertEqual(roles.call_args.kwargs,{'retry_unresolved':True,'event_ids':{'e'}})
-        self.assertEqual(finalize.call_args.args[1],recovered)
+        self.assertEqual(roles.call_args.kwargs,{'retry_unresolved':True,'event_ids':{'e'},'episode_duration':analysis['probe']['duration']})
+        finalize.assert_not_called()
         adjudicate.assert_not_called()
 
 

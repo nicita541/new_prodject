@@ -178,7 +178,7 @@ def verify_omitted_continuity(source, events, selected_ids, transcript, shots, t
                     inspected.append({'ref':candidate['ref'],'ranges':decision['selected_ranges'],
                         'proofs':proofs,'before':decision.get('state_before'),'after':decision.get('state_after'),
                         'ASR':_source_text(transcript,unit['start'],unit['end']),'decision':decision})
-        endpoint_images, endpoint_frames, hashes = [],[],{}
+        endpoint_images, endpoint_frames, hashes, endpoint_views = [],[],{},[]
         for label,node in (('BEFORE',left),('AFTER',right)):
             view = {'start':max(node['start'],node['end']-POLICY['context_seconds']) if label == 'BEFORE' else node['start'],
                     'end':node['end'] if label == 'BEFORE' else min(node['end'],node['start']+POLICY['context_seconds']),
@@ -186,20 +186,37 @@ def verify_omitted_continuity(source, events, selected_ids, transcript, shots, t
             key = _hash({'source':source_identity,'label':label,'view':view,'version':VERSION})
             pages,frames,image_hashes = _board(source,view,shots,transcript,directory,key,cancelled,context=True)
             endpoint_images.extend(pages);endpoint_frames.append(frames);hashes.update(image_hashes)
+            endpoint_views.append({'start':view['start'],'end':view['end']})
         def endpoint_owner(node):
             return next((r.get('dialogue_status') for r in node['event'].get('dialogue_relations',{}).get('coverage',[])
                          if r.get('ref') == node['ref'] and r.get('status') == 'CURRENT'),None)
         payload = {'gap':gap_key(left,right),'BEFORE':{'ref':left['ref'],'state':left['after'],'frames':endpoint_frames[0],
                         'source_roles':left['roles'],'dialogue_owner':endpoint_owner(left),
-                        'ASR':_source_text(transcript,left['start'],left['end'])},
+                        'ASR':_source_text(transcript,endpoint_views[0]['start'],endpoint_views[0]['end']),
+                        'ASR_scope':endpoint_views[0]},
             'AFTER':{'ref':right['ref'],'state':right['before'],'frames':endpoint_frames[1],
                         'source_roles':right['roles'],'dialogue_owner':endpoint_owner(right),
-                        'ASR':_source_text(transcript,right['start'],right['end'])},
+                        'ASR':_source_text(transcript,endpoint_views[1]['start'],endpoint_views[1]['end']),
+                        'ASR_scope':endpoint_views[1]},
             'CURRENT_CANDIDATES':[{k:v for k,v in node.items() if k != 'decision'} for node in inspected],
             'OMITTED_INSPECTIONS':omission_inspections}
         if endpoint_only:
-            payload['OMITTED_ASR_CONTEXT_ONLY'] = [copy.deepcopy(s) for s in transcript.get('segments',[])
-                if left['end'] <= s['start'] < s['end'] <= right['start']]
+            # Only already identified response witnesses belong to this question.
+            # Unrelated speech anywhere in the omitted gap is not endpoint evidence.
+            endpoints = [left['ref'],right['ref']]
+            witnesses = []
+            for event in result:
+                for pair in event.get('dialogue_relations',{}).get('pairs',[]):
+                    refs = [*pair.get('question_refs',[]),*pair.get('answer_refs',[])]
+                    if (pair.get('status') != 'confirmed' or pair.get('requires_answer') is not True
+                            or not any(ref in endpoints for ref in refs)):
+                        continue
+                    for row in [*pair.get('question_ranges',[]),*pair.get('answer_ranges',[])]:
+                        if left['end'] <= row['start'] < row['end'] <= right['start']:
+                            witness = {**row,'text':_source_text(transcript,row['start'],row['end'])}
+                            if witness['text'] and witness not in witnesses:
+                                witnesses.append(witness)
+            payload['OMITTED_ASR_CONTEXT_ONLY'] = witnesses
             payload['inspection_scope'] = ('Only ORIGINAL endpoints are inspected. No omitted unit has been independently '
                 'inspected in this request and no bridge can be approved. Accept coherent_without_bridges only if '
                 'positive endpoint evidence itself establishes a completed story exit/new setup or unchanged state. '

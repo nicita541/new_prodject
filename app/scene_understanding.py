@@ -212,7 +212,20 @@ def recover_chunk(vision, event, units, transcript, payload, images, diagnostics
                       model=str(getattr(vision, 'model', 'unknown')),
                       image_count=len(images) if isinstance(images, (list, tuple)) else int(images is not None))
     try:
-        prompt = RECOVERY_PROMPT+'\n'+json.dumps({**payload, 'initial_analysis': initial}, ensure_ascii=False, allow_nan=False)
+        # The caller supplies bounded CURRENT evidence. Do not carry neighbor
+        # transcript records into a purely visual/JSON recovery by default.
+        recovery_payload = copy.deepcopy(payload)
+        context_reasons = set(event.get('uncertainty_reasons', []))
+        if not context_reasons & {'missing_context','location_unclear','transition_unclear','asr_conflict'}:
+            recovery_payload.pop('PREVIOUS SCENE', None)
+            recovery_payload.pop('NEXT SCENE', None)
+        if not context_reasons & {'missing_context','location_unclear','transition_unclear'}:
+            order = recovery_payload.get('image_order', [])
+            if isinstance(images, (list,tuple)) and len(order) == len(images):
+                current = [(label,page) for label,page in zip(order,images) if 'CURRENT' in label]
+                images = [page for _,page in current]
+                recovery_payload['image_order'] = [label for label,_ in current]
+        prompt = RECOVERY_PROMPT+'\n'+json.dumps({**recovery_payload, 'initial_analysis': initial}, ensure_ascii=False, allow_nan=False)
         raw = vision.query(prompt, images, max_tokens=1800, schema=understanding_schema(units))
         recovered = validate_understanding(raw, result, units)
     except (RuntimeError, ValueError, urllib.error.URLError, TimeoutError) as error:

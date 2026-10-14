@@ -18,6 +18,100 @@ from tests.test_jobs import FakeWorker
 
 
 class StudioApiTests(unittest.TestCase):
+    def test_queued_export_snapshots_plan_captions_and_profile(self):
+        import threading
+        from contextlib import contextmanager
+        from app.studio_render import submit_render
+        from app.finishing import FinishProfile
+        entered, release = threading.Event(), threading.Event()
+        captured = []
+
+        @contextmanager
+        def gate(cancelled):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError('test gate timed out')
+            yield
+
+        def render(manager, job_id, part, profile, output, work, preview, **kwargs):
+            self.assertTrue(kwargs['resolved'])
+            captured.append((json.loads(json.dumps(part)), profile['video']['brightness']))
+            output.mkdir(parents=True, exist_ok=True)
+            path = output / f"part_{part['index']:03d}.mp4"
+            path.write_bytes(b'snapshot fixture')
+            return path
+
+        profile = FinishProfile().model_dump()
+        with patch('app.studio_render._render_slot', gate), \
+                patch('app.studio_render.render_finishing_part', side_effect=render):
+            try:
+                task = submit_render(self.manager, self.job_id, [1, 2], profile)
+                self.assertTrue(entered.wait(2))
+                response = self.client.put(f'/api/jobs/{self.job_id}/parts/1/captions', json={
+                    'part_index': 1, 'revision': 0,
+                    'cues': [{'start': .4, 'end': 1.3, 'text': 'Changed while queued'}]})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.plan['parts'][0]['cuts'][0]['end'] = 2.5
+                atomic_json(self.directory / 'plan.json', self.plan)
+                profile['video']['brightness'] = 140
+            finally:
+                release.set()
+            for _ in range(200):
+                state = self.client.get('/api/exports/' + task['export_id']).json()
+                if state['status'] not in ('queued', 'running'):
+                    break
+                time.sleep(.01)
+        self.assertEqual(state['status'], 'completed', state)
+        self.assertEqual(captured[0][0]['subtitles'][0]['text'], 'Оригинал')
+        self.assertEqual(captured[0][0]['cuts'][0]['end'], 3)
+        self.assertEqual(captured[0][1], 100)
+        self.assertEqual(state['caption_revisions'], {'1': 0, '2': 0})
+        self.assertNotIn('finishing_applied', self.client.get('/api/jobs/' + self.job_id).json())
+
+    def test_corrupt_and_legacy_export_records_do_not_hide_valid_files_or_projects(self):
+        from app.studio_render import plan_digest
+        def record(state, registry=None):
+            identifier = 'ex_' + uuid.uuid4().hex
+            folder = self.directory / 'finishing/exports' / identifier
+            (folder / 'output').mkdir(parents=True)
+            (folder / 'output/part_001.mp4').write_bytes(b'isolated presentation')
+            atomic_json(self.root / 'finishing/exports-index' / (identifier + '.json'),
+                        {'source_job_id': self.job_id} if registry is None else registry)
+            if isinstance(state, str):
+                (folder / 'status.json').write_text(state, encoding='utf-8')
+            else:
+                atomic_json(folder / 'status.json', state)
+            return identifier
+        state = {'source_job_id': self.job_id, 'status': 'completed', 'created_at_ns': 10,
+                 'source_plan_digest': plan_digest(self.plan),
+                 'files': [{'part_index': 1, 'name': 'part_001.mp4', 'duration': 6}]}
+        valid = record(state)
+        legacy = record({k: v for k, v in state.items() if k != 'source_plan_digest'})
+        record('{unfinished')
+        record(state, registry=[])
+        record({**state, 'created_at_ns': 'bad rank'})
+        record({**state, 'files': [None, 'bad entry']})
+        response = self.client.get('/api/jobs')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn('/api/exports/' + valid + '/', response.json()[0]['files'][0]['url'])
+        self.assertEqual(self.client.get(f'/api/exports/{legacy}/files/part_001.mp4').status_code, 200)
+        self.plan['parts'][0]['cuts'][0]['end'] = 2.5
+        atomic_json(self.directory / 'plan.json', self.plan)
+        response = self.client.get('/api/jobs/' + self.job_id).json()
+        self.assertNotIn('finishing_applied', response)
+        self.assertIn('/api/jobs/', response['files'][0]['url'])
+
+    def test_apply_export_accepts_more_than_fifty_supported_parts(self):
+        self.plan['parts'] = [{**self.plan['parts'][0], 'index': i} for i in range(1, 52)]
+        atomic_json(self.directory / 'plan.json', self.plan)
+        indices = list(range(1, 52))
+        with patch('app.studio_render.submit_render', return_value={'status': 'queued'}) as submit:
+            response = self.client.post('/api/jobs/' + self.job_id + '/exports', json={'part_indices': indices})
+            self.assertEqual(response.status_code, 202, response.text)
+            self.assertEqual(submit.call_args.args[2], indices)
+            denied = self.client.post('/api/jobs/' + self.job_id + '/exports', json={'part_indices': list(range(1, 102))})
+            self.assertEqual(denied.status_code, 422)
+
     def setUp(self):
         self.root = config.TEMP / ("studio-api-" + uuid.uuid4().hex)
         self.root.mkdir(parents=True)
@@ -319,6 +413,127 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), b"source remains unchanged")
         self.assertEqual(self.manager.get(self.job_id)["outputs"], ["part_001.mp4", "part_001.srt"])
         self.assertEqual(self.client.get("/api/exports/" + export_id + "/files/../job.json").status_code, 404)
+        # Ready playback and copying use the rendered presentation, even on a
+        # fresh GET, without rewriting the base output or the montage plan.
+        public = self.client.get('/api/jobs/' + self.job_id).json()
+        self.assertEqual(public['files'][0]['url'], file['url'])
+        self.assertTrue(public['finishing_applied'])
+        self.assertNotIn('_path', public['files'][0])
+        self.assertIn('/api/jobs/', public['base_files'][0]['url'])
+        destination = self.root / 'saved'
+        destination.mkdir()
+        copied = self.client.post('/api/jobs/' + self.job_id + '/save-videos',
+                                  json={'all': True, 'destination': str(destination)})
+        self.assertEqual(copied.status_code, 200, copied.text)
+        self.assertEqual((destination / 'part_001.mp4').read_bytes(), b'new independent render')
+
+    def test_repeat_apply_reuses_unchanged_parts_and_caption_edit_renders_only_its_part(self):
+        def render(manager, job_id, part, profile, output, work, preview, **kwargs):
+            output.mkdir(parents=True, exist_ok=True)
+            path = output / f"part_{part['index']:03}.mp4"
+            path.write_bytes(b'new presentation')
+            path.with_suffix('.srt').write_text('\n'.join(c['text'] for c in part['subtitles']), encoding='utf-8')
+            # FFmpeg reports progress within a part, not only after it ends.
+            kwargs['on_progress']('rendering', .4)
+            return path
+        def apply(settings=None):
+            body = {'part_indices': [1, 2]}
+            if settings:
+                body['settings'] = settings
+            response = self.client.post('/api/jobs/' + self.job_id + '/exports', json=body)
+            self.assertEqual(response.status_code, 202, response.text)
+            for _ in range(100):
+                result = self.client.get('/api/exports/' + response.json()['export_id']).json()
+                if result['status'] not in ('queued', 'running'):
+                    break
+                time.sleep(.01)
+            self.assertEqual(result['status'], 'completed', result)
+            return result
+        with patch('app.studio_render.render_finishing_part', side_effect=render) as renderer, \
+                patch('app.studio_render.choose_encoder', return_value='h264_nvenc') as encoder:
+            apply()
+            self.assertEqual(renderer.call_count, 2)
+            self.assertEqual(encoder.call_count, 1)
+            reused = apply()
+            self.assertEqual(renderer.call_count, 2, 'unchanged apply must not encode anything')
+            self.assertEqual(encoder.call_count, 1)
+            self.assertEqual(reused['completed_parts'], 2)
+            captions = self.directory / 'finishing/captions_001.json'
+            atomic_json(captions, {'revision': 1, 'cues': [{'start': .1, 'end': 1, 'text': 'Edited first'}]})
+            apply()
+            self.assertEqual(renderer.call_count, 3)
+            self.assertEqual(renderer.call_args.args[2]['index'], 1)
+            settings = self.client.get('/api/episodes/' + self.episode_id + '/finishing').json()
+            settings.pop('episode_id'); settings.pop('revision')
+            settings['video']['blur'] += 1
+            apply(settings)
+            self.assertEqual(renderer.call_count, 5, 'a global visual change affects both parts')
+            # Input identity alone cannot bless a damaged previously rendered MP4.
+            damaged = self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url']
+            export_id = damaged.split('/')[3]
+            (self.directory / 'finishing/exports' / export_id / 'output/part_001.mp4').write_bytes(b'damaged')
+            apply(settings)
+            self.assertEqual(renderer.call_count, 6, 'a corrupted cached presentation must be rebuilt')
+
+    def test_failed_partial_export_and_changed_plan_never_replace_ready_shorts(self):
+        from app.studio_render import submit_render, _locate_task
+        from app.finishing import FinishProfile
+        original = self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url']
+        def fail_second(manager, job_id, part, profile, output, work, preview, **kwargs):
+            if part['index'] == 2:
+                raise RuntimeError('authored render failure')
+            output.mkdir(parents=True, exist_ok=True)
+            path = output / 'part_001.mp4'
+            path.write_bytes(b'partial render')
+            return path
+        with patch('app.studio_render.render_finishing_part', side_effect=fail_second):
+            task = submit_render(self.manager, self.job_id, [1, 2], FinishProfile().model_dump())
+            for _ in range(100):
+                status = self.client.get('/api/exports/' + task['export_id']).json()
+                if status['status'] not in ('queued', 'running'):
+                    break
+                time.sleep(.02)
+        self.assertEqual(status['status'], 'failed')
+        self.assertEqual(self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url'], original)
+        _, folder = _locate_task(self.manager, task['export_id'])
+        state = json.loads((folder / 'status.json').read_text('utf-8'))
+        state.update(status='completed', files=[{'part_index': 1, 'name': 'part_001.mp4', 'duration': 6}])
+        atomic_json(folder / 'status.json', state)
+        self.assertIn('/api/exports/', self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url'])
+        changed = json.loads(json.dumps(self.plan))
+        changed['parts'][0]['cuts'][0]['end'] = 2.5
+        atomic_json(self.directory / 'plan.json', changed)
+        self.assertEqual(self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url'], original)
+
+    def test_avatar_upload_is_canonical_owned_and_supports_profile_and_preview(self):
+        from PIL import Image
+        import io
+        data = io.BytesIO()
+        Image.new('RGB', (180, 120), '#ef4835').save(data, format='JPEG')
+        endpoint = '/api/episodes/' + self.episode_id
+        uploaded = self.client.post(endpoint + '/finishing/avatar', files={'file': ('photo.jpg', data.getvalue(), 'image/jpeg')})
+        self.assertEqual(uploaded.status_code, 201, uploaded.text)
+        asset = uploaded.json()
+        delivered = self.client.get(asset['url'])
+        self.assertEqual(delivered.headers['content-type'], 'image/png')
+        with Image.open(io.BytesIO(delivered.content)) as decoded:
+            self.assertEqual(decoded.size, (512, 512))
+            self.assertEqual(decoded.format, 'PNG')
+        profile = self.client.get(endpoint + '/finishing').json()
+        profile.pop('episode_id')
+        profile['video'].update(frame_style='social', avatar_style='image', avatar_id=asset['avatar_id'])
+        saved = self.client.put(endpoint + '/finishing', json=profile)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(self.client.get(endpoint + '/avatars/star.png').status_code, 200)
+        other = self.client.post('/api/projects/' + self.project_id + '/episodes', json={'number': 2}).json()['id']
+        self.assertEqual(self.client.get('/api/episodes/' + other + '/avatars/' + asset['avatar_id'] + '.png').status_code, 404)
+        other_profile = self.client.get('/api/episodes/' + other + '/finishing').json()
+        other_profile.pop('episode_id')
+        other_profile['video'] = profile['video']
+        self.assertEqual(self.client.put('/api/episodes/' + other + '/finishing', json=other_profile).status_code, 422)
+        for contents in (b'not an image', b'x' * (4 * 1024 * 1024 + 1)):
+            rejected = self.client.post(endpoint + '/finishing/avatar', files={'file': ('bad.png', contents, 'image/png')})
+            self.assertIn(rejected.status_code, (413, 422))
 
     def test_legacy_completed_job_uses_migrated_library_episode(self):
         job_path = self.directory / "job.json"
@@ -458,7 +673,7 @@ class StudioApiTests(unittest.TestCase):
         from app.studio_render import submit_render
         from app.finishing import FinishProfile
         started = threading.Event()
-        def wait_until_cancelled(manager, job_id, indices, profile, base, status, preview, *, cancelled):
+        def wait_until_cancelled(manager, job_id, indices, profile, base, status, preview, *, cancelled, **kwargs):
             started.set()
             while not cancelled():
                 if not started.wait(.02):

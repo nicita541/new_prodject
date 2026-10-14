@@ -42,10 +42,23 @@ def main() -> int:
                     extra={"job_id": directory.name, "stage": stage,
                            "progress": round(value, 4), "action": "progress"})
     from app.antigravity_exchange import AnalysisPending
+    runner = None
     try:
-        if read_json(directory / 'antigravity' / 'automation.json', {}).get('enabled'):
+        selected_provider = read_json(directory / 'analysis-settings.json', {}).get('provider',
+                            read_json(directory / 'job.json', {}).get('analysis_provider', 'local'))
+        manual_provider = selected_provider == 'antigravity_manual'
+        if manual_provider and read_json(directory / 'antigravity' / 'automation.json', {}).get('enabled'):
             atomic_json(directory / 'antigravity' / 'exchange.json', {'status': 'preparing', 'updated_at': now()})
         logger.info("Worker started", extra={"job_id": directory.name, "action": "job_start"})
+        from app.antigravity_runner import ManagedRunner
+        runner = ManagedRunner(directory,cancelled)
+        runner.start()
+        if manual_provider and read_json(directory/'antigravity/automation.json', {}).get('managed') is True:
+            from app.antigravity_quota import wait_for_quota, QuotaRecoveryBlocked
+            try:
+                wait_for_quota(directory, cancelled)
+            except QuotaRecoveryBlocked as error:
+                raise AnalysisPending(str(error)) from error
         from app.pipeline import run_job
         outputs = run_job(directory, report, cancelled)
         if cancelled():
@@ -55,15 +68,18 @@ def main() -> int:
                 raise ValueError("Недопустимое имя результата")
             if not contained(directory / "output" / name, directory / "output").is_file():
                 raise ValueError("Готовый результат отсутствует")
+        response = read_json(directory/'feedback-result.json', {})
+        processing = read_json(directory/'processing-settings.json', {})
+        message = response.get('reply') if response.get('status') == 'completed' else (
+            'План готов. Видео не экспортировалось.' if processing.get('mode') == 'plan_only' else 'Шортсы готовы')
         save(status="completed", stage="completed", progress=1.0, outputs=outputs,
-             message="Шортсы готовы", error=None)
+             message=message, error=None)
         logger.info("Worker completed", extra={"job_id": directory.name, "action": "job_complete",
                                                 "status": "completed"})
         return 0
     except AnalysisPending as pending:
-        stage = read_json(directory / 'job.json').get('stage', 'waiting_analysis') if read_json(
-            directory / 'antigravity/automation.json', {}).get('enabled') else 'waiting_analysis'
-        save(status="waiting_analysis", stage=stage, error=None,
+        stage = read_json(directory / 'job.json').get('stage', 'analyze')
+        save(status="waiting_analysis", stage=stage, waiting_stage=stage, error=None,
              message=str(pending), cancel_requested=False)
         logger.info("Manual analysis pending", extra={"job_id": directory.name,
                     "action": "manual_analysis_wait", "status": "waiting_analysis"})
@@ -78,6 +94,12 @@ def main() -> int:
                                                  "status": "failed"})
         save(status="failed", error=str(error), message="Обработка завершилась с ошибкой")
         return 1
+    finally:
+        if runner is not None:
+            try:
+                runner.close()
+            except Exception:
+                logger.exception('Не удалось завершить собственный процесс обмена Antigravity')
 
 
 if __name__ == "__main__":

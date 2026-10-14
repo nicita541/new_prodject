@@ -8,7 +8,7 @@ from pathlib import Path
 from app.json_store import analysis_json as atomic_json, load_json
 
 
-def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict, shots: list[dict], events: list[dict]) -> dict:
+def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict, shots: list[dict], events: list[dict], *, scenes=None) -> dict:
     from .selection_gate import selection_readiness
     record = {
         'quality_policy': 'source_proved_v1',
@@ -26,7 +26,13 @@ def analysis_result(job_dir: Path, provider: str, probe: dict, transcript: dict,
         'story_warnings': sorted({w for e in events for w in e.get('story_warnings', [])})
     }
     scenes_path = job_dir / 'scenes.json'
-    if scenes_path.is_file():
+    handles_path = job_dir/'speech-handle-overrides.json'
+    if handles_path.is_file():
+        from .speech_handles import validate_overrides
+        record['speech_handle_overrides'] = validate_overrides(load_json(handles_path), probe['duration'])
+    if scenes is not None:
+        record['scenes'] = scenes
+    elif scenes_path.is_file():
         record['scenes'] = load_json(scenes_path)
     for name in ('story_structure', 'dialogue_relations'):
         path = job_dir/(name+'-result.json')

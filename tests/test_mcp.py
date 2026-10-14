@@ -74,6 +74,32 @@ def test_product_create_replay_and_conflict(backend):
     assert call(product, 'create_project', title='Missing ID')['error']['code'] == 'invalid_arguments'
 
 
+def test_product_provider_switch_owns_job_and_replays_once(backend):
+    product, app, manager = backend
+    ids = project_episode(backend)
+    path = manager.root / 'source.mp4'
+    path.write_bytes(b'isolated source')
+    source_id = str(uuid.uuid4())
+    manager.sources[source_id] = {'path': str(path), 'name': path.name}
+    app.state.library.save_episode(ids['episode_id'], source_id,
+                                  {'analysis_provider': 'local', 'layout': 'cinema', 'caption_style': 'accent'})
+    job = app.state.library.launch(ids['episode_id'])
+    target = {**ids, 'job_id': job['id']}
+    with patch('app.deepseek.public_status', return_value={'configured': True}):
+        wrong = call(product, 'switch_analysis_provider', **{**target, 'episode_id': IDS[0]},
+                     provider='deepseek_plan', operation_id='wrong-switch')
+        assert not wrong['ok']
+        assert not manager.active[1].terminated
+        switched = call(product, 'switch_analysis_provider', **target, provider='deepseek_plan',
+                        operation_id='switch-once')
+        assert switched['ok'], switched
+        child = manager.active[1]
+        assert switched['data']['result']['analysis_provider'] == 'deepseek_plan'
+        assert call(product, 'switch_analysis_provider', **target, provider='deepseek_plan',
+                    operation_id='switch-once') == switched
+        assert manager.active[1] is child
+
+
 def test_settings_revision_is_checked_under_backend_owner(backend):
     product, app, manager = backend
     ids = project_episode(backend)

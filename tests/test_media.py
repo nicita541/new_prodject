@@ -379,6 +379,7 @@ class PipelineCheckpointTests(unittest.TestCase):
             with patch("app.analysis.analyze", side_effect=[original, shorter, shorter]), \
                     patch("app.pipeline.choose_encoder", return_value="libx264"), \
                     patch("app.pipeline.render_part", side_effect=render) as renderer, \
+                    patch('app.pipeline.prepare_clean_part', side_effect=lambda s, p, pr, *a: (s, p, pr, False)), \
                     patch("app.pipeline.validate_export"):
                 run_job(base, lambda *a: None, lambda: False)
                 old_plan = json.loads((base / "output" / "plan.json").read_text(encoding="utf-8"))
@@ -416,8 +417,12 @@ class PipelineCheckpointTests(unittest.TestCase):
                 path.with_suffix(".srt").write_text("original subtitles", encoding="utf-8")
                 return path
             with patch("app.analysis.analyze", return_value=analysis), patch("app.pipeline.choose_encoder", return_value="libx264"), \
-                    patch("app.pipeline.render_part", side_effect=fake_render) as renderer, patch("app.pipeline.validate_export"):
+                    patch("app.pipeline.render_part", side_effect=fake_render) as renderer, \
+                    patch('app.pipeline.prepare_clean_part', side_effect=lambda s, p, pr, *a: (s.with_suffix('.clean.mkv'), p, pr, False)) as clean_preparer, \
+                    patch("app.pipeline.validate_export"):
                 outputs = run_job(base, lambda *args: None, lambda: False)
+                self.assertEqual(renderer.call_args.args[0], source.with_suffix('.clean.mkv'))
+                self.assertEqual(clean_preparer.call_count, 1)
                 self.assertEqual(outputs, ["part_001.mp4", "part_001.srt"])
                 checkpoint=json.loads((base/"render/part_001.json").read_text(encoding="utf-8"))
                 self.assertEqual(checkpoint["requested_encoder"],"libx264")

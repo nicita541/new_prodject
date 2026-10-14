@@ -26,6 +26,7 @@ __pycache__/
 *.log
 
 # Local credentials and settings.
+/finishing/
 .env
 .env.*
 *.pem

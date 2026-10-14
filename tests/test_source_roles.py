@@ -131,14 +131,14 @@ class SourceRolePipelineTests(unittest.TestCase):
         with patch('app.production.sequence_sheet',return_value=[directory/'page.jpg']) as sheet:
             legacy=refine_source_roles([event],transcript,[],directory,old,lambda *a:None,lambda:False)
             readable=refine_source_roles([event],transcript,[],directory,new,lambda *a:None,lambda:False)
-            self.assertEqual(sheet.call_count,2)
-            first,second=sheet.call_args_list
+            self.assertEqual(sheet.call_count,4)
+            first,_,second,_=sheet.call_args_list
             self.assertEqual(first.args[1:3],second.args[1:3])
             self.assertEqual(first.kwargs,{'page_size':None,'readable':False})
             self.assertEqual(second.kwargs,{'page_size':8,'readable':True})
             replay=vision(True,[])
             cached=refine_source_roles([event],transcript,[],directory,replay,lambda *a:None,lambda:False)
-            self.assertEqual(sheet.call_count,2)
+            self.assertEqual(sheet.call_count,4)
         self.assertEqual(legacy[0]['selected_ranges'],readable[0]['selected_ranges'])
         self.assertEqual(cached,readable)
         self.assertEqual(len(new.calls),2)
@@ -367,6 +367,9 @@ class SourceRolePipelineTests(unittest.TestCase):
         from tests.test_story import decision as story_decision, fixture as story_fixture
 
         directory,event,_=edge_fixture(start=0,end=20,kind='ending')
+        event['kind']='story'
+        event.pop('contains_credits',None)
+        event.pop('credits_kind',None)
         _,authored,transcript=story_fixture()
         event['units']=copy.deepcopy(authored[0]['units'])
         raw={**story_decision(['u001','u003']),
@@ -380,7 +383,10 @@ class SourceRolePipelineTests(unittest.TestCase):
             {'unit':'u002','keep':False,'story_change':False,'reaction_or_humor':False,
              'current_episode_story':False,'confidence':.98,'retained_witness':'u001',
              'evidence':'The earlier retained reply conveys the same information without another reaction.'}]}
-        story=refine_story([event],transcript,[],directory,FakeVision([raw,proof]),lambda *a:None,lambda:False)
+        # This regression concerns downstream ownership proof, not storyboard
+        # tile extraction (covered by story/media tests with native geometry).
+        with patch('app.story._omission_media',return_value=directory/'visual'/f'{event["id"]}.jpg'):
+            story=refine_story([event],transcript,[],directory,FakeVision([raw,proof]),lambda *a:None,lambda:False)
         self.assertEqual(story[0]['verified_current_story_ranges'],[{'start':0,'end':6}])
         story[0].update(kind='ending',credits_kind='ending',credit_montage=True,
                         contains_credits=True,importance=1,

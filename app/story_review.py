@@ -6,6 +6,7 @@ import json
 import math
 import urllib.error
 from typing import TYPE_CHECKING
+from .editorial_reactions import REACTION_KINDS, preserve_reaction, reaction_instruction
 
 if TYPE_CHECKING:
     from app.vision import LocalVision
@@ -138,6 +139,7 @@ def validate_global_omissions(decisions, known):
                 or item.get('reason') not in VALID_OMIT_REASONS
                 or not isinstance(item.get('evidence'), str) or not item['evidence'].strip()
                 or ('reaction_or_humor' in item and type(item['reaction_or_humor']) is not bool)
+                or ('reaction_kind' in item and item['reaction_kind'] not in ('none', *REACTION_KINDS))
                 or isinstance(item.get('confidence'), bool) or not isinstance(item.get('confidence'), (float,int))
                 or not math.isfinite(item['confidence']) or not 0 <= item['confidence'] <= 1):
             raise ValueError('Нет подтверждения исключения события')
@@ -159,15 +161,15 @@ def apply_global_selection(events, decisions, editorial_profile=None):
         event.pop('global_excluded', None)
         event.pop('global_omission', None)
         omission = omissions.get(event['id'])
-        protected = any(r.get('decision') == 'keep' and r.get('kind') in (
-            'character_reaction','emotional_pause','comedic_payoff','physical_action','state_transition')
+        protected = any(r.get('decision') == 'keep' and (r.get('kind') in ('physical_action','state_transition')
+            or r.get('kind') in REACTION_KINDS and preserve_reaction(profile, r))
             and type(r.get('confidence')) in (int,float) and math.isfinite(r['confidence'])
             and r['confidence'] >= .9 and r.get('frame_indices') for r in event.get('unit_evidence', []))
         if (omission and omission['confidence'] >= .85 and not event.get('uncertain')
                 and not event.get('selection_uncertain')
                 and not event.get('narrative_bridge')
                 and not protected
-                and not (omission.get('reaction_or_humor') and not profile.get('dramatic_condensation'))
+                and not (omission.get('reaction_or_humor') and preserve_reaction(profile, omission))
                 and not (verified_story_ranges(event) and event.get('selection_status') != 'accepted')
                 and not (omission['reason'] in ('redundant_exchange','repeated_information')
                          and not profile['remove_exact_repetition'])
@@ -193,11 +195,13 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
     dramatic = profile.get('dramatic_condensation', False)
     if dramatic:
         mode_instruction = (
-            'DRAMATIC CONDENSATION MODE: Condense the episode into 5-8 focused, high-impact dramatic shorts. '
-            'Focus strictly on the main dramatic conflicts, major revelations, emotional turning points, and decisive character actions. '
+            'DRAMATIC CONDENSATION MODE: Build focused, high-impact dramatic shorts. '
+            'Balance story necessity with concrete viewer interest: conflicts, revelations, emotional turning points, '
+            'character choices, humorous setup/payoff and anticipation. '
             'Omit low-stakes filler scenes, prolonged routine conversations with no plot development, and repetitive exchanges. '
             'Mark omissions with reason in redundant_exchange, repeated_information, nonstory, low_stakes_filler, exposition_without_action. '
-            'Mark reaction_or_humor=true if the scene is primarily light comedy or banter without plot consequences. '
+            'Mark reaction_or_humor=true for distinct reactions, comedy or banter even without plot consequences; '
+            +reaction_instruction(profile)+
             'CRITICAL: NEVER omit a narrative bridge: an event or non-verbal transition connecting State A to State B '
             '(e.g. capture, departure, sudden accident, transport, handover) where omitting it would cause '
             'an unexplained jump or broken causal continuity between surrounding events. Put such events into "narrative_bridges". '
@@ -249,7 +253,8 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
     schema['properties']['omit'] = {'type':'array', 'items':{'type':'object', 'properties':{
         'event': {'type':'string', 'enum':sorted(known)},
         'reason': {'type':'string', 'enum':sorted(VALID_OMIT_REASONS)},
-        'evidence': {'type':'string'}, 'confidence':{'type':'number'},'reaction_or_humor':{'type':'boolean'}},
+        'evidence': {'type':'string'}, 'confidence':{'type':'number'},'reaction_or_humor':{'type':'boolean'},
+        'reaction_kind':{'type':'string','enum':['none', *REACTION_KINDS]}},
         'required':['event','reason','evidence','confidence','reaction_or_humor'], 'additionalProperties':False}}
     last_error = None
     def validate_decisions(decisions):
@@ -268,7 +273,9 @@ def global_story_review(vision: LocalVision, events: list[dict], editorial_profi
         decisions['dependencies'] = dependencies
         if 'omit' in decisions:
             validate_global_omissions(decisions, known)
-    for _ in range(3):
+    # Providers own bounded syntax retries. Repeating this whole-episode map
+    # after a domain rejection sends identical context without new evidence.
+    for _ in range(1):
         try:
             from .deepseek import DeepSeekVision
             from .hybrid import query_checked

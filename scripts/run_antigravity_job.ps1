@@ -4,15 +4,21 @@ param(
     [string]$Model = 'gemini-3.8-flash-low',
     [switch]$DefaultAgent,
     [ValidateRange(0,180)][int]$MaxMinutes = 0,
-    [ValidateRange(1,2)][int]$MaxConcurrent = 2
+    [ValidateRange(1,2)][int]$MaxConcurrent = 2,
+    [string]$ManagedStopFile
 )
-# User-started direct scripting. No HTTP control of KADR, no credential access.
+# Official CLI exchange: owned by the processing worker or explicitly user-started.
 $ErrorActionPreference = 'Stop'
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $job = (Resolve-Path -LiteralPath $JobDirectory).Path
 if (-not $job.StartsWith($workspace + '\', [StringComparison]::OrdinalIgnoreCase) -or
     -not (Test-Path -LiteralPath (Join-Path $job 'job.json'))) { throw 'Job must be inside workspace' }
 $root = Join-Path $job 'antigravity'
+if ($ManagedStopFile -and
+    ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($ManagedStopFile)) -ne $root -or
+     [IO.Path]::GetFileName($ManagedStopFile) -notmatch '^\.managed-stop-[a-f0-9]{32}$')) {
+    throw 'Managed stop file must belong to this exchange folder'
+}
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 if (-not (Resolve-Path -LiteralPath $root).Path.StartsWith($job + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Exchange folder must be inside job'
@@ -20,12 +26,37 @@ if (-not (Resolve-Path -LiteralPath $root).Path.StartsWith($job + '\', [StringCo
 $env:TEMP = Join-Path $workspace 'temp'
 $env:TMP = $env:TEMP
 $env:TMPDIR = $env:TEMP
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
+# Atomic rename replaces content without copying destination ACL metadata.
+# ReplaceFile requires additional ACL rights on some Windows installations.
+if (-not ('KadrAtomicFile' -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class KadrAtomicFile {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern bool MoveFileEx(string source, string destination, int flags);
+}
+"@
+}
+function Publish-AtomicFile([string]$Source, [string]$Destination) {
+    for ($publishAttempt=0; $publishAttempt -lt 20; $publishAttempt++) {
+        if ([KadrAtomicFile]::MoveFileEx($Source, $Destination, 9)) { return }
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errorCode -notin @(5,32,33) -or $publishAttempt -eq 19) {
+            throw (New-Object ComponentModel.Win32Exception($errorCode))
+        }
+        Start-Sleep -Milliseconds 50
+    }
+}
+
 $lock = [IO.File]::Open((Join-Path $root 'runner.lock'), [IO.FileMode]::OpenOrCreate,
     [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $packetId = $null
 $workers = @{}
 $launched = New-Object 'Collections.Generic.HashSet[string]'
+$quotaTickets = @{}
 $runnerStop = Join-Path $root ('.runner-stop-' + [Guid]::NewGuid().ToString('N'))
 function Write-Runner([string]$Status, [string]$Detail) {
     $path = Join-Path $root 'runner.json'
@@ -33,20 +64,10 @@ function Write-Runner([string]$Status, [string]$Detail) {
     $value = @{status=$Status;packet=$packetId;message=$Detail;model=$Model;
         wall_seconds=$timer.Elapsed.TotalSeconds;updated_at=(Get-Date).ToUniversalTime().ToString('o');
         agent_requested=$(if ($DefaultAgent) { 'default' } else { 'kadr-json' });
-        active_packets=@($workers.Keys);max_concurrent=$MaxConcurrent}
+        active_packets=@($workers.Keys);max_concurrent=$MaxConcurrent;
+        owner=$(if ($ManagedStopFile) { 'worker' } else { 'external' })}
     [IO.File]::WriteAllText($temporary, ($value | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
-    # A short-lived Python/UI reader can hold a Windows sharing lock.
-    # Retry only status publication, never the paid model request.
-    for ($attemptNumber=0; $attemptNumber -lt 20; $attemptNumber++) {
-        try {
-            if (Test-Path -LiteralPath $path) { [IO.File]::Replace($temporary, $path, [NullString]::Value) }
-            else { [IO.File]::Move($temporary, $path) }
-            break
-        } catch [IO.IOException], [UnauthorizedAccessException] {
-            if ($attemptNumber -eq 19) { throw }
-            Start-Sleep -Milliseconds 50
-        }
-    }
+    Publish-AtomicFile $temporary $path
 }
 function Read-ExchangeJson([string]$Path) {
     # Retry transient local sharing failures only; no model call is repeated.
@@ -66,6 +87,9 @@ try {
         $state = Read-ExchangeJson (Join-Path $job 'job.json')
         if ($state.analysis_provider -ne 'antigravity_manual') { throw 'Job no longer uses Antigravity' }
         if ($state.status -eq 'completed') { Write-Runner 'completed' 'KADR finished'; return }
+        if ($ManagedStopFile -and (Test-Path -LiteralPath $ManagedStopFile)) {
+            Write-Runner 'stopped' 'Owned worker finished; checkpoints retained'; return
+        }
         if ($state.status -in @('failed','cancelled','interrupted','waiting_analysis') -or
             (Test-Path -LiteralPath (Join-Path $job '.cancel'))) {
             Write-Runner 'stopped' 'Job stopped; start/retry in KADR before running this script again'; return
@@ -82,6 +106,21 @@ try {
                 Remove-Job -Job $worker
                 $workers.Remove($completedId)
                 Write-Runner $(if ($workers.Count) { 'processing' } else { 'waiting' }) 'Results published; waiting for validation'
+            }
+        }
+        # Drain already running siblings, then block all new account calls.
+        # Only the owning Python worker re-arms a failed marker after reset.
+        $cooldownPath = Join-Path $root 'quota-cooldown.json'
+        if ($ManagedStopFile -and (Test-Path -LiteralPath $cooldownPath)) {
+            $cooldown = Read-ExchangeJson $cooldownPath
+            if ($cooldown.code -ne 'quota' -or $cooldown.packet -notmatch '^[a-f0-9]{64}$') {
+                throw 'Invalid quota cooldown'
+            }
+            if ([DateTimeOffset]::Parse($cooldown.quota_retry_at) -gt [DateTimeOffset]::UtcNow) {
+                $packetId = $cooldown.packet
+                Write-Runner 'waiting_quota' 'Provider quota cooldown; automatic resume scheduled'
+                Start-Sleep -Milliseconds 500
+                continue
             }
         }
         $exchangePath = Join-Path $root 'exchange.json'
@@ -108,6 +147,9 @@ try {
                 $failurePath = Join-Path $packet 'failure.json'
                 if (Test-Path -LiteralPath $failurePath) {
                     $packetFailure = Read-ExchangeJson $failurePath
+                    if ($ManagedStopFile -and $packetFailure.code -eq 'quota' -and $packetFailure.quota_retry_at) {
+                        continue # Python owns reset validation and bounded retry authorization.
+                    }
                     if ($packetFailure.packet -eq $packetId -and $packetFailure.code -eq 'empty_response') { continue }
                     if ($packetFailure.packet -eq $packetId -and $packetFailure.code -eq 'output_limit') {
                         # Backend splits whole units. Never relaunch the same
@@ -132,13 +174,24 @@ try {
                     # Do not launch an inevitably interrupted one-second query.
                     # A budget pause retains the pending packet and is not a CLI failure.
                     if ($remaining -lt 15) { break processing }
+                    $ticketPath = Join-Path $packet 'quota-retry.json'
+                    if ($ManagedStopFile -and (Test-Path -LiteralPath $ticketPath)) {
+                        $ticket = Read-ExchangeJson $ticketPath
+                        if ($ticket.count -isnot [long] -and $ticket.count -isnot [int]) { throw 'Invalid quota retry count' }
+                        if ($ticket.count -lt 1 -or $ticket.count -gt 2 -or
+                            [DateTimeOffset]::Parse($ticket.retry_at) -gt [DateTimeOffset]::UtcNow) { throw 'Invalid quota retry authorization' }
+                        if (-not $quotaTickets.ContainsKey($packetId) -or $quotaTickets[$packetId] -lt $ticket.count) {
+                            $null = $launched.Remove($packetId)
+                            $quotaTickets[$packetId] = $ticket.count
+                        }
+                    }
                     if (-not $launched.Add($packetId)) { throw 'Attempt already finished without a result; inspect before retry' }
                     $remaining = [Math]::Min(240, $remaining)
                     $workers[$packetId] = Start-Job -ScriptBlock {
-                        param($script, $directory, $exe, $requestedModel, $agent, $cancel, $stop, $limit)
+                        param($script, $directory, $exe, $requestedModel, $agent, $cancel, $stop, $limit, $quotaWait)
                         $ErrorActionPreference = 'Stop'
-                        & $script -PacketDirectory $directory -AgyExe $exe -Model $requestedModel -DefaultAgent:$agent -StopFile $cancel -RunnerStopFile $stop -TimeLimitSeconds $limit
-                    } -ArgumentList (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1'), $packet, $AgyExe, $Model, ([bool]$DefaultAgent), (Join-Path $job '.cancel'), $runnerStop, $remaining
+                        & $script -PacketDirectory $directory -AgyExe $exe -Model $requestedModel -DefaultAgent:$agent -StopFile $cancel -RunnerStopFile $stop -TimeLimitSeconds $limit -AllowQuotaWait:$quotaWait
+                    } -ArgumentList (Join-Path $PSScriptRoot 'run_antigravity_packet.ps1'), $packet, $AgyExe, $Model, ([bool]$DefaultAgent), (Join-Path $job '.cancel'), $runnerStop, $remaining, ([bool]$ManagedStopFile)
                     Write-Runner 'processing' 'Running independent official CLI packets'
                 }
                 }

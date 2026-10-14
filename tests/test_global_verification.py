@@ -259,6 +259,7 @@ class GlobalVerificationTests(unittest.TestCase):
 
     def test_before_after_images_and_asr_are_context_only(self):
         event = copy.deepcopy(self.event)
+        event['uncertainty_reasons'] = ['missing_context']
         event.update(start=4, end=16)
         event['analysis_chunks'][0].update(start=4, end=16)
         event['units'] = [{**u, 'start': u['start']+4, 'end': u['end']+4} for u in event['units']]
@@ -349,7 +350,7 @@ class GlobalVerificationTests(unittest.TestCase):
         self.assertEqual(len(result['global_verification_history']), 2)
         self.assertEqual(result['selected_ranges'], [{'start': 0, 'end': 6}])
 
-    def test_many_current_pages_are_batched_without_exceeding_eight_with_neighbors(self):
+    def test_many_current_pages_do_not_mechanically_resend_neighbors(self):
         event = copy.deepcopy(self.event)
         before = {'id': 'previous', 'start': 0, 'end': 1, 'summary': 'context', 'kind': 'story', 'importance': 2}
         after = {'id': 'next', 'start': 12, 'end': 13, 'summary': 'context', 'kind': 'story', 'importance': 2}
@@ -365,7 +366,7 @@ class GlobalVerificationTests(unittest.TestCase):
         atomic_json(image.with_suffix('.storyboard.json'), {'pages': pages, 'frames': frames})
         vision = FakeVision([answer(action_units=['c000_u001']), answer(action_units=['c000_u002'])])
         result = self.verify([before, event, after], vision)[1]
-        self.assertEqual([len(request[1]) for request in vision.requests], [8, 5])
+        self.assertEqual([len(request[1]) for request in vision.requests], [6, 3])
         self.assertFalse(result['uncertain'])
         self.assertEqual(result['selected_ranges'], [{'start': 0, 'end': 12}])
         self.assertEqual(len(result['global_verification_history']), 2)

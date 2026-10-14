@@ -163,7 +163,7 @@ context.fetch=async(path,options)=>{
  if(path.endsWith('/previews')){value={preview_id:'real-preview',source_job_id:'j1',status:'queued'};status=202}
  else if(path.endsWith('/exports')){value={export_id:'real-export',status:'queued'};status=202}
  else if(path==='/api/library')value={projects:[],episodes:[]};
- else if(['/api/jobs','/api/sources'].includes(path))value=[];
+ else if(path.startsWith('/api/jobs?') || ['/api/jobs','/api/sources'].includes(path))value=[];
  else if(path==='/api/music')value={tracks:[]};
  else if(path==='/api/health')value={ready:true};
  else if(path==='/api/deepseek')value={configured:false};

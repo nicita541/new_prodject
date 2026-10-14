@@ -110,6 +110,20 @@ class ValidateContinuityTests(unittest.TestCase):
 
 
 class OmittedContinuityMechanismTests(unittest.TestCase):
+    def test_endpoint_only_omits_unrelated_gap_and_off_board_endpoint_speech(self):
+        rows = [{'start':a,'end':a+.4,'text':text} for a,text in (
+            (.5,'UNRELATED_HEAD_SENTINEL'),(3,'Left evidence'),
+            (6,'UNRELATED_GAP_SENTINEL'),(13,'Right evidence'),(15,'UNRELATED_TAIL_SENTINEL'))]
+        vision = FakeVision(continuity=lambda payload:decision())
+        verification.verify_omitted_continuity(self.source,self.events,self.selected,
+            {'words':rows,'segments':rows},[],self.transition,self.job,vision,lambda:False,endpoint_only=True)
+        self.assertEqual(len(vision.requests),1)
+        payload = vision.requests[0]['payload']
+        self.assertEqual(payload['BEFORE']['ASR'],'Left evidence')
+        self.assertEqual(payload['AFTER']['ASR'],'Right evidence')
+        self.assertEqual(payload['OMITTED_ASR_CONTEXT_ONLY'],[])
+        self.assertNotIn('UNRELATED_',vision.requests[0]['prompt'])
+
     def test_endpoint_only_does_not_inspect_or_restore_unseen_bridge(self):
         vision=FakeVision(continuity=lambda payload:decision())
         with patch('app.continuity_verification.adjudicate_event') as inspect:

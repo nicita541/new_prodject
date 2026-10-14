@@ -277,6 +277,40 @@ def _valid_checkpoint(data: dict, signature: str, event: dict) -> bool:
         return False
 
 
+def _sample_query(vision, prompt, image, directory, settings, times, cancelled):
+    """Reuse an exact model answer, never a previous/held derived focus."""
+    from .json_store import atomic_json
+    if cancelled():
+        raise InterruptedError('Обработка отменена')
+    inputs = {'version': 1, 'settings': settings, 'prompt': prompt, 'schema': FOCUS_SCHEMA,
+              'max_tokens': 120, 'times': times,
+              'image_sha256': hashlib.sha256(image.read_bytes()).hexdigest()}
+    signature = hashlib.sha256(json.dumps(inputs, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    directory.mkdir(exist_ok=True)
+    checkpoint = directory/(signature+'.json')
+    if checkpoint.is_file():
+        try:
+            saved = json.loads(checkpoint.read_text('utf-8'))
+            raw = saved['answer']
+            if (saved.get('version') == 1 and saved.get('signature') == signature
+                    and isinstance(raw, dict) and set(raw) == set(FOCUS_SCHEMA['required'])
+                    and type(raw.get('visible_speaker')) is bool):
+                _coordinates(raw)
+                return raw
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    raw = vision.query(prompt, image, max_tokens=120, schema=FOCUS_SCHEMA)
+    # A valid uncertain answer may be reused, but still takes the ordinary
+    # current-shot/current-selection fallback path below on every invocation.
+    _coordinates(raw)
+    if (isinstance(raw, dict) and set(raw) == set(FOCUS_SCHEMA['required'])
+            and type(raw.get('visible_speaker')) is bool):
+        if cancelled():
+            raise InterruptedError('Обработка отменена')
+        atomic_json(checkpoint, {'version': 1, 'signature': signature, 'answer': raw})
+    return raw
+
+
 def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, events: list, job_dir: Path,
                  vision, report, cancelled) -> list[dict]:
     """Return refined copies; cached checkpoints require the exact input signature."""
@@ -285,8 +319,8 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
     if meta_path.is_file():
         identity = json.loads(meta_path.read_text(encoding="utf-8"))
     else:
-        with source.open("rb") as stream:
-            identity = {"source": hashlib.file_digest(stream, "sha256").hexdigest()}
+        from .source_identity import source_identity
+        identity = {'source': source_identity(source, cancelled)['sha256']}
     model_stats = []
     for model in (getattr(vision, "model", None) or VLM_MODEL,
                   getattr(vision, "projector", None) or VLM_PROJECTOR):
@@ -305,6 +339,11 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
                 "probe": {key: probe.get(key) for key in ("fps", "width", "height", "duration")}}
     if getattr(vision, 'cache_profile', None) is not None:
         settings['provider_profile'] = vision.cache_profile
+    from .source_identity import source_identity
+    sample_settings = {key: value for key, value in settings.items()
+                       if key not in ('source_identity', 'source_size', 'source_mtime_ns')}
+    sample_settings['source_identity'] = {'sha256': source_identity(source, cancelled)['sha256'],
+                                          'declared_source': identity.get('source')}
     focus_dir = job_dir / "focus"
     focus_dir.mkdir(parents=True, exist_ok=True)
     result = copy.deepcopy(events)
@@ -365,7 +404,7 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
                 prompt = _focus_prompt(sample)
                 reason = None
                 try:
-                    raw = vision.query(prompt, frame, max_tokens=120, schema=FOCUS_SCHEMA)
+                    raw = _sample_query(vision, prompt, frame, focus_dir/'samples', sample_settings, times, cancelled)
                     coordinates = _coordinates(raw)
                     if sample["phrase"] and raw.get("visible_speaker") is not True:
                         coordinates["confidence"] = min(coordinates["confidence"], 0.5)
@@ -391,11 +430,11 @@ def refine_focus(source: Path, probe: dict, transcript: dict, shots: list, event
                         try:
                             if cancelled():
                                 raise InterruptedError("Обработка отменена")
-                            fallback = _coordinates(vision.query(
+                            fallback = _coordinates(_sample_query(vision,
                                 'Locate the MAIN VISIBLE ACTION, gesture or object interaction center in this CURRENT single frame, '
                                 'rather than automatically a face. If no action is visible, use the main visible person or meaningful scene. '
                                 'x,y normalized 0..1. Set visible_speaker=false. Return coordinate schema.',
-                                current_frame, max_tokens=120, schema=FOCUS_SCHEMA))
+                                current_frame, focus_dir/'samples', sample_settings, [times[0]], cancelled))
                             if fallback["confidence"] >= MIN_CONFIDENCE:
                                 coordinates = {**fallback, "main_fallback": True}
                                 previous_subject = dict(fallback)

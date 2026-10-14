@@ -26,6 +26,11 @@ def framing_provider(provider: str) -> str:
     return 'local' if provider in ('deepseek_plan', 'local_fast_story') else provider
 
 
+def perception_provider(provider: str) -> str:
+    """These story transports share unchanged local 4B source perception."""
+    return 'local' if provider in ('deepseek_plan', 'antigravity_manual') else provider
+
+
 def _model_files_for_provider(provider: str) -> tuple[Path, ...]:
     """Only local models actually used by this provider are mandatory.
 
