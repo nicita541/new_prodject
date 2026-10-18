@@ -1,13 +1,14 @@
 """Recoverable analysis → deterministic plan → validated local media export."""
 from __future__ import annotations
 
-from app.json_store import analysis_json as _atomic_json
+from app.json_store import analysis_json as _atomic_json, read_json
 
 import concurrent.futures
 import hashlib
 import json
 import marshal
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -18,7 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ROOT, MUSIC, setup_environment
-from .media import choose_encoder, render_part, validate_export
+from .media import choose_encoder, render_part, validate_export, EXPORT_VALIDATION_VERSION
 from .clean_parts import prepare_clean_part
 from .planner import build_plan, validate_plan, PLANNER_VERSION
 from .subtitles import style_identity, make_cues, remap_words
@@ -107,12 +108,23 @@ def _validated_cached_render(path: Path, checkpoint: Path, fingerprint: str,
                 or saved.get("mtime_ns") != path.stat().st_mtime_ns
                 or saved.get("srt_hash") != hashlib.sha256(path.with_suffix(".srt").read_bytes()).hexdigest()):
             return None
+        from .content_identity import file_sha256
+        video_hash = file_sha256(path, cancelled)
+        if saved.get('video_sha256') is not None and saved['video_sha256'] != video_hash:
+            return None
+        full_decode = (saved.get('video_sha256') is None
+                       or saved.get('full_decode_version') != EXPORT_VALIDATION_VERSION)
         validate_export(path, part["duration"], workdir, cancelled,
-                        max_duration=150.0 if part.get("duration", 0) > 120.0 else None)
+                        max_duration=150.0 if part.get("duration", 0) > 120.0 else None,
+                        full_decode=full_decode)
+        if full_decode:
+            saved = {**saved, 'video_sha256': video_hash,
+                     'full_decode_version': EXPORT_VALIDATION_VERSION}
+            _atomic_json(checkpoint, saved)
     except InterruptedError:
         # A cancellation is not a cache miss; never start a new encode.
         raise
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError, TimeoutError):
         return None
     return saved
 
@@ -121,8 +133,10 @@ def _part_render_fingerprint(part, render_inputs, track, transcript):
     """The rendered part depends on its actual inputs, not other plan parts."""
     track_identity = None
     if track is not None:
+        from .content_identity import file_sha256
         stat = track.stat()
-        track_identity = {'path': str(track.resolve()), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+        track_identity = {'path': str(track.resolve()), 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+                          'sha256': file_sha256(track)}
     from .audio_analysis import detect_transcript_music_intervals, map_cuts_to_part_duck_intervals
     ducking = (map_cuts_to_part_duck_intervals(part['cuts'], detect_transcript_music_intervals(transcript))
                if track is not None and render_inputs['music'].get('smart_ducking', True) else [])
@@ -143,7 +157,11 @@ def _run_identity(job_dir: Path) -> dict:
     profile = load_profile(job_dir)
     modules = ("pipeline", "processing", "review_feedback", "speech_handles", "clean_parts", "media", "finishing_profile", "finishing_avatar", "social_frame", "analysis", "story", "closing", "pacing", "planner", "dramatic_planner",
                "part_context", "production_sequence", "source_roles", "editorial", "titles", "framing",
-               "deepseek", "endings")
+               "deepseek", "endings", "standalone_planner", "standalone_pipeline", "story_objective",
+               "artifact_publication", "source_evidence", "execution_context")
+    modules += ('standalone_analysis', 'episode_survey', 'selective_analysis', 'analysis_questions', 'candidate_framing',
+                'discovery_regions', 'checkpoint_lineage', 'analysis_continuation', 'unit_decisions', 'standalone_drafts',
+                'story_candidates', 'candidate_analysis', 'candidate_screen', 'audio_boundaries')
     semantic = derived_story_identity("recorded-in-events.meta.json", provider, profile)
     files, loaded_code = {}, {}
     for name in modules:
@@ -243,19 +261,30 @@ def _archive_obsolete_outputs(job_dir: Path, previous: dict | None, current: dic
 
 
 def run_job(job_dir: Path, report, cancelled) -> list[str]:
+    from .execution_context import scope
+    state = read_json(Path(job_dir) / 'job.json', {})
+    attempt_id = state.get('attempt_id') if isinstance(state, dict) else None
+    if not isinstance(attempt_id, str) or not re.fullmatch(r'[0-9a-f]{32}', attempt_id):
+        attempt_id = uuid.uuid4().hex
+    with scope(job_id=Path(job_dir).name, attempt_id=attempt_id):
+        return _run_attempt(job_dir, report, cancelled)
+
+
+def _run_attempt(job_dir: Path, report, cancelled) -> list[str]:
     job_dir = job_dir.resolve()
     job_dir.relative_to(ROOT.resolve())
     timings = {"version": 1, "status": "running", "render_workers": 2,
                "started_at": datetime.now(timezone.utc).isoformat(),
                "stages_seconds": {}, "parts": []}
-    run_id = uuid.uuid4().hex
+    from .execution_context import snapshot
+    run_id = snapshot()['attempt_id']
     timings["run_id"] = run_id
     manifest_path = job_dir / "runs" / (run_id + ".json")
     started = time.perf_counter()
     failed = False
     from .pipeline_diagnostics import Diagnostics
     diagnostics = Diagnostics(job_dir)
-    diagnostics.start(job_id=job_dir.name)
+    diagnostics.start(run_id=run_id, job_id=job_dir.name)
     active = {'stage': None, 'started': time.perf_counter()}
 
     def close_stage():
@@ -346,9 +375,18 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
             raise InterruptedError("Обработка отменена")
     check()
     options = load_options(job_dir)
-    from .processing import load_mode, cached_analysis, save_snapshot
+    from .processing import load_mode, cached_analysis, save_snapshot, source_digest
+    # A worker may outlive a source rewrite with restored timestamps. Refresh
+    # once before analysis so all downstream identities share current bytes.
+    source_sha = source_digest(source, cancelled, refresh=True)
     processing_mode = load_mode(job_dir)
+    from .confirmed_selection import restore_source,preserve_source
+    restore_source(job_dir)
     correction_request = json.loads((job_dir/'correction-request.json').read_text('utf-8')) if (job_dir/'correction-request.json').is_file() else None
+    from .story_objective import load_objective, STANDALONE
+    objective = load_objective(job_dir)
+    if correction_request and objective['objective'] == STANDALONE:
+        raise ValueError('Исправления отдельных историй пока требуют нового запуска; исходная версия сохранена')
     timings['processing_mode'] = processing_mode
     report('prepare', .01, {'full': 'Полный монтаж: новый расчёт всех этапов',
                            'incremental': 'Обновление: проверяем зависимости сохранённых этапов',
@@ -368,6 +406,13 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         with _timed_stage(timings, 'feedback'):
             analysis = apply_feedback(analysis, correction_plan, correction_request, job_dir, report, cancelled)
     check()
+    if objective['objective'] == STANDALONE:
+        from .standalone_pipeline import run_standalone
+        from types import SimpleNamespace
+        return run_standalone(job_dir, source, source_info, analysis, objective, options,
+            music_config, music_sources, processing_mode, report, cancelled, timings,
+            render_backend=SimpleNamespace(cached=_validated_cached_render, fingerprint=_part_render_fingerprint,
+                choose_encoder=choose_encoder, prepare_clean_part=prepare_clean_part, render_part=render_part))
     from .editorial import load_profile
     from .confirmed_selection import project as confirmed_project, prune_failed, identity as confirmed_identity
     analysis = confirmed_project(analysis,job_dir,report)
@@ -395,8 +440,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     planning_cache_hit = False
     for attempt in range(QUALITY_POLICY['max_recovery_passes']+1):
         check()
-        analysis = finish_pending_framing(source,analysis,job_dir,report,cancelled,
-                                         allow_new_session=processing_mode!='plan_only')
+        with preserve_source(analysis,job_dir):
+            analysis = finish_pending_framing(source,analysis,job_dir,report,cancelled,
+                                             allow_new_session=processing_mode!='plan_only')
         analysis = confirmed_project(analysis,job_dir,report)
         plan = None
         identity = {"analysis": analysis, "source": {"path": str(source), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns},
@@ -486,8 +532,9 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         session = (vision_session(job_dir,cancelled,analysis_provider(job_dir),model=STORY_MODEL,
                                   projector=STORY_PROJECTOR,thinking=True)
                    if needs_model_recovery(gate) else nullcontext(None))
-        with session as vision:
-            analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)
+        with preserve_source(analysis,job_dir):
+            with session as vision:
+                analysis = recover_final_quality(source,analysis,plan,gate,job_dir,vision,report,cancelled)
         planning_cache_hit = False
     plan['quality_gate'] = gate
     if analysis.get('selection_scope'):
@@ -545,8 +592,10 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
          "render_code": {name: hashlib.sha256((ROOT/'app'/(name+'.py')).read_bytes()).hexdigest()
                          for name in ('media', 'clean_parts', 'social_frame', 'finishing_avatar', 'audio_analysis')}},
         sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-    render_inputs = {'source': identity['source'], 'probe': analysis['probe'],
+    render_inputs = {'source': {'sha256': source_sha}, 'probe': analysis['probe'],
                      'appearance': video_finish if finishing else None, 'renderer_version': 6,
+                     'avatar_sha256': (hashlib.sha256(finishing['avatar_path'].read_bytes()).hexdigest()
+                                       if finishing and finishing.get('avatar_path') else None),
                      'code': {name: hashlib.sha256((ROOT/'app'/(name+'.py')).read_bytes()).hexdigest()
                               for name in ('media', 'clean_parts', 'social_frame', 'finishing_avatar', 'audio_analysis')},
                      'subtitle_style': style_identity(options['caption_style']),
@@ -556,6 +605,7 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     plan["render_video"] = video_finish if finishing else None
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs = []
+    publication_artifacts = {}
     missing = []
     rendering_started = time.perf_counter()
     music_tracks_assigned = {}
@@ -598,6 +648,16 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
         part['render_fingerprint'] = _part_render_fingerprint(
             part, render_inputs, music_tracks_assigned.get(part['index']), analysis['transcript'])
         saved = _validated_cached_render(path, checkpoint, part['render_fingerprint'], part, workdir, cancelled)
+        from .render_ancestry import inherited_render
+        inherited = None if saved is not None else inherited_render(job_dir, part['render_fingerprint'], cancelled)
+        if inherited is not None:
+            saved = inherited
+        if saved is not None:
+            publication_artifacts[part['index']] = {
+                **({'reference': inherited['reference']} if inherited is not None else
+                   {'video': path, 'subtitles': path.with_suffix('.srt')}),
+                'candidate_id': f"part_{part['index']:03}",
+                'output_index': part['index'], 'full_decode_version': saved['full_decode_version']}
         import logging
         logging.getLogger("app.pipeline").info(
             "Render checkpoint: part=%s, cache=%s", part["index"],
@@ -651,13 +711,22 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
                 nonlocal completed
                 path = result["path"]
                 checkpoint = workdir / f"part_{part['index']:03}.json"
+                from .content_identity import file_sha256
+                video_hash = file_sha256(path, cancelled)
+                # render_part currently performs the full decode before atomic
+                # publication; the checkpoint binds that verification to bytes.
                 _atomic_json(checkpoint, {"fingerprint": part['render_fingerprint'], "size": path.stat().st_size,
                                           "mtime_ns": path.stat().st_mtime_ns,
                                           "encoder": result["encoder"], "requested_encoder": encoder,
                                           "run_id": timings["run_id"],
                                           "music_track": result.get("music_track"),
+                                          "video_sha256": video_hash,
+                                          "full_decode_version": EXPORT_VALIDATION_VERSION,
                                           "srt_hash": hashlib.sha256(path.with_suffix(".srt").read_bytes()).hexdigest()})
                 part["music_track"] = result.get("music_track")
+                publication_artifacts[part['index']] = {'video': path, 'subtitles': path.with_suffix('.srt'),
+                    'candidate_id': f"part_{part['index']:03}", 'output_index': part['index'],
+                    'full_decode_version': EXPORT_VALIDATION_VERSION}
                 timings["parts"].append({"index": part["index"], "cached": False,
                                          "encoder": result["encoder"],
                                          "seconds": result["seconds"]})
@@ -677,5 +746,13 @@ def _run_job(job_dir: Path, report, cancelled, timings: dict) -> list[str]:
     # Persist the final per-part music metadata in both locations.
     _atomic_json(output_dir / "plan.json", plan)
     _atomic_json(plan_path, plan)
+    if publication_artifacts:
+        from .artifact_publication import publish_revision
+        if source_digest(source, cancelled, refresh=True) != source_sha:
+            raise ValueError('Исходная серия изменилась во время обработки')
+        publication = publish_revision(job_dir, plan,
+            [publication_artifacts[p['index']] for p in plan['parts']],
+            producer_id=job_dir.name, attempt_id=timings['run_id'], cancelled=cancelled)
+        outputs = publication['outputs']
     report("completed", 1.0, f"Готово: {len(plan['parts'])} частей. Проверьте сюжет и кадрирование в просмотре.")
     return outputs

@@ -237,15 +237,71 @@ class AnalysisVisionSessions:
         key = (Path(settings.get('model') or VLM_MODEL).resolve(),
                Path(settings.get('projector') or VLM_PROJECTOR).resolve(),
                settings.get('gpu_layers', 99), settings.get('cpu_projector', False))
-        if key != self._key:
-            self.close()
-            context = self.factory(job_dir, cancelled, provider, **settings)
-            vision = context.__enter__()
-            self._context, self._vision, self._key = context, vision, key
-        # Queries are sequential. Stage defaults preserve cache identities and
-        # per-request overrides without altering an in-flight request.
-        self._vision.thinking = settings.get('thinking', False)
-        yield self._vision
+        owner = self
+        # Construction exposes model identities and capability flags without
+        # starting llama.cpp. Only a method invocation acquires the runtime.
+        candidate = (self._vision if key == self._key else
+                     self.factory(job_dir, cancelled, provider, **settings))
+        deferred_factory = not hasattr(candidate, 'query')
+        metadata = {'model': key[0], 'projector': key[1], 'job_dir': job_dir,
+                    'thinking': settings.get('thinking', False), 'gpu_layers': key[2],
+                    'cpu_projector': key[3], 'cpu_fallback': False,
+                    **{name: getattr(LocalVision, name) for name in
+                       ('supports_image_pages', 'supports_thinking_override', 'max_current_frames', 'max_boundary_batch')}}
+        candidate.thinking = settings.get('thinking', False)
+        stage_open = True
+
+        def acquire():
+            if not stage_open:
+                raise RuntimeError('Vision session stage is closed')
+            if cancelled():
+                raise InterruptedError('Обработка отменена')
+            if key != owner._key:
+                owner.close()
+                try:
+                    vision = candidate.__enter__()
+                except BaseException:
+                    candidate.__exit__(*sys.exc_info())
+                    raise
+                owner._context, owner._vision, owner._key = candidate, vision, key
+            owner._vision.thinking = settings.get('thinking', False)
+            return owner._vision
+
+        class LazyVision:
+            def __getattr__(self, name):
+                target = owner._vision if owner._key == key else candidate
+                try:
+                    attribute = getattr(target, name)
+                except AttributeError:
+                    # Production observers may provide @contextmanager
+                    # factories. Their yielded client exists only after enter,
+                    # so expose native metadata/methods without loading it.
+                    if not deferred_factory:
+                        raise
+                    if name in metadata:
+                        return metadata[name]
+                    if name not in ('query', 'token_count'):
+                        raise
+                    def deferred(*args, **kwargs):
+                        return getattr(acquire(), name)(*args, **kwargs)
+                    return deferred
+                if callable(attribute):
+                    def invoke(*args, **kwargs):
+                        return getattr(acquire(), name)(*args, **kwargs)
+                    return invoke
+                return attribute
+
+            def __setattr__(self, name, value):
+                target = owner._vision if owner._key == key else candidate
+                setattr(target, name, value)
+
+        # Existing perception signatures record the transport class name.
+        LazyVision.__name__ = LocalVision.__name__ if deferred_factory else type(candidate).__name__
+        try:
+            yield LazyVision()
+        finally:
+            stage_open = False
+
 
 
 def vision_session(job_dir: Path, cancelled, provider='local', **local_settings):

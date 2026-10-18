@@ -18,10 +18,22 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app import config
 from app.json_store import atomic_json, read_json
-from app.jobs import validate_id
+from app.jobs import validate_id, TERMINAL
+from app.artifact_publication import effective_plan, PublicationError
 from app.finishing_profile import VideoFinish, profile_path
+from app.caption_state import caption_path, caption_record, target_id, requires_target
 
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
+
+
+def _canonical_operation_id(value: str | None) -> str | None:
+    if value is not None:
+        try:
+            if str(uuid.UUID(value)) != value:
+                raise ValueError
+        except (ValueError, AttributeError, TypeError):
+            raise ValueError('operation_id должен быть UUID в канонической записи') from None
+    return value
 
 
 class SubtitleFinish(BaseModel):
@@ -113,6 +125,7 @@ class CaptionsUpdate(BaseModel):
     part_index: int = Field(ge=1, le=100)
     cues: list[Cue] = Field(max_length=150)
     revision: int | None = Field(None, ge=0)
+    target_id: str | None = Field(None, pattern=r'^[0-9a-f]{64}$')
 
 
 class FinishingSave(BaseModel):
@@ -134,12 +147,18 @@ class PreviewSubmission(BaseModel):
     from_seconds: float = Field(0, ge=0, alias="from", allow_inf_nan=False)
     duration: float = Field(5, gt=0, le=10, allow_inf_nan=False)
     settings: FinishProfile | None = None
+    operation_id: str | None = None
+
+    _valid_operation_id = field_validator('operation_id')(_canonical_operation_id)
 
 
 class ExportSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
     part_indices: list[int] = Field(min_length=1, max_length=100)
     settings: FinishProfile | None = None
+    operation_id: str | None = None
+
+    _valid_operation_id = field_validator('operation_id')(_canonical_operation_id)
 
     @field_validator("part_indices")
     @classmethod
@@ -175,9 +194,14 @@ def _episode(request: Request, identifier: str):
 def _job_plan(request: Request, job_id: str, *, require_completed: bool = True):
     current = _manager(request)
     job = current.get(job_id)
+    directory = current.job_dir(job_id)
+    try:
+        plan = effective_plan(directory)
+    except PublicationError:
+        raise HTTPException(409, 'Опубликованная версия повреждена; экспорт недоступен') from None
     if require_completed and job["status"] != "completed":
-        raise HTTPException(409, "Дождитесь окончания монтажа")
-    plan = read_json(current.job_dir(job_id) / "plan.json")
+        if job["status"] not in TERMINAL or not (directory / 'publication.json').exists():
+            raise HTTPException(409, "Дождитесь окончания монтажа")
     if not isinstance(plan, dict) or not isinstance(plan.get("parts"), list):
         raise HTTPException(404, "Монтажный план не найден")
     return job, plan
@@ -194,8 +218,12 @@ def _profile_file(request: Request, identifier: str) -> Path:
     return profile_path(_manager(request).root, identifier)
 
 
-def _caption_file(request: Request, job_id: str, part_index: int) -> Path:
-    return _manager(request).job_dir(job_id) / "finishing" / ("captions_%03d.json" % part_index)
+def _caption_target(request: Request, job_id: str, plan: dict, part: dict, incoming):
+    directory = _manager(request).job_dir(job_id)
+    expected = target_id(directory, plan, part)
+    if incoming != expected and (incoming is not None or requires_target(directory, part)):
+        raise HTTPException(409, 'Состав или порядок Shorts изменился, обновите страницу')
+    return directory, expected
 
 
 def _validate_cues(cues: list[Cue], duration: float) -> None:
@@ -315,9 +343,9 @@ def create_finishing_router() -> APIRouter:
         Disk errors roll back changes in-process. Multi-file writes cannot be
         guaranteed crash-atomic, so they are not described as such.
         """
-        _, plan, episode_id = _checked_render_job(request, job_id)
         manager = _manager(request)
         with manager.mutex:
+            _, plan, episode_id = _checked_render_job(request, job_id)
             profile_path = _profile_file(request, episode_id)
             profile_exists = profile_path.is_file()
             previous = read_json(profile_path, {}) or {}
@@ -329,15 +357,18 @@ def create_finishing_router() -> APIRouter:
             for item in body.captions:
                 part = _part(plan, item.part_index)
                 _validate_cues(item.cues, float(part["duration"]))
-                path = _caption_file(request, job_id, item.part_index)
+                directory, target = _caption_target(request, job_id, plan, part, item.target_id)
+                path = caption_path(directory, plan, part)
                 existed = path.is_file()
                 prev = read_json(path, {}) or {}
-                revision = int(prev.get("revision", 0))
+                revision = caption_record(directory, plan, part)['revision']
                 if item.revision is not None and item.revision != revision:
                     raise HTTPException(409, "Реплики изменены в другом окне, обновите страницу")
                 value = {"job_id": job_id, "part_index": item.part_index,
                          "revision": revision + 1,
                          "cues": [cue.model_dump() for cue in item.cues]}
+                if requires_target(directory, part):
+                    value['target_id'] = target
                 updates.append((path, existed, prev, value))
             changed = []
             try:
@@ -356,42 +387,47 @@ def create_finishing_router() -> APIRouter:
                 elif not profile_exists:
                     profile_path.unlink(missing_ok=True)
                 raise
-            return {"profile": profile,
-                    "captions": [value for _, _, _, value in updates]}
+            return {"profile": profile, "captions": [
+                {**value, 'target_id': target_id(manager.job_dir(job_id), plan, _part(plan, value['part_index']))}
+                for _, _, _, value in updates]}
 
     @router.get("/api/jobs/{job_id}/parts/{part_index}/captions")
     def get_captions(request: Request, job_id: str, part_index: int):
-        _, plan = _job_plan(request, job_id)
-        part = _part(plan, part_index)
-        record = read_json(_caption_file(request, job_id, part_index))
-        if record:
-            return record
-        cues = part.get("subtitles", []) or []
-        return {"job_id": job_id, "part_index": part_index, "revision": 0, "cues": cues}
+        with _manager(request).mutex:
+            _, plan = _job_plan(request, job_id)
+            return caption_record(_manager(request).job_dir(job_id), plan, _part(plan, part_index))
 
     @router.put("/api/jobs/{job_id}/parts/{part_index}/captions")
     def put_captions(request: Request, job_id: str, part_index: int, body: CaptionsUpdate):
         if body.part_index != part_index:
             raise HTTPException(422, "Номер части в запросе не совпадает")
-        _, plan = _job_plan(request, job_id)
-        part = _part(plan, part_index)
-        duration = float(part["duration"])
-        _validate_cues(body.cues, duration)
-        path = _caption_file(request, job_id, part_index)
         with _manager(request).mutex:
-            prev = read_json(path, {}) or {}
-            previous_revision = int(prev.get("revision", 0))
+            _, plan = _job_plan(request, job_id)
+            part = _part(plan, part_index)
+            directory, target = _caption_target(request, job_id, plan, part, body.target_id)
+            _validate_cues(body.cues, float(part['duration']))
+            path = caption_path(directory, plan, part)
+            previous_revision = caption_record(directory, plan, part)['revision']
             if body.revision is not None and previous_revision != body.revision:
                 raise HTTPException(409, "Реплики изменены в другом окне, обновите страницу")
             stored = {"job_id": job_id, "part_index": part_index, "revision": previous_revision + 1,
                       "cues": [c.model_dump() for c in body.cues]}
+            if requires_target(directory, part):
+                stored['target_id'] = target
             atomic_json(path, stored)
-        return stored
+        return {**stored, 'target_id': target}
 
 
     @router.post("/api/jobs/{job_id}/previews", status_code=202)
     def create_preview(request: Request, job_id: str, body: PreviewSubmission):
-        from .studio_render import submit_render
+        from .studio_render import replay_render, submit_render
+        original = body.model_dump(by_alias=True, exclude={'operation_id'})
+        try:
+            replay = replay_render(_manager(request), job_id, 'preview', body.operation_id, original)
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(409, str(error)) from error
+        if replay is not None:
+            return replay
         _, plan, episode_id = _checked_render_job(request, job_id)
         part = _part(plan, body.part_index)
         if body.from_seconds >= float(part["duration"]):
@@ -401,16 +437,16 @@ def create_finishing_router() -> APIRouter:
         _check_avatar(request, episode_id, profile['video'])
         try:
             state = submit_render(_manager(request), job_id, [body.part_index], profile,
-                                  preview=(body.part_index, body.from_seconds, duration))
-        except RuntimeError as error:
+                                  preview=(body.part_index, body.from_seconds, duration),
+                                  operation_id=body.operation_id, original_request=original)
+        except (ValueError, RuntimeError) as error:
             raise HTTPException(409, str(error)) from error
-        return {"preview_id": state["preview_id"], "job_id": job_id,
-                "part_index": body.part_index, "status": state["status"], "progress": 0,
-                "url": None, "error": None}
+        return {"job_id": job_id, "part_index": body.part_index,
+                "progress": 0, "url": None, "error": None, **state}
 
     @router.api_route("/api/jobs/{job_id}/previews/{preview_file}.mp4", methods=["GET", "HEAD"])
     def stream_preview(request: Request, job_id: str, preview_file: str):
-        from .studio_render import task_status, _locate_task
+        from .studio_render import task_status, resolve_task_file
         from .http_media import ranged_file
         identifier = preview_file
         if not re.fullmatch(r"pv_[0-9a-f]{32}", identifier):
@@ -418,10 +454,8 @@ def create_finishing_router() -> APIRouter:
         state = task_status(_manager(request), identifier, job_id)
         if state["status"] != "completed" or not state["files"]:
             raise HTTPException(404, "Предпросмотр ещё не готов")
-        _, directory = _locate_task(_manager(request), identifier, job_id)
-        source = (directory / "output" / state["files"][0]["name"]).resolve()
-        if not source.is_relative_to((directory / "output").resolve()) or not source.is_file():
-            raise HTTPException(404, "Файл предпросмотра не найден")
+        source = resolve_task_file(_manager(request), identifier,
+                                   state["files"][0]["name"], job_id=job_id)
         return ranged_file(source, request)
 
     @router.get("/api/jobs/{job_id}/previews/{preview_id}")
@@ -432,17 +466,50 @@ def create_finishing_router() -> APIRouter:
             raise HTTPException(404, "Предпросмотр не найден")
         return task_status(_manager(request), preview_id, job_id)
 
+    @router.get('/api/jobs/{job_id}/finishing-tasks')
+    def get_finishing_tasks(request: Request, job_id: str):
+        from .studio_render import list_tasks
+        return list_tasks(_manager(request), job_id)
+
     @router.post("/api/jobs/{job_id}/exports", status_code=202)
     def create_export(request: Request, job_id: str, body: ExportSubmission):
-        from .studio_render import submit_render
+        from .studio_render import replay_render, submit_render
+        original = body.model_dump(by_alias=True, exclude={'operation_id'})
+        try:
+            replay = replay_render(_manager(request), job_id, 'export', body.operation_id, original)
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(409, str(error)) from error
+        if replay is not None:
+            return replay
         _, plan, episode_id = _checked_render_job(request, job_id)
         for index in body.part_indices:
             _part(plan, index)
         profile = body.settings.model_dump() if body.settings else _stored_profile(request, episode_id)
         _check_avatar(request, episode_id, profile['video'])
         try:
-            return submit_render(_manager(request), job_id, body.part_indices, profile)
-        except RuntimeError as error:
+            return submit_render(_manager(request), job_id, body.part_indices, profile,
+                                 operation_id=body.operation_id, original_request=original)
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(409, str(error)) from error
+
+    @router.post('/api/exports/{export_id}/{action}')
+    def control_export(request: Request, export_id: str, action: Literal['resume', 'cancel']):
+        from .studio_render import control_task
+        if not re.fullmatch(r'ex_[0-9a-f]{32}', export_id):
+            raise HTTPException(404, 'Экспорт не найден')
+        try:
+            return control_task(_manager(request), export_id, action)
+        except (ValueError, RuntimeError) as error:
+            raise HTTPException(409, str(error)) from error
+
+    @router.post('/api/jobs/{job_id}/previews/{preview_id}/{action}')
+    def control_preview(request: Request, job_id: str, preview_id: str, action: Literal['resume', 'cancel']):
+        from .studio_render import control_task
+        if not re.fullmatch(r'pv_[0-9a-f]{32}', preview_id):
+            raise HTTPException(404, 'Предпросмотр не найден')
+        try:
+            return control_task(_manager(request), preview_id, action, job_id=job_id)
+        except (ValueError, RuntimeError) as error:
             raise HTTPException(409, str(error)) from error
 
     @router.get("/api/exports/{export_id}")
@@ -454,7 +521,7 @@ def create_finishing_router() -> APIRouter:
 
     @router.api_route("/api/exports/{export_id}/files/{filename}", methods=["GET", "HEAD"])
     def stream_export(request: Request, export_id: str, filename: str):
-        from .studio_render import task_status, _locate_task
+        from .studio_render import task_status, resolve_task_file
         from .http_media import ranged_file
         if not re.fullmatch(r"ex_[0-9a-f]{32}", export_id):
             raise HTTPException(404, "Экспорт не найден")
@@ -463,11 +530,7 @@ def create_finishing_router() -> APIRouter:
         allowed |= {Path(name).with_suffix(".srt").name for name in allowed}
         if state["status"] != "completed" or filename not in allowed:
             raise HTTPException(404, "Файл экспорта не найден")
-        _, directory = _locate_task(_manager(request), export_id)
-        output_dir = (directory / "output").resolve()
-        source = (output_dir / filename).resolve()
-        if not source.is_relative_to(output_dir) or not source.is_file():
-            raise HTTPException(404, "Файл экспорта не найден")
+        source = resolve_task_file(_manager(request), export_id, filename)
         return ranged_file(source, request, as_attachment=bool(request.query_params.get("download")))
 
     @router.api_route("/api/music/tracks/{filename}/stream", methods=["GET", "HEAD"])

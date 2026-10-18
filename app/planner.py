@@ -6,7 +6,7 @@ from .subtitles import make_cues, remap_words
 
 MAX_DURATION = 120.0
 TARGET_DURATION = 90.0
-PLANNER_VERSION = 17
+PLANNER_VERSION = 18
 SCHEMA_VERSION = 1
 SPEECH_TAIL = 0.55
 SPEECH_LEAD = 0.18
@@ -280,12 +280,14 @@ def build_plan(analysis: dict, *, draft=False) -> dict:
                                      words, probe["duration"])
             for piece in _subtract([{'start':start,'end':end}], excluded_ranges):
                 left, right = piece['start'], piece['end']
-                if intervals and left <= intervals[-1]["end"] + 0.002:
+                if intervals and left <= intervals[-1]["end"] + 1e-7:
                     intervals[-1]["end"] = max(right, intervals[-1]["end"])
                     if event["id"] not in intervals[-1]["event_ids"]:
                         intervals[-1]["event_ids"].append(event["id"])
                 else:
                     intervals.append({"start":left,"end":right,"event_ids":[event['id']]})
+    from .edit_integrity import normalize_proved_gaps
+    intervals = normalize_proved_gaps(intervals, analysis, events)
     from .speech_handles import expand_ranges, barriers
     semantic_ranges = [{'start':r['start'],'end':r['end']} for r in intervals]
     excluded_ranges = barriers(events,semantic_ranges)
@@ -295,7 +297,7 @@ def build_plan(analysis: dict, *, draft=False) -> dict:
     for interval in intervals:
         for piece in expand_ranges([interval], analysis['transcript'], probe['duration'], excluded_ranges,
                                    overrides=analysis.get('speech_handle_overrides', [])):
-            if expanded and piece['start'] <= expanded[-1]['end'] + .002:
+            if expanded and piece['start'] <= expanded[-1]['end'] + 1e-7:
                 expanded[-1]['end'] = max(expanded[-1]['end'],piece['end'])
                 expanded[-1]['event_ids'] = list(dict.fromkeys([*expanded[-1]['event_ids'],*interval['event_ids']]))
             else:
@@ -409,6 +411,12 @@ def validate_plan(plan: dict, analysis: dict, *, allow_draft=False) -> None:
         expected = make_cues(remap_words(analysis["transcript"].get("words", []), part["cuts"]), options['caption_style'])
         if part["subtitles"] != expected:
             raise ValueError("Субтитры не соответствуют исходным словам и монтажу")
+    from .edit_integrity import inspect_edits
+    problems = [] if allow_draft and plan.get('draft') else inspect_edits(analysis, plan)
+    if problems:
+        problem = problems[0]
+        raise ValueError(f"edit_integrity: {problem['code']} в части {problem['part']}, "
+                         f"{problem['range']['start']:.6f}–{problem['range']['end']:.6f} с")
 
 
 def build_dramatic_plan(analysis: dict) -> dict:

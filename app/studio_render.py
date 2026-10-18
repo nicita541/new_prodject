@@ -6,63 +6,24 @@ plan, completion status or registered output files.
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
+from datetime import datetime
 import logging
-import threading
-import traceback
-import uuid
-import time
 import re
-import shutil
-import hashlib
 from pathlib import Path
 
 from app import config
 from app.json_store import atomic_json, read_json
-from app.media import inspect_media, render_part, choose_encoder
-from app.clean_parts import prepare_clean_part, CLEAN_VERSION
-from app.music import list_tracks, pick_track_for_part, music_library_identity
+from app.media import inspect_media
 from app.content_identity import digest
+from app.artifact_publication import effective_plan
+from app.caption_state import caption_record
 
-_RENDER_SEMAPHORE = threading.Semaphore(1)
-# A restarted process cannot have any of the old threads. Persisted queued /
-# running exports must become interrupted, not remain spinning forever.
-_TASKS_LOCK = threading.Lock()
-_ACTIVE_TASKS: set[str] = set()
-_ACTIVE_THREADS = {}
-_ACTIVE_CANCEL = {}
-_ACTIVE_OWNERS = {}
-# One FFmpeg worker is allowed to render at a time. Keep no more than two
-# additional waiting requests; unlimited daemon threads exhaust local memory.
-MAX_PENDING_FINISHING_TASKS = 3
-
-
-@contextmanager
-def _render_slot(cancelled):
-    while True:
-        if cancelled():
-            raise InterruptedError("Экспорт прерван при закрытии приложения")
-        if _RENDER_SEMAPHORE.acquire(timeout=0.2):
-            break
-    try:
-        yield
-    finally:
-        _RENDER_SEMAPHORE.release()
+from .finishing_execution import MAX_PENDING_FINISHING_TASKS
 
 
 def stop_finishing_tasks(manager, timeout=12.0):
-    """Cancel own queued/running renders; never join under manager.mutex."""
-    import time
-    with _TASKS_LOCK:
-        targets = [(thread, _ACTIVE_CANCEL[key]) for key, thread in list(_ACTIVE_THREADS.items())
-                   if _ACTIVE_OWNERS.get(key) is manager]
-    for _, flag in targets:
-        flag.set()
-    deadline = time.monotonic() + max(0.0, timeout)
-    for thread, _ in targets:
-        if thread is not threading.current_thread():
-            thread.join(timeout=max(0, deadline - time.monotonic()))
-    return all(not thread.is_alive() for thread, _ in targets)
+    execution = getattr(manager, 'finishing_execution', None)
+    return execution.stop(timeout) if execution is not None else True
 
 
 def slice_part(part: dict, start: float, duration: float) -> dict:
@@ -135,10 +96,11 @@ def _probe(source: Path, work: Path) -> dict:
             "audio_stream": ordinal}
 
 
-def _effective_part(manager, job_id: str, part: dict, profile: dict) -> dict:
+def _effective_part(manager, job_id: str, part: dict, profile: dict, *, plan=None) -> dict:
     result = copy.deepcopy(part)
-    index = result["index"]
-    stored = read_json(manager.job_dir(job_id) / "finishing" / ("captions_%03d.json" % index))
+    directory = manager.job_dir(job_id)
+    plan = plan if plan is not None else (effective_plan(directory) or {})
+    stored = caption_record(directory, plan, part)
     # Speech belongs to this *job*. Episode-wide legacy part_overrides.cues
     # are not attributable to any particular completed montage and must never
     # overwrite the text or timing of a different attempt.
@@ -148,309 +110,200 @@ def _effective_part(manager, job_id: str, part: dict, profile: dict) -> dict:
     return result
 
 
-def _music(profile: dict, index: int, total: int, part: dict) -> dict | None:
-    audio = profile["audio"]
-    if not audio["enabled"]:
+def replay_render(manager, job_id, kind, operation_id, original_request):
+    """Exact POST replay repairs recorded intent, without mutable preflight."""
+    if operation_id is None:
         return None
-    # A missing explicitly selected track must not silently turn into an
-    # unrelated random soundtrack. Explicit "none" still means no music.
-    chosen = (audio.get("part_tracks", {}).get(str(index))
-              if audio.get("mode") == "per_part" else audio.get("track")
-              if audio.get("mode") == "single" else None)
-    if chosen and chosen not in {"none", "__none__", "off", "без музыки",
-                                 "random", "__random__", "случайный"}:
-        if not any(path.name == chosen for path in list_tracks(config.MUSIC)):
-            raise FileNotFoundError("Выбранный музыкальный трек больше недоступен")
-    track = pick_track_for_part(config.MUSIC, audio, index, total)
-    if not track:
-        return None
-    return {
-        "path": track, "volume": audio["volume"],
-        "fade_in": audio["fade_in"] > 0, "fade_out": audio["fade_out"] > 0,
-        "fade_in_seconds": audio["fade_in"], "fade_out_seconds": audio["fade_out"],
-        "duck_intervals": [(c["start"], c["end"]) for c in part.get("subtitles", [])]
-        if audio.get("ducking") else [],
-        "volume_music_duck": min(audio["volume"], 0.02),
-    }
-
-
-def render_finishing_part(manager, job_id: str, original: dict, profile: dict,
-                          output: Path, work: Path, preview: tuple[float, float] | None = None,
-                          cancelled=lambda: False, *, resolved: bool = False,
-                          encoder=None, on_progress=None) -> Path:
-    source = _source(manager, job_id)
-    part = copy.deepcopy(original) if resolved else _effective_part(manager, job_id, original, profile)
-    visual_style = dict(profile["subtitles"])
-    override = profile.get("part_overrides", {}).get(str(original["index"]), {})
-    visual_style.update(override.get("style") or {})
-    total = 100
-    work.mkdir(parents=True, exist_ok=True)
-    if cancelled():
-        raise InterruptedError("Экспорт прерван при закрытии приложения")
-    probed = _probe(source, work)
-    if on_progress:
-        on_progress('preparing_clean', 0)
-    source, part, probed, _ = prepare_clean_part(source, part, probed, manager.job_dir(job_id),
-        cancelled, create=preview is None,
-        on_progress=(lambda fraction: on_progress('preparing_clean', fraction)) if on_progress else None)
-    if preview:
-        part = slice_part(part, *preview)
-    music = _music(profile, part['index'], total, part)
-    from .finishing_avatar import resolve_avatar
-    avatar = resolve_avatar(manager.root, profile['video'])
-    encoder = encoder or choose_encoder(work, cancelled)
-    if on_progress:
-        on_progress('rendering', 0)
-    return render_part(source, part, probed, output, work, encoder,
-                       cancelled=cancelled, background_music=music,
-                       finishing={"subtitles": visual_style, "video": profile["video"], 'avatar_path': avatar},
-                       on_progress=(lambda fraction: on_progress('rendering', fraction)) if on_progress else None)
-
-
-def presentation_digest(source, part, profile, music_identity):
-    """Per-part visual/audio identity; other parts and editor revisions do not count."""
-    style = {**profile['subtitles'], **(profile.get('part_overrides', {}).get(str(part['index']), {}).get('style') or {})}
-    style.pop('safe_guides', None)
-    stat = source.stat()
-    music = _music(profile, part['index'], 100, part)
-    if music:
-        music = {**music, 'path': next((m for m in music_identity if m['name'] == music['path'].name), None)}
-    return digest({'version': 1, 'clean_version': CLEAN_VERSION, 'source': str(source.resolve()),
-        'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns, 'part': part,
-        'video': profile['video'], 'subtitles': style, 'music': music})
-
-
-def _file_digest(path):
-    result = hashlib.sha256()
-    with path.open('rb') as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b''):
-            result.update(block)
-    return result.hexdigest()
-
-
-def _presentation_intact(ready, signature):
-    if (not ready or ready.get('render_digest') != signature
-            or not ready.get('subtitle_url') or not ready.get('video_sha256') or not ready.get('srt_sha256')):
-        return False
-    try:
-        return (_file_digest(ready['_path']) == ready['video_sha256']
-                and _file_digest(ready['_path'].with_suffix('.srt')) == ready['srt_sha256'])
-    except OSError:
-        return False
-
-
-def _save_render_error(target: Path):
-    """Keep detailed FFmpeg/IO failure context *locally*, never in API output.
-
-    Existing HTTP errors are deliberately generic to avoid leaking absolute
-    paths or secrets. The local log is not part of the public status payload.
-    """
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-        (target / "render-error.log").write_text(
-            traceback.format_exc(), encoding="utf-8")
-    except OSError:
-        pass
-
-
-def run_export(manager, job_id: str, part_indices: list[int], profile: dict, target: Path,
-               status_file: Path, preview: tuple[int, float, float] | None = None,
-               cancelled=lambda: False, *, plan_snapshot: dict | None = None):
-    def update(**values):
-        with _TASKS_LOCK:
-            state = read_json(status_file, {}) or {}
-            state.update(values)
-            atomic_json(status_file, state)
-    try:
-        with _render_slot(cancelled):
-            update(status="running", progress=0.01)
-            logging.getLogger("app.studio_render").info(
-                "Finishing started", extra={"job_id": job_id, "action": "finishing_start",
-                                         "status": "running"})
-            plan = plan_snapshot if plan_snapshot is not None else read_json(manager.job_dir(job_id) / "plan.json")
-            if not isinstance(plan, dict):
-                raise ValueError("Монтажный план недоступен")
-            parts = {p["index"]: p for p in plan.get("parts", [])}
-            if any(i not in parts for i in part_indices):
-                raise ValueError("Некорректные номера частей")
-            files = []
-            latest = {} if preview else ready_outputs(manager, job_id)
-            music_identity = music_library_identity(config.MUSIC) if profile['audio']['enabled'] else []
-            source = _source(manager, job_id)
-            encoder = None
-            for k, index in enumerate(part_indices):
-                if cancelled():
-                    raise InterruptedError("Экспорт прерван при закрытии приложения")
-                part = parts[index] if plan_snapshot is not None else _effective_part(manager, job_id, parts[index], profile)
-                span = (preview[1], preview[2]) if preview else None
-                signature = presentation_digest(source, part, profile, music_identity)
-                ready = latest.get(f'part_{index:03}.mp4')
-                if _presentation_intact(ready, signature):
-                    output = target / 'output'
-                    output.mkdir(parents=True, exist_ok=True)
-                    for suffix in ('.mp4', '.srt', '.ass'):
-                        old = ready['_path'].with_suffix(suffix)
-                        if old.is_file():
-                            shutil.copy2(old, output / old.name)
-                    files.append({'part_index': index, 'name': ready['name'], 'duration': part['duration'],
-                                  'render_digest': signature, 'video_sha256': ready['video_sha256'],
-                                  'srt_sha256': ready['srt_sha256'], 'reused': True})
-                    update(progress=round((k + 1) / len(part_indices), 4), completed_parts=k + 1,
-                           phase='reusing', part_index=index)
-                    continue
-                if encoder is None:
-                    encoder = choose_encoder(target / 'encoder', cancelled)
-                last_update = 0
-                def progress(phase, fraction):
-                    nonlocal last_update
-                    now = time.monotonic()
-                    if fraction and now - last_update < .5:
-                        return
-                    last_update = now
-                    update(phase=phase, part_index=index, completed_parts=k, total_parts=len(part_indices),
-                           progress=round(min(.999, (k + (.15 * fraction if phase == 'preparing_clean'
-                                      else .15 + .85 * fraction)) / len(part_indices)), 4))
-                rendered = render_finishing_part(manager, job_id, part, profile,
-                                                 target / "output", target / f"work_{index}", span,
-                                                 cancelled=cancelled, resolved=plan_snapshot is not None,
-                                                 encoder=encoder, on_progress=progress)
-                files.append({"part_index": index, "name": rendered.name,
-                              "duration": float(span[1] if span else part["duration"]),
-                              'render_digest': signature, 'reused': False,
-                              'video_sha256': _file_digest(rendered),
-                              'srt_sha256': _file_digest(rendered.with_suffix('.srt'))
-                                  if rendered.with_suffix('.srt').is_file() else None})
-                update(progress=round((k + 1) / len(part_indices), 4), completed_parts=k + 1)
-                logging.getLogger("app.studio_render").info(
-                    "Finishing part rendered: %s", index,
-                    extra={"job_id": job_id, "stage": "finishing", "action": "finishing_part",
-                           "progress": round((k + 1) / len(part_indices), 4)})
-            if cancelled():
-                raise InterruptedError("Экспорт прерван при закрытии приложения")
-            update(status="completed", progress=1.0, files=files,
-                   phase='completed', completed_parts=len(part_indices), total_parts=len(part_indices),
-                   message="Части пересобраны" if not preview else "Предпросмотр готов")
-    except InterruptedError:
-        logging.getLogger("app.studio_render").warning("Finishing interrupted",
-            extra={"job_id": job_id, "action": "finishing_interrupted", "status": "interrupted"})
-        update(status="interrupted", error="Экспорт прерван при закрытии приложения")
-    except FileNotFoundError:
-        logging.getLogger("app.studio_render").exception("Finishing music file missing",
-            extra={"job_id": job_id, "action": "finishing_failed", "status": "failed"})
-        _save_render_error(target)
-        update(status="failed", progress=0.0,
-               error="Выбранный музыкальный файл не найден. Выберите другой трек.")
-    except Exception:
-        logging.getLogger("app.studio_render").exception(
-            "Finishing render failed",
-            extra={"job_id": job_id, "action": "finishing_failed", "status": "failed",
-                   "detail_log": str(target.relative_to(config.ROOT)) if target.is_relative_to(config.ROOT) else "job/finishing"})
-        _save_render_error(target)
-        # Do not expose FFmpeg stderr containing absolute private filesystem paths.
-        update(status="failed", progress=0.0, error="Не удалось создать видео. Подробности в локальном render-error.log.")
-
-
-def _registered_export(identifier: str, manager, job_id: str, part_indices: list[int],
-                       profile: dict, target: Path, status_file: Path,
-                       preview: tuple[int, float, float] | None,
-                       stop_flag: threading.Event, plan_snapshot: dict):
-    try:
-        run_export(manager, job_id, part_indices, profile, target, status_file, preview,
-                   cancelled=stop_flag.is_set, plan_snapshot=plan_snapshot)
-    finally:
-        # The job's source, plan and output must not be removed while a
-        # preview/export is still using them.
-        with manager.mutex:
-            remaining = manager.finishing_tasks.get(job_id, 0) - 1
-            if remaining > 0:
-                manager.finishing_tasks[job_id] = remaining
-            else:
-                manager.finishing_tasks.pop(job_id, None)
-        with _TASKS_LOCK:
-            _ACTIVE_TASKS.discard(identifier)
-            _ACTIVE_THREADS.pop(identifier, None)
-            _ACTIVE_CANCEL.pop(identifier, None)
-            _ACTIVE_OWNERS.pop(identifier, None)
-
-
-def submit_render(manager, job_id: str, part_indices: list[int], profile: dict,
-                  *, preview: tuple[int, float, float] | None = None) -> dict:
-    # All submissions to the current manager are serialized. The global task
-    # lock ensures even two managers in one process respect the same queue cap.
-    # Keep lock ordering consistent with _registered_export: manager, then tasks.
+    from .finishing_commands import FinishingCommands, normalize_request, OperationConflict
     with manager.mutex:
+        store = FinishingCommands(manager.root)
+        receipt = store._receipt(operation_id)
+        if receipt is None:
+            return None
+        command = store._command(receipt['command'], expected={'job_id': job_id, 'kind': kind})
+        if command['request'] != normalize_request(kind, original_request):
+            raise OperationConflict('operation_id уже используется с другими параметрами')
+        # A crash can occur before command materialization, runtime enrollment or
+        # index publication. Recover only this already-authorized exact request.
+        def no_refreeze():
+            raise AssertionError('Replay must not freeze current settings')
+        command = store.submit(job_id, command['source_sha256'], kind, original_request,
+                               no_refreeze, operation_id=operation_id)
+        manager.finishing_execution.submit(command)
+        _index_command(manager, command)
+        return _managed_status(manager, command)
+
+
+def submit_render(manager, job_id, part_indices, profile, *, preview=None,
+                  operation_id=None, original_request=None):
+    from .finishing_commands import FinishingCommands
+    from .finishing_render import freeze_command
+    kind = 'preview' if preview else 'export'
+    request = original_request if original_request is not None else (
+        {'part_index': preview[0], 'from': preview[1], 'duration': preview[2], 'settings': profile}
+        if preview else {'part_indices': list(part_indices), 'settings': profile})
+    with manager.mutex:
+        repeated = replay_render(manager, job_id, kind, operation_id, request)
+        if repeated is not None:
+            return repeated
         if manager.closed or manager.shutdown_requested:
-            raise RuntimeError("Приложение завершает работу")
+            raise RuntimeError('Приложение завершает работу')
         if manager.busy():
-            raise RuntimeError("Нельзя запускать повторный экспорт во время обработки серии")
-        with _TASKS_LOCK:
-            if len(_ACTIVE_TASKS) >= MAX_PENDING_FINISHING_TASKS:
-                raise RuntimeError("Очередь экспорта заполнена. Дождитесь завершения текущих задач")
-            plan = read_json(manager.job_dir(job_id) / 'plan.json')
-            if not isinstance(plan, dict):
-                raise ValueError('Монтажный план недоступен')
-            profile = copy.deepcopy(profile)
-            part_indices = list(part_indices)
-            wanted = set(part_indices)
-            selected = [p for p in plan.get('parts', []) if p['index'] in wanted]
-            if len(selected) != len(wanted):
-                raise ValueError('Некорректные номера частей')
-            # Caption writes share this mutex. Capture text before queuing.
-            snapshot = copy.deepcopy(plan)
-            snapshot['parts'] = [_effective_part(manager, job_id, part, profile) for part in selected]
-            revisions = {str(part['index']): (read_json(manager.job_dir(job_id) / 'finishing' /
-                f"captions_{part['index']:03d}.json", {}) or {}).get('revision', 0) for part in selected}
-            identifier = ("pv_" if preview else "ex_") + uuid.uuid4().hex
-            base = (manager.job_dir(job_id) / "finishing" /
-                    ("previews" if preview else "exports") / identifier)
-            status_file = base / "status.json"
-            status = {
-                ("preview_id" if preview else "export_id"): identifier,
-                "source_job_id": job_id, "status": "queued", "progress": 0.0,
-                "error": None, "files": [],
-                'phase': 'queued', 'completed_parts': 0, 'total_parts': len(part_indices),
-                'created_at_ns': time.time_ns(), 'source_plan_digest': plan_digest(plan),
-                'caption_revisions': revisions,
-                'profile': copy.deepcopy(profile),
-            }
-            registry = (None if preview else
-                        manager.root / "finishing" / "exports-index" / (identifier + ".json"))
-            # Do not register or create any files when the queue is full.
-            try:
-                atomic_json(status_file, status)
-                if registry is not None:
-                    atomic_json(registry, {"source_job_id": job_id})
-            except Exception:
-                if registry is not None:
-                    registry.unlink(missing_ok=True)
-                status_file.unlink(missing_ok=True)
-                raise
-            stop_flag = threading.Event()
-            worker = threading.Thread(target=_registered_export,
-                                      args=(identifier, manager, job_id, part_indices, profile,
-                                            base, status_file, preview, stop_flag, snapshot),
-                                      daemon=True, name="finishing-" + identifier)
-            manager.finishing_tasks[job_id] = manager.finishing_tasks.get(job_id, 0) + 1
-            _ACTIVE_TASKS.add(identifier)
-            _ACTIVE_THREADS[identifier] = worker
-            _ACTIVE_CANCEL[identifier] = stop_flag
-            _ACTIVE_OWNERS[identifier] = manager
-            try:
-                worker.start()
-            except BaseException:
-                remaining = manager.finishing_tasks[job_id] - 1
-                if remaining:
-                    manager.finishing_tasks[job_id] = remaining
-                else:
-                    manager.finishing_tasks.pop(job_id, None)
-                _ACTIVE_TASKS.discard(identifier)
-                _ACTIVE_THREADS.pop(identifier, None)
-                _ACTIVE_CANCEL.pop(identifier, None)
-                _ACTIVE_OWNERS.pop(identifier, None)
-                atomic_json(status_file, {**status, "status": "failed",
-                                          "error": "Не удалось запустить поток экспорта"})
-                raise
-            return status
+            raise RuntimeError('Нельзя запускать экспорт во время обработки серии')
+        runtime = manager.finishing_execution
+        runtime._capacity()
+        store = FinishingCommands(manager.root)
+        frozen = freeze_command(manager, job_id, list(part_indices), profile, preview=preview)
+        command = store.submit(job_id, frozen['source']['sha256'], kind, request,
+                               lambda: frozen, operation_id=operation_id)
+        runtime.submit(command)
+        _index_command(manager, command)
+        return _managed_status(manager, command)
+
+
+def _index_command(manager, command):
+    from .finishing_commands import FinishingCommands
+    store = FinishingCommands(manager.root)
+    if command['kind'] == 'export':
+        store._write(store._path('finishing/exports-index/'+command['task_id']+'.json'),
+            {'source_job_id': command['job_id'], 'operation_id': command['operation_id']})
+
+
+def _task_command(manager, identifier, job_id=None):
+    from .finishing_commands import FinishingCommands, CommandError
+    store = FinishingCommands(manager.root)
+    if not re.fullmatch(r'(ex|pv)_[0-9a-f]{32}', identifier):
+        raise KeyError(identifier)
+    if identifier.startswith('ex_'):
+        record = store._read(store._path('finishing/exports-index/'+identifier+'.json'))
+        if not isinstance(record, dict):
+            raise KeyError(identifier)
+        owner = record.get('source_job_id')
+        if job_id is not None and job_id != owner:
+            raise CommandError('Экспорт принадлежит другому заданию')
+        job_id = owner
+        operation = record.get('operation_id')
+    else:
+        if job_id is None:
+            raise CommandError('Для предпросмотра нужен ID задания')
+        operation = None
+    kind = 'preview' if identifier.startswith('pv_') else 'export'
+    directory = store.task_directory(job_id, kind, identifier)
+    saved = store._read(directory/'command.json')
+    if saved is None:
+        if operation is not None:
+            raise CommandError('Неизменяемая команда экспорта отсутствует')
+        return None
+    saved = store._command(saved, expected={'job_id': job_id, 'task_id': identifier, 'kind': kind})
+    if operation is not None and operation != saved['operation_id']:
+        raise CommandError('Индекс экспорта не соответствует его команде')
+    command = store.load(saved['operation_id'], job_id=job_id, kind=kind)
+    if command != saved:
+        raise CommandError('Команда не соответствует квитанции операции')
+    return command
+
+
+def _managed_status(manager, command):
+    from .finishing_commands import FinishingCommands
+    store = FinishingCommands(manager.root)
+    state = manager.finishing_execution.status(command)
+    state = state or {'status': 'queued', 'progress': 0, 'attempt_id': None}
+    identifier, job_id = command['task_id'], command['job_id']
+    preview = command['kind'] == 'preview'
+    files = []
+    for part in command['frozen']['plan']['parts']:
+        receipt = store.part_receipt(command, part['index'], verify_bytes=False)
+        if receipt is None:
+            continue
+        name = Path(receipt['video']['path']).name
+        files.append({'part_index': part['index'], 'name': name,
+            'duration': command['frozen']['preview']['duration'] if preview else part['duration'],
+            'url': f'/api/jobs/{job_id}/previews/{identifier}.mp4' if preview else f'/api/exports/{identifier}/files/{name}',
+            'subtitle_url': None if preview else f'/api/exports/{identifier}/files/{Path(name).stem}.srt'})
+    return {**state, ('preview_id' if preview else 'export_id'): identifier,
+        'operation_id': command['operation_id'], 'source_job_id': job_id,
+        'source_plan_digest': command['frozen']['source_plan_digest'],
+        'caption_revisions': {key: value['revision'] for key,value in command['frozen']['caption_revisions'].items()},
+        'profile': copy.deepcopy(command['frozen']['profile']),
+        'created_at': command['created_at'], 'files': files,
+        'completed_parts': len(files), 'total_parts': len(command['request']['part_indices']),
+        'resumable': state['status'] in {'interrupted', 'failed', 'cancelled'},
+        'cancellable': state['status'] in {'queued', 'running'},
+        'error': state.get('error'), 'url': files[0]['url'] if preview and files else None}
+
+
+def list_tasks(manager, job_id):
+    # Runtime has already recovered at startup. GET only projects known records.
+    with manager.mutex:
+        manager.get(job_id)
+        results = [_managed_status(manager, command) for command in
+            manager.finishing_execution.commands.values() if command['job_id'] == job_id]
+        return sorted(results, key=lambda state: (state['created_at'], state['operation_id']), reverse=True)
+
+
+def control_task(manager, identifier, action, job_id=None):
+    with manager.mutex:
+        command = _task_command(manager, identifier, job_id)
+        if command is None:
+            raise ValueError('Старый экспорт не содержит точной команды и не может быть возобновлён')
+        runtime = manager.finishing_execution
+        if action == 'resume':
+            if manager.busy():
+                raise RuntimeError('Дождитесь завершения обработки серии')
+            runtime.resume(command['operation_id'])
+        elif action == 'cancel':
+            runtime.cancel(command['operation_id'])
+        else:
+            raise ValueError('Неизвестное действие экспорта')
+        return _managed_status(manager, command)
+
+
+def resolve_task_file(manager, identifier, filename, job_id=None):
+    from .finishing_commands import FinishingCommands
+    command = _task_command(manager, identifier, job_id)
+    if command is not None:
+        store = FinishingCommands(manager.root)
+        for index in command['request']['part_indices']:
+            if filename not in (f'part_{index:03}.mp4', f'part_{index:03}.srt'):
+                continue
+            receipt = store.part_receipt(command, index)
+            if receipt is not None:
+                return store._path(receipt['video' if filename.endswith('.mp4') else 'subtitles']['path'])
+        raise KeyError(filename)
+    _, directory = _locate_task(manager, identifier, job_id)
+    state = read_json(directory/'status.json', {})
+    allowed = {item['name'] for item in state.get('files', [])}
+    allowed |= {Path(name).with_suffix('.srt').name for name in allowed}
+    if state.get('status') != 'completed' or filename not in allowed:
+        raise KeyError(filename)
+    output = directory/'output'
+    path = output/filename
+    if path.resolve() != path or not path.is_file() or not path.is_relative_to(manager.root):
+        raise KeyError(filename)
+    return path
+
+
+def recover_legacy_finishing(manager):
+    # Classification occurs once at startup, never as a side effect of GET.
+    from .finishing_commands import FinishingCommands
+    store = FinishingCommands(manager.root)
+    for command in manager.finishing_execution.commands.values():
+        try:
+            _index_command(manager, command)
+        except (ValueError, OSError):
+            logging.getLogger(__name__).exception('Finishing index recovery failed',
+                extra={'operation_id': command['operation_id'], 'action': 'finishing_index_recovery_failed'})
+    for path in manager.jobs.glob('*/finishing/*/*/status.json'):
+        if (path.parent/'command.json').exists():
+            continue
+        try:
+            state = store._read(path)
+            if isinstance(state, dict) and state.get('status') in {'queued','running'}:
+                store._write(path, {**state, 'status': 'interrupted', 'resumable': False,
+                    'error': 'Старый экспорт прерван; точные параметры команды не были сохранены'})
+        except (ValueError, OSError):
+            logging.getLogger(__name__).warning('Skipping damaged legacy finishing status',
+                extra={'job_id': path.parents[3].name, 'action': 'finishing_legacy_recovery_failed'})
 
 
 def _locate_task(manager, identifier: str, job_id: str | None = None):
@@ -478,10 +331,41 @@ def ready_outputs(manager, job_id: str, plan: dict | None = None) -> dict:
     folder = (manager.job_dir(job_id) / 'finishing' / 'exports').resolve()
     if not folder.is_relative_to(manager.job_dir(job_id).resolve()) or not folder.is_dir():
         return {}
-    plan = plan if plan is not None else read_json(manager.job_dir(job_id) / 'plan.json', {})
+    plan = plan if plan is not None else (effective_plan(manager.job_dir(job_id)) or {})
     signature = plan_digest(plan)
     parts = {p['index']: p for p in plan.get('parts', [])}
     results, ranks = {}, {}
+    from .finishing_commands import FinishingCommands
+    store = FinishingCommands(manager.root)
+    execution = getattr(manager, 'finishing_execution', None)
+    for command in execution.commands.values() if execution is not None else ():
+        if (command['job_id'] != job_id or command['kind'] != 'export'
+                or command['frozen']['source_plan_digest'] != signature):
+            continue
+        try:
+            state = execution.status(command)
+            if not state or state['status'] != 'completed':
+                continue
+            rank = int(datetime.fromisoformat(command['created_at']).timestamp()*1e9)
+            for index in command['request']['part_indices']:
+                if index not in parts:
+                    continue
+                receipt = store.part_receipt(command, index, verify_bytes=False)
+                if receipt is None:
+                    continue
+                path = store._path(receipt['video']['path'])
+                name, identifier = path.name, command['task_id']
+                if rank <= ranks.get(name, -1):
+                    continue
+                ranks[name] = rank
+                results[name] = {'part_index': index, 'name': name, 'duration': parts[index]['duration'],
+                    'export_id': identifier, 'url': f'/api/exports/{identifier}/files/{name}',
+                    'subtitle_url': f'/api/exports/{identifier}/files/{path.stem}.srt',
+                    'video_sha256': receipt['video']['sha256'], 'srt_sha256': receipt['subtitles']['sha256'],
+                    '_path': path}
+        except (OSError, ValueError, KeyError, TypeError):
+            logging.getLogger(__name__).warning('Skipping damaged managed finishing export',
+                extra={'job_id': job_id, 'action': 'invalid_finishing_record'})
     for status_path in folder.glob('ex_*/status.json'):
         identifier = status_path.parent.name
         if not re.fullmatch(r'ex_[0-9a-f]{32}', identifier):
@@ -533,24 +417,13 @@ def ready_outputs(manager, job_id: str, plan: dict | None = None) -> dict:
 
 
 def task_status(manager, identifier: str, job_id: str | None = None) -> dict:
+    command = _task_command(manager, identifier, job_id)
+    if command is not None:
+        return _managed_status(manager, command)
     job_id, base = _locate_task(manager, identifier, job_id)
-    with _TASKS_LOCK:
-        status = read_json(base / "status.json")
+    status = read_json(base / "status.json")
     if not status:
         raise KeyError(identifier)
-    if status.get("status") in {"queued", "running"}:
-        with _TASKS_LOCK:
-            alive = identifier in _ACTIVE_TASKS
-            if not alive:
-                # A worker can finish and leave _ACTIVE_TASKS between our
-                # initial read and this lock. Re-read before declaring a
-                # completed preview/export to be interrupted.
-                latest = read_json(base / "status.json") or status
-                if latest.get("status") in {"queued", "running"}:
-                    latest = {**latest, "status": "interrupted",
-                              "error": "Монтажёр был перезапущен во время экспорта. Запустите новый экспорт."}
-                    atomic_json(base / "status.json", latest)
-                status = latest
     files = [
         {"part_index": item["part_index"], "name": item["name"],
          "duration": item["duration"],
@@ -560,5 +433,5 @@ def task_status(manager, identifier: str, job_id: str | None = None) -> dict:
                  else f"/api/exports/{identifier}/files/{Path(item['name']).stem}.srt"}
         for item in status.get("files", [])
     ]
-    return {**status, "files": files,
+    return {**status, "files": files, "resumable": False, "cancellable": False,
             "url": files[0]["url"] if files and identifier.startswith("pv_") else None}

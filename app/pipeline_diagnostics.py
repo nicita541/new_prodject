@@ -36,17 +36,19 @@ class Diagnostics:
         atomic_json(self.path / name, _clean(value))
 
     def append(self, name, value):
+        from .execution_context import snapshot
         record = {'time': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                  'run_id': self.run_id, **_clean(value)}
+                  **snapshot(), 'run_id': self.run_id, **_clean(value)}
         with (self.path / name).open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + '\n')
 
     def event(self, stage, action, **fields):
         self.append('timeline.jsonl', {'stage': stage, 'action': action, **fields})
 
-    def start(self, **fields):
-        self.run_id = uuid.uuid4().hex
-        self.write('run.json', {'run_id': self.run_id, 'status': 'running', **fields})
+    def start(self, *, run_id=None, **fields):
+        from .execution_context import snapshot
+        self.run_id = run_id or uuid.uuid4().hex
+        self.write('run.json', {**snapshot(), 'run_id': self.run_id, 'status': 'running', **fields})
         self.write('summary.json', {})
         self.write('warnings.json', [])
         for name in ('scene_analysis.jsonl', 'scene_recovery.jsonl', 'decisions.jsonl'):
@@ -60,10 +62,12 @@ class Diagnostics:
 
     @contextmanager
     def stage(self, stage, **fields):
+        from .execution_context import scope
         started = time.monotonic()
         self.event(stage, 'start', **fields)
         try:
-            yield
+            with scope(stage=stage):
+                yield
         except Exception as error:
             self.event(stage, 'exception', error_type=type(error).__name__, error=str(error), **fields)
             raise

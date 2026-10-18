@@ -11,6 +11,9 @@ const css = readFileSync(new URL('../public/studio-edition.css', import.meta.url
 assert(src.includes('<link rel="stylesheet" href="/studio-edition.css">'));
 assert(src.includes('<script src="/studio-edition-app.js"></script>'));
 assert(script.includes('window.KadrBridge.refresh'), 'live bootstrap must be present');
+const objectiveFunction = new Function(script.slice(script.indexOf('  function storyObjective(d) {'),script.indexOf('  function publicJob(j) {')) + '; return storyObjective;')();
+assert.deepEqual(objectiveFunction({story_objective:{version:1,objective:'standalone_shorts',settings:{max_clips:2,preferred_max_duration:80}}}),{version:1,objective:'standalone_shorts',settings:{max_clips:2,preferred_min_duration:45,preferred_max_duration:80,max_duration:120}},'saving an existing objective must preserve custom settings');
+
 
 const episode = '10000000-0000-4000-8000-000000000001';
 const project = '10000000-0000-4000-8000-000000000002';
@@ -87,13 +90,31 @@ let feedbackBody;
 let supportedProcessingModes = ['full', 'incremental', 'plan_only'];
 let launchBodies = [];
 let settingsWrites = 0;
+let lastEpisodeSettings;
 const providerSwitches = [];
 const checkSwitches = [];
 const previewId = 'pv_' + '1'.repeat(32);
+const recoverableExport = 'ex_' + 'e'.repeat(32);
+const cancellablePreview = 'pv_' + 'a'.repeat(32);
+const legacyInterrupted = 'ex_' + 'f'.repeat(32);
+const finishingControls = [];
+const finishingTasks = [
+  {export_id:recoverableExport,source_job_id:job,status:'interrupted',resumable:true,cancellable:false,files:[]},
+  {preview_id:cancellablePreview,source_job_id:job,status:'queued',resumable:true,cancellable:true,files:[]},
+  {export_id:legacyInterrupted,source_job_id:job,status:'interrupted',resumable:false,cancellable:false,files:[]},
+];
 window.fetch = async (input,options={}) => {
   const p = String(input);
   let value;
   if(p==='/api/library')value=library;
+  else if(p===`/api/jobs/${job}/finishing-tasks`)value=finishingTasks;
+  else if(p.endsWith('/finishing-tasks'))value=[];
+  else if((p===`/api/exports/${recoverableExport}/resume` || p===`/api/jobs/${job}/previews/${cancellablePreview}/cancel`) && options.method==='POST'){
+    finishingControls.push(p);
+    const task=finishingTasks.find(item=>(item.export_id||item.preview_id)===(p.includes('/previews/')?cancellablePreview:recoverableExport));
+    task.status=p.endsWith('/resume')?'queued':'cancelled';task.cancellable=p.endsWith('/resume');
+    value={...task};
+  }
   else if(p===`/api/jobs/${failedJob}/analysis-checks` && options.method==='POST'){
     const body=JSON.parse(options.body);checkSwitches.push(body);
     const current=jobs.find(item=>item.id===failedJob);
@@ -160,6 +181,7 @@ window.fetch = async (input,options={}) => {
   else if(p==='/api/health')value={ready:true,missing:[],busy:false,processing_modes:supportedProcessingModes};
   else if(p===`/api/episodes/${episode}/settings` && options.method==='PUT'){
     settingsWrites++;
+    lastEpisodeSettings=JSON.parse(options.body);
     const data=JSON.parse(options.body);
     Object.assign(library.episodes[0],{source_id:data.source_id,settings:data});
     value=library.episodes[0];
@@ -183,7 +205,7 @@ window.fetch = async (input,options={}) => {
     if(options.method==='PUT'){saveCalls++;savedProfileBody=JSON.parse(options.body);value={...savedProfileBody,revision:saveCalls};}
     else value=profile;
   }
-  else if(p.includes('/captions'))value={job_id:job,part_index:7,cues:plan.parts[0].subtitles,revision:0};
+  else if(p.includes('/captions'))value={job_id:job,part_index:7,cues:plan.parts[0].subtitles,revision:0,target_id:'7'.repeat(64)};
   else throw new Error('Unexpected endpoint '+p);
   return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>value};
 };
@@ -203,6 +225,22 @@ assert(!window.document.querySelector('#fcDownloadPresets'), 'developer JSON con
 assert(window.document.querySelector('.topbar'));
 assert(window.document.querySelector('#fcCanvas'));
 assert.equal(typeof window.document.querySelector('#fcVideo').ontimeupdate, 'function', 'finishing controls must finish binding');
+for(let i=0;i<40&&!window.document.querySelector(`[data-task-id="${recoverableExport}"]`);i++)await new Promise(resolve=>setTimeout(resolve,10));
+assert(window.document.querySelector(`[data-finishing-control="resume"][data-task-id="${recoverableExport}"]`), 'restart must expose server-owned interrupted export');
+assert(!window.document.querySelector(`[data-finishing-control="resume"][data-task-id="${legacyInterrupted}"]`), 'unknown legacy parameters must not offer resume');
+window.document.querySelector(`[data-finishing-control="cancel"][data-task-id="${cancellablePreview}"]`).click();
+for(let i=0;i<40&&!finishingControls.length;i++)await new Promise(resolve=>setTimeout(resolve,10));
+await new Promise(resolve=>setTimeout(resolve,30));
+assert.equal(finishingControls[0],`/api/jobs/${job}/previews/${cancellablePreview}/cancel`);
+window.document.querySelector(`[data-finishing-control="resume"][data-task-id="${recoverableExport}"]`).click();
+for(let i=0;i<40&&finishingControls.length<2;i++)await new Promise(resolve=>setTimeout(resolve,10));
+await new Promise(resolve=>setTimeout(resolve,30));
+assert.equal(finishingControls[1],`/api/exports/${recoverableExport}/resume`);
+assert.equal(exportCalls,0,'resume must not create another export command');
+assert.equal(saveCalls,0,'resume must not save current editor parameters');
+finishingTasks.find(item=>item.export_id===recoverableExport).status='completed';
+window.document.querySelector('[data-finishing-refresh]').click();
+await new Promise(resolve=>setTimeout(resolve,30));
 assert(window.document.querySelector('#fcVideo')?.getAttribute('src')?.includes(job));
 assert(window.document.body.textContent.includes('РЕАЛЬНАЯ РЕПЛИКА'));
 assert(!window.document.querySelector('.empty')?.textContent.includes('нет готового монтажа'),'failed newer job should not hide completed Shorts');
@@ -307,6 +345,7 @@ assert(saveCalls > 0,'save action must use real API bridge');
 assert.equal(savedCaptionBodies.length,1,'changed job captions must be batched');
 assert.equal(savedCaptionBodies[0].cues[0].text,'ИЗМЕНЁННАЯ РЕПЛИКА');
 assert.equal(savedCaptionBodies[0].revision,0);
+assert.equal(savedCaptionBodies[0].target_id,'7'.repeat(64),'editor must echo the loaded candidate ownership');
 assert.equal(savedCaptionBodies[0].part_index,7,'nonsequential part index must be preserved');
 assert.equal(savedProfileBody.revision,0,'save must preserve revision for optimistic concurrency');
 assert(Array.isArray(savedCaptionBodies),'save must bundle captions in one validated request');
@@ -627,9 +666,15 @@ assert.equal(launchBodies.length,0,'an old backend must never receive a selectiv
 assert.equal(settingsWrites,writesBeforeStaleLaunch,'capability check must happen before settings mutations');
 assert(window.document.querySelector('#toast').textContent.includes('Перезапустите'));
 supportedProcessingModes = ['full','incremental','plan_only'];
+const objectiveSelect = window.document.querySelector('#storyObjective');
+assert.equal(objectiveSelect.value,'episode_condensation');
+objectiveSelect.value='standalone_shorts';
+objectiveSelect.dispatchEvent(new window.Event('change'));
 window.document.querySelector('[data-action="launch"]').click();
 await new Promise(resolve=>setTimeout(resolve,150));
-assert.deepEqual(launchBodies,[{processing_mode:'plan_only'}], 'the split button must submit its displayed mode');
+assert.deepEqual(launchBodies.map(({operation_id,...body})=>body),[{processing_mode:'plan_only'}], 'the split button must submit its displayed mode');
+assert.match(launchBodies[0].operation_id,/^[0-9a-f-]{36}$/);
+assert.deepEqual(lastEpisodeSettings.story_objective,{version:1,objective:'standalone_shorts',settings:{max_clips:3,preferred_min_duration:45,preferred_max_duration:90,max_duration:120}});
 assert(window.document.querySelector('[data-action="open-review"]').textContent.includes('Проверить план'));
 window.document.querySelector('.sidebar [data-screen="trash"]').click();
 assert(window.document.querySelector('main').textContent.includes('Корзина'), 'global trash must remain available');
@@ -708,6 +753,41 @@ window.document.querySelector('.episode-navigation [data-screen="editor"]').clic
 assert.equal(window.document.querySelector('#analysisSelect').value,'deepseek_plan');
 assert(window.document.querySelector('#editEconomyMode').checked);
 
+// Draft videos are viewable in processing without becoming approved outputs.
+const draftURL='/api/jobs/'+failedJob+'/drafts/draft_'+'a'.repeat(20)+'/files/part_001.mp4';
+jobs.find(item=>item.id===failedJob).latest_outcome={status:'needs_review',accepted:[],declined:[],technical_failures:[],
+  drafts:[{id:'draft_'+'a'.repeat(20),status:'rendered_needs_review',export_eligible:false,video_url:draftURL}]};
+window.document.querySelector('.episode-navigation [data-screen="processing"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+window.document.querySelector(`[data-action="open-job"][data-id="${failedJob}"]`).click();
+await new Promise(resolve=>setTimeout(resolve,120));
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,120));
+const draftVideo=window.document.querySelector('video[controls]');
+assert(draftVideo && draftVideo.getAttribute('src')===draftURL,'draft must have its own review-only video URL');
+assert(window.document.body.textContent.includes('Связность истории пока не подтверждена'));
+assert.equal(jobs.find(item=>item.id===failedJob).files.length,0,'draft must not become a ready file');
+
+// The visible committed publication remains editable after a failed attempt.
+jobs.find(item=>item.id===job).status='failed';
+jobs.find(item=>item.id===job).published_revision='a'.repeat(64);
+window.document.querySelector(`[data-action="open-job"][data-id="${job}"]`).click();
+await new Promise(resolve=>setTimeout(resolve,100));
+window.document.querySelector('[data-action="read-job"]').click();
+await new Promise(resolve=>setTimeout(resolve,100));
+window.document.querySelector('.episode-navigation [data-screen="finishing"]').click();
+await new Promise(resolve=>setTimeout(resolve,100));
+assert(window.document.querySelector('.fc-workspace'),'failed job with publication must open finishing');
+const exportsBeforeFailedAttempt=exportCalls;
+window.document.querySelector('#fcSave').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+assert.equal(exportCalls,exportsBeforeFailedAttempt+1,'apply must reach the API for a prior committed publication');
+assert.equal(jobs.find(item=>item.id===job).status,'failed','finishing must not change the analysis attempt status');
+window.document.querySelector('#modalHost .buttons button[data-action="modal-confirm"]')?.click();
+window.document.querySelector('#fcPreviewRequest').click();
+await new Promise(resolve=>setTimeout(resolve,150));
+assert.equal(window.document.querySelector('#fcVideo').dataset.renderedPreview,'true',
+  'preview must work for a prior committed publication after a failed attempt');
 
 dom.window.close();
 console.log('Exact Studio Edition DOM smoke: live API, reference layout, tabs, save passed');

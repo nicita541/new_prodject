@@ -2,12 +2,65 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
+import threading
 import time
+import uuid
 from pathlib import Path
 
 from app import config
 from app.json_store import atomic_json, now, read_json
 from app.jobs import contained, validate_id
+
+
+class WorkerHeartbeat:
+    """Process liveness only; never rewrites progress or user job state."""
+    def __init__(self, directory: Path, attempt_id: str | None, *, interval=2.0):
+        self.directory = directory
+        self.attempt_id = attempt_id
+        self.interval = interval
+        self.sequence = 0
+        self.stopped = threading.Event()
+        self.thread = None
+        self.failed = False
+
+    def _publish(self):
+        self.sequence += 1
+        try:
+            atomic_json(self.directory / "worker-heartbeat.json", {
+                "version": 1, "attempt_id": self.attempt_id, "pid": os.getpid(),
+                "sequence": self.sequence, "heartbeat_at": now()})
+        except OSError:
+            # A transient full disk/lock must not change an inference outcome.
+            if not self.failed:
+                logging.getLogger("app.worker").warning("Не удалось сохранить heartbeat задания",
+                    extra={"job_id": self.directory.name, "run_id": self.attempt_id,
+                           "action": "worker_heartbeat_write_failed"})
+            self.failed = True
+        else:
+            self.failed = False
+
+    def start(self):
+        # Legacy standalone worker fixtures can lack an attempt ID. Production
+        # JobManager creates a new one before every owned process starts.
+        try:
+            if not isinstance(self.attempt_id, str) or uuid.UUID(self.attempt_id).hex != self.attempt_id:
+                return
+        except ValueError:
+            return
+        self._publish()
+        self.thread = threading.Thread(target=self._run, daemon=True, name="worker-heartbeat")
+        self.thread.start()
+
+    def _run(self):
+        while not self.stopped.wait(self.interval):
+            self._publish()
+
+    def close(self):
+        self.stopped.set()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
 
 
 def main() -> int:
@@ -16,7 +69,6 @@ def main() -> int:
     args = parser.parse_args()
     config.setup_environment()
     from app.run_logging import configure_logging
-    import logging
     configure_logging("studio")
     logger = logging.getLogger("app.worker")
     directory = contained(config.JOBS / validate_id(args.job), config.JOBS)
@@ -37,13 +89,15 @@ def main() -> int:
         if cancelled():
             raise InterruptedError("Обработка отменена")
         value = max(0.0, min(1.0, float(progress)))
-        save(stage=stage, progress=value, message=message)
+        save(stage=stage, progress=value, message=message, progress_updated_at=now())
         logger.info("Pipeline progress: %s %.1f%% %s", stage, value * 100, message,
                     extra={"job_id": directory.name, "stage": stage,
                            "progress": round(value, 4), "action": "progress"})
     from app.antigravity_exchange import AnalysisPending
     runner = None
+    heartbeat = WorkerHeartbeat(directory, read_json(directory / "job.json", {}).get("attempt_id"))
     try:
+        heartbeat.start()
         selected_provider = read_json(directory / 'analysis-settings.json', {}).get('provider',
                             read_json(directory / 'job.json', {}).get('analysis_provider', 'local'))
         manual_provider = selected_provider == 'antigravity_manual'
@@ -100,6 +154,7 @@ def main() -> int:
                 runner.close()
             except Exception:
                 logger.exception('Не удалось завершить собственный процесс обмена Antigravity')
+        heartbeat.close()
 
 
 if __name__ == "__main__":

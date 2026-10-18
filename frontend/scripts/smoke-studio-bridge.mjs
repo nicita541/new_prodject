@@ -14,6 +14,7 @@ const archivedProject='10000000-0000-4000-8000-000000000004';
 const archivedEpisode='10000000-0000-4000-8000-000000000005';
 let sources=[{id:'source-1',name:'one.mp4'}];
 let status='completed';
+let publishedRevision;
 let librarySnapshot={
  projects:[{id:project,title:'Real project'}],
  episodes:[{id:episode,project_id:project,number:1,jobs:[{id:job}]}],
@@ -30,7 +31,7 @@ win.fetch=async(input,opts={})=>{
   else if(url==='/api/sources')data=sources;
   else if(url.startsWith('/api/jobs?')){
     jobListRequests.push(url);
-    data=[{id:job,created_at:'2026-10-09T01:00:00Z',status,source_id:'source-1'}];
+    data=[{id:job,created_at:'2026-10-09T01:00:00Z',status,source_id:'source-1',published_revision:publishedRevision}];
   }
   else if(url==='/api/jobs/'+job&&opts.method==='GET')data={
     id:job,created_at:'2026-10-09T01:00:00Z',status,source_id:'source-1',
@@ -128,5 +129,95 @@ assert.equal(captionRequests,36,'Cached captions must not be re-fetched');
 assert.equal(db.captionOverrides[job+':36'].part_index,36);
 win.fetch=originalFetch;
 
+// Publication rank changes invalidate captions and cuts together. Preserve
+// unsaved words separately rather than applying them to the new rank.
+publishedRevision='revision-a';
+await win.KadrBridge.refresh(db,ui);
+db.plans[job]={parts:[{index:1,candidate_id:'a'}]};
+db.captionOverrides={[job+':1']:{part_index:1,target_id:'a'.repeat(64),revision:0,
+  cues:[{start:0,end:1,text:'Unsaved A'}]}};
+db.finishDirtyCues={[job+':1']:true};
+publishedRevision='revision-b';
+await win.KadrBridge.refresh(db,ui);
+assert.equal(db.plans[job],undefined);
+assert.equal(db.captionOverrides[job+':1'],undefined);
+assert.equal(db.finishDirtyCues[job+':1'],undefined);
+assert.equal(db.captionDraftConflicts[job][0].cues[0].text,'Unsaved A');
+
+// A lost submission response must retain the operation UUID until confirmation.
+const operations=[];
+let loseResponse=true;
+win.fetch=async(input,opts={})=>{
+  if(String(input)==='/api/episodes/'+episode+'/jobs'){
+    operations.push(JSON.parse(opts.body).operation_id);
+    if(loseResponse){loseResponse=false;throw new Error('response lost');}
+    return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>({id:job,status:'queued'})};
+  }
+  return originalFetch(input,opts);
+};
+await assert.rejects(win.KadrBridge.request('POST','/api/episodes/'+episode+'/jobs',{processing_mode:'incremental'},db,ui),/response lost/);
+await win.KadrBridge.request('POST','/api/episodes/'+episode+'/jobs',{processing_mode:'incremental'},db,ui);
+assert.equal(operations[0],operations[1]);
+assert.match(operations[0],/^[0-9a-f-]{36}$/);
+assert.equal(win.sessionStorage.length,0,'confirmed submissions clear pending tokens');
+// Changed persisted episode settings form a different submission even after a lost response.
+loseResponse=true;
+await assert.rejects(win.KadrBridge.request('POST','/api/episodes/'+episode+'/jobs',{processing_mode:'incremental'},db,ui),/response lost/);
+const lostOperation=operations.at(-1);
+db.episodes.find(item=>item.id===episode).settings={caption_style:'classic',story_objective:{version:1,objective:'standalone_shorts',settings:{max_clips:2}}};
+await win.KadrBridge.request('POST','/api/episodes/'+episode+'/jobs',{processing_mode:'incremental'},db,ui);
+assert.notEqual(operations.at(-1),lostOperation,'changed settings must not replay the prior operation');
+// A finishing command retains its operation across an ambiguous POST and a
+// page reload, and removes response-only profile fields before identity.
+for (const kind of ['exports','previews']) {
+  const path='/api/jobs/'+job+'/'+kind;
+  const attempts=[];
+  const payload=kind==='exports'?{part_indices:[7],settings:{episode_id:episode,revision:4,video:{zoom:100}}}
+    : {part_index:7,from:0,duration:5,settings:null};
+  let lose=true;
+  win.fetch=async(input,opts={})=>{
+    if(String(input)===path){
+      const body=JSON.parse(opts.body);attempts.push(body);
+      if(lose){lose=false;throw new Error('finishing response lost');}
+      const key=kind==='exports'?'export_id':'preview_id';
+      return {ok:true,status:202,headers:{get:()=> 'application/json'},json:async()=>({[key]:(kind==='exports'?'ex_':'pv_')+'a'.repeat(32),status:'queued'})};
+    }
+    throw new Error('confirmed finishing must not depend on unrelated library refresh');
+  };
+  await assert.rejects(win.KadrBridge.request('POST',path,payload,db,ui),/finishing response lost/);
+  // Reload erases JS memory while the browser retains pending request storage.
+  const reloadedDb={...db,pendingOperations:{}};
+  await win.KadrBridge.request('POST',path,payload,reloadedDb,ui);
+  assert.equal(attempts[0].operation_id,attempts[1].operation_id,kind+' must reuse exact operation after reload');
+  assert.match(attempts[0].operation_id,/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+  if(kind==='exports'){
+    assert(!('episode_id' in attempts[0].settings));
+    assert(!('revision' in attempts[0].settings));
+  }else assert.equal(attempts[0].settings,null,'omitted profile marker must survive request identity');
+  await win.KadrBridge.request('POST',path,payload,reloadedDb,ui);
+  assert.notEqual(attempts[1].operation_id,attempts[2].operation_id,'confirmed command permits a new explicit intent');
+  lose=true;
+  await assert.rejects(win.KadrBridge.request('POST',path,payload,reloadedDb,ui),/finishing response lost/);
+  const changed=kind==='exports'?{...payload,part_indices:[8]}:{...payload,duration:6};
+  await win.KadrBridge.request('POST',path,changed,reloadedDb,ui);
+  assert.notEqual(attempts[3].operation_id,attempts[4].operation_id,'changed finishing parameters require a new operation');
+}
+// Known tasks are reconstructed from the server, independently of local tabs.
+win.fetch=async(input)=>{
+  assert.equal(String(input),'/api/jobs/'+job+'/finishing-tasks');
+  return {ok:true,status:200,headers:{get:()=> 'application/json'},json:async()=>[
+    {export_id:'ex_'+'b'.repeat(32),source_job_id:job,status:'interrupted',resumable:true},
+  ]};
+};
+await win.KadrBridge.loadFinishingTasks(db,job);
+assert.equal(db.finishingTasks[job][0].status,'interrupted');
+assert.equal(db.finishingTasks[job][0].resumable,true);
+win.fetch=originalFetch;
+// Failed reruns retain access to an earlier published plan.
+db.jobs.find(item=>item.id===job).status='failed';
+db.jobs.find(item=>item.id===job).published_revision=1;
+delete db.plans[job];
+await win.KadrBridge.loadSelected(db,ui);
+assert(db.plans[job],'published revision remains reviewable after a failed rerun');
 win.close();
 console.log('Studio live bridge: optional APIs, retries and 36-part bounded loading PASS');

@@ -714,7 +714,18 @@ def _reassess_view(vision, payload, images, hashes, source_key, units, frames, d
     return max(choices,key=lambda c:_decision_rank(c['decision']))
 
 
-def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled, questions=None, *, retry_unresolved=False):
+def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled, questions=None, *,
+                     retry_unresolved=False, decision_contract='legacy'):
+    if decision_contract == 'legacy':
+        wire_schema, validate_wire, header = adjudication_schema, validate_adjudication, ADJUDICATION_PROMPT
+    elif decision_contract in ('unit_decisions_v1', 'unit_decisions_v2') and not retry_unresolved:
+        from functools import partial
+        from .unit_decisions import schema, validate, prompt as decision_prompt
+        wire_schema = partial(schema, contract=decision_contract)
+        validate_wire = partial(validate, contract=decision_contract)
+        header = decision_prompt(contract=decision_contract)
+    else:
+        raise ValueError('Unsupported adjudication decision contract')
     """Return a new event; actual frames and complete evidence gate replacement."""
     _check(cancelled)
     source, job_dir = Path(source).resolve(), Path(job_dir).resolve()
@@ -758,6 +769,11 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         base = {'version': VERSION, 'source': source_key, 'units': units, 'transcript': transcript,
                 'shots': shots, 'policy': POLICY, 'implementation': implementation,
                 'storyboard': _storyboard_identity()}
+        if decision_contract != 'legacy':
+            base['wire_contract'] = decision_contract
+            base['wire_implementation'] = hashlib.sha256(Path(__file__).with_name('unit_decisions.py').read_bytes()).hexdigest()
+            from .analysis_questions import QuestionLedger
+            ledger = QuestionLedger(job_dir, source_key['sha256'], cancelled)
         for number, view in enumerate(_views(units, transcript, shots, cancelled)):
             _check(cancelled)
             view_units = [{**u, 'start': max(u['start'], view['start']), 'end': min(u['end'], view['end'])}
@@ -771,7 +787,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 unit['frame_indices'] = [i+1 for i,frame in enumerate(frames) if unit['start'] <= frame['time'] < unit['end']]
             prior = (_prior_native_view(event,source_key,view_units,frames,directory,exclusions,transcript,shots,image_hashes,stored_audit)
                      if retry_unresolved else None)
-            if prior is None:
+            if prior is None and decision_contract != 'unit_decisions_v2':
                 prior = _accepted_prior_view(vision,source,view,view_units,frames,event,questions,transcript,shots,
                     directory,base,cancelled,first,last,pages,exclusions)
             if prior is not None and (not retry_unresolved or prior['decision']['accepted']):
@@ -816,11 +832,22 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                                              if conflict and isinstance(d,dict)],
                           'previous_selected_ranges': [{'start':max(view['start'],r['start']),'end':min(view['end'],r['end'])} for r in event.get('selected_ranges', [])
                               if r['start'] < view['end'] and r['end'] > view['start']]}}
-            prompt = _normalized(ADJUDICATION_PROMPT)+'\n'+json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+            prompt = _normalized(header)+'\n'+json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
             identity = _hash({**base, 'prompt_sha256': hashlib.sha256(prompt.encode()).hexdigest(),
                              'model': _model_identity(vision), 'images': image_hashes,
-                             'schema': adjudication_schema(view_units,frames)})
+                             'schema': wire_schema(view_units,frames)})
             checkpoint = directory/(identity+'.json')
+            failed_checkpoint = directory/(identity+'.failure.json')
+            if failed_checkpoint.is_file():
+                failure = load_json(failed_checkpoint)
+                if (not isinstance(failure, dict) or failure.get('version') != 1 or failure.get('identity') != identity
+                        or failure.get('source_sha256') != source_key['sha256']
+                        or failure.get('category') not in ('response_length', 'response_contract')
+                        or checkpoint.exists()):
+                    raise ValueError('Повреждена запись неуспешного нативного ответа; повтор не выполнен')
+                from .deepseek import ResponseContractError
+                raise ResponseContractError('Предыдущий ответ модели не завершил проверку; повтор не выполнен.',
+                    category=failure['category'], finish_reason='length' if failure['category'] == 'response_length' else None)
             try:
                 cached = load_json(checkpoint) if checkpoint.is_file() else None
             except (ValueError, OSError):
@@ -832,7 +859,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 raise ValueError('Исходный файл изменился после извлечения доказательств')
             if raw is not None:
                 try:
-                    decision = validate_adjudication(raw, view_units, frames, exclusions)
+                    decision = validate_wire(raw, view_units, frames, exclusions)
                 except (ValueError, TypeError, KeyError):
                     raw = None
             if retry_unresolved and raw is None:
@@ -863,12 +890,36 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                 retry_prompt=prompt
                 for attempt in range(2):
                     try:
-                        raw = vision.query(retry_prompt, images if len(images)>1 else images[0], max_tokens=2400,
-                                           schema=adjudication_schema(view_units,frames))
+                        schema = wire_schema(view_units, frames)
+                        def dispatch():
+                            return vision.query(retry_prompt, images if len(images)>1 else images[0],
+                                                max_tokens=2400, schema=schema)
+                        if decision_contract == 'legacy':
+                            raw = dispatch()
+                        else:
+                            raw = ledger.run({'purpose': 'source_unit_decisions', 'question': retry_prompt,
+                                'affected_refs': [event['id'] + ':' + u['id'] for u in view_units],
+                                'evidence_digest': _hash({'source': source_key['sha256'], 'units': view_units,
+                                                         'frames': frames, 'images': image_hashes}),
+                                'possible_plan_changes': ['accept_source_selection', 'decline_source_selection'],
+                                'request_identity': {'prompt': retry_prompt, 'schema': schema, 'images': image_hashes,
+                                    'model': _model_identity(vision), 'max_tokens': 2400},
+                                'estimated_cost': {'input_utf8_bytes': len(retry_prompt.encode('utf-8')),
+                                                   'output_allowance_hint': 2400, 'image_pages': len(images)}},
+                                dispatch, type(vision).__name__)
                         _check(cancelled)
-                        decision = validate_adjudication(raw, view_units, frames, exclusions)
+                        decision = validate_wire(raw, view_units, frames, exclusions)
                         break
                     except (ValueError,TypeError,KeyError) as error:
+                        from .analysis_questions import QuestionJournalError
+                        from .deepseek import ResponseContractError
+                        if isinstance(error, QuestionJournalError):
+                            raise  # An unknown dispatch supplies no new evidence for another question.
+                        if isinstance(error, ResponseContractError):
+                            category = error.category if error.category in ('response_length', 'response_contract') else 'response_contract'
+                            atomic_json(failed_checkpoint, {'version': 1, 'identity': identity,
+                                'source_sha256': source_key['sha256'], 'category': category})
+                            raise  # The adapter already owns JSON correction; no source answer exists to adjudicate.
                         if _control_failure(error) or attempt:
                             raise
                         # Only a rejected contract question is supplied. No keep,
@@ -880,7 +931,12 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
                             'If a relationship is inside one unit, causal_links=[] and its own evidence explains the contribution. '+\
                             'Positive contribution evidence cannot be dropped outside wholly confirmed nonstory. '+\
                             'Quotes and frame_indices must belong to their own unit.'
+                        if decision_contract != 'legacy':
+                            retry_prompt = prompt + '\nThe previous response failed source validation: ' + _clean(str(error))[:400] + \
+                                '\nReinspect original CURRENT. Return one explicit decision and valid own frame/quote proof per unit. ' + \
+                                'Keep/drop/action ID lists are not part of this contract. Causal links reference different kept units only.'
                 atomic_json(checkpoint, {'identity': identity, 'decision': raw,
+                    'wire_contract': decision_contract,
                     'source_evidence': {'source': source_key, 'CURRENT': payload['CURRENT'], 'images': image_hashes,
                                         'storyboard_identity': base['storyboard']},
                     'actual_prompt_sha256':hashlib.sha256(retry_prompt.encode()).hexdigest(),
@@ -889,7 +945,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
             if stat.st_size != source_key['size'] or stat.st_mtime_ns != source_key['mtime_ns']:
                 raise ValueError('Исходный файл изменился во время проверки решения')
             history.append({'view': number, 'start': view['start'], 'end': view['end'],
-                            'checkpoint': identity, 'decision': decision,
+                            'checkpoint': identity, 'decision': decision, 'wire_contract': decision_contract,
                             'source_units': [u['id'] for u in view_units],
                             'storyboard': proof_board,
                             'frame_times': [f['time'] for f in frames]})
@@ -897,7 +953,8 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         if _control_failure(error):
             raise
         history.append({'status': 'failed', 'reason': 'invalid_evidence' if isinstance(error, (ValueError, TypeError, KeyError)) else 'model_or_source_failure',
-                        'error_type': type(error).__name__, 'error': _clean(str(error))[:800]})
+                        'error_type': type(error).__name__, 'error_category': getattr(error, 'category', None),
+                        'error': _clean(str(error))[:800]})
     accepted = bool(history) and all(h.get('decision', {}).get('accepted') for h in history)
     decisions = [h['decision'] for h in history if 'decision' in h]
     if accepted:
@@ -951,6 +1008,7 @@ def adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelle
         result.update(minimal_semantic_context(event, units, transcript))
         result.update(selection_status='unresolved', analysis_unresolved=True, selection_uncertain=True)
     result['selection_adjudication'] = {'version': VERSION, 'status': result['selection_status'],
+        'requested_wire_contract': decision_contract,
         'resolved': accepted, 'understanding_confidence': min((d['understanding_confidence'] for d in decisions), default=0),
         'selection_confidence': min((d['selection_confidence'] for d in decisions), default=0),
         'questions': questions, 'decisions': history, 'source': source_key,

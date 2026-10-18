@@ -51,6 +51,14 @@ class RecordedVision:
     def __getattr__(self,name):
         return getattr(self.vision,name)
 
+    @property
+    def thinking(self):
+        return self.vision.thinking
+
+    @thinking.setter
+    def thinking(self, value):
+        self.vision.thinking = value
+
     def query(self,prompt,image=None,max_tokens=1200,schema=None, *, thinking_override=None):
         # The production acceptance recorder must transparently forward
         # per-request reasoning mode; otherwise the 9B no-thinking shortcut

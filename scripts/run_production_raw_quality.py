@@ -23,14 +23,56 @@ from app.semantic_identity import semantic_identity
 from scripts.run_raw_video_quality import RecordedVision, sha256, workspace
 
 
+def _transport_records(job, remote_model):
+    from app.model_perf import model_alias
+    path = Path(job)/'model-performance.jsonl'
+    counts = {'local': 0, 'remote': 0, 'complete': True}
+    if not path.is_file():
+        return counts
+    for line in path.read_text('utf-8').splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            counts['complete'] = False
+            continue
+        if not isinstance(row, dict):
+            counts['complete'] = False
+            continue
+        if row.get('event') == 'request_start':
+            counts['remote' if row.get('model') == model_alias(remote_model) else 'local'] += 1
+    return counts
+
+
+
+def _standalone_accepted(published, current, outputs):
+    """A preserved older publication is not success of the current attempt."""
+    if (not isinstance(published, dict) or not isinstance(current, dict)
+            or current.get('status') not in ('ready', 'partial')
+            or current.get('technical_failures') != [] or not current.get('accepted')):
+        return False
+    plan = published.get('plan', {})
+    if plan.get('outcome') != current or set(published.get('outputs', [])) != set(outputs):
+        return False
+    try:
+        accepted = {item['id']: item['filename'] for item in current['accepted']
+                    if item['status'] == 'ready' and item['export_eligible'] is True}
+        parts = {part['candidate_id'] for part in plan['parts']}
+        artifacts = {item['candidate_id']: item['video']['filename'] for item in published['artifacts']}
+        return (len(accepted) == len(current['accepted']) and set(accepted) == parts
+                and accepted == artifacts and set(accepted.values()).issubset(outputs))
+    except (KeyError, TypeError):
+        return False
+
+
 def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None,
-        analysis_provider="local"):
+        analysis_provider="local", story_objective=None):
     import app.analysis as analysis_module
     from app.vision import LocalVision
     from app.flash_story_trial import TrialStoryVision
+    from app.deepseek import DeepSeekVision, MODEL as REMOTE_MODEL
     from app.editorial import DEFAULT_PROFILE, DRAMATIC_PROFILE
-    if analysis_provider not in ("local", "local_fast_story", "local_flash_story", "local_flash_story_budgeted"):
-        raise ValueError("Raw quality observer supports genuine local 4B or explicit Flash-story pilot only")
+    if analysis_provider not in ("local", "local_fast_story", "local_flash_story", "local_flash_story_budgeted", "deepseek_plan"):
+        raise ValueError("Raw quality observer requires an explicit supported provider")
     fixture, job = workspace(fixture), workspace(job)
     manifest = load_json(fixture/'input.json')
     if set(manifest) not in ({'source'}, {'source', 'transcript'}):
@@ -44,6 +86,10 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
         raise ValueError('Editorial preferred part count must be 1..64')
     requested_settings = {'dramatic':bool(dramatic),'preferred_part_count':preferred_part_count,
                           'analysis_provider':analysis_provider}
+    if story_objective is not None:
+        from app.story_objective import validate_objective
+        story_objective = validate_objective(story_objective)
+        requested_settings['story_objective'] = story_objective
     run_settings = job/'observed-run-settings.json'
     if run_settings.is_file() and load_json(run_settings) != requested_settings:
         raise ValueError('Resume editorial settings do not match original run')
@@ -67,12 +113,27 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
         atomic_json(job/'editorial-settings.json', DRAMATIC_PROFILE if dramatic else DEFAULT_PROFILE)
         if preferred_part_count is not None:
             atomic_json(job/'planning-preferences.json',{'preferred_part_count':preferred_part_count})
+    objective_path = job/'story-objective.json'
+    if story_objective is not None:
+        if objective_path.is_file() and load_json(objective_path) != story_objective:
+            raise ValueError('Resume story objective differs from the recorded request')
+        atomic_json(objective_path, story_objective)
+    elif objective_path.is_file():
+        raise ValueError('Resume must explicitly retain the original story objective')
     atomic_json(job/'observer-input-locations.json', {'input':str(fixture/'input.json'),
         'transcript':str(transcript_path) if transcript_path else None})
     starting_code_identity = semantic_identity()
     atomic_json(job/'observer-code-identity.json', starting_code_identity)
     real_factory=analysis_module.vision_session
+    import app.vision as vision_module
+    real_shared_factory = vision_module.vision_session
+    import app.candidate_framing as candidate_framing
+    real_framing_factory = candidate_framing.vision_session
     sessions=[]
+    initial_transports = _transport_records(job, REMOTE_MODEL)
+
+    def remote_dispatches():
+        return _transport_records(job, REMOTE_MODEL)['remote']
 
     @contextmanager
     def observed_factory(*args, **kwargs):
@@ -95,9 +156,12 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
                     state = load_json(path)
                     return len(state.get("reserved", [])) if isinstance(state, dict) else 0
                 initial = dispatched()
+            elif analysis_provider == 'deepseek_plan' and isinstance(vision, DeepSeekVision):
+                recorder, cloud, dispatched = vision, True, remote_dispatches
+                initial = dispatched()
             else:
                 raise TypeError('Raw quality requires genuine local inference or explicit Flash pilot')
-            public={'model':"deepseek-flash-pilot" if cloud else str(vision.model),
+            public={'model':(REMOTE_MODEL if analysis_provider == 'deepseek_plan' else "deepseek-flash-pilot") if cloud else str(vision.model),
                     'projector':"remote" if cloud else str(vision.projector),
                     'thinking':bool(getattr(vision,'thinking',False)),
                     'initial_requests':initial}
@@ -118,16 +182,31 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
         print(json.dumps({'stage':stage,'progress':round(progress,3)},ensure_ascii=True),flush=True)
     started=time.monotonic()
     analysis_module.vision_session=observed_factory
+    # Candidate qualification imports the factory at its downstream boundary.
+    # Observe that genuine route too, including local lazy acquisition.
+    vision_module.vision_session=observed_factory
+    candidate_framing.vision_session=observed_factory
     outcome={'mode':'production_render' if render else 'production_analysis_only', 'complete':False}
     try:
         if render:
             from app.pipeline import run_job
             outcome['outputs']=run_job(job,report,lambda:False)
-            outcome['quality_gate']=load_json(job/'final_quality_gate.json')
-            outcome['complete']=outcome['quality_gate']['status'] == 'passed'
+            from app.story_objective import STANDALONE
+            standalone = story_objective is not None and story_objective['objective'] == STANDALONE
+            if standalone:
+                from app.artifact_publication import current_revision, resolve_output
+                published = current_revision(job)
+                outcome['standalone_outcome'] = load_json(job/'standalone-outcome.json')
+                outcome['complete'] = _standalone_accepted(published, outcome['standalone_outcome'], outcome['outputs'])
+                outcome['quality_gate'] = {'status': 'passed' if outcome['complete'] else 'not_accepted',
+                    'scope': 'each_published_candidate', 'actual_editorial_review': 'pending'}
+            else:
+                outcome['quality_gate']=load_json(job/'final_quality_gate.json')
+                outcome['complete']=outcome['quality_gate']['status'] == 'passed'
             if (job/'analysis-final.json').is_file():
                 atomic_json(job/'actual-analysis.json',load_json(job/'analysis-final.json'))
-            outcome['export_sha256']={name:sha256(job/'output'/name) for name in outcome['outputs']}
+            outcome['export_sha256']={name:sha256(resolve_output(job,name,allow_legacy=False) if standalone else job/'output'/name)
+                                     for name in outcome['outputs']}
         else:
             analysis=analysis_module.analyze(job,source,report,lambda:False)
             atomic_json(job/'actual-analysis.json',analysis)
@@ -139,6 +218,8 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
         raise
     finally:
         analysis_module.vision_session=real_factory
+        vision_module.vision_session=real_shared_factory
+        candidate_framing.vision_session=real_framing_factory
         final_code_identity=semantic_identity()
         atomic_json(job/'observer-code-identity-final.json', final_code_identity)
         outcome['pipeline_code_stable']=final_code_identity == starting_code_identity
@@ -146,7 +227,13 @@ def run(fixture, job, *, render=False, dramatic=False, preferred_part_count=None
             outcome['complete']=False
             outcome['proof_limitation']='Pipeline source changed during this diagnostic run'
         outcome['elapsed_seconds']=time.monotonic()-started
-        outcome['actual_model_requests']=len(list((job/'actual-model').glob('request-*.json')))
+        transports = _transport_records(job, REMOTE_MODEL)
+        outcome['recorded_local_calls']=len(list((job/'actual-model').glob('request-*.json')))
+        outcome['local_model_requests']=transports['local']
+        outcome['remote_transport_attempts']=transports['remote']
+        outcome['transport_count_complete']=transports['complete'] and initial_transports['complete']
+        outcome['actual_model_requests']=outcome['local_model_requests']+outcome['remote_transport_attempts']
+        outcome['new_transport_attempts']=sum(transports[k]-initial_transports[k] for k in ('local','remote'))
         atomic_json(job/'observed-outcome.json',outcome)
         print(json.dumps({'complete':outcome['complete'],'actual_model_requests':outcome['actual_model_requests'],
                           'error_type':outcome.get('error_type')},ensure_ascii=True),flush=True)
@@ -160,10 +247,15 @@ def main():
     parser.add_argument('--render',action='store_true')
     parser.add_argument('--dramatic',action='store_true')
     parser.add_argument('--preferred-parts',type=int)
+    parser.add_argument('--standalone',action='store_true')
+    parser.add_argument('--analysis-provider', default='local',
+        choices=('local','local_fast_story','local_flash_story','local_flash_story_budgeted','deepseek_plan'))
     args=parser.parse_args()
     setup_environment()
     job=args.job_dir or ROOT/'scratch/raw_video_quality/production_runs'/datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')/'raw-000'
-    result=run(args.fixture_dir,job,render=args.render,dramatic=args.dramatic,preferred_part_count=args.preferred_parts)
+    result=run(args.fixture_dir,job,render=args.render,dramatic=args.dramatic,preferred_part_count=args.preferred_parts,
+               analysis_provider=args.analysis_provider,
+               story_objective={'objective':'standalone_shorts'} if args.standalone else None)
     return 0 if result['complete'] else 1
 
 

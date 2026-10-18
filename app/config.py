@@ -48,7 +48,9 @@ def setup_environment() -> None:
         os.environ['PATH'] = dll_path + os.pathsep + current_path
 
 
-def readiness() -> dict:
+def readiness(provider='local', layout='portrait') -> dict:
+    from .analysis_provider import _model_files_for_provider
+    required_models = _model_files_for_provider(provider, layout)
     missing = []
     for name, path in (
         ('FFmpeg', FFMPEG), ('FFprobe', FFPROBE),
@@ -59,6 +61,8 @@ def readiness() -> dict:
         ('Whisper large-v3', ASR_MODEL / 'model.bin'),
         ('Токенизатор Whisper', ASR_MODEL / 'tokenizer.json'),
     ):
+        if path in (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR) and path not in required_models:
+            continue
         if not path.is_file():
             missing.append(name)
     return {'ready': not missing, 'missing': missing}

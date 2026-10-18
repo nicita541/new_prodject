@@ -62,9 +62,17 @@ def positive_ranges(event):
             continue
         a = max(bounds[0], bounds[2])
         b = min(bounds[1], bounds[3])
-        if a < b and _anchored(record, unit, a, b):
+        if a < b and _anchored(record, unit, a, b) and temporal_proof_valid(event, record, unit):
             result.append({'start': a, 'end': b})
     return merge_ranges(result)
+
+
+def temporal_proof_valid(event, record, unit):
+    """New source contracts cannot lose temporal ownership before planning."""
+    if ('motion' in record or event.get('selection_adjudication', {}).get('requested_wire_contract') == 'unit_decisions_v2'):
+        from .unit_decisions import persisted_motion_valid
+        return persisted_motion_valid(record, unit)
+    return True  # Historical contracts retain their original meaning.
 
 
 def selection_problems(event):
@@ -125,7 +133,8 @@ def selection_readiness(events):
             'unresolved': unresolved, 'policy': 'specific_source_evidence_required'}
 
 
-def adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled, *, source_only=False):
+def adjudicate_selections(source, events, transcript, shots, job_dir, vision, report, cancelled, *,
+                         source_only=False, decision_contract='legacy'):
     from .selection_adjudication import adjudicate_event, issues
     from .source_roles import apply_exclusions
     result = []
@@ -140,7 +149,8 @@ def adjudicate_selections(source, events, transcript, shots, job_dir, vision, re
             queued.add(index)
             report('analyze', .5, f'Проверка конкретного выбора: событие {processed+1} из {len(queued)}')
             event = adjudicate_event(source, event, transcript, shots, job_dir, vision, cancelled,
-                questions=[*issues(event), 'Проверить спорные решения: '+', '.join(problems)])
+                questions=[*issues(event), 'Проверить спорные решения: '+', '.join(problems)],
+                **({'decision_contract': decision_contract} if decision_contract != 'legacy' else {}))
             if event.get('selection_status') == 'accepted' and event.get('selected_ranges'):
                 # Positive evidence, rather than old filler importance, determines
                 # eligibility. Later ranking still decides optional retention.

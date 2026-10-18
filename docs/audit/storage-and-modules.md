@@ -65,7 +65,8 @@ flowchart TD
 | `data/settings/` | Частная provider configuration, ключи; music preferences | [deepseek](../../app/deepseek.py), [music](../../app/music.py) |
 | `music/config.json`, `data/settings/music.json` | Базовый config и сохранённые предпочтения | [music](../../app/music.py) |
 | `finishing/episodes/<episode>.json` | Разделяемый профиль оформления с revision | [finishing](../../app/finishing.py) |
-| `finishing/exports-index/ex_<id>.json` | export UUID → source_job_id | [studio_render](../../app/studio_render.py) |
+| `finishing/exports-index/ex_<id>.json` | export UUID → source_job_id и operation_id для управляемых команд | [studio_render](../../app/studio_render.py) |
+| `finishing/operations/<operation-uuid>.json` | Reserved/committed/deleted намерение, точные frozen inputs; `.locks` сериализует записи | [finishing_commands](../../app/finishing_commands.py) |
 | `finishing/avatars/av_<episode_hex>_<uuid_hex>.png` | Неизменяемая иконка, принадлежит серии; canonical PNG, до 4 МБ входных данных | [finishing_avatar](../../app/finishing_avatar.py) |
 | `cache/deepseek/<prefix>/<digest>.json` | Подписанный успешный remote response; старый flat lookup совместим | [deepseek.target_cache_path / cache_file_path](../../app/deepseek.py) |
 | `logs/LATEST.txt`, `logs/startup.log` | Последняя log session / старт батника | [run_logging](../../app/run_logging.py), [start.bat](../../start.bat) |
@@ -101,16 +102,19 @@ flowchart TD
 | `speech-handle-overrides.json` | Ограниченные исходные запасы звука для исправлений речи | Сохранять при incremental/plan-only reuse |
 | `part-context/part_NNN.json`, картинки | Optional title/synopsis/image prompt cache | Да для reuse; не готовая графическая обложка |
 | `render/part_NNN/` | filter script, ASS, partial MP4, render-info, process logs | Checkpoint и metadata сохранять; partial только после остановки |
-| `render/part_NNN.json` | Fingerprint входов конкретной части, size/mtime, SRT hash, encoder/run_id | Обязательно для безопасного cached export |
+| `render/part_NNN.json` | Fingerprint входов конкретной части, SHA256 видео/SRT, full-decode receipt, encoder/run_id | Обязательно для безопасного local cached export |
 | `output/part_NNN.mp4`, `.srt`, внутренний `.ass`, `plan.json` | Готовые файлы и финальные music metadata; публичный file API регистрирует только MP4/SRT | Обязательно |
+| `publication.json`, `revisions/<sha>/manifest.json`, `plan.json`, media | Неизменяемая публикация; v2 может ссылаться на точный файл/manifest предка без копии видео | Сохранять вместе с источниками ссылок; GET только читает |
+| `checkpoint-lineage.json` | Явная цепочка заданий одного исходника/серии; защищает предков от delete/prune | Нельзя удалять отдельно от зависимого задания |
+| `audio-boundaries/<identity>.json`, `work-*/` | Измеренные PCM около предложенных склеек с исходными PTS, выбранной дорожкой и политикой; work содержит локальные WAV/log | JSON повторно используется по явной ancestry; work восстановим, не семантическое доказательство |
 | `previous_exports/<UUID>/` | Архив obsolete checkpoint-verified parts после успешной замены | По retention, не до подтверждения нового результата |
 | `runs/<UUID>.json`, `timings.json` | Попытки, source/code/settings provenance, timings | Обязательно для сравнения прогона |
 | `model-performance.jsonl`, `token-usage.jsonl` | Local VLM timing/request и фактические usage | Да |
 | `diagnostics/pipeline/` | Timeline, decisions, selection snapshots, summary/warnings | Да; подробные данные частные |
 | `diagnostics/analysis-v.../` | Архив несовместимых derived checkpoints при старой analysis version | Не считать мусором без проверки lineage |
 | `finishing/captions_NNN.json` | Пользовательские subtitle overrides с revision | Обязательно |
-| `clean/part_NNN/<identity>/clean.mkv`, `clean.json` | Чистые нарезанные части исходного разрешения: lossless H.264, PCM, без добавленного оформления | Можно восстановить из исходника и плана; удаление требует повторной однократной нарезки |
-| `finishing/previews/pv_<id>/`, `finishing/exports/ex_<id>/` | Isolated status/output/work, render-error.log | Готовые пользовательские exports сохранять |
+| `clean/part_NNN/<identity>/clean.mkv`, `clean.json` | Чистые части: lossless H.264/PCM, v2 SHA256 и полный decode; потомки читают проверенный оригинал без копии | Восстановимы из исходника; учитывать зависимые задания |
+| `finishing/previews/pv_<id>/`, `finishing/exports/ex_<id>/` | Immutable command.json, runtime.json, attempts/<token>/output и heartbeat/log; parts/ и receipts/ связывают проверенные файлы, включая ссылки на прежнюю команду того же job. Старые status/output остаются читаемыми | Команды и файлы-источники ссылок сохранять вместе с job |
 
 Названия отдельных proof каталогов определены внутри stage modules и могут меняться по версии; исходные JSON/stage signature надо читать до prune. Нет правила «всё кроме output — мусор»: эти файлы предотвращают повторный многочасовой/платный анализ.
 
@@ -199,7 +203,11 @@ Source hash — доказательство байтового совпаден
 | [finishing_profile](../../app/finishing_profile.py) | Общая валидация видеопрофиля и чтение профиля серии без HTTP/анализа |
 | [finishing_avatar](../../app/finishing_avatar.py) | Валидация и декодирование иконок, принадлежность серии, локальные пресеты и круговая маска с сохранением alpha |
 | [social_frame](../../app/social_frame.py) | Геометрия и растровая тёмная карточка публикации: канал, подпись, весь кадр; пользовательский текст не попадает в FFmpeg expression |
-| [studio_render](../../app/studio_render.py) | Isolated finishing threads/queue/semaphore/status и reuse base plan без ИИ |
+| [studio_render](../../app/studio_render.py) | Подача/replay команд, projection состояния, проверенная выдача файлов и legacy readers без ИИ |
+| [finishing_commands](../../app/finishing_commands.py) | Immutable intention/frozen inputs, operation locks, fenced runtime и full-decode receipts/references |
+| [finishing_execution](../../app/finishing_execution.py), [finishing_worker](../../app/finishing_worker.py) | Durable очередь и owned process tree, стартовый барьер, heartbeat, cancel/resume/recovery |
+| [finishing_render](../../app/finishing_render.py) | Однократная фиксация входов и рендер только сохранённой команды; проверка входов до квитанции |
+| [file_lock](../../app/file_lock.py) | Общий OS-backed lock без JobManager lifecycle |
 | [deepseek](../../app/deepseek.py) | Remote JSON/image adapter, successful content cache, одна коррекция формата без автоматического HTTP/transport resend, disabled monetary compatibility |
 | [hybrid](../../app/hybrid.py) | Local-first remote uncertainty review и job journal/fallback |
 | [flash_story_trial](../../app/flash_story_trial.py) | Opt-in local early vision + remote story trial routing; название не означает offline |

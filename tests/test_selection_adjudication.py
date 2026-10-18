@@ -59,6 +59,98 @@ class FakeVision:
 
 
 class SelectionAdjudicationTests(unittest.TestCase):
+    def temporal_response(self, payload):
+        raw = answer(payload)
+        kept = set(raw.pop('keep_units'))
+        raw.pop('drop_units'); raw.pop('action_units')
+        for row, unit in zip(raw['unit_evidence'], payload['CURRENT']['units']):
+            row['decision'] = 'keep' if row['unit'] in kept else 'drop'
+            row['motion'] = []
+            if row['kind'] == 'physical_action':
+                owned = [i+1 for i, f in enumerate(payload['CURRENT']['frames'])
+                         if unit['start'] <= f['time'] < unit['end']]
+                row['frame_indices'] = [owned[0], owned[-1]]
+                row['motion'] = [{'frame': owned[0], 'state': 'Hand is beside the body.'},
+                                 {'frame': owned[-1], 'state': 'Hand extends toward the cup.'}]
+        return raw
+
+    def test_temporal_contract_uses_native_states_and_reuses_exact_warm_result(self):
+        from app.selection_gate import selection_problems
+        vision = FakeVision(self.temporal_response)
+        with patch('app.selection_adjudication._accepted_prior_view', side_effect=AssertionError('No temporal proof invention')):
+            result = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                      decision_contract='unit_decisions_v2')
+            self.assertEqual(result['selection_status'], 'accepted')
+            self.assertEqual(selection_problems(result), [])
+            count = len(vision.requests)
+            for row in result['unit_evidence']:
+                self.assertIn('motion', row)
+            repeated = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                        decision_contract='unit_decisions_v2')
+        self.assertEqual(len(vision.requests), count)
+        self.assertEqual(repeated['unit_evidence'], result['unit_evidence'])
+        changed = copy.deepcopy(result)
+        row = next(r for r in changed['unit_evidence'] if r['kind'] == 'physical_action')
+        row['motion'][1]['frame'] = 999
+        self.assertIn('unexplained_selected_ranges', selection_problems(changed))
+        from app.story_structure_pass import source_units
+        nodes, _, _ = source_units([changed], EMPTY)
+        self.assertFalse(any(node['proofs'] for node in nodes if node['ref']['unit'] == row['unit']))
+
+    def test_v1_single_frame_action_is_not_promoted_to_temporal_proof(self):
+        def historical(payload):
+            raw = answer(payload)
+            kept = set(raw.pop('keep_units'))
+            raw.pop('drop_units'); raw.pop('action_units')
+            for row in raw['unit_evidence']:
+                row['decision'] = 'keep' if row['unit'] in kept else 'drop'
+            return raw
+        old = adjudicate_event(self.source, self.event, EMPTY, [], self.job, FakeVision(historical), lambda: False,
+                               decision_contract='unit_decisions_v1')
+        self.assertEqual(old['selection_status'], 'accepted')
+        self.assertTrue(all(len(row['frame_indices']) == 1 for row in old['unit_evidence']))
+        originals = {row['checkpoint']: (self.job/'selection-adjudication'/(row['checkpoint']+'.json')).read_bytes()
+                     for row in old['selection_adjudication']['decisions']}
+        vision = FakeVision(self.temporal_response)
+        result = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                  decision_contract='unit_decisions_v2')
+        self.assertEqual(result['selection_status'], 'accepted')
+        self.assertGreater(len(vision.requests), 0)
+        self.assertTrue(all('motion' in r for r in result['unit_evidence']))
+        self.assertTrue(all((self.job/'selection-adjudication'/(key+'.json')).read_bytes() == value
+                            for key, value in originals.items()))
+
+    def test_unknown_temporal_dispatch_never_turns_into_a_corrective_paid_call(self):
+        vision = FakeVision(TimeoutError('unknown temporal transport'))
+        adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                         decision_contract='unit_decisions_v2')
+        self.assertEqual(len(vision.requests), 1)
+        repeated = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                    decision_contract='unit_decisions_v2')
+        self.assertEqual(len(vision.requests), 1)
+        self.assertEqual(repeated['selection_status'], 'unresolved')
+
+    def test_adapter_json_exhaustion_does_not_trigger_a_second_native_correction(self):
+        from app.deepseek import ResponseContractError
+        vision = FakeVision(ResponseContractError('No JSON after adapter correction', category='response_length'))
+        result = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                  decision_contract='unit_decisions_v2')
+        self.assertEqual(len(vision.requests), 1)
+        failure = result['selection_adjudication']['decisions'][-1]
+        self.assertEqual(failure['error_category'], 'response_length')
+        self.assertEqual(result['selection_status'], 'unresolved')
+        repeated = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                    decision_contract='unit_decisions_v2')
+        self.assertEqual(len(vision.requests), 1)
+        self.assertEqual(repeated['selection_adjudication']['decisions'][-1]['error_category'], 'response_length')
+        saved = next((self.job/'selection-adjudication').glob('*.failure.json'))
+        saved.write_text('{torn negative checkpoint', 'utf-8')
+        damaged = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                   decision_contract='unit_decisions_v2')
+        self.assertEqual(len(vision.requests), 1)
+        self.assertEqual(damaged['selection_status'], 'unresolved')
+        self.assertEqual(saved.read_text('utf-8'), '{torn negative checkpoint')
+
     def test_silent_current_cannot_borrow_a_spoken_contribution_from_context(self):
         unit = {'id': 'silent', 'start': 0., 'end': 1., 'text': ''}
         frames = [{'time': .5}]
@@ -112,6 +204,39 @@ class SelectionAdjudicationTests(unittest.TestCase):
             'evidence': 'В исходном кадре персонаж надевает видимый ремень на запястья.',
             'confidence': .95, 'frame_indices': [1], 'speech_quote': '', 'decision': 'keep'}]
         return event
+
+    def test_single_unit_decisions_use_native_proof_and_warm_question_reuse(self):
+        def response(payload):
+            raw = answer(payload)
+            keep = set(raw.pop('keep_units'))
+            raw.pop('drop_units'); raw.pop('action_units')
+            for row in raw['unit_evidence']:
+                row['decision'] = 'keep' if row['unit'] in keep else 'drop'
+            return raw
+        vision = FakeVision(response)
+        result = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                  decision_contract='unit_decisions_v1')
+        self.assertEqual(result['selection_status'], 'accepted')
+        self.assertEqual(result['action_units'], result['keep_units'])
+        count = len(vision.requests)
+        self.assertGreater(count, 0)
+        for _, _, contract, _ in vision.requests:
+            self.assertNotIn('action_units', contract['properties'])
+        repeated = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                    decision_contract='unit_decisions_v1')
+        self.assertEqual(repeated['selected_ranges'], result['selected_ranges'])
+        self.assertEqual(len(vision.requests), count)
+
+    def test_unknown_unit_decision_dispatch_cannot_be_repaired_into_another_paid_request(self):
+        vision = FakeVision(TimeoutError('unknown transport result'))
+        adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                         decision_contract='unit_decisions_v1')
+        count = len(vision.requests)
+        self.assertEqual(count, 1)
+        result = adjudicate_event(self.source, self.event, EMPTY, [], self.job, vision, lambda: False,
+                                  decision_contract='unit_decisions_v1')
+        self.assertEqual(len(vision.requests), count)
+        self.assertEqual(result['selection_adjudication']['decisions'][-1]['error_type'], 'QuestionJournalError')
 
     def test_confident_partition_replaces_selection_and_preserves_input(self):
         snapshot = copy.deepcopy(self.event)

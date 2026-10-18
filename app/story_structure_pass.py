@@ -199,7 +199,7 @@ def _state_mentions(event, unit, pieces, proofs):
 
 def source_units(events, transcript):
     """Expose actual selected source units and their accepted proof, no oracle labels."""
-    from app.selection_gate import _anchored
+    from app.selection_gate import _anchored, temporal_proof_valid
     from app.source_roles import confirmed_exclusions
     if not isinstance(transcript, dict):
         raise ValueError('Invalid source ASR')
@@ -254,7 +254,8 @@ def source_units(events, transcript):
                 if any(type(t) not in (int, float) or not math.isfinite(t) for t in (view_a, view_b)):
                     continue
                 proof_a, proof_b = max(a, u, view_a), min(b, v, view_b)
-                if proof_a >= proof_b or not _anchored(record, source_unit, proof_a, proof_b):
+                if (proof_a >= proof_b or not _anchored(record, source_unit, proof_a, proof_b)
+                        or not temporal_proof_valid(event, record, unit)):
                     continue
                 indices, times = record.get('frame_indices', []), record.get('frame_times', [])
                 quote = record.get('speech_quote', '')

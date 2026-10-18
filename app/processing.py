@@ -1,4 +1,4 @@
-"""Explicit run modes and independently copied, source-owned checkpoints."""
+"""Explicit run modes, small snapshots and source-owned media ancestry."""
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +12,7 @@ MODES = {'full', 'incremental', 'plan_only'}
 # Never inherit job state, cancellation, diagnostics, credentials, provider
 # attempts, manual exchange packets, finishing state or partial output files.
 FILES = {
-    'analysis.meta.json', 'preparation.meta.json', 'probe.json', 'audio.wav',
+    'analysis.meta.json', 'preparation.meta.json', 'probe.json',
     'transcript.json', 'shots.json', 'shots.meta.json', 'shots.candidates.json',
     'scenes.json', 'scenes.meta.json', 'scene-features.json', 'scene-features.meta.json',
     'media-evidence.json', 'media-evidence.meta.json', 'story-events.json',
@@ -21,13 +21,14 @@ FILES = {
     'analysis-final.json', 'analysis-final.meta.json', 'plan.json',
     'editorial-settings.json', 'planning-preferences.json',
     'speech-handle-overrides.json',
+    'story-objective.json',
 }
 DIRECTORIES = {
     'visual', 'focus', 'scene-features', 'media-evidence', 'story_refinement',
     'global_verification', 'production_sequences', 'title_units', 'closing_novelty',
     'credit_edges', 'source_roles', 'pacing', 'pacing_sequences', 'endings', 'story-structure',
     'dialogue-relations', 'selection-adjudication', 'continuity-verification',
-    'part-context', 'clean', 'boundary-recovery',
+    'part-context', 'boundary-recovery',
 }
 
 
@@ -47,9 +48,9 @@ def _digest(value):
                                     allow_nan=False).encode('utf-8')).hexdigest()
 
 
-def source_digest(source: Path, cancelled=lambda: False) -> str:
+def source_digest(source: Path, cancelled=lambda: False, *, refresh=False) -> str:
     from .source_identity import source_identity
-    return source_identity(source, cancelled)['sha256']
+    return source_identity(source, cancelled, refresh=refresh)['sha256']
 
 
 def _snapshot_provider(provider):
@@ -62,14 +63,19 @@ def snapshot_identity(directory: Path, source: Path, analysis: dict) -> dict:
     from .editing import load_options
     from .analysis_provider import analysis_provider
     settings = read_json(directory/'analysis-settings.json', {})
-    check_policy = ({'economy_mode': read_json(directory/'analysis-settings.json', {}).get('economy_mode', True)}
+    source_only = analysis.get('analysis_contract') == 'standalone_source_v2'
+    check_policy = ({'analysis_contract': analysis['analysis_contract'], 'check_policy': analysis.get('check_policy')}
+                    if analysis.get('analysis_contract') in ('standalone_selective_v1', 'standalone_source_v2',
+                                                          'standalone_candidate_proved_v1') else
+                    {'economy_mode': read_json(directory/'analysis-settings.json', {}).get('economy_mode', True)}
                     if 'check_policy' in analysis else {})
     from .confirmed_selection import enabled,identity as selection_identity
     selection_policy = ({'selection_policy':selection_identity(directory)}
-                        if analysis.get('selection_scope') or enabled(directory) else {})
+                        if not source_only and (analysis.get('selection_scope') or enabled(directory)) else {})
     return {**check_policy, **selection_policy, 'version': 1, 'source_sha256': source_digest(source),
             'analysis_sha256': _digest(analysis), 'provider': _snapshot_provider(analysis_provider(directory)),
-            'layout': load_options(directory)['layout'], 'editorial_profile': load_profile(directory),
+            'layout': 'source_only' if source_only else load_options(directory)['layout'],
+            'editorial_profile': {} if source_only else load_profile(directory),
             'transcript_settings': {key: settings[key] for key in
                                     ('transcript_mode', 'transcript_source_sha256') if key in settings},
             'transcript_checkpoint_sha256': _digest(read_json(directory/'transcript.json'))}
@@ -112,7 +118,17 @@ def cached_analysis(directory: Path, source: Path) -> dict:
                 or {**saved,'provider':_snapshot_provider(saved.get('provider'))} != expected):
             raise ValueError()
         from .planner import validate_analysis
-        validate_analysis(analysis)
+        from .story_objective import load_objective, STANDALONE
+        standalone = load_objective(directory)['objective'] == STANDALONE
+        if standalone and (analysis.get('analysis_contract') in ('standalone_source_v2', 'standalone_candidate_proved_v1')
+                           or analysis.get('analysis_contract') == 'standalone_selective_v1' and analysis['events'] == []):
+            from .standalone_planner import _source
+            _source(analysis)  # A complete negative discovery is valid physical evidence.
+            if analysis.get('analysis_contract') == 'standalone_source_v2':
+                from .story_candidates import candidate_cases
+                candidate_cases(analysis, analysis['episode_map'], expected['source_sha256'])
+        else:
+            validate_analysis(analysis, draft=standalone)
         preferences = read_json(directory/'planning-preferences.json')
         if preferences is not None:
             if (not isinstance(preferences, dict) or set(preferences) != {'preferred_part_count'}
@@ -140,6 +156,10 @@ def inherit_checkpoints(previous: Path, destination: Path, *, plan_only=False) -
             raise ValueError('Ссылка в контрольных точках недопустима')
         if '.partial.' in path.name or path.name.endswith('.tmp'):
             return
+        if relative.as_posix() == 'media-evidence/audio.wav':
+            # This temporary source-PTS PCM is only used to compute the saved
+            # perception features. It is not the ASR signal and is not a snapshot.
+            return
         if path.is_dir():
             for child in path.iterdir():
                 copy(child)
@@ -150,17 +170,12 @@ def inherit_checkpoints(previous: Path, destination: Path, *, plan_only=False) -
 
     # Keep upstream model checkpoints even for a plan-only job: a subsequent
     # incremental run must not lose the caches from its analysis lineage.
-    directories = DIRECTORIES - {'clean', 'part-context'} if plan_only else DIRECTORIES
+    directories = DIRECTORIES - {'part-context'} if plan_only else DIRECTORIES
     for name in sorted(FILES | directories):
         path = previous / name
         if path.exists():
             copy(path)
-    if not plan_only:
-        for folder, pattern in (('output', 'part_*.*'), ('render', 'part_*.json')):
-            for path in sorted((previous / folder).glob(pattern)):
-                if path.is_file() and path.suffix in {'.mp4', '.srt', '.json'}:
-                    copy(path)
-        path = previous / 'output' / 'plan.json'
-        if path.is_file():
-            copy(path)
+    # Large clean and rendered media stay with their original owner. The
+    # caller commits explicit checkpoint-lineage before this snapshot copy;
+    # render/clean/ASR readers verify immutable ancestry when those inputs match.
     return copied

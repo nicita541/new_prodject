@@ -163,8 +163,13 @@ class Library:
                 economical = episode['settings'].get('economy_mode', True)
             if type(economical) is not bool:
                 raise ValueError('Экономный режим должен быть включён или выключен')
+            from .story_objective import validate_objective
+            objective = settings.get('story_objective') or episode['settings'].get('story_objective')
+            objective = validate_objective(objective) if objective is not None else None
             episode.update(source_id=source_id, settings={**options, 'analysis_provider': settings['analysis_provider'],
                                                        'economy_mode': economical})
+            if objective is not None:
+                episode['settings']['story_objective'] = objective
             self._save()
             return dict(episode)
 
@@ -192,13 +197,19 @@ class Library:
                     self.save_episode(owner, episode['source_id'], {**episode['settings'], 'economy_mode': enabled})
             return self.manager.change_analysis_economy(job_id, enabled, resume=resume, remember=remember)
 
-    def launch(self, identifier, processing_mode='full', reuse_job_id=None):
+    def launch(self, identifier, processing_mode='full', reuse_job_id=None, *, operation_id=None, preflight=None):
         with self.manager.mutex:
-            episode = self._episode(identifier)
+            episode = self._episode(identifier, archived=operation_id is not None)
             if not episode['source_id']:
                 raise ValueError('Сначала выберите и сохраните видео серии')
+            def check_launch():
+                if not self.alive(episode):
+                    raise KeyError(identifier)
+                if preflight is not None:
+                    preflight()
             return self.manager.create(episode['source_id'], **episode['settings'], episode_id=identifier,
-                                       processing_mode=processing_mode, reuse_job_id=reuse_job_id)
+                                       processing_mode=processing_mode, reuse_job_id=reuse_job_id,
+                                       operation_id=operation_id, preflight=check_launch)
 
     def archive(self, kind, identifier):
         with self.manager.mutex:

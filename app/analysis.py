@@ -17,7 +17,7 @@ from .analysis_provider import analysis_provider, provider_identity, framing_pro
 from .analysis_result import analysis_result
 from .editorial_pipeline import finalize_editorial_selection
 
-from app.config import FFMPEG, ROOT, STORY_MODEL, STORY_PROJECTOR, setup_environment
+from app.config import ROOT, STORY_MODEL, STORY_PROJECTOR, setup_environment
 from app.model_perf import purpose as inference_purpose
 
 # Media preparation
@@ -193,16 +193,22 @@ def _analyze(job_dir: Path, source: Path, report, cancelled, sessions) -> dict:
         if (settings.get('transcript_mode') != 'provided'
                 and previous_preparation.get('transcript') != preparation['transcript']):
             (job_dir/'transcript.json').unlink(missing_ok=True)
-    audio = job_dir / 'audio.wav'
-    if not audio.exists():
-        partial = job_dir / 'audio.partial.wav'
-        run_process([FFMPEG, '-y', '-v', 'error', '-i', source, '-map', f"0:a:{probe.get('audio_stream', 0)}", '-vn', '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', partial], job_dir / 'audio.log', cancelled)
-        partial.replace(audio)
+    # Completed/provided ASR does not need a materialized PCM copy. Resolve the
+    # owned/explicit-ancestor audio only if transcription or repair will read it.
+    audio = None
+    def audio_input():
+        nonlocal audio
+        if audio is None:
+            from .asr_audio import prepare_asr_audio
+            audio = prepare_asr_audio(source, fingerprint, probe, preparation['audio'], job_dir, cancelled)
+        return audio
     transcript_path = job_dir / 'transcript.json'
     report('transcribe', 0.06, 'Реплики из кэша: распознавание повторять не требуется'
            if transcript_path.is_file() else 'Распознавание русских реплик')
     if not transcript_path.exists():
-        run_process([sys.executable, '-m', 'app.inference', audio, transcript_path], job_dir / 'asr.log', cancelled, timeout=7200)
+        if settings.get('transcript_mode') == 'provided':
+            raise ValueError('Отсутствует предоставленный ASR; повторное распознавание не запускалось')
+        run_process([sys.executable, '-m', 'app.inference', audio_input(), transcript_path], job_dir / 'asr.log', cancelled, timeout=7200)
     transcript = load_json(transcript_path)
     if not isinstance(transcript.get('words'), list) or not isinstance(transcript.get('segments'), list):
         raise ValueError('Некорректный сохранённый текст серии')
@@ -214,7 +220,7 @@ def _analyze(job_dir: Path, source: Path, report, cancelled, sessions) -> dict:
     from app.inference import REPAIR_VERSION
     if not provided and transcript.get('repair_version') != REPAIR_VERSION:
         report('transcribe', 0.16, 'Проверка подозрительных пауз и временных отметок речи')
-        run_process([sys.executable, '-m', 'app.inference', audio, transcript_path, '--repair-only'],
+        run_process([sys.executable, '-m', 'app.inference', audio_input(), transcript_path, '--repair-only'],
                     job_dir / 'asr-repair.log', cancelled, timeout=7200)
         transcript = load_json(transcript_path)
     transcript = normalize_transcript(transcript, probe['duration'])
@@ -266,6 +272,18 @@ def _analyze(job_dir: Path, source: Path, report, cancelled, sessions) -> dict:
     if saved_perception is None:
         journal = StageJournal(job_dir, fingerprint, transcript, shots, editorial_profile,
                                diagnostics, report, cancelled)
+    from .source_evidence import capture as capture_source_evidence
+    source_evidence = capture_source_evidence(journal, probe, transcript, shots, raw_candidates, perception, preparation)
+    from .story_objective import load_objective, STANDALONE
+    if load_objective(job_dir)['objective'] == STANDALONE:
+        from .discovery_regions import source_regions
+        from .standalone_analysis import analyze_standalone
+        regions = source_regions(probe, transcript, shots, fingerprint)
+        atomic_json(job_dir/'discovery-regions.json', regions)
+        diagnostics.event('discovery_regions', 'partitioned', regions=len(regions),
+                          semantic_authority=False)
+        return analyze_standalone(source, probe, transcript, shots, regions, source_evidence, job_dir,
+            sessions, provider, journal, diagnostics, report, cancelled)
     perception_inputs = {'settings': grouping_settings, 'profile': initial_profile}
     if saved_perception is None:
         saved_perception = journal.perception(perception_inputs, allow_legacy=True)
@@ -292,7 +310,7 @@ def _analyze(job_dir: Path, source: Path, report, cancelled, sessions) -> dict:
     diagnostics.summary(source_duration=probe['duration'], shots=len(shots), semantic_scenes=len(scenes))
     events_path = job_dir / 'events.json'
     model_identity = [{'path': str(path), 'size': path.stat().st_size, 'mtime_ns': path.stat().st_mtime_ns}
-                      for path in _model_files_for_provider(provider)]
+                      for path in _model_files_for_provider(provider, layout)]
     from .semantic_identity import scoped_identity
     component_signatures = scoped_identity('perception')
     diagnostics.event('analysis', 'semantic_identity', components=component_signatures)

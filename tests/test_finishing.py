@@ -1,10 +1,15 @@
 """Studio Edition endpoint regressions. Uses a disposable project and fake media."""
 import json
+import logging
+import os
 import shutil
+import threading
 import time
 import unittest
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -17,33 +22,114 @@ from app.studio_render import slice_part
 from tests.test_jobs import FakeWorker
 
 
+class AuthoredFinishingWorker:
+    """Thread-backed process protocol, exercising the real worker entry point.
+
+    This adapter proves scheduler/command/receipt behavior, not OS process
+    ownership or media decoding. Real-process and real-FFmpeg tests live apart.
+    """
+    def __init__(self, directory, *, command):
+        self.directory, self.code = directory, None
+        self.process = SimpleNamespace(pid=os.getpid())
+        self.logger = logging.getLogger('app.finishing_worker')
+        self.handler = logging.FileHandler(directory/'worker.log', encoding='utf-8')
+        self.logger.addHandler(self.handler)
+        (directory/'.start').touch()
+        self.thread = threading.Thread(target=self._run, args=(command[4:],), daemon=True)
+        self.thread.start()
+
+    def _run(self, argv):
+        from app.finishing_worker import main
+        try:
+            self.code = main(argv)
+        except BaseException:
+            self.logger.exception('Authored worker adapter failed')
+            self.code = 1
+
+    def poll(self):
+        return self.code
+
+    def wait(self):
+        self.thread.join(5)
+        assert not self.thread.is_alive(), 'Authored worker did not drain'
+        return self.code
+
+    def terminate_tree(self):
+        (self.directory/'.cancel').touch()
+        self.wait()
+
+    def close(self):
+        self.wait()
+        self.logger.removeHandler(self.handler)
+        self.handler.close()
+
+
+@contextmanager
+def authored_finishing(manager, render=None):
+    """Real immutable command executor with deliberately authored fake media."""
+    from app.content_identity import file_sha256
+    from app.media import EXPORT_VALIDATION_VERSION
+    execution = manager.finishing_execution
+    previous_factory = execution.worker_factory
+    workers = []
+
+    def factory(directory, *, command):
+        worker = AuthoredFinishingWorker(directory, command=command)
+        workers.append(worker)
+        return worker
+
+    def media(source, part, probe, output, work, encoder, cancelled, **kwargs):
+        if render is None:
+            output.mkdir(parents=True, exist_ok=True)
+            video = output/f"part_{part['index']:03}.mp4"
+            video.write_bytes(b'Authored presentation, not decoded media')
+        else:
+            video = render(source, part, probe, output, work, encoder, cancelled, **kwargs)
+        if not video.with_suffix('.srt').exists():
+            video.with_suffix('.srt').write_text('Authored subtitles, not decoded media', encoding='utf-8')
+        # Explicitly AUTHORED receipt for fake bytes. This adapter does not
+        # attest to actual full decoding; it exercises the ownership/hash gate.
+        kwargs['on_validated']({'full_decode_version': EXPORT_VALIDATION_VERSION,
+            'video_sha256': file_sha256(video),
+            'subtitles_sha256': file_sha256(video.with_suffix('.srt'))})
+        return video
+
+    execution.worker_factory = factory
+    with patch('app.studio_render._probe', return_value={'width': 640, 'height': 360, 'audio_stream': 0}), \
+            patch('app.finishing_render.render_contract', return_value={'version': 1, 'code_sha256': 'd'*64}), \
+            patch('app.config.setup_environment'), \
+            patch('app.media.choose_encoder', return_value='authored_encoder') as encoder, \
+            patch('app.media.render_part', side_effect=media) as renderer:
+        try:
+            yield renderer, encoder, workers
+        finally:
+            deadline = time.monotonic()+5
+            while not execution.closed and (execution.active or execution._pending()) and time.monotonic() < deadline:
+                execution.tick()
+                time.sleep(.01)
+            execution.worker_factory = previous_factory
+            assert all(not worker.thread.is_alive() for worker in workers), 'Authored workers outlived their test scope'
+
+
 class StudioApiTests(unittest.TestCase):
     def test_queued_export_snapshots_plan_captions_and_profile(self):
-        import threading
-        from contextlib import contextmanager
         from app.studio_render import submit_render
         from app.finishing import FinishProfile
         entered, release = threading.Event(), threading.Event()
         captured = []
 
-        @contextmanager
-        def gate(cancelled):
+        def render(source, part, probe, output, work, encoder, cancelled, **kwargs):
             entered.set()
             if not release.wait(5):
                 raise RuntimeError('test gate timed out')
-            yield
-
-        def render(manager, job_id, part, profile, output, work, preview, **kwargs):
-            self.assertTrue(kwargs['resolved'])
-            captured.append((json.loads(json.dumps(part)), profile['video']['brightness']))
+            captured.append((json.loads(json.dumps(part)), kwargs['finishing']['video']['brightness']))
             output.mkdir(parents=True, exist_ok=True)
             path = output / f"part_{part['index']:03d}.mp4"
             path.write_bytes(b'snapshot fixture')
             return path
 
         profile = FinishProfile().model_dump()
-        with patch('app.studio_render._render_slot', gate), \
-                patch('app.studio_render.render_finishing_part', side_effect=render):
+        with authored_finishing(self.manager, render):
             try:
                 task = submit_render(self.manager, self.job_id, [1, 2], profile)
                 self.assertTrue(entered.wait(2))
@@ -311,27 +397,35 @@ class StudioApiTests(unittest.TestCase):
         self.assertFalse(profile_path.exists())
 
     def test_finishing_never_substitutes_random_music_for_missing_selected_track(self):
-        from app.studio_render import _music
-        music_dir = self.root / "test-music"
+        from app.finishing import FinishProfile
+        from app.finishing_render import freeze_command
+        from app.finishing_commands import CommandError
+        music_dir = self.root / "music"
         music_dir.mkdir(exist_ok=True)
         (music_dir / "available.mp3").write_bytes(b"dummy")
         audio = {"enabled": True, "volume": .15, "fade_in": 0, "fade_out": 0,
                  "ducking": False, "mode": "single", "track": "deleted.mp3",
                  "part_tracks": {}}
-        with patch("app.studio_render.config.MUSIC", music_dir):
-            with self.assertRaisesRegex(FileNotFoundError, "недоступен"):
-                _music({"audio": audio}, 1, 2, self.plan["parts"][0])
+        profile = FinishProfile().model_dump()
+        profile['audio'] = audio
+        def frozen_track():
+            frozen = freeze_command(self.manager, self.job_id, [1], profile)
+            track = frozen['resolved_music']['1']
+            return None if track is None else next(Path(asset['path']).name for asset in frozen['assets']
+                                                   if asset['sha256'] == track['asset_sha256'])
+        with authored_finishing(self.manager):
+            with self.assertRaisesRegex(CommandError, "недоступен"), patch('app.music.pick_track_for_part',
+                    side_effect=AssertionError('missing selection must not choose a fallback')):
+                frozen_track()
             audio["track"] = "available.mp3"
-            self.assertEqual(_music({"audio": audio}, 1, 2, self.plan["parts"][0])[
-                "path"].name, "available.mp3")
+            self.assertEqual(frozen_track(), "available.mp3")
             audio.update(mode="per_part", part_tracks={"1": "gone.wav"})
-            with self.assertRaises(FileNotFoundError):
-                _music({"audio": audio}, 1, 2, self.plan["parts"][0])
+            with self.assertRaises(CommandError):
+                frozen_track()
             audio["part_tracks"]["1"] = "none"
-            self.assertIsNone(_music({"audio": audio}, 1, 2, self.plan["parts"][0]))
+            self.assertIsNone(frozen_track())
             audio["part_tracks"]["1"] = "available.mp3"
-            self.assertEqual(_music({"audio": audio}, 1, 2, self.plan["parts"][0])[
-                "path"].name, "available.mp3")
+            self.assertEqual(frozen_track(), "available.mp3")
 
     def test_finishing_uses_same_russian_audio_track_as_initial_montage(self):
         from app.studio_render import _probe
@@ -387,13 +481,13 @@ class StudioApiTests(unittest.TestCase):
 
     def test_export_is_non_destructive_and_files_are_individually_addressed(self):
         original = (self.directory / "output" / "part_001.mp4").read_bytes()
-        def fake_render(manager, job_id, part, profile, output, work, preview, **kwargs):
+        def fake_render(source, part, probe, output, work, encoder, cancelled, **kwargs):
             output.mkdir(parents=True, exist_ok=True)
             path = output / ("part_%03d.mp4" % part["index"])
             path.write_bytes(b"new independent render")
             path.with_suffix(".srt").write_text("subtitle", encoding="utf-8")
             return path
-        with patch("app.studio_render.render_finishing_part", side_effect=fake_render):
+        with authored_finishing(self.manager, fake_render):
             request = self.client.post("/api/jobs/" + self.job_id + "/exports",
                                        json={"part_indices": [1]})
             self.assertEqual(request.status_code, 202, request.text)
@@ -428,13 +522,13 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual((destination / 'part_001.mp4').read_bytes(), b'new independent render')
 
     def test_repeat_apply_reuses_unchanged_parts_and_caption_edit_renders_only_its_part(self):
-        def render(manager, job_id, part, profile, output, work, preview, **kwargs):
+        def render(source, part, probe, output, work, encoder, cancelled, **kwargs):
             output.mkdir(parents=True, exist_ok=True)
             path = output / f"part_{part['index']:03}.mp4"
             path.write_bytes(b'new presentation')
             path.with_suffix('.srt').write_text('\n'.join(c['text'] for c in part['subtitles']), encoding='utf-8')
             # FFmpeg reports progress within a part, not only after it ends.
-            kwargs['on_progress']('rendering', .4)
+            kwargs['on_progress'](.4)
             return path
         def apply(settings=None):
             body = {'part_indices': [1, 2]}
@@ -449,8 +543,7 @@ class StudioApiTests(unittest.TestCase):
                 time.sleep(.01)
             self.assertEqual(result['status'], 'completed', result)
             return result
-        with patch('app.studio_render.render_finishing_part', side_effect=render) as renderer, \
-                patch('app.studio_render.choose_encoder', return_value='h264_nvenc') as encoder:
+        with authored_finishing(self.manager, render) as (renderer, encoder, _):
             apply()
             self.assertEqual(renderer.call_count, 2)
             self.assertEqual(encoder.call_count, 1)
@@ -462,7 +555,7 @@ class StudioApiTests(unittest.TestCase):
             atomic_json(captions, {'revision': 1, 'cues': [{'start': .1, 'end': 1, 'text': 'Edited first'}]})
             apply()
             self.assertEqual(renderer.call_count, 3)
-            self.assertEqual(renderer.call_args.args[2]['index'], 1)
+            self.assertEqual(renderer.call_args.args[1]['index'], 1)
             settings = self.client.get('/api/episodes/' + self.episode_id + '/finishing').json()
             settings.pop('episode_id'); settings.pop('revision')
             settings['video']['blur'] += 1
@@ -470,8 +563,9 @@ class StudioApiTests(unittest.TestCase):
             self.assertEqual(renderer.call_count, 5, 'a global visual change affects both parts')
             # Input identity alone cannot bless a damaged previously rendered MP4.
             damaged = self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url']
+            from app.studio_render import resolve_task_file
             export_id = damaged.split('/')[3]
-            (self.directory / 'finishing/exports' / export_id / 'output/part_001.mp4').write_bytes(b'damaged')
+            resolve_task_file(self.manager, export_id, 'part_001.mp4').write_bytes(b'damaged')
             apply(settings)
             self.assertEqual(renderer.call_count, 6, 'a corrupted cached presentation must be rebuilt')
 
@@ -479,14 +573,14 @@ class StudioApiTests(unittest.TestCase):
         from app.studio_render import submit_render, _locate_task
         from app.finishing import FinishProfile
         original = self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url']
-        def fail_second(manager, job_id, part, profile, output, work, preview, **kwargs):
+        def fail_second(source, part, probe, output, work, encoder, cancelled, **kwargs):
             if part['index'] == 2:
                 raise RuntimeError('authored render failure')
             output.mkdir(parents=True, exist_ok=True)
             path = output / 'part_001.mp4'
             path.write_bytes(b'partial render')
             return path
-        with patch('app.studio_render.render_finishing_part', side_effect=fail_second):
+        with authored_finishing(self.manager, fail_second):
             task = submit_render(self.manager, self.job_id, [1, 2], FinishProfile().model_dump())
             for _ in range(100):
                 status = self.client.get('/api/exports/' + task['export_id']).json()
@@ -494,11 +588,19 @@ class StudioApiTests(unittest.TestCase):
                     break
                 time.sleep(.02)
         self.assertEqual(status['status'], 'failed')
+        self.assertEqual(len(status['files']), 1, 'validated partial work remains available for resume')
         self.assertEqual(self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url'], original)
         _, folder = _locate_task(self.manager, task['export_id'])
-        state = json.loads((folder / 'status.json').read_text('utf-8'))
-        state.update(status='completed', files=[{'part_index': 1, 'name': 'part_001.mp4', 'duration': 6}])
-        atomic_json(folder / 'status.json', state)
+        # Legacy status JSON cannot complete an immutable managed operation.
+        atomic_json(folder/'status.json', {**status, 'status': 'completed'})
+        self.assertEqual(self.client.get('/api/exports/' + task['export_id']).json()['status'], 'failed')
+        self.assertEqual(self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url'], original)
+        with authored_finishing(self.manager):
+            task = submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump())
+            for _ in range(150):
+                if self.client.get('/api/exports/' + task['export_id']).json()['status'] == 'completed':
+                    break
+                time.sleep(.01)
         self.assertIn('/api/exports/', self.client.get('/api/jobs/' + self.job_id).json()['files'][0]['url'])
         changed = json.loads(json.dumps(self.plan))
         changed['parts'][0]['cuts'][0]['end'] = 2.5
@@ -548,13 +650,12 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(result.status_code, 202, result.text)
 
     def test_preview_is_isolated_and_validates_range(self):
-        with patch("app.studio_render.render_finishing_part") as render:
-            def fake_render(manager, job_id, part, profile, output, work, preview, **kwargs):
-                output.mkdir(parents=True, exist_ok=True)
-                file = output / "part_001.mp4"
-                file.write_bytes(b"preview")
-                return file
-            render.side_effect = fake_render
+        def fake_render(source, part, probe, output, work, encoder, cancelled, **kwargs):
+            output.mkdir(parents=True, exist_ok=True)
+            file = output / "part_001.mp4"
+            file.write_bytes(b"preview")
+            return file
+        with authored_finishing(self.manager, fake_render):
             path = "/api/jobs/" + self.job_id + "/previews"
             self.assertEqual(self.client.post(path, json={"part_index": 1, "from": 6, "duration": 2}).status_code, 422)
             response = self.client.post(path, json={"part_index": 1, "from": 1, "duration": 3})
@@ -562,7 +663,9 @@ class StudioApiTests(unittest.TestCase):
             preview_id = response.json()["preview_id"]
             result = None
             for _ in range(100):
-                result = self.client.get(path + "/" + preview_id).json()
+                polled = self.client.get(path + "/" + preview_id)
+                self.assertEqual(polled.status_code, 200, polled.text)
+                result = polled.json()
                 if result["status"] not in {"queued", "running"}:
                     break
                 time.sleep(0.02)
@@ -599,51 +702,63 @@ class StudioApiTests(unittest.TestCase):
             self.assertEqual(self.client.get("/api/music/tracks/missing.wav/stream").status_code, 404)
 
 
-    def test_active_finishing_thread_owns_source_job_until_finished(self):
-        import threading
+    def test_active_finishing_operation_owns_source_job_until_finished(self):
         from app.studio_render import submit_render
         started = threading.Event()
         release = threading.Event()
 
-        def block_render(*args, **kwargs):
+        def block_render(source, part, probe, output, work, encoder, cancelled, **kwargs):
             started.set()
-            release.wait(timeout=5)
+            if not release.wait(timeout=5):
+                raise RuntimeError('Authored test render timed out')
+            output.mkdir(parents=True, exist_ok=True)
+            path = output/f"part_{part['index']:03}.mp4"
+            path.write_bytes(b'owned authored preview')
+            return path
 
         from app.finishing import FinishProfile
-        with patch("app.studio_render.run_export", side_effect=block_render):
+        with authored_finishing(self.manager, block_render):
             try:
                 submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
                               preview=(1, 0, 1))
                 self.assertTrue(started.wait(timeout=2), "Finishing worker never started")
-                self.assertEqual(self.manager.finishing_tasks.get(self.job_id), 1)
+                self.assertTrue(self.manager.finishing_execution.owns_job(self.job_id))
                 from app.jobs import BusyError
-                with self.assertRaisesRegex(BusyError, "предпросмотра или экспорта"):
+                with self.assertRaises(BusyError):
                     self.manager._assert_available()
+                with self.assertRaises(BusyError):
+                    self.manager.create('not-read-while-finishing')
+                self.assertEqual(self.manager.prune_jobs(max_jobs=0, max_age_days=None)['pruned_ids'], [])
                 response = self.client.delete("/api/jobs/" + self.job_id)
                 self.assertEqual(response.status_code, 409, response.text)
                 self.assertTrue(self.directory.is_dir())
             finally:
                 release.set()
             for _ in range(100):
-                if not self.manager.finishing_tasks.get(self.job_id):
+                self.manager.finishing_execution.tick()
+                if not self.manager.finishing_execution.owns_job(self.job_id):
                     break
                 time.sleep(0.01)
-            self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
+            self.assertFalse(self.manager.finishing_execution.owns_job(self.job_id))
             self.manager._assert_available()
 
     def test_finishing_queue_is_bounded_without_creating_rejected_files(self):
-        import threading
         from app.finishing import FinishProfile
         from app.studio_render import submit_render, MAX_PENDING_FINISHING_TASKS
         started = threading.Event()
         release = threading.Event()
 
-        def block_render(*args, **kwargs):
+        def block_render(source, part, probe, output, work, encoder, cancelled, **kwargs):
             started.set()
-            release.wait(timeout=5)
+            if not release.wait(timeout=5):
+                raise RuntimeError('Authored test render timed out')
+            output.mkdir(parents=True, exist_ok=True)
+            path = output/f"part_{part['index']:03}.mp4"
+            path.write_bytes(b'queued authored preview')
+            return path
 
         before = set((self.directory / "finishing" / "previews").glob("pv_*"))
-        with patch("app.studio_render.run_export", side_effect=block_render):
+        with authored_finishing(self.manager, block_render):
             try:
                 requests = [
                     submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
@@ -652,45 +767,47 @@ class StudioApiTests(unittest.TestCase):
                 ]
                 self.assertTrue(started.wait(timeout=2))
                 files_at_capacity = set((self.directory / "finishing" / "previews").glob("pv_*"))
-                with self.assertRaisesRegex(RuntimeError, "Очередь экспорта заполнена"):
+                receipts_at_capacity = set((self.root/'finishing/operations').glob('*.json'))
+                from app.file_lock import BusyError
+                with self.assertRaises(BusyError), patch('app.finishing_render.freeze_command',
+                        side_effect=AssertionError('rejected command inspected mutable media')):
                     submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
                                   preview=(1, 0, 1))
                 self.assertEqual(files_at_capacity,
                                  set((self.directory / "finishing" / "previews").glob("pv_*")))
                 self.assertEqual(len(files_at_capacity - before), MAX_PENDING_FINISHING_TASKS)
-                self.assertEqual(self.manager.finishing_tasks[self.job_id],
-                                 MAX_PENDING_FINISHING_TASKS)
+                self.assertEqual(receipts_at_capacity, set((self.root/'finishing/operations').glob('*.json')))
+                self.assertEqual(len(self.manager.finishing_execution._pending()), MAX_PENDING_FINISHING_TASKS)
             finally:
                 release.set()
             for _ in range(200):
-                if not self.manager.finishing_tasks.get(self.job_id):
+                self.manager.finishing_execution.tick()
+                if not self.manager.finishing_execution.owns_job(self.job_id):
                     break
                 time.sleep(0.01)
-            self.assertFalse(self.manager.finishing_tasks.get(self.job_id))
+            self.assertFalse(self.manager.finishing_execution.owns_job(self.job_id))
 
     def test_close_requests_cancellation_and_drains_render_tasks(self):
-        import threading
         from app.studio_render import submit_render
         from app.finishing import FinishProfile
         started = threading.Event()
-        def wait_until_cancelled(manager, job_id, indices, profile, base, status, preview, *, cancelled, **kwargs):
+        def wait_until_cancelled(source, part, probe, output, work, encoder, cancelled, **kwargs):
             started.set()
             while not cancelled():
-                if not started.wait(.02):
-                    continue
                 time.sleep(.02)
-            from app.json_store import atomic_json
-            atomic_json(status, {"preview_id": base.name, "source_job_id":job_id,
-                                 "status":"interrupted", "files":[], "progress":0})
-        with patch("app.studio_render.run_export", side_effect=wait_until_cancelled):
+            raise InterruptedError('Authored worker observed cancellation')
+        with authored_finishing(self.manager, wait_until_cancelled) as (_, _, workers):
             state = submit_render(self.manager, self.job_id, [1], FinishProfile().model_dump(),
                                   preview=(1, 0, 1))
             self.assertTrue(started.wait(2))
             self.manager.close()
-            self.assertFalse(self.manager.finishing_tasks)
-            with patch("app.studio_render.task_status") as unused:
-                self.assertTrue((self.directory / "finishing" / "previews" /
-                                state["preview_id"] / "status.json").is_file())
+            self.assertIsNone(self.manager.finishing_execution.active)
+            self.assertTrue(all(not worker.thread.is_alive() for worker in workers))
+            from app.finishing_commands import FinishingCommands
+            store = FinishingCommands(self.root)
+            command = store.load(state['operation_id'])
+            self.assertEqual(store._runtime(command)[1]['status'], 'interrupted')
+            self.assertTrue((self.directory/'finishing/previews'/state['preview_id']/'command.json').is_file())
 
     def test_task_status_never_marks_just_completed_preview_interrupted(self):
         from app.studio_render import task_status
@@ -700,23 +817,30 @@ class StudioApiTests(unittest.TestCase):
                     "status": "completed", "progress": 1.0,
                     "files": [{"part_index":1,"name":"part_001.mp4","duration":1.0}]}
         atomic_json(folder / "status.json", complete)
-        stale = {**complete, "status": "running", "files": []}
-        with patch("app.studio_render.read_json", side_effect=[stale, complete]) as reads:
+        before = (folder/'status.json').read_bytes()
+        with patch("app.studio_render.read_json", return_value=complete) as reads:
             status = task_status(self.manager, identifier, self.job_id)
-        self.assertEqual(reads.call_count, 2)
+        self.assertEqual(reads.call_count, 1, 'status must project one read without repair')
         self.assertEqual(status["status"], "completed")
-        self.assertEqual(json.loads((folder / "status.json").read_text("utf-8")), complete)
+        self.assertEqual((folder/'status.json').read_bytes(), before)
 
-    def test_restart_marks_orphaned_preview_interrupted_but_keeps_live_worker(self):
-        from app.studio_render import task_status, _ACTIVE_TASKS, _TASKS_LOCK
+    def test_startup_marks_legacy_orphan_interrupted_and_get_remains_read_only(self):
+        from app.studio_render import task_status, recover_legacy_finishing
         orphan = "pv_" + uuid.uuid4().hex
         orphan_folder = self.directory / "finishing" / "previews" / orphan
         atomic_json(orphan_folder / "status.json", {
             "preview_id": orphan, "source_job_id": self.job_id,
             "status": "queued", "progress": 0, "files": []})
+        before = (orphan_folder/'status.json').read_bytes()
+        self.assertEqual(task_status(self.manager, orphan, self.job_id)['status'], 'queued')
+        self.assertEqual((orphan_folder/'status.json').read_bytes(), before)
+        # This is the actual startup recovery entry point, invoked explicitly
+        # after authoring old records instead of making a GET mutate them.
+        recover_legacy_finishing(self.manager)
         result = task_status(self.manager, orphan, self.job_id)
         self.assertEqual(result["status"], "interrupted")
-        self.assertIn("перезапущен", result["error"])
+        self.assertFalse(result['resumable'])
+        self.assertIn("точные параметры", result["error"])
         self.assertEqual(json.loads((orphan_folder / "status.json").read_text("utf-8"))["status"],
                          "interrupted")
 
@@ -725,19 +849,19 @@ class StudioApiTests(unittest.TestCase):
         atomic_json(live_folder / "status.json", {
             "preview_id": live, "source_job_id": self.job_id,
             "status": "running", "progress": .2, "files": []})
-        with _TASKS_LOCK:
-            _ACTIVE_TASKS.add(live)
-        try:
-            self.assertEqual(task_status(self.manager, live, self.job_id)["status"], "running")
-        finally:
-            with _TASKS_LOCK:
-                _ACTIVE_TASKS.discard(live)
+        before = (live_folder/'status.json').read_bytes()
+        self.assertEqual(task_status(self.manager, live, self.job_id)["status"], "running")
+        self.assertEqual((live_folder/'status.json').read_bytes(), before,
+                         'GET cannot infer orphanhood from an absent legacy thread registry')
+        recover_legacy_finishing(self.manager)
+        self.assertEqual(task_status(self.manager, live, self.job_id)['status'], 'interrupted')
 
 
     def test_failed_preview_writes_private_diagnostic_without_leaking_absolute_paths(self):
         private_details = "FFmpeg failure at C:/private/source/anime.mkv"
-        with patch("app.studio_render.render_finishing_part",
-                   side_effect=RuntimeError(private_details)):
+        def fail(*args, **kwargs):
+            raise RuntimeError(private_details)
+        with authored_finishing(self.manager, fail):
             response = self.client.post(
                 "/api/jobs/" + self.job_id + "/previews",
                 json={"part_index": 1, "from": 0, "duration": 2})
@@ -752,8 +876,8 @@ class StudioApiTests(unittest.TestCase):
                 time.sleep(0.01)
         self.assertEqual(state["status"], "failed", state)
         self.assertNotIn("C:/private", json.dumps(state))
-        private_log = (self.directory / "finishing" / "previews" /
-                       preview_id / "render-error.log")
+        private_log = (self.directory / "finishing" / "previews" / preview_id /
+                       'attempts' / state['attempt_id'] / 'worker.log')
         self.assertIn(private_details, private_log.read_text("utf-8"))
         self.assertEqual((self.directory / "output" / "part_001.mp4").read_bytes(),
                          b"existing precious mp4")

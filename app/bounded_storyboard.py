@@ -171,8 +171,41 @@ def _decode_frames(source, times, directory, base, width, height, cancelled):
         batch.rmdir()
 
 
-def source_frame_files(source, start, end, directory, cancelled, times, *, width=320, height=180):
-    """Shared source-only extraction for readable inference and legacy overview pages."""
+def source_frame_groups(source, groups, directory, cancelled, *, width=320, height=180):
+    """Extract original frames for several half-open owners in one shared pass.
+
+    Returned groups retain their input order; each frame stays inside its own
+    window, including when another group has a frame exactly at its end. Empty
+    physical windows return empty lists rather than borrowing a neighbor's PTS.
+    Per-frame cache keys and proof records are shared with source_frame_files.
+    """
+    _check(cancelled)
+    if type(width) is not int or type(height) is not int or width <= 0 or height <= 0:
+        raise ValueError('Invalid source frame dimensions')
+    try:
+        groups = list(groups)
+    except TypeError:
+        raise ValueError('Source frame groups must be an iterable of windows') from None
+    if not groups:
+        raise ValueError('Source frame groups must not be empty')
+    checked = []
+    for group in groups:
+        if not isinstance(group, dict) or not all(key in group for key in ('start', 'end', 'times')):
+            raise ValueError('Source frame group requires start, end and times')
+        start, end = group['start'], group['end']
+        if _number(start) >= _number(end):
+            raise ValueError('Invalid source frame group window')
+        try:
+            times = list(group['times'])
+        except TypeError:
+            raise ValueError('Source frame group requires timestamp requests') from None
+        if not times or any(not start <= _number(value) < end for value in times):
+            raise ValueError('Source frame requests must lie inside [start, end)')
+        if len(set(times)) != len(times):
+            raise ValueError('Duplicate source frame requests')
+        # Preserve numeric representations and request order: existing single-
+        # owner cache identities must remain byte-for-byte compatible.
+        checked.append((start, end, times))
     source, directory = Path(source).resolve(), Path(directory).resolve()
     directory.relative_to(ROOT.resolve())
     identity = _source_identity(source, cancelled)
@@ -180,45 +213,74 @@ def source_frame_files(source, start, end, directory, cancelled, times, *, width
     directory = directory/'.bounded-frames'/identity['sha256']
     directory.mkdir(parents=True, exist_ok=True)
     atomic_json(directory/'source.json', identity)
-    available, numerator, denominator, first = _source_times(source, start, end, directory, cancelled,
-        timeout=max(45, (end-start)/4+30))
+    first_start = min(start for start, _, _ in checked)
+    last_end = max(end for _, end, _ in checked)
+    try:
+        available, numerator, denominator, first = _source_times(
+            source, first_start, last_end, directory, cancelled,
+            timeout=max(45, (last_end-first_start)/4+30))
+    except ValueError as error:
+        if str(error) != 'Source window contains no video frames':
+            raise
+        _unchanged(source, stamp, cancelled)
+        return identity, [([], []) for _ in checked]
     _unchanged(source, stamp, cancelled)
-    entries, missing = [], set()
-    for requested in times:
-        position = min(bisect_left(available, requested), len(available)-1)
-        chosen = available[position]
-        image, meta, log = _frame_paths(requested, chosen, start, end, directory, identity, width, height)
-        cached = _cached_frame(image, meta, log, requested, chosen, start, end, identity, width, height, cancelled)
-        entries.append((requested, chosen, image, meta, log, cached))
-        if cached is None:
-            missing.add(chosen)
+    grouped_entries, missing = [], set()
+    for start, end, times in checked:
+        _check(cancelled)
+        lower, upper = bisect_left(available, start), bisect_left(available, end)
+        entries = []
+        if lower < upper:
+            for requested in times:
+                position = min(bisect_left(available, requested, lower, upper), upper-1)
+                chosen = available[position]
+                image, meta, log = _frame_paths(requested, chosen, start, end, directory, identity, width, height)
+                cached = _cached_frame(image, meta, log, requested, chosen, start, end,
+                                       identity, width, height, cancelled)
+                entries.append((requested, chosen, image, meta, log, cached))
+                if cached is None:
+                    missing.add(chosen)
+        grouped_entries.append(entries)
     decoded = {}
     values = sorted(missing)
     for offset in range(0, len(values), 128):
         decoded.update(_decode_frames(source, values[offset:offset+128], directory,
                        (numerator, denominator, first), width, height, cancelled))
         _unchanged(source, stamp, cancelled)
-    records, paths = [], []
-    for requested, chosen, image, meta, log, cached in entries:
-        if cached is None:
-            pixels, evidence, pts, time_base = decoded[chosen]
-            partial = image.with_suffix('.partial.jpg')
-            try:
-                partial.write_bytes(pixels)
-                log.write_text(evidence, 'utf-8')
-                saved = {'version': BOUNDED_STORYBOARD_VERSION, 'source': identity, 'time': chosen,
-                         'requested_time': requested, 'pts': pts, 'time_base': time_base,
-                         'sha256': _digest(partial, cancelled), 'log_sha256': _digest(log, cancelled)}
-                _unchanged(source, stamp, cancelled)
-                partial.replace(image)
-                atomic_json(meta, saved)
-            finally:
-                partial.unlink(missing_ok=True)
-        else:
-            saved = cached[0]
-        records.append({key: saved[key] for key in ('time', 'requested_time', 'pts', 'time_base', 'sha256')})
-        paths.append(image)
+    result = []
+    for entries in grouped_entries:
+        records, paths = [], []
+        for requested, chosen, image, meta, log, cached in entries:
+            if cached is None:
+                pixels, evidence, pts, time_base = decoded[chosen]
+                partial = image.with_suffix('.partial.jpg')
+                try:
+                    partial.write_bytes(pixels)
+                    log.write_text(evidence, 'utf-8')
+                    saved = {'version': BOUNDED_STORYBOARD_VERSION, 'source': identity, 'time': chosen,
+                             'requested_time': requested, 'pts': pts, 'time_base': time_base,
+                             'sha256': _digest(partial, cancelled), 'log_sha256': _digest(log, cancelled)}
+                    _unchanged(source, stamp, cancelled)
+                    partial.replace(image)
+                    atomic_json(meta, saved)
+                finally:
+                    partial.unlink(missing_ok=True)
+            else:
+                saved = cached[0]
+            records.append({key: saved[key] for key in ('time', 'requested_time', 'pts', 'time_base', 'sha256')})
+            paths.append(image)
+        result.append((records, paths))
     _unchanged(source, stamp, cancelled)
+    return identity, result
+
+
+def source_frame_files(source, start, end, directory, cancelled, times, *, width=320, height=180):
+    """Shared source-only extraction for readable inference and legacy overview pages."""
+    identity, groups = source_frame_groups(source, [{'start': start, 'end': end, 'times': times}],
+        directory, cancelled, width=width, height=height)
+    records, paths = groups[0]
+    if not records:
+        raise ValueError('Source window contains no video frames')
     return identity, records, paths
 
 

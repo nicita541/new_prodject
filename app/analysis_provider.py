@@ -31,13 +31,15 @@ def perception_provider(provider: str) -> str:
     return 'local' if provider in ('deepseek_plan', 'antigravity_manual') else provider
 
 
-def _model_files_for_provider(provider: str) -> tuple[Path, ...]:
+def _model_files_for_provider(provider: str, layout: str = 'portrait') -> tuple[Path, ...]:
     """Only local models actually used by this provider are mandatory.
 
-    DeepSeek story, pacing and framing require local visual 4B, not an
-    installed local 9B. Asking for STORY_MODEL.stat() made otherwise valid
-    paid jobs fail before the first story request on machines without 9B.
+    DeepSeek Plan uses local 9B only for portrait framing; cinema keeps
+    the source frame and needs just local 4B perception. Local story and
+    hybrid routes still need 9B regardless of output layout.
     """
+    if provider == 'deepseek_plan' and layout == 'cinema':
+        return (VLM_MODEL, VLM_PROJECTOR)
     if provider in ('local_flash_story', 'local_flash_story_budgeted', 'deepseek', 'antigravity_manual'):
         return (VLM_MODEL, VLM_PROJECTOR)
     return (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR)

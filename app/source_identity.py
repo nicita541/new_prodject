@@ -33,7 +33,7 @@ def _hash_source(source, cancelled):
     return digest.hexdigest()
 
 
-def source_identity(source, cancelled=lambda: False):
+def source_identity(source, cancelled=lambda: False, *, refresh=False):
     """Never seed this cache from persisted metadata; verify mutation before reuse."""
     source = Path(source).resolve()
     check_cancelled(cancelled)
@@ -41,7 +41,10 @@ def source_identity(source, cancelled=lambda: False):
         check_cancelled(cancelled)
         stamp = source_stamp(source)
         key = (str(source), *stamp.values())
-        digest = _HASHES.get(key)
+        # Trust boundaries can request current bytes once, then share that hash
+        # within the run. Windows ctime is creation time, so stat equality alone
+        # cannot detect a same-size rewrite whose mtime was restored.
+        digest = None if refresh else _HASHES.get(key)
         if digest is None:
             digest = _hash_source(source, cancelled)
         check_source(source, stamp, cancelled)

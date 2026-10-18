@@ -537,9 +537,9 @@ def build_dramatic_plan(analysis: dict) -> dict:
     for raw in sorted(raw_intervals, key=lambda r: r['start']):
         for piece in _subtract([{'start': raw['start'], 'end': raw['end']}], excluded_ranges):
             left, right = round(piece['start'], 6), round(piece['end'], 6)
-            if right - left < 0.2:
+            if right - left <= 1e-7:
                 continue
-            if intervals and left <= intervals[-1]['end'] + 0.002:
+            if intervals and left <= intervals[-1]['end'] + 1e-7:
                 intervals[-1]['end'] = max(right, intervals[-1]['end'])
                 raw_eids = raw['event_id'] if isinstance(raw['event_id'], list) else [raw['event_id']]
                 for eid in raw_eids:
@@ -552,6 +552,8 @@ def build_dramatic_plan(analysis: dict) -> dict:
     if not intervals:
         raise ValueError("После исключений не осталось фрагментов для монтажа")
 
+    from .edit_integrity import normalize_proved_gaps
+    intervals = normalize_proved_gaps(intervals, analysis, events)
     from .speech_handles import expand_ranges, barriers
     semantic_ranges = [{'start':r['start'],'end':r['end']} for r in intervals]
     excluded_ranges = barriers(events,semantic_ranges)
@@ -561,7 +563,7 @@ def build_dramatic_plan(analysis: dict) -> dict:
     for interval in intervals:
         for piece in expand_ranges([interval],analysis['transcript'],duration,excluded_ranges,
                                    overrides=analysis.get('speech_handle_overrides', [])):
-            if expanded and piece['start'] <= expanded[-1]['end']+.002:
+            if expanded and piece['start'] <= expanded[-1]['end']+1e-7:
                 expanded[-1]['end'] = max(expanded[-1]['end'],piece['end'])
                 expanded[-1]['event_ids'] = list(dict.fromkeys([*expanded[-1]['event_ids'],*interval['event_ids']]))
             else:

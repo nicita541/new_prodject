@@ -48,7 +48,7 @@ class ProcessingModesTests(unittest.TestCase):
             processing.save_snapshot(directory, self.source, analysis)
         return self.manager.get(job['id']), directory
 
-    def test_incremental_inherits_independent_checkpoints_and_preserves_history(self):
+    def test_incremental_copies_small_checkpoints_and_keeps_media_with_ancestor(self):
         owner = str(uuid.uuid4())
         old, directory = self.previous(owner)
         (directory/'.cancel').write_text('cancel', 'utf-8')
@@ -58,6 +58,8 @@ class ProcessingModesTests(unittest.TestCase):
         (directory/'output'/'part_001.srt').write_text('subtitles', 'utf-8')
         (directory/'render').mkdir()
         atomic_json(directory/'render'/'part_001.json', {'fingerprint': 'verified-by-pipeline'})
+        (directory/'clean'/'part_001'/'identity').mkdir(parents=True)
+        (directory/'clean'/'part_001'/'identity'/'clean.mkv').write_bytes(b'clean media')
         before = (directory/'job.json').read_bytes()
         new = self.manager.create(self.source_id, episode_id=owner, processing_mode='incremental')
         dest = self.manager.job_dir(new['id'])
@@ -65,7 +67,12 @@ class ProcessingModesTests(unittest.TestCase):
         self.assertEqual(read_json(dest/'transcript.json'), {'words': [], 'segments': []})
         self.assertFalse((dest/'.cancel').exists())
         self.assertFalse((dest/'worker.log').exists())
-        self.assertEqual((dest/'output'/'part_001.mp4').read_bytes(), b'export')
+        self.assertFalse((dest/'output').exists())
+        self.assertFalse((dest/'render').exists())
+        self.assertFalse((dest/'clean').exists())
+        from app.checkpoint_lineage import ancestors
+        self.assertEqual(ancestors(dest), [directory])
+        (dest/'output').mkdir()
         (dest/'output'/'part_001.mp4').write_bytes(b'new export')
         self.assertEqual((directory/'output'/'part_001.mp4').read_bytes(), b'export')
         self.assertEqual((directory/'job.json').read_bytes(), before)
@@ -81,6 +88,24 @@ class ProcessingModesTests(unittest.TestCase):
         new = self.manager.create(self.source_id, processing_mode='incremental')
         self.assertIsNone(new['reuse_job_id'])
         self.assertTrue((old/'transcript.json').exists())
+
+    def test_incremental_snapshot_skips_both_pcm_files_and_keeps_perception_metadata(self):
+        _, old = self.previous()
+        # Copier-only fixture: bytes are deliberately not passed to an audio reader.
+        (old/'audio.wav').write_bytes(b'large derived ASR PCM placeholder')
+        atomic_json(old/'audio.receipt.json', {'producer_job_id': old.name})
+        (old/'media-evidence').mkdir()
+        (old/'media-evidence/audio.wav').write_bytes(b'different transient source-PTS PCM')
+        atomic_json(old/'media-evidence/observations.json', {'source_samples': []})
+        new = self.manager.create(self.source_id, processing_mode='incremental')
+        child = self.manager.job_dir(new['id'])
+        self.assertFalse((child/'audio.wav').exists())
+        self.assertFalse((child/'audio.receipt.json').exists())
+        self.assertFalse((child/'media-evidence/audio.wav').exists())
+        self.assertEqual(read_json(child/'media-evidence/observations.json'), {'source_samples': []})
+        self.assertTrue((old/'audio.wav').exists())
+        self.assertTrue((old/'media-evidence/audio.wav').exists())
+        self.assertEqual(read_json(child/'transcript.json'), read_json(old/'transcript.json'))
 
     def test_cache_ownership_is_checked_before_creation(self):
         first = str(uuid.uuid4())

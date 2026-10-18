@@ -9,11 +9,11 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
 from app import config
-from app.jobs import BusyError, JobManager, WorkerProcess
+from app.jobs import BusyError, DamagedJobError, HEARTBEAT_STALE_SECONDS, JobManager, WorkerProcess
 from app.json_store import atomic_json, read_json
 
 
@@ -51,6 +51,152 @@ class FakeWorker:
 
 
 class JobTests(unittest.TestCase):
+    def test_startup_isolates_damaged_jobs_without_rewriting_originals(self):
+        healthy = self.manager.create(self.source_id)
+        self.manager.close()
+        damaged = {}
+        for content in (b'{"status":', b'null', b'[]',
+                        b'{"id":"wrong","status":"running"}', b'\xff\xfe'):
+            identifier = str(uuid.uuid4())
+            directory = self.manager.job_dir(identifier)
+            directory.mkdir()
+            (directory / 'job.json').write_bytes(content)
+            damaged[identifier] = content
+        with self.assertLogs('app.jobs', level='ERROR') as messages:
+            self.manager = JobManager(self.root, FakeWorker)
+        damage_records = [item for item in messages.records
+                          if getattr(item, 'action', None) == 'job_record_damaged']
+        self.assertEqual(len(damage_records), len(damaged))
+        self.assertEqual({job['id'] for job in self.manager.list_jobs()}, {healthy['id']})
+        self.assertEqual(self.manager.get(healthy['id'])['status'], 'interrupted')
+        for identifier, content in damaged.items():
+            with self.assertRaisesRegex(DamagedJobError, 'Исходный job.json сохранён'):
+                self.manager.get(identifier)
+            self.assertEqual((self.manager.job_dir(identifier) / 'job.json').read_bytes(), content)
+        self.assertEqual(set(self.manager.damaged_jobs), set(damaged))
+        self.assertEqual(self.manager.retry(healthy['id'])['status'], 'running')
+
+    def test_listing_isolates_new_corruption_and_recognizes_repaired_record(self):
+        first = self.manager.create(self.source_id)
+        self.manager.cancel(first['id'])
+        path = self.manager.job_dir(first['id']) / 'job.json'
+        original = path.read_bytes()
+        second = self.manager.create(self.source_id)
+        path.write_bytes(b'{"private_marker": "must-not-appear-in-diagnostic",')
+        with self.assertLogs('app.jobs', level='ERROR') as messages:
+            self.assertEqual([job['id'] for job in self.manager.list_jobs()], [second['id']])
+        self.assertNotIn('private_marker', ' '.join(messages.output))
+        self.assertIn(first['id'], self.manager.damaged_jobs)
+        self.assertTrue(path.read_bytes().endswith(b','))
+        path.write_bytes(original)
+        self.assertEqual(len(self.manager.list_jobs()), 2)
+        self.assertNotIn(first['id'], self.manager.damaged_jobs)
+
+    def test_cancel_still_drains_owned_worker_if_its_record_is_damaged(self):
+        job = self.manager.create(self.source_id)
+        child = self.manager.active[1]
+        path = self.manager.job_dir(job['id']) / 'job.json'
+        path.write_bytes(b'{broken')
+        with self.assertLogs('app.jobs', level='ERROR'), self.assertRaises(DamagedJobError):
+            self.manager.cancel(job['id'])
+        self.assertTrue(child.terminated)
+        self.assertTrue(child.closed)
+        self.assertFalse(self.manager.busy())
+        self.assertEqual(path.read_bytes(), b'{broken')
+
+    def test_heartbeat_advances_without_progress_and_stale_does_not_kill(self):
+        job = self.manager.create(self.source_id)
+        with self.manager.mutex:
+            child = self.manager.active[1]
+            child.process = SimpleNamespace(pid=4123)
+            path = self.manager.job_dir(job['id']) / 'job.json'
+            original = path.read_bytes()
+            heartbeat = path.with_name('worker-heartbeat.json')
+            record = {'version': 1, 'attempt_id': job['attempt_id'], 'pid': child.process.pid,
+                      'sequence': 1, 'heartbeat_at': '2026-10-15T00:00:00+00:00'}
+            atomic_json(heartbeat, record)
+            self.assertEqual(self.manager.get(job['id'])['worker_health']['status'], 'healthy')
+            self.manager._worker_observation['last_seen'] -= HEARTBEAT_STALE_SECONDS + 1
+            with self.assertLogs('app.jobs', level='WARNING'):
+                health = self.manager.get(job['id'])['worker_health']
+            self.assertEqual(health['status'], 'stale')
+            self.assertTrue(health['process_alive'])
+            self.assertFalse(child.terminated)
+            atomic_json(heartbeat, {**record, 'sequence': 2})
+            self.assertEqual(self.manager.get(job['id'])['worker_health']['status'], 'healthy')
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(self.manager.get(job['id'])['updated_at'], job['updated_at'])
+
+    def test_wrong_attempt_pid_and_malformed_heartbeat_cannot_refresh_liveness(self):
+        job = self.manager.create(self.source_id)
+        with self.manager.mutex:
+            child = self.manager.active[1]
+            child.process = SimpleNamespace(pid=4123)
+            path = self.manager.job_dir(job['id']) / 'worker-heartbeat.json'
+            record = {'version': 1, 'attempt_id': job['attempt_id'], 'pid': 4123,
+                      'sequence': 1, 'heartbeat_at': '2099-01-01T00:00:00+00:00'}
+            self.manager._worker_observation['last_seen'] -= HEARTBEAT_STALE_SECONDS + 1
+            for value in ({**record, 'attempt_id': uuid.uuid4().hex},
+                          {**record, 'pid': 9999}, {**record, 'sequence': True}, ['invalid']):
+                atomic_json(path, value)
+                health = self.manager.get(job['id'])['worker_health']
+                self.assertEqual(health['status'], 'stale')
+                self.assertEqual(self.manager._worker_observation['sequence'], 0)
+            path.write_bytes(b'{broken')
+            self.assertEqual(self.manager.get(job['id'])['worker_health']['heartbeat_issue'], 'unreadable')
+            self.assertFalse(child.terminated)
+            atomic_json(path, record)
+            self.assertEqual(self.manager.get(job['id'])['worker_health']['status'], 'healthy')
+
+    def test_retry_changes_attempt_and_old_watcher_cannot_own_new_worker(self):
+        first = self.manager.create(self.source_id)
+        previous = self.manager.active[1]
+        self.manager.cancel(first['id'])
+        retried = self.manager.retry(first['id'])
+        self.assertNotEqual(first['attempt_id'], retried['attempt_id'])
+        with self.manager.mutex:
+            current = self.manager.active[1]
+            current.process = SimpleNamespace(pid=4123)
+            atomic_json(self.manager.job_dir(first['id']) / 'worker-heartbeat.json', {
+                'version': 1, 'attempt_id': first['attempt_id'], 'pid': 4123,
+                'sequence': 100, 'heartbeat_at': '2099-01-01T00:00:00+00:00'})
+            self.assertEqual(self.manager.get(first['id'])['worker_health']['status'], 'starting')
+            self.assertIsNone(self.manager._observe_worker(first['id'], previous))
+            self.manager._watch(first['id'], previous)
+            self.assertIs(self.manager.active[1], current)
+            self.assertFalse(current.closed)
+            self.assertFalse(current.terminated)
+
+    def test_real_owned_child_heartbeat_is_visible_without_pipeline_progress(self):
+        def factory(directory):
+            script = ("from pathlib import Path; import time; "
+                      "from app.worker import WorkerHeartbeat; "
+                      "from app.json_store import read_json; "
+                      f"directory=Path({str(directory)!r}); "
+                      "gate=directory/'.start'; exec('while not gate.exists(): time.sleep(.01)'); "
+                      "heartbeat=WorkerHeartbeat(directory, read_json(directory/'job.json')['attempt_id'], interval=.03); "
+                      "heartbeat.start(); time.sleep(60)")
+            return WorkerProcess(directory, command=[sys.executable, '-c', script])
+
+        self.manager.worker_factory = factory
+        job = self.manager.create(self.source_id)
+        child = self.manager.active[1]
+        deadline = time.monotonic() + 5
+        try:
+            while time.monotonic() < deadline:
+                current = self.manager.get(job['id'])
+                if current.get('worker_health', {}).get('status') == 'healthy':
+                    break
+                time.sleep(.02)
+            self.assertEqual(current['worker_health']['status'], 'healthy')
+            self.assertTrue(current['worker_health']['process_alive'])
+            self.assertIsNone(current['progress_updated_at'])
+            self.assertEqual(read_json(self.manager.job_dir(job['id']) / 'worker-heartbeat.json')['pid'],
+                             child.process.pid)
+        finally:
+            self.manager.cancel(job['id'])
+        self.assertIsNotNone(child.poll())
+
     def test_atomic_json_keeps_old_state_and_cleans_temporary_file_on_failure(self):
         path = self.root / 'atomic-state.json'
         atomic_json(path, {'value': 'old'})

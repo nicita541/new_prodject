@@ -18,6 +18,8 @@ CACHE_FIELDS = ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
 
 
 def record(job_dir: Path, provider: str, model: str, response: dict):
+    from .execution_context import snapshot
+    from .model_perf import _PURPOSE
     usage = response.get("usage") if isinstance(response, dict) else None
     if not isinstance(usage, dict):
         usage = {}
@@ -31,7 +33,7 @@ def record(job_dir: Path, provider: str, model: str, response: dict):
                 ("prompt_tokens" in numbers and "completion_tokens" in numbers))
     if "total_tokens" not in numbers and reported:
         numbers["total_tokens"] = numbers["prompt_tokens"] + numbers["completion_tokens"]
-    entry = {"provider": provider, "model": model,
+    entry = {**snapshot(), "purpose": _PURPOSE.get(), "provider": provider, "model": model,
              "timestamp": datetime.now(timezone.utc).isoformat(),
              "usage_reported": reported, **numbers}
     path = Path(job_dir) / "token-usage.jsonl"
@@ -46,7 +48,7 @@ def record(job_dir: Path, provider: str, model: str, response: dict):
             return
 
 
-def summary(job_dir: Path):
+def summary(job_dir: Path, *, attempt_id: str | None = None):
     path = Path(job_dir) / "token-usage.jsonl"
     totals = {name: {"prompt_tokens": 0, "completion_tokens": 0,
                      "total_tokens": 0, "calls": 0} for name in ("local", "deepseek")}
@@ -66,6 +68,8 @@ def summary(job_dir: Path):
                     continue
                 if not isinstance(row, dict):
                     # A partial/corrupted line must not take down the UI.
+                    continue
+                if attempt_id is not None and row.get('attempt_id') != attempt_id:
                     continue
                 provider = row.get("provider")
                 if provider not in ("local", "deepseek"):

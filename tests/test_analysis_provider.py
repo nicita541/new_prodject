@@ -35,6 +35,19 @@ class AnalysisProviderTests(unittest.TestCase):
             self.assertEqual(_model_files_for_provider(provider),
                              (VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR))
 
+    def test_layout_only_removes_unused_plan_framing_model(self):
+        from app.config import VLM_MODEL, VLM_PROJECTOR, STORY_MODEL, STORY_PROJECTOR
+        small = (VLM_MODEL, VLM_PROJECTOR)
+        large = small + (STORY_MODEL, STORY_PROJECTOR)
+        self.assertEqual(_model_files_for_provider('deepseek_plan', 'cinema'), small)
+        self.assertEqual(_model_files_for_provider('deepseek_plan', 'portrait'), large)
+        for provider in ('local', 'hybrid', 'local_fast_story'):
+            for layout in ('portrait', 'cinema'):
+                self.assertEqual(_model_files_for_provider(provider, layout), large)
+        for provider in ('deepseek', 'antigravity_manual', 'local_flash_story', 'local_flash_story_budgeted'):
+            for layout in ('portrait', 'cinema'):
+                self.assertEqual(_model_files_for_provider(provider, layout), small)
+
     def test_existing_visual_cache_keeps_legacy_signature_only_when_well_formed(self):
         with checkpoint_directory() as root:
             directory = Path(root)
@@ -89,13 +102,15 @@ class AnalysisProviderTests(unittest.TestCase):
         events = [{'id':f'event_{i:04}', 'summary':'Причина поступка и последующее событие. '*10,
                    'kind':'story', 'importance':4} for i in range(36)]
         vision = DeepSeekVision(TEMP, lambda:False)
-        vision.query = Mock(return_value={'keep':[e['id'] for e in events], 'dependencies':[], 'summary':'История'})
+        vision.query = Mock(side_effect=lambda *args, **kwargs: {
+            'keep': kwargs['schema']['properties']['keep']['items']['enum'],
+            'dependencies': [], 'omit': [], 'summary': 'История'})
         result = global_story_review(vision, events)
-        self.assertEqual(result['keep'], [e['id'] for e in events])
+        self.assertEqual(set(result['keep']), {e['id'] for e in events})
         arguments = vision.query.call_args
         self.assertEqual(arguments.kwargs['max_tokens'], 1800)
-        for event in events:
-            self.assertIn(event['id'], arguments.args[0])
+        for identifier in arguments.kwargs['schema']['properties']['keep']['items']['enum']:
+            self.assertIn(identifier, arguments.args[0])
         schema_bytes = len(json.dumps(arguments.kwargs['schema'], ensure_ascii=False).encode('utf-8'))
         self.assertLess(len(arguments.args[0].encode('utf-8')) + schema_bytes + 512, 64000)
         self.assertEqual(result['incomplete_event_ids'], [])

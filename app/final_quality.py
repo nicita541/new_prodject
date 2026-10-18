@@ -13,7 +13,7 @@ from app.source_ranges import merge_ranges
 from .source_roles import confirmed_exclusions
 from app.source_ranges import subtract_ranges as _subtract
 
-VERSION = 4
+VERSION = 5
 POLICY = {'max_recovery_passes':3, 'word_tolerance':.002,
           'uncertainty_retention':False, 'required_production_passes':['story_structure','dialogue_relations']}
 
@@ -95,6 +95,12 @@ def _source_part_endings(events,transcript,parts,arcs,*,speech_overrides=()):
 
 
 def inspect_final_quality(analysis, plan=None):
+    from .story_candidates import CONTRACT, inspect_candidate_quality
+    if analysis.get('analysis_contract') == 'standalone_source_v2':
+        return {'version': 1, 'status': 'unresolved', 'problems': [
+            {'code': 'discovery_hypothesis_only', 'recovery_stage': 'candidate_review'}], 'evidence_chain': []}
+    if analysis.get('quality_policy') == CONTRACT:
+        return inspect_candidate_quality(analysis, plan)
     problems, evidence_chain = [], []
     events = copy.deepcopy(analysis.get('events', []))
     transcript = analysis.get('transcript', {})
@@ -156,6 +162,9 @@ def inspect_final_quality(analysis, plan=None):
         return {'version':VERSION,'status':'unresolved' if problems else 'passed',
                 'problems':problems,'evidence_chain':[], 'phase':'before_planner'}
     cuts = [cut for part in plan['parts'] for cut in part['cuts']]
+    from .edit_integrity import inspect_edits
+    for problem in inspect_edits(analysis, plan):
+        add(problem['code'], 'planner', **{key: value for key, value in problem.items() if key != 'code'})
     retained = merge_ranges(cuts)
     source_endings={}
     if production:
@@ -321,7 +330,9 @@ def quality_failure_message(gate, *, stalled=False):
         'unresolved_relation_selection':'фрагменты с нерешёнными связями',
         'story_structure_unresolved':'сюжетные связи','dialogue_relations_unresolved':'связи реплик',
         'unexplained_dialogue_unit':'реплики без подтверждённой связи',
-        'unexplained_story_structure_unit':'фрагменты без подтверждённой сюжетной роли'}
+        'unexplained_story_structure_unit':'фрагменты без подтверждённой сюжетной роли',
+        'introduced_micro_gap':'вырезы длиной не более двух кадров',
+        'introduced_micro_fragment':'обрывки длиной не более двух кадров'}
     details = ', '.join(f'{labels.get(code,code)} ({count})' for code, count in sorted(counts.items()))
     suffix = ('; дополнительная проверка не разрешила оставшиеся вопросы. '
               'Повторные запросы по тем же данным остановлены' if stalled else '')

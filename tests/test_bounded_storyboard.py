@@ -11,7 +11,7 @@ from PIL import Image
 
 from app.config import FFMPEG, FFPROBE, TEMP
 from app.media_probe import run_process
-from app.bounded_storyboard import build_bounded_storyboard
+from app.bounded_storyboard import build_bounded_storyboard, source_frame_files, source_frame_groups
 
 
 @unittest.skipUnless(FFMPEG.is_file() and FFPROBE.is_file(), 'Portable FFmpeg/FFprobe absent')
@@ -180,6 +180,120 @@ class BoundedStoryboardSourceTests(unittest.TestCase):
         self.build(times=[.13])
         with self.assertRaises(InterruptedError):
             self.build(times=[.13], cancelled=lambda: True)
+
+    def test_groups_share_one_probe_and_decoder_without_crossing_half_open_owners(self):
+        groups = [
+            {'start': 1, 'end': 2, 'times': [1.99, 1.013]},
+            {'start': 0, 'end': 1, 'times': [.99, 0]},
+            {'start': .01, 'end': .05, 'times': [.02]},
+            {'start': 1, 'end': 2, 'times': [1]},
+            {'start': .08, 'end': .09, 'times': [.081]},
+            {'start': 6, 'end': 7, 'times': [6.1]},
+        ]
+        with patch('app.bounded_storyboard.run_process', wraps=run_process) as execute:
+            identity, result = source_frame_groups(self.source, groups, self.job, lambda: False)
+        commands = [Path(call.args[0][0]) for call in execute.call_args_list]
+        self.assertEqual(commands.count(FFPROBE), 1)
+        self.assertEqual(commands.count(FFMPEG), 1)
+        self.assertEqual([[r['time'] for r in records] for records, _ in result],
+                         [[23/12, 13/12], [11/12, 0], [], [1], [1/12], [74/12]])
+        self.assertEqual(result[2], ([], []))
+        self.assertEqual(identity['sha256'], hashlib.sha256(self.source.read_bytes()).hexdigest())
+        for group, (records, paths) in zip(groups, result, strict=True):
+            for record, path in zip(records, paths, strict=True):
+                self.assertTrue(group['start'] <= record['time'] < group['end'])
+                numerator, denominator = map(int, record['time_base'].split('/'))
+                self.assertEqual(record['time'], record['pts']*numerator/denominator)
+                self.assertEqual(record['sha256'], hashlib.sha256(path.read_bytes()).hexdigest())
+                with Image.open(path) as picture:
+                    self.assertEqual(picture.size, (320, 180))
+
+    def test_group_cache_is_byte_compatible_with_single_owner_helper(self):
+        groups = [{'start': 0, 'end': 1, 'times': [.13, .99]},
+                  {'start': 1.0, 'end': 2.0, 'times': [1.0, 1.99]}]
+        expected, saved_bytes = [], {}
+        for group in groups:
+            identity, records, paths = source_frame_files(self.source, group['start'], group['end'],
+                self.job, lambda: False, group['times'])
+            expected.append((records, paths))
+            for path in paths:
+                for proof in (path, path.with_suffix('.log'), path.with_suffix('.json')):
+                    saved_bytes[proof] = proof.read_bytes()
+        with patch('app.bounded_storyboard._decode_frames') as decode, \
+                patch('app.bounded_storyboard.run_process', wraps=run_process) as execute:
+            grouped_identity, actual = source_frame_groups(self.source, groups, self.job, lambda: False)
+        self.assertEqual(grouped_identity, identity)
+        self.assertEqual(actual, expected)
+        decode.assert_not_called()
+        self.assertEqual(len(execute.call_args_list), 1)
+        self.assertEqual(Path(execute.call_args.args[0][0]), FFPROBE)
+        self.assertEqual({path: path.read_bytes() for path in saved_bytes}, saved_bytes)
+
+    def test_group_missing_pts_are_deduplicated_globally_and_decoded_in_bounded_batches(self):
+        from app.bounded_storyboard import _decode_frames
+        self.encode(self.source, pattern='testsrc2=s=160x90:r=24:d=8')
+        groups = [{'start': 0, 'end': 3, 'times': [i/24 for i in range(72)]},
+                  {'start': 3, 'end': 6, 'times': [i/24 for i in range(72, 144)]},
+                  {'start': 6, 'end': 8, 'times': [i/24 for i in range(144, 192)]},
+                  {'start': 0, 'end': 8, 'times': [0, 3, 6]}]
+        with patch('app.bounded_storyboard._decode_frames', wraps=_decode_frames) as decode:
+            _, result = source_frame_groups(self.source, groups, self.job, lambda: False)
+        self.assertEqual([len(call.args[1]) for call in decode.call_args_list], [128, 64])
+        self.assertEqual([len(records) for records, _ in result], [72, 72, 48, 3])
+        self.assertEqual([record['time'] for records, _ in result[:3] for record in records],
+                         [i/24 for i in range(192)])
+        self.assertEqual([record['time'] for record in result[3][0]], [0, 3, 6])
+
+    def test_all_groups_without_actual_pts_are_empty_but_legacy_helper_still_raises(self):
+        groups = [{'start': .01, 'end': .03, 'times': [.02]},
+                  {'start': .04, 'end': .05, 'times': [.045]}]
+        with patch('app.bounded_storyboard._decode_frames') as decode:
+            _, result = source_frame_groups(self.source, groups, self.job, lambda: False)
+        self.assertEqual(result, [([], []), ([], [])])
+        decode.assert_not_called()
+        with self.assertRaisesRegex(ValueError, 'Source window contains no video frames'):
+            source_frame_files(self.source, .01, .03, self.job, lambda: False, [.02])
+
+    def test_group_validation_precedes_source_processing(self):
+        invalid = [[], None, [{}], [{'start': 0, 'end': 1, 'times': None}],
+            [{'start': 0, 'end': 1, 'times': []}], [{'start': 1, 'end': 1, 'times': [1]}],
+            [{'start': True, 'end': 1, 'times': [.5]}],
+            [{'start': 0, 'end': float('inf'), 'times': [.5]}],
+            [{'start': 0, 'end': 1, 'times': [True]}],
+            [{'start': 0, 'end': 1, 'times': [float('nan')]}],
+            [{'start': 0, 'end': 1, 'times': [1]}],
+            [{'start': 0, 'end': 1, 'times': [-.1]}],
+            [{'start': 0, 'end': 1, 'times': [.5, .5]}]]
+        with patch('app.bounded_storyboard.run_process') as execute:
+            for groups in invalid:
+                with self.subTest(groups=groups), self.assertRaises(ValueError):
+                    source_frame_groups(self.source, groups, self.job, lambda: False)
+            for width, height in ((0, 180), (320, False), (320.0, 180)):
+                with self.subTest(width=width, height=height), self.assertRaises(ValueError):
+                    source_frame_groups(self.source, [{'start': 0, 'end': 1, 'times': [.5]}],
+                        self.job, lambda: False, width=width, height=height)
+            execute.assert_not_called()
+
+    def test_group_source_change_invalidates_cache_and_mid_decode_mutation_fails_closed(self):
+        groups = [{'start': 0, 'end': 1, 'times': [.13]},
+                  {'start': 2, 'end': 3, 'times': [2.13]}]
+        initial_identity, initial = source_frame_groups(self.source, groups, self.job, lambda: False)
+        self.encode(self.source, pattern='color=c=red:s=160x90:r=12:d=8')
+        changed_identity, changed = source_frame_groups(self.source, groups, self.job, lambda: False)
+        self.assertNotEqual(initial_identity['sha256'], changed_identity['sha256'])
+        for (old_records, old_paths), (new_records, new_paths) in zip(initial, changed, strict=True):
+            self.assertNotEqual(old_records[0]['sha256'], new_records[0]['sha256'])
+            self.assertNotEqual(old_paths, new_paths)
+        new_groups = [{'start': 3, 'end': 4, 'times': [3.13]}]
+        def mutate(command, *args, **kwargs):
+            value = run_process(command, *args, **kwargs)
+            if Path(command[0]) == FFMPEG:
+                with self.source.open('ab') as handle:
+                    handle.write(b'changed during grouped decode')
+            return value
+        with patch('app.bounded_storyboard.run_process', side_effect=mutate), \
+                self.assertRaisesRegex(ValueError, 'Source changed'):
+            source_frame_groups(self.source, new_groups, self.job, lambda: False)
 
 
 if __name__ == '__main__':

@@ -19,7 +19,8 @@ _PURPOSE = ContextVar("kadr_model_purpose", default="general")
 _ALLOWED = frozenset(("general", "semantic_boundary", "scene_analysis",
     "story_refinement", "choose_units", "verify_omissions",
     "credit_classifier", "global_story", "global_visual", "source_roles",
-    "titles", "framing", "pacing"))
+    "titles", "framing", "pacing", "episode_survey", "episode_map", "selective_native",
+    "candidate_proposal", "candidate_review", "candidate_screen"))
 _LOCK = threading.Lock()
 
 
@@ -46,8 +47,10 @@ def _append(job_dir, row):
         with _LOCK:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8", newline="\n") as stream:
+                from .execution_context import snapshot
                 stream.write(json.dumps({
                     "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    **snapshot(),
                     **row,
                 }, allow_nan=False, sort_keys=True) + "\n")
                 stream.flush()
@@ -77,7 +80,9 @@ def model_started(job_dir, model, seconds, cpu, status):
 class RequestTrace:
     def __init__(self, job_dir, model, *, pages, prompt_chars, max_tokens, thinking, cpu):
         self.job_dir = job_dir
-        self.id = uuid.uuid4().hex
+        from .execution_context import snapshot
+        self.context = snapshot()
+        self.id = self.context.get('request_id') or uuid.uuid4().hex
         self.model = model_alias(model)
         self.stage = _PURPOSE.get()
         self.started = time.perf_counter()
@@ -86,6 +91,8 @@ class RequestTrace:
         _append(job_dir, {
             "event": "request_start", "id": self.id, "model": self.model,
             "stage": self.stage, "pages": metric(pages),
+            "purpose": _PURPOSE.get(),
+            "analysis_stage": self.context.get('stage'),
             "prompt_chars": metric(prompt_chars), "max_tokens": metric(max_tokens),
             "thinking": bool(thinking), "cpu": bool(cpu),
         })
@@ -115,18 +122,26 @@ class RequestTrace:
         _append(self.job_dir, {
             "event": "request_end", "id": self.id, "model": self.model,
             "stage": self.stage, "seconds": metric(time.perf_counter()-self.started),
+            "purpose": _PURPOSE.get(),
+            "analysis_stage": self.context.get('stage'),
             "status": status, **self.details,
         })
 
 
 @contextmanager
-def measure_request(job_dir, model, *, pages, prompt_chars, max_tokens, thinking, cpu):
-    trace = RequestTrace(job_dir, model, pages=pages, prompt_chars=prompt_chars,
-                         max_tokens=max_tokens, thinking=thinking, cpu=cpu)
-    try:
-        yield trace
-    except BaseException as error:
-        trace.close("cancelled" if isinstance(error, (KeyboardInterrupt, InterruptedError)) else "failed")
-        raise
-    else:
-        trace.close("retried" if trace.retried else "ok")
+def measure_request(job_dir, model, *, pages, prompt_chars, max_tokens, thinking, cpu,
+                    transport_attempt=None):
+    from .execution_context import scope, snapshot
+    parent = snapshot()
+    with scope(logical_request_id=parent.get('logical_request_id') or uuid.uuid4().hex,
+               request_id=uuid.uuid4().hex,
+               transport_attempt=transport_attempt or parent.get('transport_attempt', 0)+1):
+        trace = RequestTrace(job_dir, model, pages=pages, prompt_chars=prompt_chars,
+                             max_tokens=max_tokens, thinking=thinking, cpu=cpu)
+        try:
+            yield trace
+        except BaseException as error:
+            trace.close("cancelled" if isinstance(error, (KeyboardInterrupt, InterruptedError)) else "failed")
+            raise
+        else:
+            trace.close("retried" if trace.retried else "ok")

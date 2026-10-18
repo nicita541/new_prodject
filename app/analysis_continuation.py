@@ -68,7 +68,9 @@ class AcceptedReplies:
         for value in pages:
             check_cancelled(self.cancelled)
             path = Path(value).resolve()
-            path.relative_to(self.directory.resolve())
+            from .checkpoint_lineage import ancestors
+            if not any(path.is_relative_to(owner.resolve()) for owner in (self.directory, *ancestors(self.directory))):
+                raise ValueError('Reply image is outside its checkpoint owners')
             hashes.append(hashlib.sha256(path.read_bytes()).hexdigest())
         return _request_key(self.source, prompt, schema, hashes)
 
@@ -127,15 +129,20 @@ class AcceptedReplies:
         check_cancelled(self.cancelled)
         key = self._key(prompt, image, schema)
         with self.lock:
-            saved = _optional(self.root / 'replies' / (key + '.json'))
-            if (saved.get('key') == key and saved.get('source') == self.source
-                    and saved.get('answer_hash') == digest(saved.get('answer'))):
-                try:
-                    self._validate(saved['answer'], schema)
-                except (ValueError, KeyError, TypeError):
+            from .checkpoint_lineage import ancestors
+            saved = {}
+            for directory in (self.directory, *ancestors(self.directory)):
+                saved = _optional(directory / 'continuation' / 'replies' / (key + '.json'))
+                if (saved.get('key') == key and saved.get('source') == self.source
+                        and saved.get('answer_hash') == digest(saved.get('answer'))):
+                    try:
+                        self._validate(saved['answer'], schema)
+                    except (ValueError, KeyError, TypeError):
+                        saved = {}
+                else:
                     saved = {}
-            else:
-                saved = {}
+                if saved:
+                    break
             if not saved:
                 saved = self._legacy_answer(key, schema)
             if saved:
@@ -207,7 +214,9 @@ class StageJournal:
         from .semantic_identity import scoped_identity
         self.directory, self.root = Path(directory), Path(directory) / 'continuation'
         resolved = self.directory.resolve()
-        self.prefixes = (str(resolved), resolved.as_posix())
+        from .checkpoint_lineage import ancestors
+        owners = (resolved, *ancestors(resolved))
+        self.prefixes = tuple(prefix for owner in owners for prefix in (str(owner), owner.as_posix()))
         self.diagnostics, self.report, self.cancelled = diagnostics, report, cancelled
         self.context = {'version': VERSION, 'source': fingerprint, 'transcript': digest(transcript),
                         'shots': digest(shots), 'profile': profile,
@@ -217,7 +226,10 @@ class StageJournal:
 
     def _key(self, name, inputs):
         context = self.context
-        if name == 'visual_analysis':
+        if name in ('source_evidence', 'episode_survey', 'episode_map', 'standalone_source',
+                    'whole_candidate_qualification'):
+            context = {k: v for k, v in context.items() if k in ('version', 'source', 'transcript', 'shots')}
+        elif name == 'visual_analysis':
             context = {k: v for k, v in context.items() if k not in ('story_code', 'late_code', 'profile')}
         return digest({'context': context, 'stage': name, 'inputs': self._normalise(stable_semantics(inputs))})
 
@@ -232,20 +244,78 @@ class StageJournal:
                     return '@job/' + value[len(prefix)+1:].replace('\\', '/')
         return value
 
+    def _load_record(self, root, name, inputs):
+        saved = _optional(root / 'stages' / (name + '.json'))
+        if saved.get('key') != self._key(name, inputs):
+            return None
+        try:
+            record = saved
+            if 'artifact' in saved:
+                # A declared new artifact must be complete; never fall through
+                # to a stale embedded legacy output after an interrupted commit.
+                artifact = saved['artifact']
+                path = root / artifact['path']
+                path.resolve().relative_to((root / 'artifacts').resolve())
+                raw = path.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != artifact['sha256']:
+                    return None
+                import json
+                record = json.loads(raw)
+                if any(record.get(key) != saved.get(key) for key in
+                       ('key', 'stage', 'producer', 'output_hash', 'completed_at')):
+                    return None
+                if 'output' in saved and saved['output'] != record.get('output'):
+                    return None
+            if saved.get('output_hash') != digest(self._normalise(record.get('output'))):
+                return None
+        except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+            return None
+        return record
+
     def load(self, name, inputs):
         check_cancelled(self.cancelled)
-        saved = _optional(self.root / 'stages' / (name + '.json'))
-        if (saved.get('key') == self._key(name, inputs)
-                and saved.get('output_hash') == digest(self._normalise(saved.get('output')))):
-            self.diagnostics.event(name, 'cache_hit', scope='stage', producer=saved.get('producer'))
-            return copy.deepcopy(saved['output'])
+        from .checkpoint_lineage import ancestors
+        for directory in (self.directory, *ancestors(self.directory)):
+            record = self._load_record(directory / 'continuation', name, inputs)
+            if record is None:
+                continue
+            self.diagnostics.event(name, 'cache_hit', scope='stage', producer=record.get('producer'),
+                                   source_job_id=directory.name)
+            return copy.deepcopy(record['output'])
         return None
 
     def save(self, name, inputs, output, producer):
         check_cancelled(self.cancelled)
-        atomic_json(self.root / 'stages' / (name + '.json'),
-                    {'key': self._key(name, inputs), 'context': self.context, 'stage': name,
-                     'producer': producer, 'output': output, 'output_hash': digest(self._normalise(output)), 'completed_at': now()})
+        key, output_hash = self._key(name, inputs), digest(self._normalise(output))
+        artifact = self.root / 'artifacts' / name / key / (output_hash + '.json')
+        artifact.resolve().relative_to((self.root / 'artifacts').resolve())
+        record = {'version': 1, 'key': key, 'context': self.context, 'stage': name,
+                  'producer': producer, 'output': output, 'output_hash': output_hash, 'completed_at': now()}
+        # Content-addressed successful results are never overwritten by later
+        # selections, retries or an interchangeable provider's identical answer.
+        existing = _optional(artifact)
+        if artifact.exists():
+            try:
+                valid = (existing.get('key') == key and existing.get('stage') == name
+                         and existing.get('output_hash') == output_hash
+                         and digest(self._normalise(existing.get('output'))) == output_hash)
+            except (ValueError, TypeError):
+                valid = False
+            if valid:
+                record = existing
+            else:
+                import uuid
+                artifact = artifact.with_name(output_hash + '.recovered-' + uuid.uuid4().hex + '.json')
+                atomic_json(artifact, record)
+        else:
+            atomic_json(artifact, record)
+        check_cancelled(self.cancelled)
+        manifest = {k: v for k, v in record.items() if k != 'output'}
+        manifest['artifact'] = {'path': artifact.relative_to(self.root).as_posix(),
+                                'sha256': hashlib.sha256(artifact.read_bytes()).hexdigest()}
+        # Commit pointer last. An orphan artifact is harmless after a crash;
+        # the previous committed stage remains readable throughout publication.
+        atomic_json(self.root / 'stages' / (name + '.json'), manifest)
 
     def run(self, name, inputs, callback, producer):
         saved = self.load(name, inputs)
@@ -254,7 +324,9 @@ class StageJournal:
             return saved
         # Compute the signature before callbacks that mutate their event inputs.
         original = copy.deepcopy(inputs)
-        result = callback()
+        from .execution_context import scope
+        with scope(stage=name):
+            result = callback()
         self.save(name, original, result, producer)
         return result
 

@@ -22,11 +22,11 @@ from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app import config
 from app.studio_identity import server_identity
-from app.jobs import BusyError, JobManager, contained
+from app.jobs import BusyError, JobManager, contained, TERMINAL
 from app.json_store import read_json
 from app.quality import debug_timeline, summarize_plan
 from app.part_context import with_context
@@ -94,6 +94,18 @@ class ProcessingMode(BaseModel):
     model_config = ConfigDict(extra="forbid")
     processing_mode: Literal['full', 'incremental', 'plan_only'] = 'full'
     reuse_job_id: str | None = None
+    operation_id: str | None = None
+
+    @field_validator('operation_id')
+    @classmethod
+    def canonical_operation_id(cls, value):
+        if value is not None:
+            try:
+                if str(uuid.UUID(value)) != value:
+                    raise ValueError()
+            except ValueError:
+                raise ValueError('operation_id должен быть UUID в канонической записи') from None
+        return value
 
 
 class CreateJob(ProcessingMode):
@@ -103,6 +115,13 @@ class CreateJob(ProcessingMode):
     layout: Literal["portrait", "cinema"] = "portrait"
     caption_style: Literal["classic", "accent"] = "classic"
     economy_mode: bool = True
+    story_objective: dict | None = None
+
+    @field_validator('story_objective')
+    @classmethod
+    def editorial_objective(cls, value):
+        from .story_objective import validate_objective
+        return validate_objective(value) if value is not None else None
 
 
 class ManualAnalysisMode(BaseModel):
@@ -280,10 +299,31 @@ def public_job(job: dict, manager: JobManager | None = None, *, include_progress
         result['stage_progress'] = stage_progress(job, manager.job_dir(identifier))
         result['analysis_passes'] = analysis_passes(job, manager.job_dir(identifier))
     outputs = job.get("outputs", []) if job["status"] == "completed" else []
+    saved_plan = {}
+    publication_broken = False
+    if manager:
+        from .artifact_publication import current_revision, PublicationError
+        directory = manager.job_dir(identifier)
+        try:
+            published = current_revision(directory, verify_artifacts=False)
+        except PublicationError:
+            publication_broken = True
+            outputs = []
+            result['publication_error'] = 'Публикация повреждена; файлы требуют повторной проверки'
+        else:
+            if published is not None:
+                outputs, saved_plan = published['outputs'], published['plan']
+                result.update(published_revision=published['revision_id'], outputs=outputs,
+                              outcome=saved_plan.get('outcome'))
+        latest = read_json(directory/'standalone-outcome.json')
+        if latest is not None:
+            result['latest_outcome'] = latest
+            result.setdefault('outcome', latest)
     durations = {}
     if outputs and manager:
-        plan_path = contained(manager.job_dir(identifier) / "plan.json", manager.jobs)
-        saved_plan = read_json(plan_path, {})
+        if not saved_plan:
+            plan_path = contained(manager.job_dir(identifier) / "plan.json", manager.jobs)
+            saved_plan = read_json(plan_path, {})
         durations = {f"part_{part['index']:03}.mp4": part.get("duration")
                      for part in saved_plan.get("parts", []) if isinstance(part.get("index"), int)}
     result["files"] = [{"name": name, "url": f"/api/jobs/{identifier}/files/{name}",
@@ -291,7 +331,8 @@ def public_job(job: dict, manager: JobManager | None = None, *, include_progress
                         if f"{Path(name).stem}.srt" in outputs else None,
                         "duration": durations.get(name)}
                        for name in outputs if name.endswith(".mp4")]
-    if manager and job['status'] == 'completed':
+    if (manager and not publication_broken and
+            (job['status'] == 'completed' or result.get('published_revision') and job['status'] in TERMINAL)):
         from .studio_render import ready_outputs
         ready = ready_outputs(manager, identifier, saved_plan if outputs else None)
         if ready:
@@ -398,7 +439,8 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         with current.mutex:
             if current.closed or current.shutdown_requested:
                 raise HTTPException(409, "Приложение завершает работу")
-            if current.active is not None or any(current.finishing_tasks.values()):
+            if (current.active is not None or any(current.finishing_tasks.values())
+                    or current.finishing_execution.busy()):
                 raise HTTPException(409, "Дождитесь завершения экспорта или отмените обработку в интерфейсе")
             current.shutdown_requested = True
             try:
@@ -487,9 +529,13 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @application.post('/api/episodes/{identifier}/jobs', status_code=201)
     def episode_job(request: Request, identifier: str, body: ProcessingMode | None = None):
         body = body or ProcessingMode()
-        if body.processing_mode != 'plan_only' and not config.readiness()['ready']:
-            raise HTTPException(503, 'Сначала выполните локальную настройку проекта')
-        return public_job(request.app.state.library.launch(identifier, body.processing_mode, body.reuse_job_id), get_manager(request))
+        def preflight():
+            settings = request.app.state.library.data['episodes'].get(identifier, {}).get('settings', {})
+            if body.processing_mode != 'plan_only' and not config.readiness(
+                    settings.get('analysis_provider', 'local'), settings.get('layout', 'portrait'))['ready']:
+                raise HTTPException(503, 'Сначала выполните локальную настройку проекта')
+        return public_job(request.app.state.library.launch(identifier, body.processing_mode, body.reuse_job_id,
+            operation_id=body.operation_id, preflight=preflight), get_manager(request))
 
     @application.get("/api/music")
     def music_settings():
@@ -623,18 +669,16 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
 
     @application.post("/api/jobs", status_code=201)
     def create_job(request: Request, body: CreateJob):
-        state = config.readiness()
-        if body.analysis_provider == 'antigravity_manual':
-            missing = [name for name in state['missing'] if name not in {
-                'Qwen3.5-9B для сокращения истории', 'Визуальный проектор Qwen 9B'}]
-            state = {'missing': missing, 'ready': not missing}
-        if body.processing_mode != 'plan_only' and not state["ready"]:
-            raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
+        def preflight():
+            state = config.readiness(body.analysis_provider, body.layout)
+            if body.processing_mode != 'plan_only' and not state["ready"]:
+                raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
         current = get_manager(request)
         return public_job(current.create(body.source_id, body.analysis_provider,
                                          body.layout, body.caption_style,
                                          processing_mode=body.processing_mode, reuse_job_id=body.reuse_job_id,
-                                         economy_mode=body.economy_mode), current)
+                                         economy_mode=body.economy_mode, operation_id=body.operation_id,
+                                         preflight=preflight, story_objective=body.story_objective), current)
 
     @application.get("/api/jobs")
     def jobs(request: Request, summary: bool = False, progress_job_id: str | None = None):
@@ -756,10 +800,11 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
 
     @application.post("/api/jobs/{identifier}/retry")
     def retry(request: Request, identifier: str):
-        state = config.readiness()
-        if not state["ready"]:
-            raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
         current = get_manager(request)
+        job = current.get(identifier)
+        state = config.readiness(job.get('analysis_provider', 'local'), job.get('layout', 'portrait'))
+        if job.get('processing_mode') != 'plan_only' and not state["ready"]:
+            raise HTTPException(503, "Не установлены компоненты: " + ", ".join(state["missing"]))
         return public_job(current.retry(identifier), current)
 
     @application.get('/api/jobs/{identifier}/feedback')
@@ -776,8 +821,11 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     @application.get("/api/jobs/{identifier}/plan")
     def plan(request: Request, identifier: str):
         current = get_manager(request)
-        current.get(identifier)
-        result = read_json(contained(current.job_dir(identifier) / "plan.json", current.jobs))
+        item = current.get(identifier)
+        from .artifact_publication import current_revision
+        published = current_revision(current.job_dir(identifier), verify_artifacts=False)
+        result = (published['plan'] if published is not None and item.get('processing_mode') != 'plan_only'
+                  else read_json(contained(current.job_dir(identifier) / "plan.json", current.jobs)))
         if result is None:
             raise HTTPException(404, "Монтажный план ещё не готов")
         if isinstance(result, dict):
@@ -804,24 +852,47 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     def output(request: Request, identifier: str, filename: str):
         current = get_manager(request)
         item = current.get(identifier)
-        if (item["status"] != "completed" or filename not in item.get("outputs", []) or
-                Path(filename).name != filename or "/" in filename or "\\" in filename or
+        if (Path(filename).name != filename or "/" in filename or "\\" in filename or
                 Path(filename).suffix not in {".mp4", ".srt"}):
             raise HTTPException(404, "Готовый файл не найден")
-        directory = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
-        path = contained(directory / filename, directory)
+        from .artifact_publication import current_revision, resolve_output
+        job_directory = current.job_dir(identifier)
+        published = current_revision(job_directory, verify_artifacts=False)
+        if published is not None:
+            if filename not in published['outputs']:
+                raise HTTPException(404, 'Файл не опубликован')
+            path = resolve_output(job_directory, filename, allow_legacy=False)
+        else:
+            if item['status'] != 'completed' or filename not in item.get('outputs', []):
+                raise HTTPException(404, 'Готовый файл не найден')
+            directory = contained(job_directory/'output', job_directory)
+            path = contained(directory/filename, directory)
         if not path.is_file():
             raise HTTPException(404, "Готовый файл не найден")
         as_download = bool(request.query_params.get("download"))
         return ranged_file(path, request, as_attachment=as_download)
 
+    @application.api_route('/api/jobs/{identifier}/drafts/{draft_id}/files/{filename}', methods=['GET', 'HEAD'])
+    def draft_file(request: Request, identifier: str, draft_id: str, filename: str):
+        current = get_manager(request)
+        current.get(identifier)
+        from .standalone_drafts import draft_output
+        try:
+            path = draft_output(current.job_dir(identifier), draft_id, filename)
+        except (ValueError, OSError):
+            raise HTTPException(404, 'Видео черновика недоступно') from None
+        return ranged_file(path, request, as_attachment=bool(request.query_params.get('download')))
+
     @application.post("/api/jobs/{identifier}/open-folder")
     def open_job_folder(request: Request, identifier: str):
         current = get_manager(request)
         item = current.get(identifier)
-        if item.get("status") != "completed":
+        from .artifact_publication import current_revision
+        published = current_revision(current.job_dir(identifier), verify_artifacts=False)
+        if item.get("status") != "completed" and published is None:
             raise HTTPException(400, "Задание ещё не завершено")
-        output_dir = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
+        output_dir = contained(current.job_dir(identifier) / (
+            'revisions/'+published['revision_id'] if published else 'output'), current.job_dir(identifier))
         target = output_dir.resolve()
         if not target.is_dir():
             target.mkdir(parents=True, exist_ok=True)
@@ -836,9 +907,11 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
     def save_videos(request: Request, identifier: str, body: SaveVideos):
         current = get_manager(request)
         item = current.get(identifier)
-        if item["status"] != "completed":
+        from .artifact_publication import current_revision, resolve_output
+        published = current_revision(current.job_dir(identifier), verify_artifacts=False)
+        if item["status"] != "completed" and published is None:
             raise HTTPException(404, "Готовые видео не найдены")
-        registered = item.get("outputs", [])
+        registered = published['outputs'] if published else item.get("outputs", [])
         from .studio_render import ready_outputs
         ready = ready_outputs(current, identifier)
         registered = [*registered, *[name for name in ready if name not in registered]]
@@ -861,7 +934,8 @@ def create_app(manager: JobManager | None = None) -> FastAPI:
         output_dir = contained(current.job_dir(identifier) / "output", current.job_dir(identifier))
         sources = []
         for name in names:
-            path = ready[name]['_path'] if name in ready else contained(output_dir / name, output_dir)
+            path = (ready[name]['_path'] if name in ready else resolve_output(current.job_dir(identifier), name,
+                    allow_legacy=False) if published else contained(output_dir/name, output_dir))
             if not path.is_file():
                 raise HTTPException(404, "Одно из готовых видео недоступно")
             sources.append((name, path))

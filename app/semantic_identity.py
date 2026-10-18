@@ -42,8 +42,21 @@ _COMPONENTS = {name: (*modules, 'editorial_reactions') if any(module in modules
     for module in ('story','story_review','pacing','closing')) else modules
     for name,modules in _COMPONENTS.items()}
 _COMPONENTS['story_structure'] += ('scoped_relations',)
+for _component in ('planner', 'final_quality', 'ending'):
+    _COMPONENTS[_component] += ('edit_integrity',)
+_COMPONENTS['standalone'] = (*_COMPONENTS['planner'], 'standalone_planner', 'story_objective',
+    'standalone_pipeline', 'standalone_analysis', 'episode_survey', 'selective_analysis',
+    'analysis_questions', 'candidate_framing', 'artifact_publication', 'discovery_regions', 'unit_decisions', 'standalone_drafts',
+    'story_candidates', 'candidate_analysis', 'candidate_screen', 'audio_boundaries')
+_COMPONENTS['final_quality'] += ('story_candidates', 'candidate_screen', 'audio_boundaries')
 _COMPONENTS['final_quality'] += ('scoped_relations','scoped_boundary_recovery','scoped_ending_recovery',
                               'scoped_owner_refresh','scoped_recovery_state')
+_COMPONENTS = {name: (*modules, 'unit_decisions')
+               if 'selection_gate' in modules and 'unit_decisions' not in modules else modules
+               for name, modules in _COMPONENTS.items()}
+_COMPONENTS = {name: (*modules, 'checkpoint_lineage')
+               if 'analysis_continuation' in modules or 'analysis_questions' in modules else modules
+               for name, modules in _COMPONENTS.items()}
 _OPTIONAL = {'story_structure', 'planner_audit'}
 _CONSTANTS = {
     'media_probe': ('SHOT_DETECTOR_VERSION', 'BASE_SCENE_THRESHOLD'),
@@ -60,6 +73,8 @@ _CONSTANTS = {
     'retention_allocation': ('VERSION',),
     'viewer_interest': ('VERSION', 'INTEREST_WEIGHTS', 'INTEREST_KINDS', 'MAX_INTEREST_BONUS', 'PROOF_INTEREST', 'INTEREST_INSTRUCTION'),
     'speech_handles': ('VERSION','LEAD','TAIL'),
+    'edit_integrity': ('VERSION', 'LEGACY_FPS', 'MAX_EDIT_FRAMES', 'TIME_EPSILON'),
+    'standalone_planner': ('VERSION', 'DEFAULT_SETTINGS', 'REQUIRED_RELATIONS'),
     'story_structure_pass': ('VERSION','POLICY','STORY_STRUCTURE_PROMPT','ROLES','RELATIONS'),
     'dialogue_relations': ('VERSION','POLICY','DIALOGUE_PROMPT'),
     'source_continuity': ('VERSION','FACTS'),
@@ -211,6 +226,7 @@ def scoped_identity(scope: str):
         'story': ('global_story', 'story', 'episode_profile'),
         'late_analysis': ('pacing', 'ending', 'story_structure', 'continuity'),
         'planning': ('planner', 'final_quality'),
+        'standalone': ('standalone', 'final_quality'),
     }
     components = {name: component_identity(name) for name in scopes[scope]}
     result = {'version': SEMANTIC_IDENTITY_VERSION, 'components': components}

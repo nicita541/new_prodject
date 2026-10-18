@@ -1,5 +1,6 @@
 """Current provider contract replaces obsolete monetary gate tests."""
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import uuid
@@ -67,6 +68,16 @@ class DeepSeekTests(unittest.TestCase):
             self.assertEqual(self.vision.query('current',schema=SCHEMA),{'keep':['A']})
             self.vision.query('current',schema=SCHEMA)
         self.assertEqual(fetch.call_count,1)
+    def test_valid_paid_cache_survives_malformed_optional_audit_metadata(self):
+        with patch.object(self.vision, '_fetch', return_value=response()):
+            self.vision.query('cached-before-diagnostic-corruption', schema=SCHEMA)
+        for error in (json.JSONDecodeError('Authored broken JSON', '', 0),
+                      TypeError('Authored invalid metadata'), AttributeError('Authored nonobject metadata')):
+            with self.subTest(error=type(error).__name__), \
+                    patch('app.pipeline_diagnostics.Diagnostics', side_effect=error), \
+                    patch.object(self.vision, '_fetch', side_effect=AssertionError('Paid cache must win')) as fetch:
+                self.assertEqual(self.vision.query('cached-before-diagnostic-corruption', schema=SCHEMA), {'keep': ['A']})
+                fetch.assert_not_called()
     def test_full_launch_isolates_prior_responses_but_resume_reuses_own(self):
         with patch.object(self.vision, '_fetch', return_value=response()) as fetch:
             self.vision.query('current', schema=SCHEMA)
@@ -148,11 +159,72 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual(fetch.call_count,2)
     def test_invalid_page_count_and_nonfinite_json_are_rejected(self):
         with patch.object(self.vision,'_fetch') as fetch:
-            for pages in ([],[self.root/'missing']*9):
+            for pages in ([],[self.root/'missing']*(api.MAX_IMAGE_PAGES+1)):
                 with self.assertRaises(ValueError):self.vision.query('current',pages,schema=SCHEMA)
             fetch.assert_not_called()
         for text in ('{"n":NaN}','{"n":Infinity}','{"n":1e999}'):
             with self.assertRaises(ValueError):api._strict_json(text)
+
+    def test_nine_actual_jpeg_pages_use_current_transport_and_cache(self):
+        from PIL import Image
+        pages = []
+        for i in range(9):
+            page = self.root/f'page-{i}.jpg'
+            Image.new('RGB', (32, 32), (i*10, 0, 0)).save(page)
+            pages.append(page)
+        with patch.object(self.vision, '_fetch', return_value=response()) as fetch:
+            self.assertEqual(self.vision.query('nine-page-transport', pages, schema=SCHEMA), {'keep': ['A']})
+            self.vision.query('nine-page-transport', pages, schema=SCHEMA)
+        fetch.assert_called_once()
+        self.assertEqual(len(fetch.call_args.args[0]['messages'][1]['content'])-1, 9)
+
+    def test_inline_individual_and_total_sizes_reject_before_read_or_transport(self):
+        pages = [self.root/'a.jpg', self.root/'b.jpg']
+        for page in pages:
+            page.write_bytes(b'123456')  # Authored byte boundary, no visual inference.
+        with patch.object(self.vision, '_fetch') as fetch, \
+                patch.object(Path, 'read_bytes', side_effect=AssertionError('Oversize files must not be read')):
+            with patch.object(api, 'MAX_INLINE_IMAGE_BYTES', 5), self.assertRaises(api.RequestCapacityError):
+                self.vision.query('one-too-large', pages[:1], schema=SCHEMA)
+            with patch.object(api, 'MAX_INLINE_IMAGES_BYTES', 10), self.assertRaises(api.RequestCapacityError):
+                self.vision.query('total-too-large', pages, schema=SCHEMA)
+            fetch.assert_not_called()
+
+    def test_serialized_base64_body_boundary_is_exact_and_checked_before_read(self):
+        page = self.root/'body-page.jpg'
+        page.write_bytes(b'Authored bytes for request serialization only')
+        with patch.object(self.vision, '_fetch', return_value=response()) as fetch:
+            self.vision.query('body-limit-A', page, schema=SCHEMA)
+        size = len(json.dumps(fetch.call_args.args[0], ensure_ascii=False).encode('utf-8'))
+        with patch.object(api, 'MAX_REQUEST_BYTES', size), \
+                patch.object(self.vision, '_fetch', return_value=response()) as fetch:
+            self.vision.query('body-limit-B', page, schema=SCHEMA)  # Same UTF8 length.
+            fetch.assert_called_once()
+        with patch.object(api, 'MAX_REQUEST_BYTES', size-1), \
+                patch.object(self.vision, '_fetch') as fetch, \
+                patch.object(Path, 'read_bytes', side_effect=AssertionError('No base64 allocation')):
+            with self.assertRaises(api.RequestCapacityError) as error:
+                self.vision.query('body-limit-C', page, schema=SCHEMA)
+            self.assertFalse(error.exception.dispatched)
+            fetch.assert_not_called()
+
+    def test_format_correction_cannot_overflow_body_or_start_an_extra_transport(self):
+        def invalid_then_limit(body):
+            api.MAX_REQUEST_BYTES = len(json.dumps(body, ensure_ascii=False).encode('utf-8'))+5
+            return response('not json')
+        with patch.object(api, 'MAX_REQUEST_BYTES', api.MAX_REQUEST_BYTES), \
+                patch.object(self.vision, '_fetch', side_effect=invalid_then_limit) as fetch:
+            with self.assertRaises(api.RequestCapacityError) as error:
+                self.vision.query('correction-size-boundary', schema=SCHEMA)
+            self.assertTrue(error.exception.dispatched)
+            fetch.assert_called_once()
+
+    def test_http_final_size_guard_runs_before_credentials_or_network(self):
+        with patch.object(api, 'MAX_REQUEST_BYTES', 10), \
+                patch.object(api, '_key', side_effect=AssertionError('Must not read credentials')), \
+                patch.object(api.urllib.request, 'build_opener', side_effect=AssertionError('Must not open network')):
+            with self.assertRaises(api.RequestCapacityError):
+                api._http('/chat/completions', {'input': 'too long for this authored limit'})
     def test_final_error_does_not_leak_exception_or_key(self):
         with patch.object(self.vision,'_fetch',side_effect=api.RemoteError('Bearer secret-token',category='transport')):
             with self.assertRaises(api.RemoteError) as error:self.vision.query('current',schema=SCHEMA)
@@ -185,8 +257,11 @@ class DeepSeekTests(unittest.TestCase):
         truncated = {'choices': [{'finish_reason': 'length', 'message': {'content': '{Bearer secret-token'}}],
                      'usage': {'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150,
                                'authorization': 'secret-token'}}
-        with patch.object(self.vision, '_fetch', side_effect=[truncated, response()]):
-            self.vision.query('current', schema=SCHEMA)
+        with patch.object(self.vision, '_fetch', side_effect=[truncated, response()]) as fetch:
+            with self.assertRaises(api.ResponseContractError) as caught:
+                self.vision.query('current', schema=SCHEMA)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(caught.exception.category, 'response_length')
         records = [api._strict_json(p.read_text('utf-8')) for p in
                    (self.root / 'diagnostics' / 'deepseek-responses').glob('*.json')]
         rejected = next(row for row in records if not row['accepted'])
@@ -194,6 +269,18 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual(rejected['usage']['total_tokens'], 150)
         self.assertNotIn('response', rejected)
         self.assertNotIn('secret-token', str(records))
+
+    def test_empty_exhausted_reasoning_is_not_retried_as_a_json_format_error(self):
+        self.vision = api.DeepSeekVision(self.root, lambda: False, reasoning_effort='low')
+        exhausted = {'choices': [{'finish_reason': 'length', 'message': {'content': '',
+                       'reasoning_content': 'Private reasoning must not enter diagnostics.'}}],
+                     'usage': {'completion_tokens': 2400}}
+        with patch.object(self.vision, '_fetch', return_value=exhausted) as fetch:
+            with self.assertRaises(api.ResponseContractError) as caught:
+                self.vision.query('bounded source', schema=SCHEMA, max_tokens=2400)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(caught.exception.finish_reason, 'length')
+        self.assertFalse((self.root/'responses').exists())
 
     def test_contract_feedback_keeps_boundary_branch_constraints_strict(self):
         from app.semantic_boundary import boundary_schema

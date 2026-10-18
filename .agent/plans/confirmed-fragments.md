@@ -29,6 +29,6 @@ Output can be substantially shorter. Source-ready material may still fail necess
 # Progress
 
 - [x] Actual failure audited and user preference answered.
-- [ ] Projection and integration.
-- [ ] Tests and offline source audit.
-- [ ] Apply policy and launch without monitoring.
+- [x] Projection and integration, with native canonical-source preservation and crash-resume restoration. Snapshot/plan policy binding prevents a partial result from masquerading as full analysis.
+- [x]147 tests plus70 subtests passed. Real-source offline projection selects25 fragments/114.21s and matches the original completed stage output;10 upstream stage contexts remain unchanged and0 model calls were made. Diff whitespace check passed. Only an existing Starlette test-client deprecation warning remains.
+- [x] Saved the user's explicit confirmed-only preference for this owned failed job, with prior-preference backup in scratch/confirmed-fragments-deployment/preference-backup.json. No server restart or processing launch: the user explicitly canceled that action and requested finishing code only. Server/job state was not mutated by this final preference save.

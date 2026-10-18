@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 from app.json_store import atomic_json, read_json, now
+from app.content_identity import digest as content_digest
+from app.file_lock import BusyError, InstanceLock
 
 import ctypes
+import copy
 import logging
 import os
 import shutil
@@ -20,6 +23,12 @@ from app import config
 
 TERMINAL = {"completed", "failed", "cancelled", "interrupted", "waiting_analysis"}
 LOGGER = logging.getLogger(__name__)
+HEARTBEAT_STALE_SECONDS = 30.0
+WORKER_POLL_SECONDS = 0.2
+
+
+class DamagedJobError(ValueError):
+    """A saved user record is unreadable; never replace it with empty state."""
 
 
 def contained(path: Path, root: Path) -> Path:
@@ -39,38 +48,8 @@ def validate_id(value: str) -> str:
     return value
 
 
-class BusyError(RuntimeError):
-    pass
-
-
-class InstanceLock:
-    """OS-backed lock; a crashed server automatically releases ownership."""
-    def __init__(self, path: Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.stream = path.open("a+b")
-        try:
-            if os.name == "nt":
-                import msvcrt
-                if path.stat().st_size == 0:
-                    self.stream.write(b"0")
-                    self.stream.flush()
-                self.stream.seek(0)
-                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self.stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (OSError, IOError):
-            self.stream.close()
-            raise BusyError("Приложение уже запущено в другом окне") from None
-
-    def close(self):
-        if self.stream.closed:
-            return
-        if os.name == "nt":
-            import msvcrt
-            self.stream.seek(0)
-            msvcrt.locking(self.stream.fileno(), msvcrt.LK_UNLCK, 1)
-        self.stream.close()
+class SubmissionConflict(BusyError):
+    """An operation ID cannot create another job or change its original command."""
 
 
 class WorkerProcess:
@@ -189,22 +168,187 @@ class JobManager:
         # Active finishing previews/exports also own files under a job directory.
         self.finishing_tasks: dict[str, int] = {}
         self.pending_states = {}
+        self.damaged_jobs: dict[str, str] = {}
+        self._worker_observation = None
         self.closed = False
+        self._resources_closed = False
+        self.finishing_execution = None
         self.shutdown_requested = False
         self.sources = read_json(self.data / "sources.json", {})
         try:
             self._recover()
+            from .finishing_execution import FinishingExecution
+            self.finishing_execution = FinishingExecution(self)
+            from .studio_render import recover_legacy_finishing
+            recover_legacy_finishing(self)
         except BaseException:
+            if self.finishing_execution is not None:
+                self.finishing_execution.stop()
             self.lock.close()
             raise
 
     def _recover(self):
+        self._recover_submissions()
         for path in self.jobs.glob("*/job.json"):
-            job = read_json(path)
+            try:
+                job = self._read_job(path.parent.name)
+            except (DamagedJobError, KeyError):
+                continue
             if job and job["status"] in {"queued", "running"}:
                 job.update(status="interrupted", message="Обработка прервана. Можно продолжить.",
                            updated_at=now(), cancel_requested=False)
                 atomic_json(path, job)
+
+    def _submission_path(self, operation_id: str) -> Path:
+        try:
+            validate_id(operation_id)
+        except KeyError:
+            raise ValueError('operation_id должен быть UUID в канонической записи') from None
+        return contained(self.data / 'job-operations' / (operation_id + '.json'), self.data)
+
+    def _read_submission(self, operation_id: str) -> dict | None:
+        path = self._submission_path(operation_id)
+        try:
+            receipt = read_json(path)
+            if receipt is None and not path.exists():
+                return None
+            if (not isinstance(receipt, dict) or receipt.get('version') != 1
+                    or receipt.get('operation_id') != operation_id
+                    or receipt.get('state') not in {'reserved', 'committed', 'deleted'}
+                    or not isinstance(receipt.get('request'), dict)
+                    or not isinstance(receipt.get('files'), dict)
+                    or not isinstance(receipt.get('job'), dict)):
+                raise ValueError()
+            snapshot = {key: value for key, value in receipt.items() if key not in {'state', 'snapshot_sha256'}}
+            if receipt.get('snapshot_sha256') != content_digest(snapshot):
+                raise ValueError()
+            identifier = validate_id(receipt['job_id'])
+            job, request, files = receipt['job'], receipt['request'], receipt['files']
+            request_fields = {'source_id', 'analysis_provider', 'layout', 'caption_style',
+                              'episode_id', 'processing_mode', 'reuse_job_id', 'economy_mode'}
+            required = {'source.json', 'analysis-settings.json', 'render-settings.json', 'processing-settings.json'}
+            allowed = required | {'editorial-settings.json', 'planning-preferences.json', 'speech-handle-overrides.json', 'story-objective.json'}
+            absent = receipt.get('absent_settings', [])
+            if (set(request)-{'story_objective'} != request_fields or not required.issubset(files) or not set(files).issubset(allowed)
+                    or not isinstance(absent, list) or any(not isinstance(name, str) for name in absent)
+                    or not set(absent).issubset(allowed - required) or set(absent).intersection(files)
+                    or job.get('id') != identifier or job.get('operation_id') != operation_id
+                    or job.get('episode_id') != request.get('episode_id')
+                    or job.get('source_id') != request.get('source_id')
+                    or job.get('status') != 'queued'
+                    or not isinstance(job.get('created_at'), str)
+                    or not isinstance(job.get('source_name'), str)
+                    or not isinstance(files['source.json'], dict)
+                    or not isinstance(files['source.json'].get('name'), str)
+                    or not all(isinstance(files[name], dict) for name in required)):
+                raise ValueError()
+            contained(Path(files['source.json']['path']), self.root)
+            previous = files['processing-settings.json'].get('reuse_job_id')
+            if previous is not None:
+                validate_id(previous)
+                if previous == identifier:
+                    raise ValueError()
+        except (OSError, ValueError, KeyError, TypeError):
+            raise SubmissionConflict('Квитанция операции повреждена. Она сохранена; новое задание не создано.') from None
+        return receipt
+
+    def _recover_submissions(self):
+        # Recovery never starts a worker. Incomplete creation is made visible
+        # under its reserved ID and requires an explicit ordinary retry.
+        for path in (self.data / 'job-operations').glob('*.json'):
+            try:
+                receipt = self._read_submission(path.stem)
+                if receipt and receipt['state'] == 'reserved':
+                    self._materialize_submission(receipt, recovered=True)
+            except (OSError, ValueError, KeyError, RuntimeError):
+                LOGGER.error('Не удалось восстановить создание задания; квитанция сохранена',
+                             extra={'action': 'job_submission_recovery_failed', 'status': 'interrupted'})
+
+    def _write_job_inputs(self, directory: Path, files: dict, *, absent_settings=(), owner_episode_id=None) -> None:
+        from .processing import inherit_checkpoints
+        files = copy.deepcopy(files)
+        processing = files['processing-settings.json']
+        previous = processing.get('reuse_job_id')
+        copied = []
+        if previous is not None:
+            previous_directory = self.job_dir(previous)
+            if not (previous_directory / 'job.json').is_file():
+                raise SubmissionConflict('Задание с исходными контрольными точками недоступно. Квитанция сохранена.')
+            from .checkpoint_lineage import link
+            from .processing import source_digest
+            link(previous_directory, directory, source_sha256=source_digest(Path(files['source.json']['path'])),
+                 episode_id=owner_episode_id)
+            copied = inherit_checkpoints(previous_directory, directory,
+                                         plan_only=processing['mode'] == 'plan_only')
+        processing['inherited_files'] = copied
+        # Settings were captured before the reservation, not read again from
+        # a possibly edited episode or ancestor during crash recovery.
+        for name in absent_settings:
+            (directory / name).unlink(missing_ok=True)
+        for name, value in files.items():
+            atomic_json(directory / name, value)
+
+    def _materialize_submission(self, receipt: dict, *, recovered: bool) -> dict:
+        identifier = receipt['job_id']
+        directory = self.job_dir(identifier)
+        if (directory / 'job.json').exists():
+            job = self._read_job(identifier)
+            if (job.get('operation_id') != receipt['operation_id']
+                    or job.get('source_id') != receipt['request']['source_id']
+                    or job.get('episode_id') != receipt['request']['episode_id']):
+                raise SubmissionConflict('Зарезервированное задание принадлежит другой операции.')
+        else:
+            if receipt['state'] != 'reserved':
+                raise SubmissionConflict('Задание этой операции удалено или недоступно. Повторный запуск не выполнен.')
+            directory.mkdir(exist_ok=True)
+            self._write_job_inputs(directory, receipt['files'], absent_settings=receipt.get('absent_settings', []),
+                                   owner_episode_id=receipt['job'].get('episode_id'))
+            job = copy.deepcopy(receipt['job'])
+            if recovered:
+                job.update(status='interrupted', updated_at=now(),
+                           message='Создание задания восстановлено. Можно продолжить обработку.')
+            atomic_json(directory / 'job.json', job)
+        if receipt['state'] == 'reserved':
+            atomic_json(self._submission_path(receipt['operation_id']), {**receipt, 'state': 'committed'})
+        return job
+
+    def _existing_submission(self, operation_id: str, request: dict) -> dict | None:
+        receipt = self._read_submission(operation_id)
+        if receipt is None:
+            return None
+        if content_digest(receipt['request']) != content_digest(request):
+            raise SubmissionConflict('operation_id уже использован для другого исходника, настроек или серии.')
+        if receipt['state'] == 'deleted':
+            raise SubmissionConflict('Задание этой операции удалено. Повторный запуск не выполнен.')
+        job = self._materialize_submission(receipt, recovered=True)
+        return self.get(job['id'])
+
+    def _read_job(self, identifier: str) -> dict:
+        path = self.job_dir(identifier) / "job.json"
+        try:
+            missing = object()
+            job = read_json(path, missing)
+            if job is missing:
+                raise KeyError(identifier)
+            if (not isinstance(job, dict) or job.get("id") != identifier
+                    or job.get("status") not in TERMINAL | {"queued", "running"}
+                    or not isinstance(job.get("created_at"), str)
+                    or not isinstance(job.get("source_name"), str)
+                    or not isinstance(job.get("outputs", []), list)
+                    or any(not isinstance(name, str) for name in job.get("outputs", []))):
+                raise ValueError("Invalid job record")
+        except (OSError, ValueError, TypeError) as error:
+            # Log only the exception type, never the contents of a damaged file.
+            reason = type(error).__name__
+            if self.damaged_jobs.get(identifier) != reason:
+                LOGGER.error("Повреждена запись задания %s; исходный job.json сохранён (%s)",
+                             identifier, reason, extra={"job_id": identifier,
+                             "action": "job_record_damaged", "status": "damaged"})
+            self.damaged_jobs[identifier] = reason
+            raise DamagedJobError("Повреждена запись задания. Исходный job.json сохранён; "
+                                  "остальные задания доступны.") from None
+        self.damaged_jobs.pop(identifier, None)
+        return job
 
     def list_sources(self, *, discover=True) -> list[dict]:
         with self.mutex:
@@ -283,9 +427,7 @@ class JobManager:
     def get(self, identifier: str) -> dict:
         with self.mutex:
             path = self.job_dir(identifier) / "job.json"
-            job = read_json(path)
-            if not job:
-                raise KeyError(identifier)
+            job = self._read_job(identifier)
             owned = self.active is not None and self.active[0] == identifier
             if not owned and identifier in self.pending_states:
                 job = dict(self.pending_states[identifier])
@@ -305,11 +447,67 @@ class JobManager:
                     # Return the actual process state even while storage is
                     # unavailable. A later read retries persisting recovery.
                     LOGGER.exception("Не удалось сохранить восстановленный статус задания %s", identifier)
+            if owned:
+                job = {**job, "worker_health": self._observe_worker(identifier, self.active[1])}
             return job
 
     def list_jobs(self) -> list[dict]:
-        return sorted((self.get(path.parent.name) for path in self.jobs.glob("*/job.json")),
-                      key=lambda item: item["created_at"], reverse=True)
+        jobs = []
+        for path in self.jobs.glob("*/job.json"):
+            try:
+                jobs.append(self.get(path.parent.name))
+            except (DamagedJobError, KeyError):
+                continue
+        return sorted(jobs, key=lambda item: item["created_at"], reverse=True)
+
+    def _observe_worker(self, identifier: str, child) -> dict | None:
+        """Observe only our current process; stale heartbeat is not a kill policy.
+
+        A long model request may have no progress while its heartbeat advances.
+        A missing heartbeat can also mean blocked storage/native Python code, so
+        it is diagnostic and leaves explicit cancellation to the owned tree.
+        """
+        if not self.active or self.active != (identifier, child):
+            return None
+        observation = self._worker_observation
+        if observation is None:
+            return None
+        process = getattr(child, "process", None)
+        pid = getattr(process, "pid", None)
+        if pid is None:
+            return {"status": "unavailable", "process_alive": child.poll() is None,
+                    "attempt_id": observation["attempt_id"]}
+        stamp = time.monotonic()
+        reason = "missing"
+        try:
+            record = read_json(self.job_dir(identifier) / "worker-heartbeat.json")
+            if record is not None:
+                reason = "invalid"
+                if (isinstance(record, dict) and record.get("version") == 1
+                        and record.get("attempt_id") == observation["attempt_id"]
+                        and type(record.get("pid")) is int and record["pid"] == pid
+                        and type(record.get("sequence")) is int and record["sequence"] > 0
+                        and isinstance(record.get("heartbeat_at"), str)):
+                    reason = None
+                    if record["sequence"] > observation["sequence"]:
+                        observation.update(sequence=record["sequence"], last_seen=stamp,
+                                           heartbeat_at=record["heartbeat_at"])
+        except (OSError, ValueError, TypeError):
+            reason = "unreadable"
+        elapsed = max(0.0, stamp - observation["last_seen"])
+        status = ("stale" if elapsed >= HEARTBEAT_STALE_SECONDS else
+                  "healthy" if observation["sequence"] else "starting")
+        if status != observation.get("status"):
+            if status == "stale" or observation.get("status") == "stale":
+                LOGGER.log(logging.WARNING if status == "stale" else logging.INFO,
+                           "Worker heartbeat: %s", status,
+                           extra={"job_id": identifier, "run_id": observation["attempt_id"],
+                                  "action": "worker_heartbeat_" + status, "status": status})
+            observation["status"] = status
+        return {"status": status, "process_alive": child.poll() is None,
+                "attempt_id": observation["attempt_id"],
+                "last_heartbeat_at": observation.get("heartbeat_at"),
+                "seconds_since_heartbeat": round(elapsed, 1), "heartbeat_issue": reason}
 
     def _drop_finishing_export_index(self, job_id: str) -> None:
         """Remove only orphaned registry entries after a job was removed.
@@ -328,19 +526,91 @@ class JobManager:
             except (OSError, ValueError):
                 LOGGER.exception("Cannot inspect/remove old export registry entry %s", path.name)
 
+    def _checkpoint_dependents(self, identifier):
+        from .checkpoint_lineage import dependents
+        references = set(dependents(self.jobs, identifier))
+        # A process may stop between durable submission reservation and writing
+        # the child's lineage pointer. Preserve its intended ancestor too.
+        for path in (self.data / 'job-operations').glob('*.json'):
+            try:
+                receipt = self._read_submission(path.stem)
+            except (ValueError, SubmissionConflict):
+                continue
+            if (receipt and receipt['state'] == 'reserved'
+                    and receipt['files']['processing-settings.json'].get('reuse_job_id') == identifier):
+                references.add(receipt['job_id'])
+        return references
+
+    def _retire_finishing_commands(self, identifier):
+        """Tombstone exact finishing intentions before removing their job files."""
+        from .finishing_commands import FinishingCommands, CommandError
+        store = FinishingCommands(self.root)
+        commands = {}
+        directory = self.job_dir(identifier)
+        for kind in ('previews', 'exports'):
+            for path in (directory/'finishing'/kind).glob('*/command.json'):
+                saved = store._read(path)
+                command = store._command(saved, expected={'job_id': identifier})
+                if store.load(command['operation_id'], job_id=identifier) != command:
+                    raise CommandError('Finishing command is missing its operation receipt')
+                commands[command['operation_id']] = command
+        for path in store._path('finishing/operations').glob('*.json'):
+            try:
+                receipt = store._receipt(path.stem)
+            except (ValueError, OSError):
+                continue
+            if receipt and receipt['state'] != 'deleted' and receipt['command']['job_id'] == identifier:
+                commands[path.stem] = receipt['command']
+        retired = []
+        try:
+            for operation in commands:
+                path = store._operation(operation)
+                receipt = store._receipt(operation)
+                store.tombstone(operation, job_id=identifier)
+                retired.append((path, receipt))
+        except BaseException:
+            for path, receipt in reversed(retired):
+                atomic_json(path, receipt)
+            raise
+        return retired
+
     def delete_job(self, identifier: str) -> dict:
         with self.mutex:
             validate_id(identifier)
             if self.active and self.active[0] == identifier:
                 raise BusyError("Нельзя удалить выполняющееся задание")
-            if self.finishing_tasks.get(identifier, 0):
+            if self.finishing_tasks.get(identifier, 0) or self.finishing_execution.owns_job(identifier):
                 raise BusyError("Нельзя удалить задание во время предпросмотра или экспорта")
             directory = self.job_dir(identifier)
             if not directory.is_dir():
                 raise KeyError(identifier)
-            # Never report success if Windows locks or permissions prevent removal.
-            shutil.rmtree(directory)
+            if self._checkpoint_dependents(identifier):
+                raise BusyError('Задание используется потомками как источник контрольных точек')
+            # Keep a tombstone even for an interrupted reservation whose
+            # job.json was never published. A retry must not resurrect it.
+            retired = []
+            try:
+                retired.extend(self._retire_finishing_commands(identifier))
+                for path in (self.data / 'job-operations').glob('*.json'):
+                    try:
+                        receipt = self._read_submission(path.stem)
+                    except (ValueError, SubmissionConflict):
+                        continue
+                    if receipt and receipt['job_id'] == identifier:
+                        atomic_json(path, {**receipt, 'state': 'deleted'})
+                        retired.append((path, receipt))
+                # Never report success if Windows locks or permissions prevent removal.
+                shutil.rmtree(directory)
+            except BaseException:
+                for path, receipt in retired:
+                    try:
+                        atomic_json(path, receipt)
+                    except OSError:
+                        LOGGER.error('Не удалось восстановить квитанцию после ошибки удаления задания',
+                                     extra={'job_id': identifier, 'action': 'job_submission_restore_failed'})
+                raise
             self._drop_finishing_export_index(identifier)
+            self.finishing_execution.forget_job(identifier)
             self.pending_states.pop(identifier, None)
             return {"id": identifier, "deleted": True}
 
@@ -382,9 +652,13 @@ class JobManager:
 
             for path in self.jobs.glob("*/job.json"):
                 jid = path.parent.name
-                if jid == active_id or self.finishing_tasks.get(jid, 0):
+                if (jid == active_id or self.finishing_tasks.get(jid, 0)
+                        or self.finishing_execution.owns_job(jid) or self._checkpoint_dependents(jid)):
                     continue
-                data = read_json(path)
+                try:
+                    data = self._read_job(jid)
+                except (DamagedJobError, KeyError):
+                    continue
                 if not data or data.get("status") not in TERMINAL:
                     continue
                 if (data.get("status") in {"failed", "interrupted", "cancelled"}
@@ -405,11 +679,10 @@ class JobManager:
             for jid, created_at, mtime, directory in terminal_jobs:
                 if cutoff_ts is not None and mtime < cutoff_ts:
                     try:
-                        shutil.rmtree(directory)
-                    except OSError:
+                        self.delete_job(jid)
+                    except (OSError, BusyError, ValueError):
                         LOGGER.exception("Cannot prune job %s", jid)
                     else:
-                        self._drop_finishing_export_index(jid)
                         pruned.append(jid)
                 else:
                     remaining_jobs.append((jid, created_at, mtime, directory))
@@ -419,11 +692,10 @@ class JobManager:
             if excess > 0:
                 for jid, _, _, directory in remaining_jobs[:excess]:
                     try:
-                        shutil.rmtree(directory)
-                    except OSError:
+                        self.delete_job(jid)
+                    except (OSError, BusyError, ValueError):
                         LOGGER.exception("Cannot prune job %s", jid)
                     else:
-                        self._drop_finishing_export_index(jid)
                         pruned.append(jid)
 
             return {"pruned_count": len(pruned), "pruned_ids": pruned,
@@ -455,9 +727,25 @@ class JobManager:
     def create(self, source_id: str, analysis_provider: str = "local",
                layout: str = "portrait", caption_style: str = "classic", episode_id: str | None = None,
                processing_mode: str = "full", reuse_job_id: str | None = None,
-               correction_request: dict | None = None, economy_mode: bool = True) -> dict:
+               correction_request: dict | None = None, economy_mode: bool = True,
+               operation_id: str | None = None, preflight: Callable | None = None,
+               story_objective: dict | None = None) -> dict:
         with self.mutex:
-            from .processing import validate_mode, inherit_checkpoints, cached_analysis, source_digest
+            from .processing import validate_mode, cached_analysis, source_digest
+            request = {'source_id': source_id, 'analysis_provider': analysis_provider,
+                       'layout': layout, 'caption_style': caption_style, 'episode_id': episode_id,
+                       'processing_mode': processing_mode, 'reuse_job_id': reuse_job_id,
+                       'economy_mode': economy_mode}
+            from .story_objective import validate_objective
+            objective = validate_objective(story_objective)
+            if story_objective is not None:
+                request['story_objective'] = objective
+            if operation_id is not None:
+                if correction_request is not None:
+                    raise ValueError('Замечания используют собственный идентификатор операции')
+                existing = self._existing_submission(operation_id, request)
+                if existing is not None:
+                    return existing
             if type(economy_mode) is not bool:
                 raise ValueError('Экономный режим должен быть включён или выключен')
             validate_mode(processing_mode)
@@ -466,6 +754,8 @@ class JobManager:
             if episode_id is not None:
                 validate_id(episode_id)
             self._assert_available()
+            if preflight is not None:
+                preflight()
             if processing_mode != 'plan_only':
                 self._check_analysis_provider(analysis_provider)
             source = self.source(source_id)
@@ -502,36 +792,50 @@ class JobManager:
                     raise ValueError('Нет подходящего сохранённого анализа. Сначала выполните полный монтаж или обновление по изменениям.')
             identifier = str(uuid.uuid4())
             directory = self.jobs / identifier
-            directory.mkdir()
-            copied = []
-            if previous:
-                copied = inherit_checkpoints(self.job_dir(previous['id']), directory,
-                                             plan_only=processing_mode == 'plan_only')
-            atomic_json(directory / "source.json", source)
             previous_settings = read_json(self.job_dir(previous['id']) / 'analysis-settings.json', {}) if previous else {}
             if previous and processing_mode == 'plan_only':
                 economy_mode = previous_settings.get('economy_mode', True)
             # Preserve supplied transcript provenance, never manual exchange state.
             analysis_settings = {key: previous_settings[key] for key in
                                  ('transcript_mode', 'transcript_source_sha256') if key in previous_settings}
-            atomic_json(directory / "analysis-settings.json", {**analysis_settings, "provider": analysis_provider,
-                                                               "economy_mode": economy_mode})
-            atomic_json(directory / "render-settings.json", options)
             previous_processing = read_json(self.job_dir(previous['id'])/'processing-settings.json', {}) if previous else {}
             response_cache_jobs = previous_processing.get('response_cache_jobs', [])
             if previous and previous_processing.get('mode') == 'full':
                 response_cache_jobs = [previous['id'], *response_cache_jobs]
-            atomic_json(directory / 'processing-settings.json', {
+            files = {'source.json': source,
+                'analysis-settings.json': {**analysis_settings, 'provider': analysis_provider, 'economy_mode': economy_mode},
+                'render-settings.json': options,
+                'story-objective.json': objective,
+                'processing-settings.json': {
                 'mode': processing_mode, 'reuse_job_id': previous['id'] if previous else None,
-                'response_cache_jobs': response_cache_jobs, 'inherited_files': copied})
+                'response_cache_jobs': response_cache_jobs, 'inherited_files': []}}
+            absent_settings = []
+            if previous:
+                for name in ('editorial-settings.json', 'planning-preferences.json', 'speech-handle-overrides.json'):
+                    path = self.job_dir(previous['id']) / name
+                    if path.is_file():
+                        files[name] = read_json(path)
+                    else:
+                        absent_settings.append(name)
             job = {"id": identifier, "source_name": source["name"], "status": "queued",
                    "stage": "queued", "progress": 0.0, "message": "Ожидание запуска",
                    "created_at": now(), "updated_at": now(), "error": None,
                    "outputs": [], "cancel_requested": False, "analysis_provider": analysis_provider, "economy_mode": economy_mode,
                    'processing_mode': processing_mode,
                    'reuse_job_id': previous['id'] if previous else None, **options}
+            job['story_objective'] = objective
             if episode_id is not None:
                 job['episode_id'] = episode_id
+            if operation_id is not None:
+                job.update(operation_id=operation_id, source_id=source_id)
+                receipt = {'version': 1, 'operation_id': operation_id, 'job_id': identifier,
+                           'state': 'reserved', 'request': request, 'files': files,
+                           'absent_settings': absent_settings, 'job': job}
+                receipt['snapshot_sha256'] = content_digest({key: value for key, value in receipt.items() if key != 'state'})
+                atomic_json(self._submission_path(operation_id), receipt)
+                return self._start(self._materialize_submission(receipt, recovered=False))
+            directory.mkdir()
+            self._write_job_inputs(directory, files, owner_episode_id=episode_id)
             if correction_request is not None:
                 job['feedback_parent_job_id'] = correction_request['parent_job_id']
                 job['feedback_operation_id'] = correction_request['operation_id']
@@ -599,7 +903,7 @@ class JobManager:
             raise BusyError("Сейчас обрабатывается другая серия")
         # Finishing jobs also consume FFmpeg, CPU, memory and source files.
         # Do not start a fresh analysis while any preview/export is active.
-        if any(self.finishing_tasks.values()):
+        if any(self.finishing_tasks.values()) or self.finishing_execution.busy():
             raise BusyError("Дождитесь завершения предпросмотра или экспорта")
 
     def _start(self, job: dict) -> dict:
@@ -607,8 +911,10 @@ class JobManager:
         from .antigravity_runner import configure_default
         configure_default(directory,job.get('analysis_provider','local'))
         (directory / ".cancel").unlink(missing_ok=True)
+        job.pop("worker_health", None)
         job.update(status="running", error=None, outputs=[], cancel_requested=False,
-                   message="Запуск обработки", updated_at=now())
+                   message="Запуск обработки", updated_at=now(), attempt_id=uuid.uuid4().hex,
+                   progress_updated_at=None)
         atomic_json(directory / "job.json", job)
         self.pending_states.pop(job["id"], None)
         try:
@@ -619,6 +925,8 @@ class JobManager:
             atomic_json(directory / "job.json", job)
             return job
         self.active = (job["id"], child)
+        self._worker_observation = {"attempt_id": job["attempt_id"], "sequence": 0,
+                                    "last_seen": time.monotonic()}
         LOGGER.info("Worker process launched", extra={"job_id": job["id"],
                      "action": "worker_launched", "status": "running",
                      "detail_log": f"data/jobs/{job['id']}/worker.log"})
@@ -627,6 +935,12 @@ class JobManager:
 
     def _watch(self, identifier: str, child):
         try:
+            while child.poll() is None:
+                with self.mutex:
+                    if self.closed or not self.active or self.active[1] is not child:
+                        return
+                    self._observe_worker(identifier, child)
+                time.sleep(WORKER_POLL_SECONDS)
             code = child.wait()
             LOGGER.log(logging.INFO if code == 0 else logging.ERROR,
                        "Worker exited with code %s", code,
@@ -636,6 +950,7 @@ class JobManager:
                 if self.closed or not self.active or self.active[1] is not child:
                     return
                 job = self.get(identifier)
+                job.pop("worker_health", None)
                 if job["status"] not in TERMINAL:
                     requested = (self.job_dir(identifier) / ".cancel").exists()
                     job.update(status="cancelled" if requested else "failed", updated_at=now(),
@@ -658,8 +973,16 @@ class JobManager:
 
     def cancel(self, identifier: str, *, stop_terminal=False) -> dict:
         with self.mutex:
-            job = self.get(identifier)
-            if job["status"] in TERMINAL and (not stop_terminal or job['status'] == 'completed'):
+            damaged = None
+            try:
+                job = self.get(identifier)
+            except DamagedJobError as error:
+                if not self.active or self.active[0] != identifier:
+                    raise
+                # A damaged record must not make its still-owned process
+                # impossible to stop. Preserve the file after draining it.
+                damaged, job = error, None
+            if job is not None and job["status"] in TERMINAL and (not stop_terminal or job['status'] == 'completed'):
                 return job
             try:
                 (self.job_dir(identifier) / ".cancel").touch()
@@ -678,7 +1001,9 @@ class JobManager:
                         if self.active and self.active[1] is child:
                             self.active = None
             # No child writes after terminate_tree returns.
-            job = read_json(self.job_dir(identifier) / "job.json")
+            if damaged is not None:
+                raise damaged
+            job = self._read_job(identifier)
             if job["status"] != "completed":
                 job.update(status="cancelled", cancel_requested=True, error=None,
                            message="Обработка отменена. Сохранённые этапы можно продолжить.", updated_at=now())
@@ -699,7 +1024,7 @@ class JobManager:
                 raise BusyError('Приложение завершает работу')
             if self.active and self.active[0] != identifier:
                 raise BusyError('Сейчас обрабатывается другая серия')
-            if any(self.finishing_tasks.values()):
+            if any(self.finishing_tasks.values()) or self.finishing_execution.busy():
                 raise BusyError('Дождитесь завершения предпросмотра или экспорта')
             if not resume and job['status'] not in TERMINAL:
                 raise BusyError('Сначала остановите обработку или выберите переключение с продолжением')
@@ -745,7 +1070,7 @@ class JobManager:
                 raise BusyError('Приложение завершает работу')
             if self.active and self.active[0] != identifier:
                 raise BusyError('Сейчас обрабатывается другая серия')
-            if any(self.finishing_tasks.values()):
+            if any(self.finishing_tasks.values()) or self.finishing_execution.busy():
                 raise BusyError('Дождитесь завершения предпросмотра или экспорта')
             if job['status'] not in TERMINAL and not resume:
                 raise BusyError('Сначала остановите обработку или выберите продолжение')
@@ -806,8 +1131,8 @@ class JobManager:
 
     def close(self):
         with self.mutex:
-            if self.closed:
-                return
+            if self._resources_closed:
+                return True
             self.closed = True
             try:
                 if self.active:
@@ -816,6 +1141,7 @@ class JobManager:
                         child.terminate_tree()
                         job = self.get(identifier)
                         if job["status"] not in TERMINAL:
+                            job.pop("worker_health", None)
                             job.update(status="interrupted", message="Приложение закрыто. Можно продолжить.", updated_at=now())
                             atomic_json(self.job_dir(identifier) / "job.json", job)
                     except Exception:
@@ -831,9 +1157,12 @@ class JobManager:
                 pass
         # Finishing worker cleanup acquires manager.mutex, so join only
         # after releasing the lock held above.
-        try:
-            from .studio_render import stop_finishing_tasks
-            if not stop_finishing_tasks(self, timeout=12):
-                LOGGER.warning("Не все экспорты завершились при закрытии")
-        finally:
-            self.lock.close()
+        from .studio_render import stop_finishing_tasks
+        if not stop_finishing_tasks(self, timeout=12):
+            # Keep exclusive server ownership until the old process tree and
+            # durable terminal state have been reconciled. close() may retry.
+            LOGGER.warning("Не все экспорты завершились при закрытии; блокировка приложения сохранена")
+            return False
+        self.lock.close()
+        self._resources_closed = True
+        return True

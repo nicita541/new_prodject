@@ -228,7 +228,7 @@ def instrument(measurements):
         yield
 
 
-def benchmark(fixture, job, *, resume, timeout):
+def benchmark(fixture, job, *, resume, timeout, standalone=False):
     from scripts.run_production_raw_quality import run
     job.mkdir(parents=True, exist_ok=True)
     label = 'resume' if resume else 'fresh'
@@ -249,14 +249,15 @@ def benchmark(fixture, job, *, resume, timeout):
     error = None
     try:
         with instrument(metrics):
-            outcome = run(fixture, job, render=True, analysis_provider='local')
+            options = {'story_objective': {'objective': 'standalone_shorts'}} if standalone else {}
+            outcome = run(fixture, job, render=True, analysis_provider='local', **options)
     except Exception as caught:
         error = type(caught).__name__
         outcome = load_json(job / 'observed-outcome.json') if (job / 'observed-outcome.json').exists() else {}
     finally:
         metrics.finish()
     for name in ('observed-outcome.json', 'observed-sessions.json', 'timings.json',
-                 'final_quality_gate.json'):
+                 'final_quality_gate.json', 'standalone-outcome.json', 'selective-scope.json'):
         if (job / name).is_file(): shutil.copyfile(job / name, record / name)
     for source, destination in ((job / 'model-performance.jsonl', 'model-performance.jsonl'),
             (job / 'diagnostics/pipeline/timeline.jsonl', 'timeline.jsonl'),
@@ -281,6 +282,7 @@ def main():
     parser.add_argument('--timeout-seconds', type=float, default=1800)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--standalone', action='store_true', help='Use whole-episode survey and independent story compilation')
     args = parser.parse_args()
     if not 0 < args.timeout_seconds < 86400: parser.error('Timeout must be positive and below one day')
     config.setup_environment()
@@ -292,7 +294,7 @@ def main():
         prepare(args.source, fixture, duration, args.start_seconds)
         if not args.prepare_only:
             results.append(benchmark(fixture, directory / f'job-{duration}s',
-                                     resume=args.resume, timeout=args.timeout_seconds))
+                                     resume=args.resume, timeout=args.timeout_seconds, standalone=args.standalone))
     if results: atomic_json(directory / ('resume-results.json' if args.resume else 'fresh-results.json'), results)
     return 0 if all(r['complete'] for r in results) else 1
 

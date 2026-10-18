@@ -4,12 +4,14 @@ from contextlib import contextmanager
 import uuid
 import time
 import threading
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from app.config import FFMPEG, FFPROBE, TEMP
-from app.media import choose_encoder, crop_expressions, crop_position, crop_size, inspect_media, render_part, run_command, validate_export
+from app.media import choose_encoder, crop_expressions, crop_position, crop_size, inspect_media, render_part, run_command, run_render_command, validate_export
 from app.pipeline import _run_render_tasks, run_job
 
 
@@ -59,6 +61,82 @@ class EncoderProbeTests(unittest.TestCase):
             with self.subTest(error=type(error).__name__), workspace_directory() as directory, \
                     patch("app.media.run_command", side_effect=error):
                 self.assertEqual(choose_encoder(Path(directory)), "libx264")
+
+
+class RenderProgressTests(unittest.TestCase):
+    def _simulate(self, directory, observations, on_progress=None, duration=10, inputs=0):
+        clock = [0.0]
+        def run(args, workdir, cancelled, *, timeout, on_tick):
+            self.assertGreater(timeout, 180)
+            progress = Path(args[args.index('-progress') + 1])
+            self.assertIn('-nostats', args)
+            for now, contents in observations:
+                clock[0] = now
+                if contents is not None:
+                    progress.write_text(contents, encoding='ascii')
+                on_tick()
+            return 'done'
+        with patch('app.media.time.monotonic', side_effect=lambda: clock[0]), \
+                patch('app.media.run_command', side_effect=run):
+            return run_render_command(['ffmpeg', *['-i', 'source'] * inputs, 'output.mp4'],
+                                      Path(directory), duration, lambda: False, on_progress)
+
+    def test_no_callback_still_times_out_without_first_frame(self):
+        with workspace_directory() as directory:
+            with self.assertRaisesRegex(TimeoutError, 'нет первых кадров'):
+                self._simulate(directory, [(181, None)])
+
+    def test_repeated_progress_records_do_not_keep_stalled_render_alive(self):
+        with workspace_directory() as directory:
+            with self.assertRaisesRegex(TimeoutError, 'остановился вывод кадров'):
+                self._simulate(directory, [(1, 'frame=1\nout_time_us=1000000\n'),
+                                           (90, 'frame=1\nout_time_us=1000000\nprogress=continue\n'),
+                                           (122, 'frame=1\nout_time_us=1000000\nprogress=continue\n')])
+
+    def test_advancing_frames_with_static_output_clock_do_not_false_stall(self):
+        with workspace_directory() as directory:
+            self.assertEqual(self._simulate(directory, [(1, 'frame=1\nout_time_us=0\n'),
+                                                       (120, 'frame=2\nout_time_us=0\n'),
+                                                       (239, 'frame=3\nout_time_us=0\n')]), 'done')
+
+    def test_reports_monotonic_clock_and_tolerates_incomplete_lines(self):
+        values = []
+        with workspace_directory() as directory:
+            self.assertEqual(self._simulate(directory, [(1, 'out_time_us=1000000\nframe=1\n'),
+                                                       (2, 'out_time_us=not_finished\nframe=2\n'),
+                                                       (3, 'out_time_us=500000\nframe=2\n'),
+                                                       (4, 'out_time_us=20000000\nframe=3\n')], values.append), 'done')
+        self.assertEqual(values, [.1, .999])
+
+    def test_first_frame_bootstrap_allows_time_to_open_multiple_inputs(self):
+        with workspace_directory() as directory:
+            self.assertEqual(self._simulate(directory, [(190, None), (199, 'frame=1\n')],
+                                            inputs=10), 'done')
+
+    def test_deadline_scales_with_output_and_input_work(self):
+        deadlines = []
+        with workspace_directory() as directory, patch('app.media.run_command') as run:
+            for duration, count in [(1, 1), (120, 1), (120, 10)]:
+                run_render_command(['ffmpeg', *['-i', 'source'] * count, 'output.mp4'],
+                                   Path(directory), duration, lambda: False)
+                deadlines.append(run.call_args.kwargs['timeout'])
+        self.assertLess(deadlines[0], deadlines[1])
+        self.assertLess(deadlines[1], deadlines[2])
+
+    def test_stalled_owned_process_is_reaped_without_callback(self):
+        processes = []
+        start_process = subprocess.Popen
+        def capture(*args, **kwargs):
+            process = start_process(*args, **kwargs)
+            processes.append(process)
+            return process
+        with workspace_directory() as directory, patch('app.media.subprocess.Popen', side_effect=capture), \
+                patch('app.media._RENDER_BOOTSTRAP_SECONDS', .1):
+            with self.assertRaisesRegex(TimeoutError, 'нет первых кадров'):
+                run_render_command([sys.executable, '-c', 'import time; time.sleep(30)', '-'],
+                                   Path(directory), 1, lambda: False)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll())
 
 
 class RenderTaskTests(unittest.TestCase):
@@ -207,9 +285,71 @@ class RenderTaskTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate_export(path, 121, Path(directory))
 
+    def test_full_decode_is_explicit_and_propagates_packet_errors(self):
+        info = {"format": {"duration": "1"}, "streams": [
+            {"codec_type": "video", "codec_name": "h264", "width": 1080,
+             "height": 1920, "avg_frame_rate": "30/1"},
+            {"codec_type": "audio", "codec_name": "aac"}]}
+        with workspace_directory() as directory:
+            path = Path(directory) / 'output.mp4'
+            path.write_bytes(b'x' * 2000)
+            with patch('app.media.inspect_media', return_value=info), \
+                    patch('app.media.run_render_command', side_effect=RuntimeError('invalid packet')) as decode:
+                validate_export(path, 1, Path(directory))
+                decode.assert_not_called()
+                with self.assertRaisesRegex(RuntimeError, 'invalid packet'):
+                    validate_export(path, 1, Path(directory), full_decode=True)
+                command = decode.call_args.args[0]
+                self.assertIn('-xerror', command)
+                self.assertIn('-err_detect', command)
+                self.assertEqual(command[-3:], ['-f', 'null', '-'])
+
+    def test_fresh_render_requires_full_decode_before_publishing(self):
+        with workspace_directory() as directory:
+            base = Path(directory)
+            source = base / 'source.mp4'
+            source.write_bytes(b'placeholder')
+            part = {'index': 1, 'duration': 1, 'cuts': [{'start': 0, 'end': 1, 'focus': []}],
+                    'subtitles': []}
+            with patch('app.media.run_render_command'), \
+                    patch('app.media.validate_export', side_effect=RuntimeError('decode failed')) as validate:
+                with self.assertRaisesRegex(RuntimeError, 'decode failed'):
+                    render_part(source, part, {'width': 320, 'height': 180},
+                                base / 'output', base / 'work', 'libx264')
+            self.assertTrue(validate.call_args.kwargs['full_decode'])
+            self.assertFalse((base / 'output' / 'part_001.mp4').exists())
+            self.assertFalse((base / 'output' / 'part_001.srt').exists())
+
 
 @unittest.skipUnless(FFMPEG.is_file() and FFPROBE.is_file(), "Portable FFmpeg has not been installed")
 class MediaIntegrationTests(unittest.TestCase):
+    def test_full_decode_rejects_corrupt_packets_in_valid_container(self):
+        with workspace_directory() as directory:
+            base = Path(directory)
+            output = base / 'corrupt.mp4'
+            run_command([str(FFMPEG), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                         'color=size=1080x1920:rate=30:duration=0.2', '-f', 'lavfi', '-i',
+                         'sine=frequency=440:duration=0.2', '-c:v', 'libx264', '-preset', 'ultrafast',
+                         '-c:a', 'aac', '-shortest', str(output)], base)
+            validate_export(output, .2, base, full_decode=True)
+            data = bytearray(output.read_bytes())
+            cursor = 0
+            while cursor + 8 <= len(data):
+                size = int.from_bytes(data[cursor:cursor + 4], 'big')
+                self.assertGreaterEqual(size, 8)
+                if data[cursor + 4:cursor + 8] == b'mdat':
+                    data[cursor + 8:cursor + size] = b'\0' * (size - 8)
+                    break
+                cursor += size
+            else:
+                self.fail('Fixture has no media data atom')
+            output.write_bytes(data)
+            # The metadata and stream headers remain readable; packet decoding
+            # is the extra protection supplied by full_decode.
+            validate_export(output, .2, base)
+            with self.assertRaises(RuntimeError):
+                validate_export(output, .2, base, full_decode=True)
+
     def test_cinema_preserves_both_source_edges_and_outputs_valid_portrait(self):
         import numpy as np
         import cv2
@@ -355,8 +495,14 @@ class MediaIntegrationTests(unittest.TestCase):
             self.assertTrue(frames)
             self.assertTrue(all(first <= timestamp <= last for timestamp in frames))
             self.assertTrue((base / "eof-board.jpg").is_file())
-            self.assertTrue(list(base.glob("eof-board_*_*.jpg")))
-            self.assertTrue(all(frame.stat().st_size > 0 for frame in base.glob("eof-board_*_*.jpg")))
+            audit = json.loads((base / 'eof-board.storyboard.json').read_text('utf-8'))
+            self.assertEqual([row['time'] for row in audit['frames']], frames)
+            self.assertTrue(all(row['pts'] is not None and row['time_base'] for row in audit['frames']))
+            from PIL import Image
+            with Image.open(base / 'eof-board.jpg') as picture:
+                self.assertGreater(picture.width, 0)
+                self.assertGreater(picture.height, 24)
+                self.assertGreater(sum(picture.crop((0, 24, picture.width, picture.height)).convert('L').getextrema()), 0)
 
 
 class PipelineCheckpointTests(unittest.TestCase):

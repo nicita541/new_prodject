@@ -69,7 +69,8 @@ def check_regions(events):
             tasks = ['credits','titles','source_roles']
             if kind == 'ending':
                 tasks.append('closing')
-        elif event.get('kind') == 'eyecatch' or event.get('title_candidate') or event.get('visible_production_title'):
+        elif (event.get('kind') == 'eyecatch' or event.get('eyecatch_candidate')
+              or event.get('title_candidate') or event.get('visible_production_title')):
             tasks = ['titles']
         if tasks:
             regions.append({'start':max(0.,event['start']-BOUNDARY_CONTEXT),

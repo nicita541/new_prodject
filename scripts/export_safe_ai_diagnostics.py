@@ -255,7 +255,9 @@ def model_perf_summary(job):
                 for (model, stage), items in sorted(groups.items())]
     by_model = [_model_statistics(items, model=model)
                 for model, items in sorted(models.items())]
-    overall = _model_statistics(all_rows, model="all_local_models") if all_rows else None
+    local_rows = [item for item in all_rows if item[0]['model'] != 'deepseek_flash']
+    remote_rows = [item for item in all_rows if item[0]['model'] == 'deepseek_flash']
+    overall = _model_statistics(local_rows, model="all_local_models") if local_rows else None
     return {
         "schema_version": 2, "available": bool(starts or loads),
         "requests": len(starts),
@@ -264,6 +266,8 @@ def model_perf_summary(job):
         "by_model": by_model,
         "by_model_and_stage": by_stage,
         "overall_local_models": overall,
+        "overall_remote_models": (_model_statistics(remote_rows, model="all_remote_models")
+                                  if remote_rows else None),
         "note": "Measured response usage only. Pending or missing usage stays unknown; "
                 "prefill/decode timing is optional and not equal to HTTP latency.",
     }

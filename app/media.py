@@ -15,6 +15,15 @@ from .subtitles import write_ass, write_srt
 from .planner import MAX_DURATION
 
 _FRAME_BOUNDS = {}
+EXPORT_VALIDATION_VERSION = 1
+
+# A render may spend time opening several source intervals before the first
+# output frame. Once it starts, only advancing media (not diagnostic log writes)
+# keeps it alive. These are conservative infrastructure defaults, not measured
+# performance targets; the effective policy is logged for later calibration.
+_RENDER_BOOTSTRAP_SECONDS = 180.0
+_RENDER_STALL_SECONDS = 120.0
+_RENDER_SECONDS_PER_OUTPUT_SECOND = 120.0
 
 
 def video_frame_bounds(source: Path, workdir: Path, cancelled=lambda: False) -> tuple[float, float]:
@@ -115,7 +124,13 @@ def inspect_media(path: Path, workdir: Path, cancelled=lambda: False) -> dict:
                                    "-of", "json", str(path.resolve())], workdir, cancelled, 45))
 
 
-def validate_export(path: Path, expected_duration: float, workdir: Path, cancelled=lambda: False, max_duration: float | None = None) -> dict:
+def validate_export(path: Path, expected_duration: float, workdir: Path, cancelled=lambda: False,
+                    max_duration: float | None = None, *, full_decode: bool = False) -> dict:
+    """Inspect metadata; fresh exports also require an explicit complete decode.
+
+    A caller reusing a previously decoded artifact may omit ``full_decode`` only
+    after verifying that its bytes still match that artifact's identity.
+    """
     if not path.is_file() or path.stat().st_size < 1000:
         raise ValueError("Недописанный или пустой результат")
     info = inspect_media(path, workdir, cancelled)
@@ -136,7 +151,15 @@ def validate_export(path: Path, expected_duration: float, workdir: Path, cancell
     video_duration = float(video.get("duration", duration))
     if abs(audio_duration - video_duration) > 0.15:
         raise ValueError("Обнаружено рассогласование длительности видео и звука")
-    return {"duration": duration, "width": video["width"], "height": video["height"], "codec": "h264"}
+    if full_decode:
+        # ffprobe reads the container, not every packet. Fail on decode errors
+        # anywhere in the result, before its partial name is published.
+        run_render_command([str(FFMPEG), '-hide_banner', '-loglevel', 'error', '-nostdin',
+                            '-xerror', '-err_detect', 'explode', '-i', str(path.resolve()),
+                            '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'],
+                           workdir, duration, cancelled)
+    return {"duration": duration, "width": video["width"], "height": video["height"], "codec": "h264",
+            'full_decode': full_decode, 'validation_version': EXPORT_VALIDATION_VERSION}
 
 
 def crop_size(width: int, height: int) -> tuple[int, int]:
@@ -173,7 +196,7 @@ def crop_expressions(cut: dict, width: int, height: int) -> tuple[str, str]:
     # Framing has already resolved uncertainty into a held composition or an
     # explicit fallback. Confidence describes the evidence, not whether a
     # timeline anchor can be discarded (a new-shot centre reset may be zero).
-    anchors = cut["focus"] or [{"time": cut["start"], "x": 0.5, "y": 0.5}]
+    anchors = cut.get("focus", []) or [{"time": cut["start"], "x": 0.5, "y": 0.5}]
     coordinates = {}
     for anchor in anchors:
         coordinates[round(max(0.0, anchor["time"] - cut["start"]), 6)] = (
@@ -196,31 +219,69 @@ def choose_encoder(workdir: Path, cancelled=lambda: False) -> str:
 
 
 def run_render_command(args, workdir, duration, cancelled, on_progress=None):
-    """Read FFmpeg's output clock without parsing noisy diagnostic stderr."""
-    if on_progress is None:
-        return run_command(args, workdir, cancelled)
+    """Watch media advancement, including renders without a UI callback.
+
+    The stall watchdog is separate from a generous workload-based deadline. It
+    catches a live but stuck FFmpeg without imposing an episode-wide timer.
+    ``run_command`` owns and terminates only the process it started.
+    """
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError('Длительность обработки должна быть положительной')
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
     progress = workdir / ('progress_' + uuid.uuid4().hex + '.txt')
     args = [*args[:-1], '-progress', str(progress.resolve()), '-nostats', args[-1]]
+    inputs = args.count('-i')
+    bootstrap = _RENDER_BOOTSTRAP_SECONDS + 2 * inputs
+    deadline = bootstrap + max(_RENDER_STALL_SECONDS,
+                              duration * _RENDER_SECONDS_PER_OUTPUT_SECOND + 10 * inputs)
+    logging.getLogger('app.media').info(
+        'FFmpeg progress policy: bootstrap=%ss, stall=%ss, deadline=%ss',
+        bootstrap, _RENDER_STALL_SECONDS, deadline,
+        extra={'action': 'render_progress_policy', 'stage': 'media',
+               'bootstrap_seconds': bootstrap, 'stall_seconds': _RENDER_STALL_SECONDS,
+               'timeout_seconds': deadline, 'output_duration': duration, 'input_count': inputs})
+    started = advanced_at = time.monotonic()
+    maxima = {'out_time_us': 0, 'frame': 0}
+    started_output = False
     last = -1.0
     def tick():
-        nonlocal last
+        nonlocal last, advanced_at, started_output
+        now = time.monotonic()
+        values = {}
         try:
             with progress.open('rb') as handle:
                 handle.seek(max(0, progress.stat().st_size - 4096))
                 lines = handle.read().decode('ascii', 'ignore').splitlines()
-            values = [int(line.split('=', 1)[1]) for line in lines if line.startswith('out_time_us=')]
-            value = min(.999, max(0, values[-1] / 1_000_000 / duration)) if values else 0
-        except (OSError, ValueError):
-            return
-        if value > last:
+            for line in lines:
+                key, separator, raw = line.partition('=')
+                if separator and key in maxima:
+                    try:
+                        values[key] = max(values.get(key, 0), int(raw))
+                    except ValueError:
+                        pass  # A tick may race a partially written progress line.
+        except OSError:
+            pass
+        if any(value > maxima[key] for key, value in values.items()):
+            advanced_at = now
+            started_output = True
+            for key, value in values.items():
+                maxima[key] = max(maxima[key], value)
+        limit = _RENDER_STALL_SECONDS if started_output else bootstrap
+        if now - (advanced_at if started_output else started) > limit:
+            raise TimeoutError('FFmpeg не продвигает обработку: ' +
+                               ('остановился вывод кадров' if started_output else 'нет первых кадров'))
+        value = min(.999, max(0, maxima['out_time_us'] / 1_000_000 / duration))
+        if on_progress and value > last:
             last = value
             on_progress(value)
-    return run_command(args, workdir, cancelled, on_tick=tick)
+    return run_command(args, workdir, cancelled, timeout=deadline, on_tick=tick)
 
 
 def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir: Path,
                 encoder: str, cancelled=lambda: False,
-                background_music: dict | None = None, finishing: dict | None = None, *, on_progress=None) -> Path:
+                background_music: dict | None = None, finishing: dict | None = None, *, on_progress=None,
+                on_validated=None) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     workdir.mkdir(parents=True, exist_ok=True)
     basename = f"part_{part['index']:03}"
@@ -350,9 +411,11 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
         if encoder != "h264_nvenc":
             raise
         return render_part(source, part, probe, output_dir, workdir, "libx264", cancelled,
-                           background_music=background_music, finishing=finishing, on_progress=on_progress)
+                           background_music=background_music, finishing=finishing, on_progress=on_progress,
+                           on_validated=on_validated)
     validate_export(partial, part["duration"], workdir, cancelled,
-                    max_duration=150.0 if part.get("duration", 0) > MAX_DURATION else None)
+                    max_duration=150.0 if part.get("duration", 0) > MAX_DURATION else None,
+                    full_decode=True)
     if cancelled():
         raise InterruptedError("Обработка отменена")
     # The requested hardware encoder can fall back per part. Record the actual
@@ -367,6 +430,11 @@ def render_part(source: Path, part: dict, probe: dict, output_dir: Path, workdir
     _safe_replace(srt_partial, output_dir / (basename + ".srt"))
     _safe_replace(ass_path, output_dir / (basename + ".ass"))
     _safe_replace(partial, destination)
+    if on_validated is not None:
+        from .content_identity import file_sha256
+        on_validated({'full_decode_version': EXPORT_VALIDATION_VERSION,
+                      'video_sha256': file_sha256(destination, cancelled),
+                      'subtitles_sha256': file_sha256(destination.with_suffix('.srt'), cancelled)})
     return destination
 
 

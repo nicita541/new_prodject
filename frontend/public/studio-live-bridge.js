@@ -76,6 +76,11 @@
     db.projects = library.projects || [];
     db.episodes = library.episodes || [];
     db.sources = sources || [];
+    for (const job of jobs || []) {
+      const previous = db.jobs?.find((value) => value.id === job.id);
+      if (previous && previous.published_revision !== job.published_revision)
+        invalidateJobPlan(db, job.id);
+    }
     db.jobs = (jobs || []).map((j) => ({
       ...j,
       created_at: date(j.created_at),
@@ -141,7 +146,7 @@
       );
     }
     const job = db.jobs.find((j) => j.id === ui.jobId);
-    if (!job || job.status !== "completed") return;
+    if (!job || (job.status !== "completed" && !job.published_revision)) return;
     if (!db.plans[job.id])
       db.plans[job.id] = normalizePlan(
         await get("/api/jobs/" + encodeURIComponent(job.id) + "/plan"),
@@ -174,6 +179,28 @@
           );
         }),
       );
+    }
+  }
+  async function loadFinishingTasks(db, jobId) {
+    const tasks = await get('/api/jobs/' + encodeURIComponent(jobId) + '/finishing-tasks');
+    db.finishingTasks ||= {};
+    db.finishingTasks[jobId] = Array.isArray(tasks) ? tasks : [];
+    return db.finishingTasks[jobId];
+  }
+  function invalidateJobPlan(db, jobId) {
+    for (const key of Object.keys(db.finishDirtyCues || {})) {
+      if (!key.startsWith(jobId + ":") || !db.finishDirtyCues[key]) continue;
+      const record = db.captionOverrides?.[key];
+      if (record) {
+        db.captionDraftConflicts ||= {};
+        db.captionDraftConflicts[jobId] ||= [];
+        db.captionDraftConflicts[jobId].push(JSON.parse(JSON.stringify(record)));
+      }
+    }
+    delete db.plans?.[jobId];
+    for (const field of ["captionOverrides", "finishDirtyCues"]) {
+      for (const key of Object.keys(db[field] || {}))
+        if (key.startsWith(jobId + ":")) delete db[field][key];
     }
   }
   async function request(method, path, body, db, ui, onResponse) {
@@ -233,9 +260,32 @@
         options.body = JSON.stringify(data);
       }
     }
+    const finishingSubmission = method === "POST" && /^\/api\/jobs\/[^/]+\/(?:previews|exports)$/.test(path);
+    const submission = method === "POST" && (/^\/api\/episodes\/[^/]+\/jobs$/.test(path) || path === "/api/jobs" || finishingSubmission);
+    let pendingKey;
+    if (submission) {
+      const payload = JSON.parse(options.body || "{}");
+      const episode = finishingSubmission ? null : db.episodes.find(item => item.id === path.split("/")[3]);
+      const snapshot = episode ? {source_id: episode.source_id, settings: episode.settings} : null;
+      const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === "object"
+        ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+      pendingKey = "kadr.pending:" + path + ":" + JSON.stringify(canonical({payload, episode: snapshot}));
+      let operationId;
+      try { operationId = sessionStorage.getItem(pendingKey); } catch { /* Storage may be unavailable. */ }
+      db.pendingOperations ||= {};
+      operationId = payload.operation_id || operationId || db.pendingOperations[pendingKey] || crypto.randomUUID();
+      db.pendingOperations[pendingKey] = operationId;
+      try { sessionStorage.setItem(pendingKey, operationId); } catch { /* Keep the in-memory retry token. */ }
+      options.headers = {"Content-Type": "application/json"};
+      options.body = JSON.stringify({...payload, operation_id: operationId});
+    }
     const result = await get(path, options);
+    if (pendingKey) {
+      delete db.pendingOperations[pendingKey];
+      try { sessionStorage.removeItem(pendingKey); } catch { /* No persistent token to clear. */ }
+    }
     if (
-      /^\/api\/jobs\/[^/]+\/previews(?:\/[^/]+)?$/.test(path) &&
+      /^\/api\/jobs\/[^/]+\/previews(?:\/[^/]+(?:\/(?:resume|cancel))?)?$/.test(path) &&
       result.preview_id
     ) {
       db.previews ||= {};
@@ -243,18 +293,29 @@
     }
     if (
       (/^\/api\/jobs\/[^/]+\/exports$/.test(path) ||
-        /^\/api\/exports\/[^/]+$/.test(path)) &&
+        /^\/api\/exports\/[^/]+(?:\/(?:resume|cancel))?$/.test(path)) &&
       result.export_id
     ) {
       db.exports ||= {};
       db.exports[result.export_id] = result;
     }
+    // The confirmed command is sufficient for its own status UI. An unrelated
+    // library refresh failing here must not make an accepted export look lost.
+    if ((result.preview_id || result.export_id) && (
+      /^\/api\/jobs\/[^/]+\/(?:previews(?:\/[^/]+(?:\/(?:resume|cancel))?)?|exports)$/.test(path) ||
+      /^\/api\/exports\/[^/]+(?:\/(?:resume|cancel))?$/.test(path)
+    )) return result;
     if (method === "GET") {
       if (path === "/api/music") db.music = { ...db.music, ...result };
       else if (path === "/api/health") db.health = result;
       else if (path === "/api/sources")
         db.sources = Array.isArray(result) ? result : [];
       else if (path === "/api/jobs") {
+        for (const job of Array.isArray(result) ? result : []) {
+          const previous = db.jobs.find((value) => value.id === job.id);
+          if (previous && previous.published_revision !== job.published_revision)
+            invalidateJobPlan(db, job.id);
+        }
         db.jobs = (Array.isArray(result) ? result : []).map((j) => ({
           ...j,
           created_at: date(j.created_at),
@@ -274,6 +335,8 @@
             db.episodes.find((e) => e.jobs?.some((a) => a.id === id))?.id,
         };
         const index = db.jobs.findIndex((j) => j.id === id);
+        if (index >= 0 && db.jobs[index].published_revision !== item.published_revision)
+          invalidateJobPlan(db, id);
         if (index >= 0) db.jobs[index] = item;
         else db.jobs.push(item);
       } else if (path === "/api/deepseek") db.deepseek = result;
@@ -311,7 +374,7 @@
       const retry =
         method === "POST" && path.match(/^\/api\/jobs\/([^/]+)\/(?:retry|analysis-provider|analysis-checks)$/);
       if (retry) {
-        delete db.plans[retry[1]];
+        invalidateJobPlan(db, retry[1]);
       }
       await refresh(db, ui);
     }
@@ -369,5 +432,5 @@
       String(reason?.message || "Unhandled promise rejection"),
     );
   });
-  window.KadrBridge = { get, refresh, loadSelected, request };
+  window.KadrBridge = { get, refresh, loadSelected, loadFinishingTasks, request };
 })();

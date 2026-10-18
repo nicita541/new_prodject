@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
+import shutil
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 from .content_identity import digest
@@ -14,6 +18,73 @@ VERSION = 1
 MODE = 'confirmed_only'
 REQUIRED_RELATIONS = {'cause', 'response', 'setup_payoff', 'state_transition'}
 BOUNDARY_FAILURES = {'ambiguous_internal_boundary','semantic_boundary_unresolved','unverified_scene_boundary'}
+SOURCE_FILES = ('events.json','story_structure-result.json','dialogue_relations-result.json',
+                'episode_profile.json','boundary-recovery/derived-ownership.json')
+
+
+def restore_source(directory):
+    """Recover the original canonical source even after worker termination."""
+    directory=Path(directory)
+    manifest=directory/'confirmed-selection/active-source.json'
+    saved=read_json(manifest,{})
+    if not saved.get('active'):
+        return
+    if saved['source']!=read_json(directory/'analysis.meta.json',{}).get('source'):
+        raise ValueError('Исходник изменён: автоматическое восстановление полного анализа остановлено')
+    for name,entry in saved['files'].items():
+        if name not in SOURCE_FILES:
+            raise ValueError('Неизвестный исходный файл в записи восстановления')
+        target=directory/name;target.resolve().relative_to(directory.resolve())
+        if entry is None:
+            target.unlink(missing_ok=True)
+            continue
+        backup=directory/entry['backup'];backup.resolve().relative_to((directory/'confirmed-selection').resolve())
+        raw=backup.read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=entry['sha256']:
+            raise ValueError('Изменена копия полного исходного анализа')
+        target.parent.mkdir(parents=True,exist_ok=True)
+        temporary=target.with_name('.'+target.name+'.'+uuid.uuid4().hex+'.tmp')
+        try:
+            temporary.write_bytes(raw);os.replace(temporary,target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    atomic_json(manifest,{**saved,'active':False})
+
+
+@contextmanager
+def preserve_source(analysis,directory):
+    """Native passes keep their APIs; scoped outputs cannot replace full source."""
+    directory=Path(directory)
+    if not analysis.get('selection_scope'):
+        yield
+        return
+    restore_source(directory)
+    folder=directory/'confirmed-selection'/'canonical'/uuid.uuid4().hex
+    folder.resolve().relative_to(directory.resolve())
+    entries={}
+    for name in SOURCE_FILES:
+        source=directory/name;source.resolve().relative_to(directory.resolve())
+        if source.exists():
+            backup=folder/name;backup.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source,backup)
+            entries[name]={'backup':backup.relative_to(directory).as_posix(),
+                           'sha256':hashlib.sha256(backup.read_bytes()).hexdigest()}
+        else:
+            entries[name]=None
+    atomic_json(directory/'confirmed-selection/active-source.json',{'active':True,'files':entries,
+        'source':read_json(directory/'analysis.meta.json',{}).get('source')})
+    try:
+        yield
+    finally:
+        try:
+            for name in SOURCE_FILES:
+                source=directory/name
+                if source.exists():
+                    target=directory/'confirmed-selection/working'/name
+                    target.resolve().relative_to(directory.resolve())
+                    target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
+        finally:
+            restore_source(directory)
 
 
 def enabled(directory):

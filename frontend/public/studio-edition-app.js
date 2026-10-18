@@ -81,7 +81,7 @@
     localMedia: {},
     actionPending: false,
   };
-  let toastTimer, processTimer, feedbackTimer, reviewDialogOpener;
+  let toastTimer, processTimer, feedbackTimer, finishingTaskTimer, reviewDialogOpener;
   const feedbackReading = new Set();
   function sourceBy(id) {
     return db.sources.find((s) => s.id === id);
@@ -141,6 +141,25 @@
     return `<span class="badge ${s === "completed" ? "good" : ["running", "queued"].includes(s) ? "warn" : ["failed", "cancelled"].includes(s) ? "rose" : "muted"}">${statusLabel(s)}</span>`;
   }
   // Server data is authoritative; do not invent completed Shorts or durations.
+  function reviewable(j) {
+    return !!j && (j.status === "completed" || !!j.published_revision);
+  }
+  function outcomeHTML(j) {
+    const outcome = j?.latest_outcome || j?.outcome;
+    if (!outcome) return "";
+    const count = value => Array.isArray(value) ? value.length : Number(value) || 0;
+    const failures = Array.isArray(outcome.technical_failures) ? outcome.technical_failures : [];
+    const draftVideos = (Array.isArray(outcome.drafts) ? outcome.drafts : []).filter(d => d.status === 'rendered_needs_review' && d.video_url);
+    const draftCards = draftVideos.map((d, i) => '<div style="margin-top:16px"><strong>Черновик ' + (i + 1) + ' · требуется проверка</strong><p class="field-hint">Исходный кадр и оригинальный звук. Связность истории пока не подтверждена.</p><video controls preload="metadata" style="width:100%;max-height:360px" src="' + escAttr(d.video_url) + '"></video></div>').join('');
+    const details = failures.map(item => '<p class="field-hint">Техническая ошибка: ' + esc(typeof item === 'string' ? item : item.message || item.error || item.reason || 'Не удалось обработать кандидата') + '</p>').join('');
+    const labels = {ready: "Результат готов", partial: "Часть историй готова", needs_review: "Анализ завершён · нужна проверка", failed: "Обработка не завершена", planned: "Подготовлены предложения"};
+    return '<div class="panel" role="status" style="padding:16px;margin-bottom:16px"><strong>' + esc(labels[outcome.status] || "Результат обработки") + '</strong><p>Принято: ' + count(outcome.accepted) + ' · Черновые предложения: ' + count(outcome.drafts) + ' · Отклонено: ' + count(outcome.declined) + ' · Технические ошибки: ' + count(outcome.technical_failures) + '</p><p class="field-hint">Черновики требуют проверки и не являются утверждёнными клипами.' + (j.published_revision && j.status !== 'completed' ? ' Доступна предыдущая опубликованная версия.' : '') + '</p>' + details + draftCards + '</div>';
+  }
+  function storyObjective(d) {
+    return d.story_objective?.objective === "standalone_shorts"
+      ? {version: 1, objective: "standalone_shorts", settings: {max_clips: 3, preferred_min_duration: 45, preferred_max_duration: 90, max_duration: 120, ...d.story_objective.settings}}
+      : d.story_objective;
+  }
   function publicJob(j) {
     return {
       ...j,
@@ -214,9 +233,9 @@
       const selected = jobBy(ui.jobId),
         ready =
           selected?.episode_id === ui.episodeId &&
-          selected.status === "completed"
+          reviewable(selected)
             ? selected
-            : jobsFor(ui.episodeId).find((x) => x.status === "completed");
+            : jobsFor(ui.episodeId).find(reviewable);
       if (screen === "review" && !ready) {
         notify("Готовых шортсов для этой серии пока нет");
         screen = "editor";
@@ -238,6 +257,8 @@
     ui.screen = screen;
     ui.playing = false;
     render();
+    clearTimeout(finishingTaskTimer);
+    if (screen === 'finishing' && ui.jobId) refreshFinishingTasks(ui.jobId);
     window.scrollTo({ top: 0, behavior: "instant" });
     if (screen === "editor" && ui.episodeId && !db.finishing[ui.episodeId]) {
       const expectedEpisode = ui.episodeId;
@@ -335,7 +356,7 @@
   function episodeNavigation() {
     if (!["editor", "processing", "review", "finishing"].includes(ui.screen) || (!aliveE(currE()) || currE().project_id !== ui.projectId)) return "";
     const hasJob = Boolean(latest(ui.episodeId));
-    const ready = jobsFor(ui.episodeId).some((job) => job.status === "completed");
+    const ready = jobsFor(ui.episodeId).some(reviewable);
     return `<nav class="episode-navigation" aria-label="Работа с серией">${[
       ["editor", "Настройки", true], ["processing", "Монтаж", hasJob],
       ["review", currentJob()?.processing_mode === 'plan_only' ? 'План' : "Shorts", ready], ["finishing", "Оформление", true],
@@ -392,7 +413,7 @@
     return `${header("ПРОЕКТ / БИБЛИОТЕКА СЕРИЙ", "Серии проекта", "Выберите серию, чтобы настроить монтаж или открыть готовые Shorts.", `<button class="btn clear" data-action="nav" data-screen="projects">← Библиотека</button><button class="btn solid" data-action="new-episode">＋ Добавить серию</button>`)}<div class="episode-cover" data-tone="${p.tone || "blue"}"><div class="inside"><div class="kicker">ПРОЕКТ · ${String(eps.length).padStart(2, "0")} ЭПИЗОДОВ</div><h1>${esc(p.title)}</h1><p>${summary.ready} готовых серий · ${summary.running ? "Монтаж идёт" : "Нет активных монтажей"} · Начат ${stamp(p.created_at)}</p><div class="inline-controls"><button class="btn sm" data-action="new-episode">＋ Новая серия</button><button class="btn sm red" data-action="delete-project" data-id="${esc(p.id)}">Удалить проект</button></div></div></div><div class="section-title"><h2>Список серий</h2><span class="tiny-note">${eps.length} · Отсортировано по номеру</span></div><div class="episodes-list">${eps
       .map((e) => {
         const j = latest(e.id);
-        return `<article class="episode-item panel"><div class="episode-number">${String(e.number).padStart(2, "0")}</div><div class="episode-info"><h3>Серия ${e.number}</h3><p>${esc(sourceBy(e.source_id)?.name || "Видео ещё не выбрано")} · ${jobsFor(e.id).length} запусков</p></div><div class="status-col">${j ? badge(j.status) : '<span class="badge muted">Без монтажа</span>'}</div><div class="episode-actions"><button class="btn sm" data-action="open-episode" data-id="${esc(e.id)}">⚙ Настроить</button>${jobsFor(e.id).some((job) => job.status === "completed") ? `<button class="btn sm green" data-action="open-review" data-id="${esc(e.id)}">▷ Shorts</button>` : ""}${j && j.status !== "completed" ? `<button class="btn sm clear" data-action="open-job" data-id="${esc(j.id)}">◷ Монтаж</button>` : ""}<button class="btn sm red" data-action="delete-episode" data-id="${esc(e.id)}" title="Поместить в корзину">✕</button></div></article>`;
+        return `<article class="episode-item panel"><div class="episode-number">${String(e.number).padStart(2, "0")}</div><div class="episode-info"><h3>Серия ${e.number}</h3><p>${esc(sourceBy(e.source_id)?.name || "Видео ещё не выбрано")} · ${jobsFor(e.id).length} запусков</p></div><div class="status-col">${j ? badge(j.status) : '<span class="badge muted">Без монтажа</span>'}</div><div class="episode-actions"><button class="btn sm" data-action="open-episode" data-id="${esc(e.id)}">⚙ Настроить</button>${jobsFor(e.id).some(reviewable) ? `<button class="btn sm green" data-action="open-review" data-id="${esc(e.id)}">▷ Shorts</button>` : ""}${j && j.status !== "completed" ? `<button class="btn sm clear" data-action="open-job" data-id="${esc(j.id)}">◷ Монтаж</button>` : ""}<button class="btn sm red" data-action="delete-episode" data-id="${esc(e.id)}" title="Поместить в корзину">✕</button></div></article>`;
       })
       .join(
         "",
@@ -434,14 +455,14 @@
       m = ui.draftMusic,
       src = sourceBy(d.source_id),
       isRunning = jobsFor(e.id).some((x) => x.status === "running");
-    return `${header(`СЕРИЯ ${String(e.number).padStart(2, "0")} / ПАРАМЕТРЫ`, "Настройка монтажа", `Проект «${esc(currP()?.title || "")}».`, `<button class="btn clear" data-action="nav" data-screen="episodes">← К сериям</button>${jobsFor(e.id).some((x) => x.status === "completed") ? '<button class="btn" data-action="open-review">▷ Проверить готовые</button>' : ""}`)}
+    return `${header(`СЕРИЯ ${String(e.number).padStart(2, "0")} / ПАРАМЕТРЫ`, "Настройка монтажа", `Проект «${esc(currP()?.title || "")}».`, `<button class="btn clear" data-action="nav" data-screen="episodes">← К сериям</button>${jobsFor(e.id).some(reviewable) ? '<button class="btn" data-action="open-review">▷ Проверить готовые</button>' : ""}`)}
 <div class="two-col montage-settings"><div class="editor-left">
 <section class="panel editor-source"><div class="editor-source-info"><h2>Исходное видео</h2><p id="sourceInfo" title="${esc(src?.name || "")}">${src ? `${esc(src.name)} · ${kb(src.size)}` : "Импортируйте MP4 или MKV"}</p></div><button class="btn" data-action="upload-video">↥ Импортировать видео</button></section>
 <section class="panel setting-panel editor-appearance"><div class="section-heading"><h2>Оформление Shorts</h2><span>9:16</span></div><div class="choice-row editor-layouts">${[
   ["cinema", "Весь кадр", ""], ["portrait", "Крупный план", "crop"], ["social", "Карточка", "social"],
 ].map(([value, label, cls]) => `<label class="option-card"><input name="layout" type="radio" value="${value}" ${(value === "social" ? d.frame_style === "social" : d.frame_style !== "social" && d.layout === value) ? "checked" : ""}><span class="mini-layout ${cls}"></span><strong>${label}</strong></label>`).join("")}</div>
 <div class="editor-appearance-tools"><label class="form-label" for="captionStyle">Субтитры</label><select class="form-select" id="captionStyle"><option value="accent" ${d.caption_style === "accent" ? "selected" : ""}>Яркие</option><option value="classic" ${d.caption_style === "classic" ? "selected" : ""}>Классические</option></select><button class="btn sm" id="editCardButton" data-action="editor-panel" data-id="editorCard" ${d.frame_style === "social" ? "" : "hidden"}>Настроить карточку</button></div></section>
-<section class="panel editor-options"><div class="editor-option-row"><label class="form-label" for="analysisSelect">Анализ</label><select class="form-select" id="analysisSelect"><option value="deepseek_plan" ${d.analysis_provider === "deepseek_plan" ? "selected" : ""}>DeepSeek · сюжет и план</option><option value="antigravity_manual" ${d.analysis_provider === "antigravity_manual" ? "selected" : ""}>Antigravity · автоматически</option><option value="local" ${d.analysis_provider === "local" ? "selected" : ""}>На компьютере</option><option value="hybrid" ${d.analysis_provider === "hybrid" ? "selected" : ""}>На компьютере + DeepSeek</option><option value="deepseek" ${d.analysis_provider === "deepseek" ? "selected" : ""}>DeepSeek · облако</option></select><button class="btn sm clear" data-action="editor-panel" data-id="editorAnalysis" aria-label="Настройки подключения анализа">⚙</button></div>
+<section class="panel editor-options"><div class="editor-option-row"><label class="form-label" for="storyObjective">Цель монтажа</label><select class="form-select" id="storyObjective"><option value="episode_condensation" ${d.story_objective?.objective !== "standalone_shorts" ? "selected" : ""}>Сокращение серии</option><option value="standalone_shorts" ${d.story_objective?.objective === "standalone_shorts" ? "selected" : ""}>Самостоятельные истории</option></select></div><p class="field-hint">Самостоятельные истории: до 3 роликов, ориентир 45–90 секунд, максимум 120 секунд. Результат зависит от материала и требует проверки.</p><div class="editor-option-row"><label class="form-label" for="analysisSelect">Анализ</label><select class="form-select" id="analysisSelect"><option value="deepseek_plan" ${d.analysis_provider === "deepseek_plan" ? "selected" : ""}>DeepSeek · сюжет и план</option><option value="antigravity_manual" ${d.analysis_provider === "antigravity_manual" ? "selected" : ""}>Antigravity · автоматически</option><option value="local" ${d.analysis_provider === "local" ? "selected" : ""}>На компьютере</option><option value="hybrid" ${d.analysis_provider === "hybrid" ? "selected" : ""}>На компьютере + DeepSeek</option><option value="deepseek" ${d.analysis_provider === "deepseek" ? "selected" : ""}>DeepSeek · облако</option></select><button class="btn sm clear" data-action="editor-panel" data-id="editorAnalysis" aria-label="Настройки подключения анализа">⚙</button></div>
 <div class="editor-option-row"><label class="form-label" for="editEconomyMode">Экономный режим</label><input id="editEconomyMode" type="checkbox" role="switch" ${d.economy_mode !== false ? "checked" : ""}><span class="caption">Существующие проверки по необходимости</span></div>
 <div class="editor-option-row"><label class="form-label" for="musicEnabled">Музыка</label><input id="musicEnabled" type="checkbox" ${m.enabled ? "checked" : ""}><span id="musicSummary" class="caption"></span><button class="btn sm clear" data-action="editor-panel" data-id="editorMusic">Настроить</button></div></section>
 <div class="sticky-bottom editor-launch"><span class="form-status" id="editStatus"></span><button class="btn" data-action="save-settings">Сохранить</button>${processingModeHTML(d, !d.source_id || isRunning)}</div></div>
@@ -601,6 +622,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
       });
     }
     $("captionStyle").onchange = event => { d.caption_style = event.target.value; syncPreview(); };
+    $("storyObjective").onchange = event => { d.story_objective = {version: 1, objective: event.target.value}; };
     $("analysisSelect").onchange = event => { d.analysis_provider = event.target.value; syncPreview(); };
     $("editEconomyMode").onchange = event => { d.economy_mode = event.target.checked; };
     $("musicEnabled").onchange = (e) => {
@@ -754,7 +776,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
     const current = processingProgress(j),
       progress = current.percent;
     const hist = jobsFor(e.id);
-    return `${header(`МОНТАЖ / СЕРИЯ ${e.number}`, "Процесс обработки", "Следите за этапами монтажа и открывайте готовые Shorts.", `<button class="btn clear" data-action="nav" data-screen="editor">⚙ Параметры серии</button>${j.status === "completed" ? `<button class="btn solid" data-action="open-review">${j.processing_mode === "plan_only" ? "▷ Проверить план" : "▷ Проверить Shorts"}</button>` : ""}`)}<div class="progress-dashboard"><section class="process-main"><div class="panel process-stat"><div class="progress-head"><div><div class="eyebrow">ЗАДАНИЕ / ${esc(j.id.slice(0, 8))}</div><h2>${j.status === "running" && j.provider_wait?.reason === "quota" ? "Ожидаем восстановления лимита" : j.status === "running" ? "Идёт монтаж серии" : statusLabel(j.status)}</h2></div>${badge(j.status)}</div><div class="percentage" id="percentage">${progress === null ? "…" : progress + '<span style="font-size:26px;letter-spacing:0">%</span>'}</div><p class="caption" id="currentStageLabel">${esc(current.label)}</p><p class="lede" id="stageMessage">${esc(processingMessage(j))}</p><div class="progress-track"><i id="jobBar" style="width:${progress === null ? 0 : progress}%"></i></div><div class="panel" style="padding:12px 15px;margin:14px 0;background:#101a16"><div class="section-title" style="margin-bottom:9px"><h2 style="font-size:12px">Токены моделей · всё задание</h2><span class="tiny-note">Сохранённая статистика ответов моделей</span></div><div id="jobTokens" style="font-size:12px;color:#d4e8ba;line-height:1.8">Загружаем данные…</div></div><div class="inline-controls">${j.status === "running" ? `<button class="btn red" data-action="cancel-job" data-id="${esc(j.id)}">■ Отменить монтаж</button>` : ""}${["interrupted", "failed", "cancelled", "waiting_analysis"].includes(j.status) ? `<button class="btn solid" data-action="retry-job" data-id="${esc(j.id)}">↺ Продолжить обработку</button>` : ""}<button class="btn" data-action="read-job" data-id="${esc(j.id)}">↻ Обновить статус</button>${j.status === "completed" ? `<button class="btn solid" data-action="open-review">${j.processing_mode === "plan_only" ? "▷ К плану" : "▷ К шортсам"}</button>` : ""}</div></div>
+    return `${header(`МОНТАЖ / СЕРИЯ ${e.number}`, "Процесс обработки", "Следите за этапами монтажа и открывайте готовые Shorts.", `<button class="btn clear" data-action="nav" data-screen="editor">⚙ Параметры серии</button>${reviewable(j) ? `<button class="btn solid" data-action="open-review">${j.processing_mode === "plan_only" ? "▷ Проверить план" : "▷ Проверить Shorts"}</button>` : ""}`)}${outcomeHTML(j)}<div class="progress-dashboard"><section class="process-main"><div class="panel process-stat"><div class="progress-head"><div><div class="eyebrow">ЗАДАНИЕ / ${esc(j.id.slice(0, 8))}</div><h2>${j.status === "running" && j.provider_wait?.reason === "quota" ? "Ожидаем восстановления лимита" : j.status === "running" ? "Идёт монтаж серии" : statusLabel(j.status)}</h2></div>${badge(j.status)}</div><div class="percentage" id="percentage">${progress === null ? "…" : progress + '<span style="font-size:26px;letter-spacing:0">%</span>'}</div><p class="caption" id="currentStageLabel">${esc(current.label)}</p><p class="lede" id="stageMessage">${esc(processingMessage(j))}</p><div class="progress-track"><i id="jobBar" style="width:${progress === null ? 0 : progress}%"></i></div><div class="panel" style="padding:12px 15px;margin:14px 0;background:#101a16"><div class="section-title" style="margin-bottom:9px"><h2 style="font-size:12px">Токены моделей · всё задание</h2><span class="tiny-note">Сохранённая статистика ответов моделей</span></div><div id="jobTokens" style="font-size:12px;color:#d4e8ba;line-height:1.8">Загружаем данные…</div></div><div class="inline-controls">${j.status === "running" ? `<button class="btn red" data-action="cancel-job" data-id="${esc(j.id)}">■ Отменить монтаж</button>` : ""}${["interrupted", "failed", "cancelled", "waiting_analysis"].includes(j.status) ? `<button class="btn solid" data-action="retry-job" data-id="${esc(j.id)}">↺ Продолжить обработку</button>` : ""}<button class="btn" data-action="read-job" data-id="${esc(j.id)}">↻ Обновить статус</button>${reviewable(j) ? `<button class="btn solid" data-action="open-review">${j.processing_mode === "plan_only" ? "▷ К плану" : "▷ К шортсам"}</button>` : ""}</div></div>
 <div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>Этапы монтажа</h2></div><div class="process-stage-list" id="stageRows">${processingStageRows(j)}</div></div>
 <div class="panel" style="padding:24px;margin-top:17px"><div class="section-title"><h2>История монтажей</h2><span class="tiny-note">${hist.length} попыток</span></div>${hist.map((h) => `<div class="history-row"><div><strong>Монтаж ${esc(h.id.slice(0, 8))}</strong><br><span>${stamp(h.created_at)}</span></div>${badge(h.status)}<button class="btn sm" data-action="open-job" data-id="${esc(h.id)}">Открыть →</button></div>`).join("")}</div>${renderEconomyControl(j)}${renderProviderControl(j)}${renderManualPanel(j)}</section>
 <aside style="display:grid;gap:17px"><div class="panel" style="padding:23px"><div class="section-title"><h2>Параметры монтажа</h2></div><div class="data-row"><span>Видеофайл</span><b style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(j.source_name)}">${esc(j.source_name)}</b></div><div class="data-row"><span>Режим</span><b>${esc(processingModeLabel(j.processing_mode))}</b></div><div class="data-row"><span>Анализ</span><b>${esc(providerLabel(j.analysis_provider))}</b></div><div class="data-row"><span>Кадр</span><b>${j.layout === "cinema" ? "Весь кадр" : "Умное кадрирование"}</b></div><div class="data-row"><span>Субтитры</span><b>${j.caption_style === "accent" ? "С акцентом" : "Классические"}</b></div><div class="data-row"><span>Запущено</span><b>${stamp(j.created_at)}</b></div><div class="data-row"><span>Повтор</span><b>${j.attempt || 1}</b></div><div class="data-row"><span>Файлов</span><b>${publicJob(j).files.length}</b></div><div class="downloads">${j.status !== "running" ? `<button class="btn sm red" data-action="delete-job" data-id="${esc(j.id)}">Удалить запись</button>` : ""}</div></div><div class="panel" style="padding:23px"><div class="section-title"><h2>Сводка статуса</h2><span class="tiny-note">Последние события</span></div><div class="log-box" id="progressLog">${(
@@ -1013,8 +1035,15 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
   function reviewGetSource(j) {
     return "/api/jobs/" + encodeURIComponent(j.id) + "/source";
   }
+  function reviewFile(j, part, index) {
+    const files = publicJob(j).files;
+    return files.find(file => Number(file.part_index) === Number(part?.index)) ||
+      files.find(file => new RegExp("part[_-]?0*" + Number(part?.index) + "(?:\\D|$)", "i").test(file.name || file.url || "")) ||
+      (j.story_objective?.objective !== "standalone_shorts" && files.every(file => file.part_index == null) ? files[index] : undefined);
+  }
   function reviewGetShort(j, index) {
-    return j?.files?.[index]?.url || "";
+    const part = db.plans[j?.id]?.parts?.[index];
+    return reviewFile(j, part, index)?.url || "";
   }
   function reviewSourceStage(j, compact = false) {
     return `<div class="rv-source-box ${compact ? "rv-comp-source" : ""}"><video id="reviewSourceVideo" controls playsinline preload="metadata" aria-label="Исходная серия" src="${reviewGetSource(j)}"></video></div>`;
@@ -1034,17 +1063,17 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
     const e = currE(),
       j = currentJob(),
       plan = db.plans[j?.id];
-    if (j?.status === "completed" && !plan)
+    if (reviewable(j) && !plan)
       return `<div class="empty" role="status">Загружаем готовые Shorts…</div>`;
-    if (!j || j.status !== "completed" || !Array.isArray(plan?.parts) || !plan.parts.length)
-      return `<div class="empty"><strong>Нет готовых частей</strong>Сначала завершите монтаж выбранной серии.</div>`;
+    if (!reviewable(j) || !Array.isArray(plan?.parts) || !plan.parts.length)
+      return `${outcomeHTML(j)}<div class="empty"><strong>Нет готовых частей</strong>Проверьте результат анализа и предложения в сводке обработки.</div>`;
     if (j.processing_mode === "plan_only") ui.reviewMode = "source";
     ui.part = Math.max(0, Math.min(plan.parts.length - 1, ui.part));
     const part = plan.parts[ui.part],
       all = reviewSegments(plan),
       sel = reviewSelection(plan),
       files = publicJob(j).files,
-      fmt = files[ui.part] || files[0],
+      fmt = reviewFile(j, part, ui.part),
       saved = all.filter((x) => x.kind === "kept"),
       keptTime = saved.reduce((a, s) => a + s.end - s.start, 0),
       mode = ui.reviewMode || "compare",
@@ -1069,10 +1098,10 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
         return `<button class="rv2-clip ${s.kind === "kept" ? "kept" : "removed"} ${sel.key === s.key ? "active" : ""}" data-action="review-select-seg" data-id="${s.key}" title="${esc(title)}"><span class="rv2-clip-top"><b>${s.kind === "kept" ? `Часть ${s.part + 1} · сцена ${s.cut + 1}` : "Вырезано"}</b><i>${s.kind === "kept" ? "✓" : "✕"}</i></span><span class="rv2-clip-art ${s.kind === "kept" ? `scene-tone-${s.part % 5}` : ""}"><small>${s.kind === "kept" ? "▶ СМОТРЕТЬ" : "↪ ПРОПУСК"}</small></span><span class="rv2-clip-foot"><b>${reviewTime(s.start)}–${reviewTime(s.end)}</b><small>${reviewTime(s.end - s.start)}</small></span></button>`;
       })
       .join("");
-    return `<div class="rv2-screen">${j.processing_mode === "plan_only" ? '<p class="field-hint">План пересобран из кэша. Видео не экспортировалось. Здесь можно проверить сцены на исходнике; для создания Shorts запустите обновление по изменениям.</p>' : ""}<div class="rv2-head"><div class="rv2-titleline"><button class="rv2-back" data-action="nav" data-screen="editor" title="Настройки серии">←</button><div><span class="rv2-kicker">КАДР STUDIO / СЕРИЯ ${e.number}</span><h1>${j.processing_mode === "plan_only" ? "Проверка плана" : "Проверка монтажа"}</h1></div></div><div class="rv2-heading-actions"><select class="form-select rv2-run-select" id="reviewAttempt" aria-label="Выбор попытки монтажа">${jobsFor(
+    return `<div class="rv2-screen">${outcomeHTML(j)}${j.processing_mode === "plan_only" ? '<p class="field-hint">План пересобран из кэша. Видео не экспортировалось. Здесь можно проверить сцены на исходнике; для создания Shorts запустите обновление по изменениям.</p>' : ""}<div class="rv2-head"><div class="rv2-titleline"><button class="rv2-back" data-action="nav" data-screen="editor" title="Настройки серии">←</button><div><span class="rv2-kicker">КАДР STUDIO / СЕРИЯ ${e.number}</span><h1>${j.processing_mode === "plan_only" ? "Проверка плана" : "Проверка монтажа"}</h1></div></div><div class="rv2-heading-actions"><select class="form-select rv2-run-select" id="reviewAttempt" aria-label="Выбор попытки монтажа">${jobsFor(
       e.id,
     )
-      .filter((x) => x.status === "completed")
+      .filter(reviewable)
       .map(
         (x) =>
           `<option value="${esc(x.id)}" ${x.id === j.id ? "selected" : ""}>${x.processing_mode === "plan_only" ? "План" : x.review_draft ? "Черновик" : "Монтаж"} ${esc(x.id.slice(0, 8))}</option>`,
@@ -1532,6 +1561,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
               layout: d.layout,
               caption_style: d.caption_style,
               analysis_provider: d.analysis_provider,
+              ...(storyObjective(d) ? {story_objective: storyObjective(d)} : {}),
               economy_mode: d.economy_mode !== false,
             },
           );
@@ -1554,6 +1584,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
             layout: d.layout,
             caption_style: d.caption_style,
             analysis_provider: d.analysis_provider,
+              ...(storyObjective(d) ? {story_objective: storyObjective(d)} : {}),
               economy_mode: d.economy_mode !== false,
           });
           await saveEditorAppearance(d);
@@ -1808,13 +1839,13 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
           notify("Контекстный промпт скопирован");
           break;
         case "download-mp4": {
-          const file = j.files?.[ui.part];
+          const file = reviewFile(j, db.plans[j.id]?.parts?.[ui.part], ui.part);
           if (!file) throw new Error("MP4 не найден");
           window.open(file.url + "?download=1", "_blank", "noopener");
           break;
         }
         case "download-srt": {
-          const file = j.files?.[ui.part];
+          const file = reviewFile(j, db.plans[j.id]?.parts?.[ui.part], ui.part);
           if (!file?.subtitle_url) throw new Error("SRT не найден");
           window.open(file.subtitle_url + "?download=1", "_blank", "noopener");
           break;
@@ -2076,6 +2107,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
     return {
       part_index: index,
       revision: record?.revision ?? 0,
+      target_id: record?.target_id ?? null,
       cues: structuredClone(selectedCues(partIndex)),
     };
   }
@@ -2109,7 +2141,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
     const e = currE();
     if (!e) return '<div class="empty">Выберите серию для настройки.</div>';
     const j = currentJob();
-    if (!j || j.status !== "completed" || !db.plans[j.id]?.parts?.length) {
+    if (!reviewable(j) || !db.plans[j.id]?.parts?.length) {
       return '<div class="empty"><strong>Для этой серии ещё нет готового монтажа</strong>Редактор оформления станет доступен после завершения Shorts. Выберите другую серию или запустите монтаж.</div>';
     }
     const f = getFinishing(),
@@ -2184,7 +2216,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
         : "Музыка выключена";
     const previewSource = finishingPreviewSource(), src = previewSource.url;
     return `<div class="fc-screen"><div class="fc-header"><div><div class="fc-overline">ОФОРМЛЕНИЕ / СЕРИЯ ${e.number}</div><h1>Финальный штрих<span class="fc-period">.</span></h1><p>Настройте кадр, субтитры и музыку, затем сохраните готовое видео.</p></div><div class="fc-header-actions"><button class="fc-secondary" id="fcReset">↶ Сбросить оформление</button><button class="fc-accent" id="fcSave" ${ui.finishApplying ? "disabled" : ""}>${ui.finishApplying ? "Обновляем Shorts…" : "Применить оформление к Shorts"} <span>↗</span></button></div></div>
- ${finishingProgressMarkup(j.id)}<div class="fc-workspace"><section class="fc-controls"><div class="fc-controls-top"><span>ИНСТРУМЕНТЫ</span></div>${tabs}<div class="fc-controls-content">${controls}</div></section>
+ ${(db.captionDraftConflicts?.[j.id] || []).length ? `<details class="panel" style="padding:16px"><summary>Монтаж изменился: прежние несохранённые правки субтитров</summary><p>Проверьте новый порядок Shorts. Эти правки сохранены в текущем окне отдельно и не перенесены в другие ролики.</p>${db.captionDraftConflicts[j.id].map(record => `<p>Прежняя часть ${esc(record.part_index)}</p><pre style="white-space:pre-wrap">${esc((record.cues || []).map(cue => `${cue.start}–${cue.end}: ${cue.text}`).join('\n'))}</pre>`).join('')}</details>` : ''}${finishingProgressMarkup(j.id)}<section id="fcTaskList" aria-label="Задачи предпросмотра и экспорта">${finishingTasksMarkup(j.id)}</section><div class="fc-workspace"><section class="fc-controls"><div class="fc-controls-top"><span>ИНСТРУМЕНТЫ</span></div>${tabs}<div class="fc-controls-content">${controls}</div></section>
  <section class="fc-stage"><div class="fc-stage-toolbar"><span><i class="fc-live"></i> Предпросмотр</span><div><button id="fcGuideToggle" class="fc-minibtn ${s.safe_guides ? "active" : ""}" title="Показать границы безопасной области">⌗ Сетка</button><button id="fcPreviewReset" class="fc-minibtn" title="Вернуть предпросмотр">⤾</button></div></div><div class="fc-stage-inside"><div class="fc-canvas" id="fcCanvas" tabindex="0" aria-label="Предпросмотр 9 на 16. Перетаскивайте надпись, чтобы изменить позицию.">
  <video id="fcBackdrop" class="fc-backdrop" src="${src}" muted loop playsinline preload="metadata" aria-hidden="true"></video><video id="fcVideo" src="${src}" data-source-preview="${previewSource.raw}" data-preview-cut="0" loop playsinline preload="metadata"></video>
  <div class="fc-social-card" id="fcSocialCard"><div class="fc-social-header"><img id="fcSocialAvatar" alt="Иконка канала" src="${escAttr(avatarURL(v))}"><div class="fc-social-identity"><b id="fcSocialChannel"></b><small id="fcSocialHandle"></small></div><i>•••</i></div><div class="fc-social-caption" id="fcSocialCaption"></div><div class="fc-social-footer">Видео · ${reviewTime(finishingPart()?.duration || 0)}</div></div><div class="fc-frame-shade"></div><div class="fc-frame-number">KADR <span>STUDIO</span> <b> / ${String(ui.finishPart + 1).padStart(2, "0")}</b></div>
@@ -2294,6 +2326,59 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
       "Экспорт продолжается в фоне. Готовые Shorts появятся после завершения обработки.",
     );
   }
+  function finishingTaskPath(task) {
+    return task.preview_id
+      ? `/api/jobs/${encodeURIComponent(task.source_job_id || task.job_id)}/previews/${encodeURIComponent(task.preview_id)}`
+      : `/api/exports/${encodeURIComponent(task.export_id)}`;
+  }
+  function finishingTasksMarkup(jobId) {
+    const tasks = db.finishingTasks?.[jobId] || [];
+    return `<div class="panel" style="padding:16px;margin-bottom:16px"><div class="section-title"><h2>Предпросмотры и экспорт</h2><button class="btn sm" data-finishing-refresh>↻ Обновить</button></div>${ui.finishTaskError?.jobId === jobId ? `<p role="status">${esc(ui.finishTaskError.message)}</p>` : ''}${tasks.length ? tasks.map(task => {
+      const identifier = task.preview_id || task.export_id;
+      const resume = task.resumable && ['failed', 'cancelled', 'interrupted'].includes(task.status);
+      const cancel = task.cancellable && ['queued', 'running'].includes(task.status);
+      return `<div style="padding:10px 0;border-top:1px solid var(--line)"><p>${task.preview_id ? 'Предпросмотр' : 'Экспорт'} · ${esc(statusLabel(task.status))}${task.total_parts ? ` · ${Number(task.completed_parts) || 0} из ${Number(task.total_parts)} частей` : ''}</p>${task.error ? `<p role="status">${esc(task.error)}</p>` : ''}<div class="buttons">${resume ? `<button class="btn sm solid" data-finishing-control="resume" data-task-id="${escAttr(identifier)}">↻ Продолжить</button>` : ''}${cancel ? `<button class="btn sm red" data-finishing-control="cancel" data-task-id="${escAttr(identifier)}">■ Отменить</button>` : ''}${task.status === 'completed' ? (task.files || []).filter(file => file.url).map(file => `<a class="btn sm" href="${escAttr(file.url)}?download=1" target="_blank" rel="noopener">↓ Часть ${Number(file.part_index) || 1}</a>`).join('') : ''}</div></div>`;
+    }).join('') : '<p class="caption">Задачи появятся после создания предпросмотра или экспорта.</p>'}</div>`;
+  }
+  function bindFinishingTasks(jobId) {
+    document.querySelector('[data-finishing-refresh]')?.addEventListener('click', () => refreshFinishingTasks(jobId));
+    document.querySelectorAll('[data-finishing-control]').forEach(button => {
+      button.onclick = async () => {
+        const task = (db.finishingTasks?.[jobId] || []).find(item => (item.preview_id || item.export_id) === button.dataset.taskId);
+        if (!task) return;
+        button.disabled = true;
+        try {
+          await request('POST', finishingTaskPath(task) + '/' + button.dataset.finishingControl, {});
+          notify(button.dataset.finishingControl === 'resume' ? 'Задача продолжена с сохранёнными настройками.' : 'Задача отменена.');
+        } catch (error) {
+          notify(error.message, true);
+        } finally {
+          await refreshFinishingTasks(jobId);
+        }
+      };
+    });
+  }
+  async function refreshFinishingTasks(jobId) {
+    if (ui.finishTasksLoading === jobId) return;
+    ui.finishTasksLoading = jobId;
+    try {
+      await window.KadrBridge.loadFinishingTasks(db, jobId);
+      if (ui.finishTaskError?.jobId === jobId) ui.finishTaskError = null;
+    } catch (error) {
+      ui.finishTaskError = {jobId, message: 'Не удалось обновить задачи: ' + error.message};
+    } finally {
+      if (ui.finishTasksLoading === jobId) ui.finishTasksLoading = null;
+    }
+    if (ui.screen !== 'finishing' || currentJob()?.id !== jobId) return;
+    const panel = $('fcTaskList');
+    if (panel) {
+      panel.innerHTML = finishingTasksMarkup(jobId);
+      bindFinishingTasks(jobId);
+    }
+    clearTimeout(finishingTaskTimer);
+    if ((db.finishingTasks?.[jobId] || []).some(task => ['queued', 'running'].includes(task.status)))
+      finishingTaskTimer = setTimeout(() => refreshFinishingTasks(jobId), 1600);
+  }
   function finishingProgressMarkup(jobId) {
     const state = ui.finishProgress;
     if (!state || state.jobId !== jobId) return "";
@@ -2348,7 +2433,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
   async function applyFinishing(indices) {
     if (ui.finishApplying) return;
     const job = currentJob();
-    if (!job || job.status !== "completed") throw new Error("Нужен завершённый монтаж");
+    if (!reviewable(job)) throw new Error("Нужен готовый монтаж");
     ui.finishApplying = job.id;
     if (document.querySelector('#modalHost [data-finishing-result="true"]')) $("modalHost").innerHTML = "";
     setFinishingProgress(job.id, "running", "Обновление началось. Сохраняем изменения…");
@@ -2361,6 +2446,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
       });
       if (currentJob()?.id === job.id && ui.screen === "finishing") render();
       const task = await request("POST", `/api/jobs/${job.id}/exports`, {part_indices: indices, settings});
+      refreshFinishingTasks(job.id);
       setFinishingProgress(job.id, "running", "Задача принята. Ожидаем начала обработки…");
       const result = await waitForFinishingJob(`/api/exports/${task.export_id}`, (state) => {
         if (state.status === "completed") {
@@ -2390,6 +2476,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
       const currentButton = $("fcSave");
       if (currentButton) { currentButton.disabled = false; currentButton.innerHTML = 'Применить оформление к Shorts <span>↗</span>'; }
       if (ui.screen === "finishing") render();
+      refreshFinishingTasks(job.id);
     }
   }
   function optionalElement(id) {
@@ -2402,6 +2489,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
   function bindFinishing() {
     const canvasRoot = $("fcCanvas");
     if (!canvasRoot || !$("fcVideo")) return;
+    bindFinishingTasks(currentJob()?.id);
     const f = getFinishing(),
       s = selectedSubtitle(),
       a = f.audio,
@@ -2844,8 +2932,8 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
       try {
         const job = currentJob(),
           part = ui.finishPart;
-        if (!job || job.status !== "completed")
-          throw new Error("Нужен завершённый монтаж");
+        if (!reviewable(job))
+          throw new Error("Нужен готовый монтаж");
         const previewEpoch = ui.finishPreviewEpoch || 0;
         const previewSettings = structuredClone(f);
         await persistSelectedCaptions(job, part);
@@ -2860,6 +2948,7 @@ ${editorDialogHTML("editorMusic", "Фоновая музыка", `<p class="fiel
           },
         );
         notify("Создаём предпросмотр. Подождите несколько секунд.");
+        refreshFinishingTasks(job.id);
         const result = await waitForFinishingJob(
           "/api/jobs/" + job.id + "/previews/" + task.preview_id,
         );

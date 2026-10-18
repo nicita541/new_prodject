@@ -210,15 +210,16 @@ class AnalysisValidationTests(unittest.TestCase):
                 self.prompts.append(text)
                 return len(text) // 2
             def query(self, prompt, max_tokens, schema=None):
-                return {'keep': ['event_0035'], 'dependencies': None}
+                return {'keep': schema['properties']['keep']['items']['enum'], 'omit': [], 'dependencies': None}
         vision = FakeVision()
         events = [{'id': f'event_{i:04d}', 'summary': 'Событие' * 200, 'kind': 'story', 'importance': 4} for i in range(36)]
         result = global_story_review(vision, events)
         self.assertEqual(result['dependencies'], [])
         self.assertLessEqual(len(vision.prompts[-1]) // 2, 5300)
-        self.assertIn('event_0035', vision.prompts[-1])
+        self.assertIn('event_0035', result['keep'])
+        self.assertIn('e35', vision.prompts[-1])
 
-    def test_global_pass_retries_hallucinated_source_references(self):
+    def test_global_pass_rejects_hallucinated_source_without_identical_retry(self):
         class FakeVision:
             calls = 0
             def token_count(self, text): return 100
@@ -227,8 +228,9 @@ class AnalysisValidationTests(unittest.TestCase):
                 return {'keep': ['invented' if self.calls < 3 else 'event_0000']}
         vision = FakeVision()
         event = {'id': 'event_0000', 'summary': 'Событие', 'kind': 'story', 'importance': 4}
-        self.assertEqual(global_story_review(vision, [event])['keep'], ['event_0000'])
-        self.assertEqual(vision.calls, 3)
+        with self.assertRaises(ValueError):
+            global_story_review(vision, [event])
+        self.assertEqual(vision.calls, 1)
 
     def test_cloud_global_review_preserves_complete_middle_facts(self):
         from app.deepseek import DeepSeekVision
@@ -237,10 +239,13 @@ class AnalysisValidationTests(unittest.TestCase):
         vision = DeepSeekVision(Path('F:/new_prodject/temp/global-test'), lambda:False, cache_only=True)
         events = [{'id':f'event_{i:04d}', 'summary':'Начало. '*45+'Важная причина в середине. '+'Конец. '*45,
                    'kind':'story', 'importance':4} for i in range(36)]
-        response = {'keep':[e['id'] for e in events], 'omit':[], 'dependencies':[], 'summary':'История'}
-        with patch.object(DeepSeekVision, 'query', return_value=response) as query:
+        def response(prompt, max_tokens, schema=None):
+            return {'keep': schema['properties']['keep']['items']['enum'],
+                    'omit': [], 'dependencies': [], 'summary': 'История'}
+        with patch.object(DeepSeekVision, 'query', side_effect=response) as query:
             result = global_story_review(vision, events)
         self.assertEqual(result['incomplete_event_ids'], [])
+        self.assertEqual(set(result['keep']), {e['id'] for e in events})
         prompt = query.call_args.args[0]
         self.assertEqual(prompt.count('Важная причина в середине.'), 36)
         self.assertNotIn('[middle omitted]', prompt)

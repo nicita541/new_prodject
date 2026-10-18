@@ -6,6 +6,19 @@ import json
 import math
 
 
+def file_sha256(path, cancelled=lambda: False):
+    """Hash current artifact bytes without trusting size/mtime or a memo cache."""
+    from .cancellation import check_cancelled
+    result = hashlib.sha256()
+    check_cancelled(cancelled)
+    with path.open('rb') as stream:
+        while block := stream.read(1024 * 1024):
+            check_cancelled(cancelled)
+            result.update(block)
+    check_cancelled(cancelled)
+    return result.hexdigest()
+
+
 def finite_number(value):
     """JSON numeric evidence excludes booleans, infinity and NaN."""
     return type(value) in (int, float) and math.isfinite(value)

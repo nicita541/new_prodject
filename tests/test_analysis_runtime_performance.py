@@ -55,6 +55,19 @@ class RuntimePerformanceTests(unittest.TestCase):
                 source_digest(source)
         self.assertEqual(source_digest(source), hashlib.sha256(b'changed!').hexdigest())
 
+    def test_refresh_rehashes_same_stat_source_and_seeds_run_cache(self):
+        source = self.directory / 'source.mp4'
+        source.write_bytes(b'original')
+        stamp = source_identity.source_stamp(source)
+        with patch.object(source_identity, 'source_stamp', return_value=stamp), \
+                patch.object(source_identity, '_hash_source', wraps=source_identity._hash_source) as hasher:
+            self.assertEqual(source_digest(source), hashlib.sha256(b'original').hexdigest())
+            source.write_bytes(b'changed!')
+            changed = source_digest(source, refresh=True)
+            self.assertEqual(changed, hashlib.sha256(b'changed!').hexdigest())
+            self.assertEqual(source_digest(source), changed)
+            self.assertEqual(hasher.call_count, 2)
+
     def test_concurrent_first_hash_computed_once(self):
         source = self.directory / 'source.mp4'
         source.write_bytes(b'original')
@@ -119,9 +132,7 @@ class RuntimePerformanceTests(unittest.TestCase):
                     pass
                 with sessions.session(self.directory, lambda: False):
                     raise RuntimeError('failure')
-        self.assertEqual(calls, [('start', 'local'), ('close', 'local'),
-                                 ('start', 'deepseek_plan'), ('close', 'deepseek_plan'),
-                                 ('start', 'local'), ('close', 'local')])
+        self.assertEqual(calls, [('start', 'deepseek_plan'), ('close', 'deepseek_plan')])
 
     def test_one_lookahead_prepares_while_current_inference_is_running(self):
         second_started, release, third_started = Event(), Event(), Event()
@@ -173,7 +184,7 @@ class RuntimePerformanceTests(unittest.TestCase):
             with self.assertRaises(InterruptedError):
                 prepared.take(0)
 
-    def test_analysis_orchestration_uses_two_loads_and_closes_on_cache_hit(self):
+    def test_analysis_orchestration_without_inference_never_loads_models(self):
         from app.analysis import analyze
         from app.json_store import analysis_json as atomic_json
         from app.inference import REPAIR_VERSION
@@ -191,7 +202,7 @@ class RuntimePerformanceTests(unittest.TestCase):
         stages, loads, closes = [], [], []
         def stage(label):
             def run(*args, **kwargs):
-                vision = next((value for value in args if isinstance(value, LocalVision)), None)
+                vision = next((value for value in args if hasattr(value, 'query') and hasattr(value, 'model')), None)
                 if vision is not None:
                     stages.append((label, vision.model, vision.thinking))
                 return events
@@ -235,18 +246,18 @@ class RuntimePerformanceTests(unittest.TestCase):
                 stack.enter_context(patch(target, side_effect=stage(label)))
             expected = {'events': events, 'check_policy': {'version': 2, 'economy_mode': False}}
             self.assertEqual(analyze(self.directory, source, lambda *args: None, lambda: False), expected)
-            self.assertEqual(loads, [VLM_MODEL, STORY_MODEL])
+            self.assertEqual(loads, [])
             self.assertEqual(closes, loads)
             self.assertIn(('story', STORY_MODEL, True), stages)
             self.assertIn(('pacing', STORY_MODEL, False), stages)
             self.assertIn(('framing', STORY_MODEL, False), stages)
-            # Story cache reuse can start 9B directly in non-thinking mode.
+            # Story cache reuse also leaves subsequent cached/skipped work lazy.
             (self.directory / 'events.meta.json').unlink()
             loads.clear()
             closes.clear()
             stages.clear()
             analyze(self.directory, source, lambda *args: None, lambda: False)
-            self.assertEqual(loads, [STORY_MODEL])
+            self.assertEqual(loads, [])
             self.assertEqual(closes, loads)
             self.assertFalse(any(stage[0] == 'story' for stage in stages))
             # The completed pacing pass can itself be restored without query.
@@ -269,6 +280,34 @@ class RuntimePerformanceTests(unittest.TestCase):
                 self.assertTrue(result['check_policy']['economy_mode'])
             self.assertNotIn(VLM_MODEL, loads)
             self.assertEqual(closes, loads)
+
+    def test_standalone_discovery_precedes_any_semantic_boundary_query(self):
+        from app.analysis import analyze
+        from app.json_store import atomic_json
+        from app.inference import REPAIR_VERSION
+        source = self.directory / 'source.mp4'
+        source.write_bytes(b'authored physical source, not media')
+        (self.directory / 'audio.wav').write_bytes(b'prepared')
+        atomic_json(self.directory / 'transcript.json', {'segments': [], 'words': [], 'repair_version': REPAIR_VERSION})
+        atomic_json(self.directory / 'story-objective.json', {'version': 1, 'objective': 'standalone_shorts'})
+        with ExitStack() as stack:
+            for target, result in (
+                ('app.analysis.probe_media', {'duration': 65, 'width': 160, 'height': 90, 'fps': 24, 'has_audio': True}),
+                ('app.analysis.shot_checkpoint', [{'id': 'shot', 'start': 0, 'end': 65}]),
+                ('app.media_probe.raw_shot_evidence', []), ('app.media_evidence.perception_checkpoint', {}),
+                ('app.episode_profile.build_episode_profile', {}), ('app.episode_profile.scene_settings', {})):
+                stack.enter_context(patch(target, return_value=result))
+            boundary = stack.enter_context(patch('app.scene_detection.scene_checkpoint',
+                                                 side_effect=AssertionError('premature boundary inference')))
+            model = stack.enter_context(patch.object(LocalVision, 'start',
+                                                     side_effect=AssertionError('premature model load')))
+            discovery = stack.enter_context(patch('app.standalone_analysis.analyze_standalone', return_value={'discovery': True}))
+            self.assertEqual(analyze(self.directory, source, lambda *_: None, lambda: False), {'discovery': True})
+        catalog = discovery.call_args.args[4]
+        self.assertEqual([(r['start'], r['end']) for r in catalog], [(0, 30), (30, 60), (60, 65)])
+        self.assertTrue(all(r['evidence']['semantic_authority'] is False for r in catalog))
+        boundary.assert_not_called()
+        model.assert_not_called()
 
     def test_scene_prefetch_crosses_scene_boundary_and_skips_valid_checkpoints(self):
         from app.scene_analysis import analyze_scenes

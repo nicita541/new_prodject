@@ -6,7 +6,7 @@ import unittest
 import uuid
 
 from app.config import ROOT
-from app.confirmed_selection import project,prune_failed
+from app.confirmed_selection import project,prune_failed,preserve_source,restore_source
 from app.json_store import atomic_json,read_json
 from app.selection_gate import source_selection_problems
 from tests.test_final_quality import fixture
@@ -110,3 +110,17 @@ class ConfirmedSelectionTests(unittest.TestCase):
         analysis=world();analysis['events'][0]['uncertain']=True
         self.assertIs(project(analysis,self.directory),analysis)
         self.assertIsNone(prune_failed(analysis,{'problems':[]},None,self.directory))
+
+    def test_partial_recovery_cannot_replace_full_source_even_when_it_raises(self):
+        original=b'[ {"id":"original full source"} ]\n'
+        (self.directory/'events.json').write_bytes(original)
+        with self.assertRaisesRegex(RuntimeError,'interrupted'):
+            with preserve_source({'selection_scope':{'mode':'confirmed_only'}},self.directory):
+                atomic_json(self.directory/'events.json',[{'id':'scoped'}])
+                atomic_json(self.directory/'dialogue_relations-result.json',{'status':'scoped'})
+                raise RuntimeError('interrupted')
+        self.assertEqual((self.directory/'events.json').read_bytes(),original)
+        self.assertFalse((self.directory/'dialogue_relations-result.json').exists())
+        self.assertEqual(read_json(self.directory/'confirmed-selection/working/events.json'),[{'id':'scoped'}])
+        restore_source(self.directory)
+        self.assertEqual((self.directory/'events.json').read_bytes(),original)

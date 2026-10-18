@@ -15,7 +15,7 @@ from app.config import TEMP
 from app import deepseek, episode_profile, scene_analysis, scene_detection, story, endings, pacing
 from app.json_store import analysis_json as atomic_json, load_json
 from app.media_probe import shot_checkpoint
-from app.semantic_identity import component_identity, semantic_identity, _static_constants
+from app.semantic_identity import component_identity, semantic_identity, scoped_identity, _static_constants
 from app.vision import storyboard_samples
 
 
@@ -71,11 +71,17 @@ class SemanticIdentityTests(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(first, allow_nan=False)), first)
         required = {'shot_detector', 'scene_detector', 'scene_grouping', 'visual_features',
                     'storyboard', 'local_prompt', 'recovery', 'global_story', 'episode_profile',
-                    'story', 'pacing', 'planner', 'ending','story_structure','continuity','final_quality'}
+                    'story', 'pacing', 'planner', 'ending','story_structure','continuity','final_quality', 'standalone'}
         self.assertEqual(set(first['components']), required)
         planner = first['components']['planner']
         self.assertIn('app/story_structure.py', planner['sources'])
         self.assertIn('app/planner_audit.py', planner['sources'])
+        self.assertIn('app/standalone_planner.py', first['components']['standalone']['sources'])
+        self.assertIn('app/story_candidates.py', first['components']['standalone']['sources'])
+        self.assertIn('app/candidate_analysis.py', first['components']['standalone']['sources'])
+        self.assertIn('app/story_candidates.py', first['components']['final_quality']['sources'])
+        standalone = scoped_identity('standalone')
+        self.assertEqual(set(standalone['components']), {'standalone', 'final_quality'})
         self.assertTrue(first['components']['local_prompt']['prompt_hashes'])
         self.assertTrue(first['components']['planner']['versions'])
         with self.assertRaises(ValueError):
@@ -139,6 +145,17 @@ class SemanticIdentityTests(unittest.TestCase):
         expected = {name: component_identity(name) for name in ('local_prompt', 'recovery', 'storyboard')}
         with changed_source(antigravity_batch, 'max_workers=4', 'max_workers=2'):
             self.assertEqual(expected, {name: component_identity(name) for name in expected})
+
+    def test_whole_candidate_policy_changes_invalidate_compiler_but_not_raw_media(self):
+        from app import candidate_analysis, story_candidates
+        for module, before, after in (
+            (candidate_analysis, 'Propose ONE independent short story', 'Propose ONE complete independent short story'),
+            (story_candidates, "'suitable_pacing'", "'source_suitable_pacing'"),
+        ):
+            original = {name: component_identity(name) for name in ('standalone', 'shot_detector')}
+            with self.subTest(module=module.__name__), changed_source(module, before, after):
+                self.assertNotEqual(original['standalone']['digest'], component_identity('standalone')['digest'])
+                self.assertEqual(original['shot_detector'], component_identity('shot_detector'))
 
     def test_runtime_prompt_and_policy_changes_invalidate_without_version_change(self):
         original = component_identity('recovery')

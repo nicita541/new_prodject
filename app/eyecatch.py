@@ -53,16 +53,19 @@ def detect_eyecatches(
 
 
 def apply_eyecatch_exclusions(events: list[dict], eyecatch_indices: list[int]) -> list[dict]:
-    """Mark detected eyecatches with kind='eyecatch' and zero importance."""
+    """Preserve the legacy entry point; heuristic candidates never authorize cuts.
+
+    Position, silence and duration can also describe a consequential quiet
+    story. Existing visual/title checks own any subsequent exclusion decision.
+    """
     import copy
     result = copy.deepcopy(events)
     for idx in eyecatch_indices:
         if 0 <= idx < len(result):
             event = result[idx]
-            event['kind'] = 'eyecatch'
-            event['importance'] = 0
-            event['contains_credits'] = False
-            event['credit_montage'] = False
-            event['selected_ranges'] = []
-            event.setdefault('story_warnings', []).append('Исключена ТВ-заставка (айкетч) между частями')
+            event['eyecatch_candidate'] = {
+                'method': 'position_duration_speech_v1',
+                'status': 'proposal',
+                'authorizes_exclusion': False,
+            }
     return result

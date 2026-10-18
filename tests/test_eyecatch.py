@@ -20,10 +20,29 @@ class EyecatchTests(unittest.TestCase):
         indices = detect_eyecatches(events, transcript, shots, duration=duration)
         self.assertEqual(indices, [2])
 
-        excluded = apply_eyecatch_exclusions(events, indices)
-        self.assertEqual(excluded[2]['kind'], 'eyecatch')
-        self.assertEqual(excluded[2]['importance'], 0)
-        self.assertEqual(excluded[2]['selected_ranges'], [])
+        proposed = apply_eyecatch_exclusions(events, indices)
+        self.assertEqual(proposed[2]['eyecatch_candidate']['status'], 'proposal')
+        self.assertFalse(proposed[2]['eyecatch_candidate']['authorizes_exclusion'])
+        self.assertEqual({k:v for k,v in proposed[2].items() if k != 'eyecatch_candidate'}, events[2])
+        self.assertNotIn('eyecatch_candidate', events[2])
+
+    def test_quiet_mid_episode_story_is_not_erased_and_visual_review_is_targeted(self):
+        from app.review_scope import check_regions
+        event = {'id':'quiet_reveal','kind':'story','start':690.,'end':696.,
+                 'importance':5,'contains_credits':False,'credit_montage':False,
+                 'selected_ranges':[{'start':690.,'end':696.}],
+                 'action_units':[{'start':691.,'end':695.,'action':'visible reveal'}]}
+        source = [event]
+        candidates = detect_eyecatches(source, {'words':[]}, [], duration=1440.)
+        result = apply_eyecatch_exclusions(source, candidates)
+        self.assertEqual(result[0]['selected_ranges'], event['selected_ranges'])
+        self.assertEqual(result[0]['action_units'], event['action_units'])
+        self.assertEqual(result[0]['kind'], 'story')
+        self.assertEqual(result[0]['importance'], 5)
+        regions = check_regions(result)
+        self.assertEqual(len(regions),1)
+        self.assertEqual(regions[0]['checks'],['titles'])
+        self.assertNotIn('eyecatch_candidate', event)
 
     def test_detect_eyecatches_ignores_normal_dialogue_scene(self):
         duration = 1440.0

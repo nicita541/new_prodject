@@ -2,24 +2,67 @@
 from __future__ import annotations
 
 import copy
+import os
+import re
 import threading
 from pathlib import Path
 
 from app.config import FFMPEG
-from app.content_identity import digest
+from app.cancellation import check_cancelled
+from app.checkpoint_lineage import ancestors
+from app.content_identity import digest, file_sha256
 from app.json_store import atomic_json, read_json
 from app.media import inspect_media, run_render_command, _safe_replace
+from app.source_identity import check_source, source_stamp
 
-CLEAN_VERSION = 1
+CLEAN_VERSION = 2
+FULL_DECODE_VERSION = 1
 _LOCKS = [threading.Lock() for _ in range(16)]
 
 
-def clean_identity(source: Path, part: dict, probe: dict):
-    stat = source.stat()
-    return digest({'version': CLEAN_VERSION, 'source': str(source.resolve()),
-        'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns,
+def _canonical_resolved(path):
+    resolved = path.resolve()
+    value = str(resolved)
+    # realpath can retain this equivalent drive namespace during an atomic
+    # publication race. Other aliases still fail the containment checks below.
+    if os.name == 'nt' and re.match(r'^\\\\\?\\[A-Za-z]:\\', value):
+        return Path(value[4:])
+    return resolved
+
+
+def _owned_path(root, path):
+    root, path = Path(root).absolute(), Path(path).absolute()
+    relative = path.relative_to(root)
+    current = root
+    for component in (None, *relative.parts):
+        if component is not None:
+            current = current / component
+        if current.is_symlink() or current.is_junction():
+            raise ValueError('Чистая часть содержит перенаправление пути')
+    if _canonical_resolved(path) != _canonical_resolved(root) / relative:
+        raise ValueError('Чистая часть должна находиться в своём каталоге')
+    return path
+
+
+def _identity(source, part, probe, source_key):
+    return digest({'version': CLEAN_VERSION, 'source': str(_canonical_resolved(source)),
+        'source_sha256': source_key['sha256'],
         'width': probe['width'], 'height': probe['height'], 'audio': probe.get('audio_stream', 0),
         'duration': part['duration'], 'cuts': [{'start': c['start'], 'end': c['end']} for c in part['cuts']]})
+
+
+def _source_identity(source, cancelled=lambda: False):
+    # Windows ctime is creation time: a same-size rewrite followed by restored
+    # mtime can evade the process-local source memo. A clean receipt is a media
+    # trust boundary, so hash current bytes rather than accepting that memo.
+    stamp = source_stamp(source)
+    sha256 = file_sha256(source, cancelled)
+    check_source(source, stamp, cancelled)
+    return {'sha256': sha256, **stamp}
+
+
+def clean_identity(source: Path, part: dict, probe: dict):
+    return _identity(source, part, probe, _source_identity(source))
 
 
 def clean_clock_part(part: dict):
@@ -43,28 +86,57 @@ def clean_clock_part(part: dict):
     return result
 
 
-def _cached(path, identity):
+def _cached(path, identity, cancelled=lambda: False):
     try:
+        check_cancelled(cancelled)
         record = read_json(path.with_suffix('.json'), {})
         stat = path.stat()
         return (isinstance(record, dict) and record.get('identity') == identity
+                and record.get('version') == CLEAN_VERSION
+                and record.get('full_decode_version') == FULL_DECODE_VERSION
                 and record.get('size') == stat.st_size and stat.st_size > 1000
-                and record.get('mtime_ns') == stat.st_mtime_ns)
-    except (OSError, ValueError, TypeError):
+                and record.get('sha256') == file_sha256(path, cancelled))
+    except InterruptedError:
+        raise
+    except (OSError, ValueError, TypeError, UnicodeError):
         return False
+
+
+def _ancestor_clean(job_dir, identity, cancelled):
+    # Validate the complete declared source/owner chain before reading media.
+    # A matching source elsewhere in the job store never grants cache access.
+    for ancestor in ancestors(job_dir):
+        check_cancelled(cancelled)
+        clean = ancestor / 'clean'
+        try:
+            _owned_path(ancestor, clean)
+            for folder in sorted(clean.glob('part_*')):
+                check_cancelled(cancelled)
+                if not re.fullmatch(r'part_[0-9]+', folder.name):
+                    continue
+                path = folder / identity / 'clean.mkv'
+                _owned_path(ancestor, path)
+                _owned_path(ancestor, path.with_suffix('.json'))
+                if _cached(path, identity, cancelled):
+                    return path
+        except InterruptedError:
+            raise
+        except (OSError, ValueError):
+            continue  # A damaged or redirected disposable cache is a miss.
+    return None
 
 
 def prepare_clean_part(source: Path, part: dict, probe: dict, job_dir: Path,
                        cancelled=lambda: False, *, create=True, on_progress=None):
     """Return (source, part, probe, cache_hit); previews can decline a full build."""
-    identity = clean_identity(source, part, probe)
+    check_cancelled(cancelled)
+    source_key = _source_identity(source, cancelled)
+    identity = _identity(source, part, probe, source_key)
     folder = job_dir / 'clean' / f"part_{part['index']:03}" / identity
-    if not folder.resolve().is_relative_to(job_dir.resolve()):
-        raise ValueError('Некорректный каталог чистой части')
-    path = folder / 'clean.mkv'
-    if (not path.resolve().is_relative_to(folder.resolve())
-            or not path.with_suffix('.json').resolve().is_relative_to(folder.resolve())):
-        raise ValueError('Чистая часть должна находиться в своём каталоге')
+    path = _owned_path(job_dir, folder / 'clean.mkv')
+    _owned_path(job_dir, path.with_suffix('.json'))
+    _owned_path(job_dir, folder / 'clean.partial.mkv')
+    _owned_path(job_dir, folder / 'clean.ffscript')
     lock = _LOCKS[int(identity[:8], 16) % len(_LOCKS)]
     while not lock.acquire(timeout=.2):
         if cancelled():
@@ -72,7 +144,13 @@ def prepare_clean_part(source: Path, part: dict, probe: dict, job_dir: Path,
     try:
         if cancelled():
             raise InterruptedError('Обработка отменена')
-        hit = _cached(path, identity)
+        hit = _cached(path, identity, cancelled)
+        if not hit:
+            inherited = _ancestor_clean(job_dir, identity, cancelled)
+            if inherited is not None:
+                if _source_identity(source, cancelled) != source_key:
+                    raise ValueError('Исходник изменился при подготовке чистой части')
+                return inherited, clean_clock_part(part), {**probe, 'audio_stream': 0}, True
         if not hit:
             if not create:
                 return source, part, probe, False
@@ -111,10 +189,24 @@ def prepare_clean_part(source: Path, part: dict, probe: dict, job_dir: Path,
                 raise ValueError('Чистая часть не соответствует монтажу')
             if cancelled():
                 raise InterruptedError('Обработка отменена')
+            # Probe metadata alone cannot detect damaged packets near the end.
+            # Decode both complete streams, using the same cancellable process
+            # ownership and progress watchdog as the clean render itself.
+            run_render_command([str(FFMPEG), '-hide_banner', '-loglevel', 'error', '-nostdin',
+                '-xerror', '-err_detect', 'explode', '-i', str(partial.resolve()),
+                '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'],
+                folder, part['duration'], cancelled)
+            sha256 = file_sha256(partial, cancelled)
+            if _source_identity(source, cancelled) != source_key:
+                raise ValueError('Исходник изменился при подготовке чистой части')
+            check_cancelled(cancelled)
             _safe_replace(partial, path)
             stat = path.stat()
             atomic_json(path.with_suffix('.json'), {'identity': identity, 'size': stat.st_size,
-                'mtime_ns': stat.st_mtime_ns, 'version': CLEAN_VERSION})
+                'mtime_ns': stat.st_mtime_ns, 'version': CLEAN_VERSION, 'sha256': sha256,
+                'full_decode_version': FULL_DECODE_VERSION})
+        elif _source_identity(source, cancelled) != source_key:
+            raise ValueError('Исходник изменился при подготовке чистой части')
         return path, clean_clock_part(part), {**probe, 'audio_stream': 0}, hit
     finally:
         lock.release()

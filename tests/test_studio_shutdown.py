@@ -48,6 +48,13 @@ class StudioShutdownTests(unittest.TestCase):
         replacement = JobManager(self.root)
         replacement.close()
 
+    def test_managed_finishing_queue_blocks_idle_shutdown_without_legacy_counter(self):
+        with patch.object(self.manager.finishing_execution, 'busy', return_value=True):
+            response = self.stop()
+        self.assertEqual(response.status_code, 409, response.text)
+        self.callback.assert_not_called()
+        self.assertFalse(self.manager.shutdown_requested)
+
     def test_wrong_workspace_backend_or_ui_cannot_stop_server(self):
         for key in ("workspace", "backend", "ui", "application", "interface"):
             with self.subTest(key=key):
